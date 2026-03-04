@@ -1,0 +1,27 @@
+{
+    "name": "",
+    "description": "",
+    "category": "",
+    "publisher": {
+        "name": "",
+        "url": ""
+    },
+    "documentModels": [
+        {
+            "id": "powerhouse/vetra-cloud-environment",
+            "name": "Vetra Cloud Environment"
+        }
+    ],
+    "editors": [
+        {
+            "id": "vetra-cloud-environment",
+            "name": "Vetra Cloud Environment",
+            "documentTypes": [
+                "powerhouse/vetra-cloud-environment"
+            ]
+        }
+    ],
+    "apps": [],
+    "subgraphs": [],
+    "importScripts": []
+}
