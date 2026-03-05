@@ -1,6 +1,6 @@
-import { type IRelationalDb } from "document-drive/processors/types";
+import { type IRelationalDbLegacy } from "document-drive/processors/types";
 
-export async function up(db: IRelationalDb<any>): Promise<void> {
+export async function up(db: IRelationalDbLegacy<any>): Promise<void> {
   // Create table
   await db.schema
     .createTable("environments")
@@ -15,7 +15,7 @@ export async function up(db: IRelationalDb<any>): Promise<void> {
     .execute();
 }
 
-export async function down(db: IRelationalDb<any>): Promise<void> {
+export async function down(db: IRelationalDbLegacy<any>): Promise<void> {
   // drop table
   await db.schema.dropTable("environments").execute();
 }

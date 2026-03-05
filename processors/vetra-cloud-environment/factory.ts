@@ -1,14 +1,14 @@
 import type {
-  IProcessorHostModule,
-  ProcessorRecord,
-  RelationalDbProcessorFilter,
+  IProcessorHostModuleLegacy,
+  ProcessorRecordLegacy,
+  RelationalDbProcessorFilterLegacy,
 } from "document-drive/processors/types";
 import type { PHDocumentHeader } from "document-model";
 import { VetraCloudEnvironmentProcessor } from "./index.js";
 
 export const vetraCloudEnvironmentProcessorFactory =
-  (module: IProcessorHostModule) =>
-  async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
+  (module: IProcessorHostModuleLegacy) =>
+  async (driveHeader: PHDocumentHeader): Promise<ProcessorRecordLegacy[]> => {
     // Create a namespace for the processor and the provided drive id
     const namespace = VetraCloudEnvironmentProcessor.getNamespace(
       driveHeader.id
@@ -21,7 +21,7 @@ export const vetraCloudEnvironmentProcessorFactory =
       );
 
     // Create a filter for the processor
-    const filter: RelationalDbProcessorFilter = {
+    const filter: RelationalDbProcessorFilterLegacy = {
       branch: ["main"],
       documentId: ["*"],
       documentType: ["powerhouse/vetra-cloud-environment"],

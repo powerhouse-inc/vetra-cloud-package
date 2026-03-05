@@ -4,25 +4,25 @@
  */
 
 import {
-  type ProcessorRecord,
-  type IProcessorHostModule,
-  type ProcessorFactory,
+  type ProcessorRecordLegacy,
+  type IProcessorHostModuleLegacy,
+  type ProcessorFactoryLegacy,
 } from "document-drive/processors/types";
 import { type PHDocumentHeader } from "document-model";
 
 // Import processor factories here as they are generated
 import { vetraCloudEnvironmentProcessorFactory } from "./vetra-cloud-environment/factory.js";
 
-export const processorFactory = (module: IProcessorHostModule) => {
+export const processorFactory = (module: IProcessorHostModuleLegacy) => {
   // Initialize all processor factories once with the module
-  const factories: Array<ProcessorFactory> = [];
+  const factories: Array<ProcessorFactoryLegacy> = [];
 
   // Add processors here as they are generated
   factories.push(vetraCloudEnvironmentProcessorFactory(module));
 
   // Return the inner function that will be called for each drive
-  return async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
-    const processors: ProcessorRecord[] = [];
+  return async (driveHeader: PHDocumentHeader): Promise<ProcessorRecordLegacy[]> => {
+    const processors: ProcessorRecordLegacy[] = [];
 
     // Call each cached factory with the driveHeader
     for (const factory of factories) {

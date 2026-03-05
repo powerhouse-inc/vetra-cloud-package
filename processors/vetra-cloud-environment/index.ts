@@ -1,4 +1,4 @@
-import { RelationalDbProcessor } from "document-drive/processors/relational";
+import { RelationalDbProcessorLegacy } from "document-drive/processors/relational";
 import type { InternalTransmitterUpdate } from "document-drive/server/transmitter/types";
 import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { up } from "./migrations.js";
@@ -8,7 +8,7 @@ import { childLogger } from "document-drive";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
-export class VetraCloudEnvironmentProcessor extends RelationalDbProcessor<DB> {
+export class VetraCloudEnvironmentProcessor extends RelationalDbProcessorLegacy<DB> {
   static override getNamespace(driveId: string): string {
     // Default namespace: `${this.name}_${driveId.replaceAll("-", "_")}`
     logger.warn("Getting namespace for VetraCloudEnvironmentProcessor");
