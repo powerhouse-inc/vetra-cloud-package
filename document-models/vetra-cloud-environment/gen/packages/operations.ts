@@ -1,6 +1,6 @@
 import { type SignalDispatch } from "document-model";
-import { type AddPackageAction, type RemovePackageAction } from "./actions.js";
-import { type VetraCloudEnvironmentState } from "../types.js";
+import type { AddPackageAction, RemovePackageAction } from "./actions.js";
+import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentPackagesOperations {
   addPackageOperation: (

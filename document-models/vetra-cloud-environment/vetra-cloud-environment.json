@@ -1,135 +1,135 @@
 {
-    "author": {
-        "name": "Powerhouse Inc.",
-        "website": "https://www.powerhouse.inc"
-    },
-    "description": "a vetra cloud environment",
-    "extension": "vce",
-    "id": "powerhouse/vetra-cloud-environment",
-    "name": "Vetra Cloud Environment",
-    "specifications": [
+  "author": {
+    "name": "Powerhouse Inc.",
+    "website": "https://www.powerhouse.inc"
+  },
+  "description": "a vetra cloud environment",
+  "extension": "vce",
+  "id": "powerhouse/vetra-cloud-environment",
+  "name": "Vetra Cloud Environment",
+  "specifications": [
+    {
+      "changeLog": [],
+      "modules": [
         {
-            "changeLog": [],
-            "modules": [
-                {
-                    "description": "",
-                    "id": "559dea13-26dd-4f6d-bc1b-a3cad960a4d9",
-                    "name": "data_management",
-                    "operations": [
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "3efd794f-8ad7-450e-b83f-fe6ee6a4f6d7",
-                            "name": "SET_ENVIRONMENT_NAME",
-                            "reducer": "",
-                            "schema": "input SetEnvironmentNameInput {\n  \"Add your inputs here\"\n  name: String!\n}",
-                            "scope": "global",
-                            "template": ""
-                        }
-                    ]
-                },
-                {
-                    "description": "",
-                    "id": "7d5ac201-5919-429a-b87a-f20fed6db981",
-                    "name": "services",
-                    "operations": [
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "2b6372e4-06ee-49c5-90d3-6ddc37cfe952",
-                            "name": "ENABLE_SERVICE",
-                            "reducer": "",
-                            "schema": "input EnableServiceInput {\n  \"Add your inputs here\"\n  serviceName: VetraCloudEnvironmentService!\n}",
-                            "scope": "global",
-                            "template": ""
-                        },
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "eb57b5bb-e5d2-4e48-bff4-cc276bfddc0b",
-                            "name": "DISABLE_SERVICE",
-                            "reducer": "",
-                            "schema": "input DisableServiceInput {\n  \"Add your inputs here\"\n  serviceName: VetraCloudEnvironmentService!\n}",
-                            "scope": "global",
-                            "template": ""
-                        }
-                    ]
-                },
-                {
-                    "description": "",
-                    "id": "3248311d-757a-4c39-9039-1877c07d1b09",
-                    "name": "packages",
-                    "operations": [
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "4f30d807-9490-4a54-ad59-7cd617e02217",
-                            "name": "ADD_PACKAGE",
-                            "reducer": "",
-                            "schema": "input AddPackageInput {\n  \"Add your inputs here\"\n  packageName: String!\n  version: String\n}",
-                            "scope": "global",
-                            "template": ""
-                        },
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "d96a3e51-0ab6-42cf-81d4-ded1f83220ca",
-                            "name": "REMOVE_PACKAGE",
-                            "reducer": "",
-                            "schema": "input RemovePackageInput {\n  \"Add your inputs here\"\n  packageName: String!\n}",
-                            "scope": "global",
-                            "template": ""
-                        }
-                    ]
-                },
-                {
-                    "description": "",
-                    "id": "cb2f0759-2dce-4901-9e3c-4999d5a9f7c5",
-                    "name": "status",
-                    "operations": [
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "25eecb0d-a4c9-4d05-97c1-c1d9d1c3ad0f",
-                            "name": "START",
-                            "reducer": "",
-                            "schema": "input StartInput {\n  \"Add your inputs here\"\n  _placeholder: String\n}",
-                            "scope": "global",
-                            "template": ""
-                        },
-                        {
-                            "description": "",
-                            "errors": [],
-                            "examples": [],
-                            "id": "f89f026e-3d47-46e9-8ca7-35ce78d882d0",
-                            "name": "STOP",
-                            "reducer": "",
-                            "schema": "input StopInput {\n  \"Add your inputs here\"\n  _placeholder: String\n}",
-                            "scope": "global",
-                            "template": ""
-                        }
-                    ]
-                }
-            ],
-            "state": {
-                "global": {
-                    "examples": [],
-                    "initialValue": "{\n  \"name\": null,\n  \"services\": [],\n  \"packages\": null,\n  \"status\": \"STOPPED\"\n}",
-                    "schema": "enum VetraCloudEnvironmentService {\n  CONNECT\n  SWITCHBOARD\n}\n\nenum VetraCloudEnvironmentStatus {\n  STOPPED\n  STARTED\n}\n\ntype VetraCloudPackage {\n  name: String!\n  version: String\n}\n\ntype VetraCloudEnvironmentState {\n  name: String\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]\n  status: VetraCloudEnvironmentStatus!\n}"
-                },
-                "local": {
-                    "examples": [],
-                    "initialValue": "",
-                    "schema": ""
-                }
+          "description": "",
+          "id": "559dea13-26dd-4f6d-bc1b-a3cad960a4d9",
+          "name": "data_management",
+          "operations": [
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "3efd794f-8ad7-450e-b83f-fe6ee6a4f6d7",
+              "name": "SET_ENVIRONMENT_NAME",
+              "reducer": "",
+              "schema": "input SetEnvironmentNameInput {\n  \"Add your inputs here\"\n  name: String!\n}",
+              "scope": "global",
+              "template": ""
+            }
+          ]
+        },
+        {
+          "description": "",
+          "id": "7d5ac201-5919-429a-b87a-f20fed6db981",
+          "name": "services",
+          "operations": [
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "2b6372e4-06ee-49c5-90d3-6ddc37cfe952",
+              "name": "ENABLE_SERVICE",
+              "reducer": "",
+              "schema": "input EnableServiceInput {\n  \"Add your inputs here\"\n  serviceName: VetraCloudEnvironmentService!\n}",
+              "scope": "global",
+              "template": ""
             },
-            "version": 1
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "eb57b5bb-e5d2-4e48-bff4-cc276bfddc0b",
+              "name": "DISABLE_SERVICE",
+              "reducer": "",
+              "schema": "input DisableServiceInput {\n  \"Add your inputs here\"\n  serviceName: VetraCloudEnvironmentService!\n}",
+              "scope": "global",
+              "template": ""
+            }
+          ]
+        },
+        {
+          "description": "",
+          "id": "3248311d-757a-4c39-9039-1877c07d1b09",
+          "name": "packages",
+          "operations": [
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "4f30d807-9490-4a54-ad59-7cd617e02217",
+              "name": "ADD_PACKAGE",
+              "reducer": "",
+              "schema": "input AddPackageInput {\n  \"Add your inputs here\"\n  packageName: String!\n  version: String\n}",
+              "scope": "global",
+              "template": ""
+            },
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "d96a3e51-0ab6-42cf-81d4-ded1f83220ca",
+              "name": "REMOVE_PACKAGE",
+              "reducer": "",
+              "schema": "input RemovePackageInput {\n  \"Add your inputs here\"\n  packageName: String!\n}",
+              "scope": "global",
+              "template": ""
+            }
+          ]
+        },
+        {
+          "description": "",
+          "id": "cb2f0759-2dce-4901-9e3c-4999d5a9f7c5",
+          "name": "status",
+          "operations": [
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "25eecb0d-a4c9-4d05-97c1-c1d9d1c3ad0f",
+              "name": "START",
+              "reducer": "",
+              "schema": "input StartInput {\n  \"Add your inputs here\"\n  _placeholder: String\n}",
+              "scope": "global",
+              "template": ""
+            },
+            {
+              "description": "",
+              "errors": [],
+              "examples": [],
+              "id": "f89f026e-3d47-46e9-8ca7-35ce78d882d0",
+              "name": "STOP",
+              "reducer": "",
+              "schema": "input StopInput {\n  \"Add your inputs here\"\n  _placeholder: String\n}",
+              "scope": "global",
+              "template": ""
+            }
+          ]
         }
-    ]
+      ],
+      "state": {
+        "global": {
+          "examples": [],
+          "initialValue": "{\n  \"name\": null,\n  \"services\": [],\n  \"packages\": null,\n  \"status\": \"STOPPED\"\n}",
+          "schema": "enum VetraCloudEnvironmentService {\n  CONNECT\n  SWITCHBOARD\n}\n\nenum VetraCloudEnvironmentStatus {\n  STOPPED\n  STARTED\n}\n\ntype VetraCloudPackage {\n  name: String!\n  version: String\n}\n\ntype VetraCloudEnvironmentState {\n  name: String\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]\n  status: VetraCloudEnvironmentStatus!\n}"
+        },
+        "local": {
+          "examples": [],
+          "initialValue": "",
+          "schema": ""
+        }
+      },
+      "version": 1
+    }
+  ]
 }

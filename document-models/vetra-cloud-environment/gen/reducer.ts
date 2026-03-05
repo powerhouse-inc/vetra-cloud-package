@@ -1,20 +1,26 @@
 // TODO: remove eslint-disable rules once refactor is done
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
+import type { StateReducer } from "document-model";
+import { isDocumentAction, createReducer } from "document-model/core";
+import type { VetraCloudEnvironmentPHState } from "vetra-cloud-package/document-models/vetra-cloud-environment";
+
+import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/data-management.js";
+import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
+import { vetraCloudEnvironmentPackagesOperations } from "../src/reducers/packages.js";
+import { vetraCloudEnvironmentStatusOperations } from "../src/reducers/status.js";
+
 import {
-  type StateReducer,
-  isDocumentAction,
-  createReducer,
-} from "document-model";
-import { VetraCloudEnvironmentPHState } from "./ph-factories.js";
-import { z } from "./types.js";
+  SetEnvironmentNameInputSchema,
+  EnableServiceInputSchema,
+  DisableServiceInputSchema,
+  AddPackageInputSchema,
+  RemovePackageInputSchema,
+  StartInputSchema,
+  StopInputSchema,
+} from "./schema/zod.js";
 
-import { reducer as DataManagementReducer } from "../src/reducers/data-management.js";
-import { reducer as ServicesReducer } from "../src/reducers/services.js";
-import { reducer as PackagesReducer } from "../src/reducers/packages.js";
-import { reducer as StatusReducer } from "../src/reducers/status.js";
-
-export const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
+const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
   state,
   action,
   dispatch,
@@ -22,70 +28,90 @@ export const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
   if (isDocumentAction(action)) {
     return state;
   }
-
   switch (action.type) {
-    case "SET_ENVIRONMENT_NAME":
-      z.SetEnvironmentNameInputSchema().parse(action.input);
-      DataManagementReducer.setEnvironmentNameOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
-      break;
+    case "SET_ENVIRONMENT_NAME": {
+      SetEnvironmentNameInputSchema().parse(action.input);
 
-    case "ENABLE_SERVICE":
-      z.EnableServiceInputSchema().parse(action.input);
-      ServicesReducer.enableServiceOperation(
+      vetraCloudEnvironmentDataManagementOperations.setEnvironmentNameOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
       );
-      break;
 
-    case "DISABLE_SERVICE":
-      z.DisableServiceInputSchema().parse(action.input);
-      ServicesReducer.disableServiceOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
       break;
+    }
 
-    case "ADD_PACKAGE":
-      z.AddPackageInputSchema().parse(action.input);
-      PackagesReducer.addPackageOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
-      break;
+    case "ENABLE_SERVICE": {
+      EnableServiceInputSchema().parse(action.input);
 
-    case "REMOVE_PACKAGE":
-      z.RemovePackageInputSchema().parse(action.input);
-      PackagesReducer.removePackageOperation(
+      vetraCloudEnvironmentServicesOperations.enableServiceOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
       );
-      break;
 
-    case "START":
-      z.StartInputSchema().parse(action.input);
-      StatusReducer.startOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
       break;
+    }
 
-    case "STOP":
-      z.StopInputSchema().parse(action.input);
-      StatusReducer.stopOperation(
+    case "DISABLE_SERVICE": {
+      DisableServiceInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.disableServiceOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
       );
+
       break;
+    }
+
+    case "ADD_PACKAGE": {
+      AddPackageInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentPackagesOperations.addPackageOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "REMOVE_PACKAGE": {
+      RemovePackageInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentPackagesOperations.removePackageOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "START": {
+      StartInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusOperations.startOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "STOP": {
+      StopInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusOperations.stopOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
 
     default:
       return state;

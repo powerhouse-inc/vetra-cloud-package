@@ -1,24 +1,26 @@
+import type { DocumentModelUtils } from "document-model";
 import {
-  type CreateDocument,
-  type CreateState,
-  type LoadFromFile,
-  type LoadFromInput,
   baseCreateDocument,
-  baseSaveToFile,
   baseSaveToFileHandle,
-  baseLoadFromFile,
   baseLoadFromInput,
   defaultBaseState,
   generateId,
-} from "document-model";
-import {
-  type VetraCloudEnvironmentState,
-  type VetraCloudEnvironmentLocalState,
+} from "document-model/core";
+import type {
+  VetraCloudEnvironmentGlobalState,
+  VetraCloudEnvironmentLocalState,
 } from "./types.js";
-import { VetraCloudEnvironmentPHState } from "./ph-factories.js";
+import type { VetraCloudEnvironmentPHState } from "./types.js";
 import { reducer } from "./reducer.js";
+import { vetraCloudEnvironmentDocumentType } from "./document-type.js";
+import {
+  isVetraCloudEnvironmentDocument,
+  assertIsVetraCloudEnvironmentDocument,
+  isVetraCloudEnvironmentState,
+  assertIsVetraCloudEnvironmentState,
+} from "./document-schema.js";
 
-export const initialGlobalState: VetraCloudEnvironmentState = {
+export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   name: null,
   services: [],
   packages: null,
@@ -26,54 +28,50 @@ export const initialGlobalState: VetraCloudEnvironmentState = {
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 
-export const createState: CreateState<VetraCloudEnvironmentPHState> = (
-  state,
-) => {
-  return {
-    ...defaultBaseState(),
-    global: { ...initialGlobalState, ...(state?.global ?? {}) },
-    local: { ...initialLocalState, ...(state?.local ?? {}) },
-  };
-};
-
-export const createDocument: CreateDocument<VetraCloudEnvironmentPHState> = (
-  state,
-) => {
-  const document = baseCreateDocument(createState, state);
-  document.header.documentType = "powerhouse/vetra-cloud-environment";
-  // for backwards compatibility, but this is NOT a valid signed document id
-  document.header.id = generateId();
-  return document;
-};
-
-export const saveToFile = (document: any, path: string, name?: string) => {
-  return baseSaveToFile(document, path, "vce", name);
-};
-
-export const saveToFileHandle = (document: any, input: any) => {
-  return baseSaveToFileHandle(document, input);
-};
-
-export const loadFromFile: LoadFromFile<VetraCloudEnvironmentPHState> = (
-  path,
-) => {
-  return baseLoadFromFile(path, reducer);
-};
-
-export const loadFromInput: LoadFromInput<VetraCloudEnvironmentPHState> = (
-  input,
-) => {
-  return baseLoadFromInput(input, reducer);
-};
-
-const utils = {
+export const utils: DocumentModelUtils<VetraCloudEnvironmentPHState> = {
   fileExtension: "vce",
-  createState,
-  createDocument,
-  saveToFile,
-  saveToFileHandle,
-  loadFromFile,
-  loadFromInput,
+  createState(state) {
+    return {
+      ...defaultBaseState(),
+      global: { ...initialGlobalState, ...state?.global },
+      local: { ...initialLocalState, ...state?.local },
+    };
+  },
+  createDocument(state) {
+    const document = baseCreateDocument(utils.createState, state);
+
+    document.header.documentType = vetraCloudEnvironmentDocumentType;
+
+    // for backwards compatibility, but this is NOT a valid signed document id
+    document.header.id = generateId();
+
+    return document;
+  },
+  saveToFileHandle(document, input) {
+    return baseSaveToFileHandle(document, input);
+  },
+  loadFromInput(input) {
+    return baseLoadFromInput(input, reducer);
+  },
+  isStateOfType(state) {
+    return isVetraCloudEnvironmentState(state);
+  },
+  assertIsStateOfType(state) {
+    return assertIsVetraCloudEnvironmentState(state);
+  },
+  isDocumentOfType(document) {
+    return isVetraCloudEnvironmentDocument(document);
+  },
+  assertIsDocumentOfType(document) {
+    return assertIsVetraCloudEnvironmentDocument(document);
+  },
 };
 
-export default utils;
+export const createDocument = utils.createDocument;
+export const createState = utils.createState;
+export const saveToFileHandle = utils.saveToFileHandle;
+export const loadFromInput = utils.loadFromInput;
+export const isStateOfType = utils.isStateOfType;
+export const assertIsStateOfType = utils.assertIsStateOfType;
+export const isDocumentOfType = utils.isDocumentOfType;
+export const assertIsDocumentOfType = utils.assertIsDocumentOfType;

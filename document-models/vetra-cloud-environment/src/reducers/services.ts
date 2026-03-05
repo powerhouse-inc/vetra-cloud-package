@@ -1,25 +1,26 @@
-import type { VetraCloudEnvironmentServicesOperations } from "../../gen/services/operations.js";
+import type { VetraCloudEnvironmentServicesOperations } from "vetra-cloud-package/document-models/vetra-cloud-environment";
 
-export const reducer: VetraCloudEnvironmentServicesOperations = {
-    enableServiceOperation(state, action, dispatch) {
-        const { serviceName } = action.input;
-        if (!state.services) {
-            state.services = [];
+export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
+  {
+    enableServiceOperation(state, action) {
+      const { serviceName } = action.input;
+      if (!state.services) {
+        state.services = [];
+      }
+      if (serviceName) {
+        if (state.services.find((s) => s === serviceName)) {
+          return;
         }
-        if (serviceName) {
-            if (state.services.find((s) => s === serviceName)) {
-                return;
-            }
-            state.services.push(serviceName);
-        }
+        state.services.push(serviceName);
+      }
     },
-    disableServiceOperation(state, action, dispatch) {
-        const { serviceName } = action.input;
-        if (!state.services) {
-            state.services = [];
-        }
-        if (serviceName) {
-            state.services = state.services.filter((s) => s !== serviceName);
-        }
-    }
-};
+    disableServiceOperation(state, action) {
+      const { serviceName } = action.input;
+      if (!state.services) {
+        state.services = [];
+      }
+      if (serviceName) {
+        state.services = state.services.filter((s) => s !== serviceName);
+      }
+    },
+  };

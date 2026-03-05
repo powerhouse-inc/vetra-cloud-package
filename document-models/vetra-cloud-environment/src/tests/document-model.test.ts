@@ -4,10 +4,10 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import utils, {
+import { utils,
   initialGlobalState,
   initialLocalState,
-} from "../../gen/utils.js";
+} from "../../gen/utils.js"
 
 describe("Vetra Cloud Environment Document Model", () => {
   it("should create a new Vetra Cloud Environment document", () => {

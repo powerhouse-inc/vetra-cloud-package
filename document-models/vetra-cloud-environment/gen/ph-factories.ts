@@ -1,27 +1,17 @@
 /**
  * Factory methods for creating VetraCloudEnvironmentDocument instances
  */
-
-import {
-  createBaseState,
-  defaultBaseState,
-  type PHAuthState,
-  type PHDocumentState,
-  type PHBaseState,
-} from "document-model";
+import type { PHAuthState, PHDocumentState, PHBaseState } from "document-model";
+import { createBaseState, defaultBaseState } from "document-model/core";
 import type {
   VetraCloudEnvironmentDocument,
   VetraCloudEnvironmentLocalState,
-  VetraCloudEnvironmentState,
+  VetraCloudEnvironmentGlobalState,
+  VetraCloudEnvironmentPHState,
 } from "./types.js";
 import { createDocument } from "./utils.js";
 
-export type VetraCloudEnvironmentPHState = PHBaseState & {
-  global: VetraCloudEnvironmentState;
-  local: VetraCloudEnvironmentLocalState;
-};
-
-export function defaultGlobalState(): VetraCloudEnvironmentState {
+export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
   return {
     name: null,
     services: [],
@@ -43,12 +33,12 @@ export function defaultPHState(): VetraCloudEnvironmentPHState {
 }
 
 export function createGlobalState(
-  state?: Partial<VetraCloudEnvironmentState>,
-): VetraCloudEnvironmentState {
+  state?: Partial<VetraCloudEnvironmentGlobalState>,
+): VetraCloudEnvironmentGlobalState {
   return {
     ...defaultGlobalState(),
     ...(state || {}),
-  } as VetraCloudEnvironmentState;
+  } as VetraCloudEnvironmentGlobalState;
 }
 
 export function createLocalState(
@@ -62,7 +52,7 @@ export function createLocalState(
 
 export function createState(
   baseState?: Partial<PHBaseState>,
-  globalState?: Partial<VetraCloudEnvironmentState>,
+  globalState?: Partial<VetraCloudEnvironmentGlobalState>,
   localState?: Partial<VetraCloudEnvironmentLocalState>,
 ): VetraCloudEnvironmentPHState {
   return {
@@ -81,7 +71,7 @@ export function createVetraCloudEnvironmentDocument(
   state?: Partial<{
     auth?: Partial<PHAuthState>;
     document?: Partial<PHDocumentState>;
-    global?: Partial<VetraCloudEnvironmentState>;
+    global?: Partial<VetraCloudEnvironmentGlobalState>;
     local?: Partial<VetraCloudEnvironmentLocalState>;
   }>,
 ): VetraCloudEnvironmentDocument {

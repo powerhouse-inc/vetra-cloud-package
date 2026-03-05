@@ -1,6 +1,6 @@
 import { type SignalDispatch } from "document-model";
-import { type StartAction, type StopAction } from "./actions.js";
-import { type VetraCloudEnvironmentState } from "../types.js";
+import type { StartAction, StopAction } from "./actions.js";
+import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentStatusOperations {
   startOperation: (

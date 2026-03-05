@@ -1,20 +1,17 @@
-import { createAction } from "document-model";
+import { createAction } from "document-model/core";
 import {
-  z,
-  type EnableServiceInput,
-  type DisableServiceInput,
-} from "../types.js";
-import {
-  type EnableServiceAction,
-  type DisableServiceAction,
-} from "./actions.js";
+  EnableServiceInputSchema,
+  DisableServiceInputSchema,
+} from "../schema/zod.js";
+import type { EnableServiceInput, DisableServiceInput } from "../types.js";
+import type { EnableServiceAction, DisableServiceAction } from "./actions.js";
 
 export const enableService = (input: EnableServiceInput) =>
   createAction<EnableServiceAction>(
     "ENABLE_SERVICE",
     { ...input },
     undefined,
-    z.EnableServiceInputSchema,
+    EnableServiceInputSchema,
     "global",
   );
 
@@ -23,6 +20,6 @@ export const disableService = (input: DisableServiceInput) =>
     "DISABLE_SERVICE",
     { ...input },
     undefined,
-    z.DisableServiceInputSchema,
+    DisableServiceInputSchema,
     "global",
   );

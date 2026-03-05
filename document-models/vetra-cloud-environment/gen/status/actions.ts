@@ -1,4 +1,4 @@
-import { type Action } from "document-model";
+import type { Action } from "document-model";
 import type { StartInput, StopInput } from "../types.js";
 
 export type StartAction = Action & { type: "START"; input: StartInput };

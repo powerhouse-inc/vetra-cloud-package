@@ -1,10 +1,11 @@
-import type { VetraCloudEnvironmentDataManagementOperations } from "../../gen/data-management/operations.js";
+import type { VetraCloudEnvironmentDataManagementOperations } from "vetra-cloud-package/document-models/vetra-cloud-environment";
 
-export const reducer: VetraCloudEnvironmentDataManagementOperations = {
-    setEnvironmentNameOperation(state, action, dispatch) {
-        const { name } = action.input;
-        if (name) {
-            state.name = name;
-        }
-    }
-};
+export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
+  {
+    setEnvironmentNameOperation(state, action) {
+      const { name } = action.input;
+      if (name) {
+        state.name = name;
+      }
+    },
+  };

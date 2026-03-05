@@ -2,7 +2,6 @@
 @import './node_modules/@powerhousedao/design-system/dist/style.css';
 @import './html-defaults.css';
 @import './node_modules/@powerhousedao/vetra/dist/style.css';
-@import './node_modules/@sky-ph/atlas/dist/style.css';
 
 /* Uses .dark class for dark mode */
 @custom-variant dark (&:where(.dark, .dark *));

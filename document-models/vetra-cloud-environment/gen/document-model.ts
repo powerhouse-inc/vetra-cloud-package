@@ -1,6 +1,6 @@
-import type { DocumentModelState } from "document-model";
+import type { DocumentModelGlobalState } from "document-model";
 
-export const documentModel: DocumentModelState = {
+export const documentModel: DocumentModelGlobalState = {
   author: {
     name: "Powerhouse Inc.",
     website: "https://www.powerhouse.inc",
@@ -130,13 +130,13 @@ export const documentModel: DocumentModelState = {
         global: {
           examples: [],
           initialValue:
-            '"{\\n  \\"name\\": null,\\n  \\"services\\": [],\\n  \\"packages\\": null,\\n  \\"status\\": \\"STOPPED\\"\\n}"',
+            '{\n  "name": null,\n  "services": [],\n  "packages": null,\n  "status": "STOPPED"\n}',
           schema:
             "enum VetraCloudEnvironmentService {\n  CONNECT\n  SWITCHBOARD\n}\n\nenum VetraCloudEnvironmentStatus {\n  STOPPED\n  STARTED\n}\n\ntype VetraCloudPackage {\n  name: String!\n  version: String\n}\n\ntype VetraCloudEnvironmentState {\n  name: String\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]\n  status: VetraCloudEnvironmentStatus!\n}",
         },
         local: {
           examples: [],
-          initialValue: '""',
+          initialValue: "",
           schema: "",
         },
       },

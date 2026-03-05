@@ -1,9 +1,6 @@
-import {
-  type InlineProgramArgs,
-  LocalWorkspace,
-} from "@pulumi/pulumi/automation";
+// @ts-expect-error - pulumi types don't support nodenext module resolution
+import { type InlineProgramArgs, LocalWorkspace } from "@pulumi/pulumi/automation";
 import { s3 } from "@pulumi/aws";
-import { type PolicyDocument } from "@pulumi/aws/iam";
 export const pulumiProgram = async (name: string) => {
   console.log(`Creating bucket for environment: ${name}`);
   // Create a bucket and expose a website index document
@@ -28,7 +25,7 @@ export const pulumiProgram = async (name: string) => {
   });
 
   // Create an S3 Bucket Policy to allow public read of all objects in bucket
-  function publicReadPolicyForBucket(bucketName: string): PolicyDocument {
+  function publicReadPolicyForBucket(bucketName: string) {
     return {
       Version: "2012-10-17",
       Statement: [
@@ -47,7 +44,7 @@ export const pulumiProgram = async (name: string) => {
   // Set the access policy for the bucket so all objects are readable
   const bucketPolicy = new s3.BucketPolicy("bucketPolicy", {
     bucket: siteBucket.bucket, // refer to the bucket created earlier
-    policy: siteBucket.bucket.apply(publicReadPolicyForBucket), // use output property `siteBucket.bucket`
+    policy: siteBucket.bucket.apply(publicReadPolicyForBucket) as s3.BucketPolicyArgs["policy"],
   });
 
   return {

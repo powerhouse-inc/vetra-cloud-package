@@ -5,8 +5,8 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { generateMock } from "@powerhousedao/codegen";
-import utils from "../../gen/utils.js";
-import { z, type SetEnvironmentNameInput } from "../../gen/schema/index.js";
+import { utils } from "../../gen/utils.js";
+import { SetEnvironmentNameInputSchema, type SetEnvironmentNameInput } from "../../gen/schema/index.js";
 import { reducer } from "../../gen/reducer.js";
 import * as creators from "../../gen/data-management/creators.js";
 import type { VetraCloudEnvironmentDocument } from "../../gen/types.js";
@@ -20,7 +20,7 @@ describe("DataManagement Operations", () => {
 
   it("should handle setEnvironmentName operation", () => {
     const input: SetEnvironmentNameInput = generateMock(
-      z.SetEnvironmentNameInputSchema(),
+      SetEnvironmentNameInputSchema(),
     );
 
     const updatedDocument = reducer(

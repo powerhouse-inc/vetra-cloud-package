@@ -1,74 +1,100 @@
-import { Button, Select, TextInput } from "@powerhousedao/document-engineering";
+import {
+  Icon,
+  TextInput,
+  Toggle,
+} from "@powerhousedao/document-engineering";
 import { useDocumentById } from "@powerhousedao/reactor-browser";
 import { childLogger } from "document-drive";
 import type { EditorProps } from "document-model";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   actions,
   type VetraCloudEnvironmentDocument,
-  type VetraCloudEnvironmentService
+  type VetraCloudEnvironmentService,
 } from "../../document-models/vetra-cloud-environment/index.js";
 
 const logger = childLogger(["vetra-cloud-environment-editor"]);
 
-export type IProps = EditorProps;
+export type IProps = EditorProps & { documentId?: string };
+
+const SERVICE_META: Record<
+  VetraCloudEnvironmentService,
+  { label: string; prefix: string; icon: "Globe" | "Connect" }
+> = {
+  CONNECT: { label: "Powerhouse Connect", prefix: "connect", icon: "Globe" },
+  SWITCHBOARD: {
+    label: "Powerhouse Switchboard",
+    prefix: "switchboard",
+    icon: "Connect",
+  },
+};
 
 export default function Editor(props: IProps) {
-  const [document, dispatch] = useDocumentById(props.document.header.id)
-  const unsafeCastOfDocument = document as VetraCloudEnvironmentDocument;
-  const { state: { global } } = unsafeCastOfDocument;
-  
-  // Local form stateF
-  const [environmentName, setEnvironmentName] = useState(unsafeCastOfDocument.state.global.name || "");
-  const [selectedServices, setSelectedServices] = useState<VetraCloudEnvironmentService[]>(
-    global.services || []
-  );
+  const documentId = props.documentId ?? props.document?.header.id ?? "";
+  const [document, dispatch] = useDocumentById(documentId || undefined);
+  const typedDocument = document as
+    | VetraCloudEnvironmentDocument
+    | undefined;
+  const global = typedDocument?.state?.global;
+
+  const [environmentName, setEnvironmentName] = useState("");
+  const [selectedServices, setSelectedServices] = useState<
+    VetraCloudEnvironmentService[]
+  >([]);
+  const [initialized, setInitialized] = useState(false);
   const [newPackageName, setNewPackageName] = useState("");
   const [newPackageVersion, setNewPackageVersion] = useState("");
+  const [moduleSearch, setModuleSearch] = useState("");
 
-  // Available services
-  const availableServices: VetraCloudEnvironmentService[] = ["CONNECT", "SWITCHBOARD"];
+  if (global && !initialized) {
+    setEnvironmentName(global.name || "");
+    setSelectedServices(global.services || []);
+    setInitialized(true);
+  }
 
-  // Handle environment name change
-  const handleNameChange = useCallback((name: string) => {
-    setEnvironmentName(name);
-    if (name.trim()) {
-      try {
-        dispatch(actions.setEnvironmentName({ name: name.trim() }));
-      } catch (error) {
-        console.error("Failed to set environment name:", error);
+  const baseDomain = useMemo(() => {
+    const name = environmentName.trim();
+    if (!name) return null;
+    return `${name}.vetra.io`;
+  }, [environmentName]);
+
+  const handleNameChange = useCallback(
+    (name: string) => {
+      setEnvironmentName(name);
+      if (name.trim()) {
+        try {
+          dispatch(actions.setEnvironmentName({ name: name.trim() }));
+        } catch (error) {
+          console.error("Failed to set environment name:", error);
+        }
       }
-    }
-  }, []);
+    },
+    [dispatch],
+  );
 
-  // Handle service toggle
-  const handleServiceToggle = useCallback((services: VetraCloudEnvironmentService[]) => {
-    logger.info("Toggling services:", services);
-    for(const activatedService of selectedServices) {
-      if(services.includes(activatedService)) {
-        logger.info("Disabling service:", activatedService);
-        dispatch(actions.disableService({ serviceName: activatedService }));
+  const handleServiceToggle = useCallback(
+    (service: VetraCloudEnvironmentService, enabled: boolean) => {
+      logger.info("Toggling service:", service, enabled);
+      if (enabled) {
+        dispatch(actions.enableService({ serviceName: service }));
+        setSelectedServices((prev) => [...prev, service]);
+      } else {
+        dispatch(actions.disableService({ serviceName: service }));
+        setSelectedServices((prev) => prev.filter((s) => s !== service));
       }
-    }
+    },
+    [dispatch],
+  );
 
-    for(const deactivatedService of services) {
-      if(!selectedServices.includes(deactivatedService)) {
-        logger.info("Enabling service:", deactivatedService);
-        dispatch(actions.enableService({ serviceName: deactivatedService }));
-      }
-    }
-
-    setSelectedServices(services);
-  }, [selectedServices, dispatch]);
-
-  // Handle package addition
   const handleAddPackage = useCallback(() => {
     if (newPackageName.trim()) {
       try {
-        dispatch(actions.addPackage({
-          packageName: newPackageName.trim(),
-          version: newPackageVersion.trim() || undefined
-        }));
+        dispatch(
+          actions.addPackage({
+            packageName: newPackageName.trim(),
+            version: newPackageVersion.trim() || undefined,
+          }),
+        );
         setNewPackageName("");
         setNewPackageVersion("");
       } catch (error) {
@@ -77,19 +103,20 @@ export default function Editor(props: IProps) {
     }
   }, [newPackageName, newPackageVersion, dispatch]);
 
-  // Handle package removal
-  const handleRemovePackage = useCallback((packageName: string) => {
-    try {
-      dispatch(actions.removePackage({ packageName }));
-    } catch (error) {
-      console.error("Failed to remove package:", error);
-    }
-  }, [dispatch]);
+  const handleRemovePackage = useCallback(
+    (packageName: string) => {
+      try {
+        dispatch(actions.removePackage({ packageName }));
+      } catch (error) {
+        console.error("Failed to remove package:", error);
+      }
+    },
+    [dispatch],
+  );
 
-  // Handle start/stop
   const handleStartStop = useCallback(() => {
     try {
-      if (global.status === "STARTED") {
+      if (global?.status === "STARTED") {
         dispatch(actions.stop({}));
       } else {
         dispatch(actions.start({}));
@@ -97,228 +124,253 @@ export default function Editor(props: IProps) {
     } catch (error) {
       console.error("Failed to start/stop environment:", error);
     }
-  }, [global.status, dispatch]);
+  }, [global?.status, dispatch]);
 
-  // Generate endpoints
-  const generateEndpoints = useCallback(() => {
-    if (!environmentName.trim()) return [];
-    
-    const baseUrl = `${environmentName.trim()}.demo.powerhouse.io`;
-    const endpoints = [];
-    
-    if (selectedServices.includes("CONNECT")) {
-      endpoints.push({
-        service: "Connect",
-        url: `https://${baseUrl}`,
-        description: "Connect service endpoint"
-      });
-    }
-    
-    if (selectedServices.includes("SWITCHBOARD")) {
-      endpoints.push({
-        service: "Switchboard",
-        url: `https://${baseUrl}/api/graphql`,
-        description: "Switchboard GraphQL API endpoint"
-      });
-    }
-    
-    return endpoints;
-  }, [environmentName, selectedServices]);
+  const filteredPackages = useMemo(() => {
+    const pkgs = global?.packages ?? [];
+    if (!moduleSearch.trim()) return pkgs;
+    const q = moduleSearch.toLowerCase();
+    return pkgs.filter((p) => p.name.toLowerCase().includes(q));
+  }, [global?.packages, moduleSearch]);
 
-  const endpoints = generateEndpoints();
+  if (!global) {
+    return (
+      <div className="flex h-64 items-center justify-center text-gray-500">
+        Loading environment...
+      </div>
+    );
+  }
+
   const isRunning = global.status === "STARTED";
 
   return (
-    <div className="html-defaults-container container mx-auto max-w-4xl p-8">
-      <div className="mb-8">
-        <h1 className="mb-2 text-3xl font-bold text-gray-900">
-          Vetra Cloud Environment Manager
-        </h1>
-        <p className="mb-4 text-gray-600">
-          Manage your cloud environment configuration, services, and packages.
-        </p>
-      </div>
+    <div className="html-defaults-container w-full space-y-10 p-8">
+      {/* ── Environment ── */}
+      <section>
+        <h1 className="mb-6 text-2xl font-bold text-gray-900">Environment</h1>
 
-      {/* Environment Info */}
-      <div className="mb-8 rounded-lg bg-gray-50 p-6 border border-gray-200">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">
-            Environment Information
-          </h3>
-          {/* Status Badge */}
-          <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${
-            isRunning 
-              ? "bg-green-100 text-green-800" 
-              : "bg-red-100 text-red-800"
-          }`}>
-            <div className={`h-2 w-2 rounded-full ${
-              isRunning ? "bg-green-500" : "bg-red-500"
-            }`} />
-            {isRunning ? "Running" : "Stopped"}
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          <div className="flex justify-between">
-            <span className="font-medium text-gray-600">Name:</span>
-            <span className="text-gray-900">{global.name || "Not set"}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="font-medium text-gray-600">Services:</span>
-            <span className="text-gray-900">{global.services.length} enabled</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="font-medium text-gray-600">Packages:</span>
-            <span className="text-gray-900">{global.packages?.length || 0} installed</span>
-          </div>
-        </div>
-        
-        {/* Service Links */}
-        {endpoints.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-gray-200">
-            <h4 className="text-sm font-medium text-gray-700 mb-3">Service Links</h4>
-            <div className="flex flex-wrap gap-2">
-              {endpoints.map((endpoint, index) => (
-                <a
-                  key={index}
-                  href={endpoint.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-800 text-sm font-medium rounded-lg transition-colors duration-200"
-                >
-                  <span>{endpoint.service}</span>
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                  </svg>
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Start/Stop Section */}
-      <div className="mb-8 text-center">
-        <Button
-          onClick={handleStartStop}
-          color={isRunning ? "red" : "blue"}
-          size="default"
-          variant={isRunning ? "destructive" : "default"}
-        >
-          {isRunning ? "🛑 Stop Environment" : "▶️ Start Environment"}
-        </Button>
-      </div>
-
-      {/* Environment Name Section */}
-      <div className="mb-8 rounded-lg bg-white p-6 shadow-sm border border-gray-200">
-        <h2 className="mb-4 text-xl font-semibold text-gray-900">
-          Environment Configuration
-        </h2>
-        <div className="space-y-4">
-          <div>
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="grid grid-cols-[120px_1fr] items-center gap-y-5">
+            <span className="text-sm font-medium text-gray-500">Name:</span>
             <TextInput
-              label="Environment Name"
               value={environmentName}
               onChange={(e) => handleNameChange(e.target.value)}
-              placeholder="Enter environment name (e.g., my-project)"
+              placeholder="e.g. Acme Project - Production"
             />
-            <p className="mt-2 text-sm text-gray-500">
-              This will be used to generate your endpoints: &lt;name&gt;.demo.powerhouse.io
-            </p>
+
+            <span className="text-sm font-medium text-gray-500">Status:</span>
+            <div>
+              <button
+                type="button"
+                onClick={handleStartStop}
+                className={`inline-flex cursor-pointer items-center rounded-md px-3 py-1 text-xs font-bold uppercase tracking-wider text-white transition-colors ${
+                  isRunning
+                    ? "bg-green-600 hover:bg-green-700"
+                    : "bg-gray-400 hover:bg-gray-500"
+                }`}
+              >
+                {isRunning ? "ACTIVE" : "STOPPED"}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Services Section */}
-      <div className="mb-8 rounded-lg bg-white p-6 shadow-sm border border-gray-200">
+      {/* ── Domain Configuration ── */}
+      <section>
         <h2 className="mb-4 text-xl font-semibold text-gray-900">
-          Powerhouse Services
+          Domain Configuration
         </h2>
-        <div className="space-y-3">
-          <Select
-            options={availableServices.map((service) => ({
-              label: service === "CONNECT" ? "Connect" : "Switchboard",
-              value: service,
-            }))}
-            multiple
-            value={selectedServices}
-            id="services"
-            onChange={(value) => handleServiceToggle(value as VetraCloudEnvironmentService[])}
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="grid grid-cols-[120px_1fr] items-center">
+            <span className="text-sm font-medium text-gray-500">
+              Generic Domain:
+            </span>
+            {baseDomain ? (
+              <span className="font-mono text-sm text-gray-800">
+                {baseDomain}
+              </span>
+            ) : (
+              <span className="text-sm italic text-gray-400">
+                Set a name above to generate domain
+              </span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Reactor Modules ── */}
+      <section>
+        <h2 className="mb-4 text-xl font-semibold text-gray-900">
+          Reactor Modules
+        </h2>
+
+        {/* Search bar */}
+        <div className="relative mb-4">
+          <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+            <Icon name="Search" size={16} />
+          </div>
+          <input
+            type="text"
+            value={moduleSearch}
+            onChange={(e) => setModuleSearch(e.target.value)}
+            placeholder="Search modules..."
+            className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-10 pr-4 text-sm shadow-sm outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
           />
         </div>
-      </div>
 
-      {/* Packages Section */}
-      <div className="mb-8 rounded-lg bg-white p-6 shadow-sm border border-gray-200">
-        <h2 className="mb-4 text-xl font-semibold text-gray-900">
-          Package Management
-        </h2>
-        
-        {/* Add Package Form */}
-        <div className="mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <TextInput
-                type="text"
-                label="Package Name"
-                value={newPackageName}
-                onChange={(e) => setNewPackageName(e.target.value)}
-                placeholder="Package name"
-              />
-            </div>
-            <div>
-              <TextInput
-                type="text"
-                label="Version (optional)"
-                value={newPackageVersion}
-                onChange={(e) => setNewPackageVersion(e.target.value)}
-                placeholder="Version (optional)"
-              />
-            </div>
-            <div className="flex items-end">
-              <Button
-                onClick={handleAddPackage}
-                disabled={!newPackageName.trim()}
-                color="blue"
-                className="w-full"
+        {/* Module list */}
+        <div className="space-y-2">
+          {filteredPackages.length > 0 ? (
+            filteredPackages.map((pkg) => (
+              <div
+                key={pkg.name}
+                className="flex items-center rounded-xl border border-gray-200 bg-white px-5 py-3.5 shadow-sm"
               >
-                Add Package
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        {/* Package List */}
-        <div>
-          {global.packages && global.packages.length > 0 ? (
-            <div className="space-y-2">
-              {global.packages.map((pkg, index) => (
-                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-900">{pkg.name}</span>
-                    {pkg.version && (
-                      <span className="text-sm text-gray-500 bg-gray-200 px-2 py-1 rounded">
-                        v{pkg.version}
-                      </span>
-                    )}
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100">
+                    <Icon
+                      name="PackageManager"
+                      size={16}
+                      className="text-gray-500"
+                    />
                   </div>
-                  <Button
-                    onClick={() => handleRemovePackage(pkg.name)}
-                    color="red"
-                    size="sm"
-                  >
-                    Remove
-                  </Button>
+                  <span className="truncate font-medium text-gray-900">
+                    {pkg.name}
+                  </span>
+                  {pkg.version && (
+                    <span className="shrink-0 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-medium text-gray-500">
+                      v. {pkg.version}
+                    </span>
+                  )}
                 </div>
-              ))}
-            </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleRemovePackage(pkg.name)}
+                  className="ml-3 shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700"
+                >
+                  Uninstall
+                </button>
+              </div>
+            ))
           ) : (
-            <div className="text-center py-8 text-gray-500">
-              <p>No packages added yet. Add packages to extend your environment functionality.</p>
+            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/50 py-10 text-center text-sm text-gray-400">
+              {moduleSearch
+                ? "No modules match your search."
+                : "No modules installed yet."}
             </div>
           )}
         </div>
-      </div>
 
+        {/* Add module form */}
+        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-5 shadow-sm">
+          <p className="mb-4 text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Add Module
+          </p>
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <TextInput
+                value={newPackageName}
+                onChange={(e) => setNewPackageName(e.target.value)}
+                placeholder="Package name, e.g. @scope/package"
+              />
+            </div>
+            <div className="w-28 shrink-0">
+              <TextInput
+                value={newPackageVersion}
+                onChange={(e) => setNewPackageVersion(e.target.value)}
+                placeholder="Version"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleAddPackage}
+              disabled={!newPackageName.trim()}
+              className="shrink-0 rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Install
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Services ── */}
+      <section>
+        <h2 className="mb-4 text-xl font-semibold text-gray-900">Services</h2>
+
+        <div className="space-y-3">
+          {(
+            Object.entries(SERVICE_META) as [
+              VetraCloudEnvironmentService,
+              (typeof SERVICE_META)[VetraCloudEnvironmentService],
+            ][]
+          ).map(([service, meta]) => {
+            const enabled = selectedServices.includes(service);
+            const serviceUrl = baseDomain
+              ? `https://${meta.prefix}.${baseDomain}`
+              : null;
+
+            return (
+              <div
+                key={service}
+                className={`flex items-center gap-4 rounded-xl border p-5 shadow-sm transition-all ${
+                  enabled
+                    ? "border-gray-200 bg-white"
+                    : "border-dashed border-gray-200 bg-gray-50/60"
+                }`}
+              >
+                <div
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                    enabled
+                      ? "bg-gray-900 text-white"
+                      : "bg-gray-200 text-gray-400"
+                  }`}
+                >
+                  <Icon name={meta.icon} size={20} />
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={`font-medium ${enabled ? "text-gray-900" : "text-gray-400"}`}
+                  >
+                    {meta.label}
+                  </p>
+                  {enabled && serviceUrl ? (
+                    <a
+                      href={serviceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block truncate text-sm text-blue-600 hover:underline"
+                    >
+                      {serviceUrl}
+                    </a>
+                  ) : enabled ? (
+                    <span className="text-sm italic text-gray-400">
+                      Set a name to generate URL
+                    </span>
+                  ) : (
+                    <span className="text-sm text-gray-400">Disabled</span>
+                  )}
+                </div>
+
+                {enabled && isRunning && (
+                  <div
+                    className="h-3 w-3 shrink-0 rounded-full bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.4)]"
+                    title="Running"
+                  />
+                )}
+
+                <Toggle
+                  value={enabled}
+                  onChange={(checked) => handleServiceToggle(service, checked)}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }

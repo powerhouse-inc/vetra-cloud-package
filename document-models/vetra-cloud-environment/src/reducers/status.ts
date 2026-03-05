@@ -1,10 +1,11 @@
-import type { VetraCloudEnvironmentStatusOperations } from "../../gen/status/operations.js";
+import type { VetraCloudEnvironmentStatusOperations } from "vetra-cloud-package/document-models/vetra-cloud-environment";
 
-export const reducer: VetraCloudEnvironmentStatusOperations = {
-    startOperation(state, action, dispatch) {
-        state.status = "STARTED";
+export const vetraCloudEnvironmentStatusOperations: VetraCloudEnvironmentStatusOperations =
+  {
+    startOperation(state) {
+      state.status = "STARTED";
     },
-    stopOperation(state, action, dispatch) {
-        state.status = "STOPPED";
-    }
-};
+    stopOperation(state) {
+      state.status = "STOPPED";
+    },
+  };

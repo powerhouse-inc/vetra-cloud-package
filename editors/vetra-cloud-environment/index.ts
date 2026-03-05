@@ -6,9 +6,7 @@ export const module: EditorModule = {
   documentTypes: ["powerhouse/vetra-cloud-environment"],
   config: {
     id: "vetra-cloud-environment",
-    disableExternalControls: true,
-    documentToolbarEnabled: true,
-    showSwitchboardLink: true,
+    name: "Vetra Cloud Environment",
   },
 };
 

@@ -5,8 +5,8 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { generateMock } from "@powerhousedao/codegen";
-import utils from "../../gen/utils.js";
-import { z, type AddPackageInput } from "../../gen/schema/index.js";
+import { utils } from "../../gen/utils.js";
+import { AddPackageInputSchema, type AddPackageInput } from "../../gen/schema/index.js";
 import { reducer } from "../../gen/reducer.js";
 import * as creators from "../../gen/packages/creators.js";
 import type { VetraCloudEnvironmentDocument } from "../../gen/types.js";
@@ -19,7 +19,7 @@ describe("Packages Operations", () => {
   });
 
   it("should handle addPackage operation", () => {
-    const input: AddPackageInput = generateMock(z.AddPackageInputSchema());
+    const input: AddPackageInput = generateMock(AddPackageInputSchema());
 
     const updatedDocument = reducer(document, creators.addPackage(input));
 

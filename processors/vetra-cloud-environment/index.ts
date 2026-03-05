@@ -1,6 +1,6 @@
 import { RelationalDbProcessor } from "document-drive/processors/relational";
-import { type InternalTransmitterUpdate } from "document-drive/server/listener/transmitter/internal";
-import { type VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment/index.js";
+import type { InternalTransmitterUpdate } from "document-drive/server/transmitter/types";
+import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { up } from "./migrations.js";
 import { start, stop } from "./pulumi.js";
 import { type DB } from "./schema.js";
@@ -39,7 +39,7 @@ export class VetraCloudEnvironmentProcessor extends RelationalDbProcessor<DB> {
 
       const environment = await this.relationalDb
         .selectFrom("environments")
-        .where("name", "=", name)
+        .where("name", "=", name ?? "")
         .where("id", "=", strand.documentId)
         .executeTakeFirst();
 
@@ -62,7 +62,7 @@ export class VetraCloudEnvironmentProcessor extends RelationalDbProcessor<DB> {
             services: JSON.stringify(services),
             status: status,
           })
-          .where("name", "=", name)
+          .where("name", "=", name ?? "")
           .where("id", "=", strand.documentId)
           .execute();
       }

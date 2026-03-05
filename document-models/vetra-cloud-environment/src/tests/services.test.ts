@@ -5,8 +5,8 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { generateMock } from "@powerhousedao/codegen";
-import utils from "../../gen/utils.js";
-import { z, type EnableServiceInput } from "../../gen/schema/index.js";
+import { utils } from "../../gen/utils.js";
+import { EnableServiceInputSchema, type EnableServiceInput } from "../../gen/schema/index.js";
 import { reducer } from "../../gen/reducer.js";
 import * as creators from "../../gen/services/creators.js";
 import type { VetraCloudEnvironmentDocument } from "../../gen/types.js";
@@ -20,7 +20,7 @@ describe("Services Operations", () => {
 
   it("should handle enableService operation", () => {
     const input: EnableServiceInput = generateMock(
-      z.EnableServiceInputSchema(),
+      EnableServiceInputSchema(),
     );
 
     const updatedDocument = reducer(document, creators.enableService(input));

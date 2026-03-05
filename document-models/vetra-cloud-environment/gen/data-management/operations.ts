@@ -1,6 +1,6 @@
 import { type SignalDispatch } from "document-model";
-import { type SetEnvironmentNameAction } from "./actions.js";
-import { type VetraCloudEnvironmentState } from "../types.js";
+import type { SetEnvironmentNameAction } from "./actions.js";
+import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
   setEnvironmentNameOperation: (

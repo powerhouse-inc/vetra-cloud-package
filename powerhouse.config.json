@@ -14,11 +14,6 @@
       "packageName": "@powerhousedao/vetra",
       "version": "latest",
       "provider": "npm"
-    },
-    {
-      "packageName": "@sky-ph/atlas",
-      "version": "latest",
-      "provider": "npm"
     }
   ]
 }

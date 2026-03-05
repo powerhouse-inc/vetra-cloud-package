@@ -1,4 +1,4 @@
-import { type Action } from "document-model";
+import type { Action } from "document-model";
 import type { EnableServiceInput, DisableServiceInput } from "../types.js";
 
 export type EnableServiceAction = Action & {

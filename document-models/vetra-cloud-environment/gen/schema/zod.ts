@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import type {
   AddPackageInput,
   DisableServiceInput,
@@ -14,7 +14,7 @@ import type {
 } from "./types.js";
 
 type Properties<T> = Required<{
-  [K in keyof T]: z.ZodType<T[K], any, T[K]>;
+  [K in keyof T]: z.ZodType<T[K]>;
 }>;
 
 type definedNonNullAny = {};
@@ -91,8 +91,8 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
-    name: z.string().nullable(),
-    packages: z.array(VetraCloudPackageSchema()).nullable(),
+    name: z.string().nullish(),
+    packages: z.array(z.lazy(() => VetraCloudPackageSchema())).nullish(),
     services: z.array(VetraCloudEnvironmentServiceSchema),
     status: VetraCloudEnvironmentStatusSchema,
   });
@@ -104,6 +104,6 @@ export function VetraCloudPackageSchema(): z.ZodObject<
   return z.object({
     __typename: z.literal("VetraCloudPackage").optional(),
     name: z.string(),
-    version: z.string().nullable(),
+    version: z.string().nullish(),
   });
 }

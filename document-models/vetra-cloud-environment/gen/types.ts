@@ -1,15 +1,21 @@
-import type { PHDocument } from "document-model";
+import type { PHDocument, PHBaseState } from "document-model";
 import type { VetraCloudEnvironmentAction } from "./actions.js";
-import type { VetraCloudEnvironmentPHState } from "./ph-factories.js";
-import type { VetraCloudEnvironmentState } from "./schema/types.js";
+import type { VetraCloudEnvironmentState as VetraCloudEnvironmentGlobalState } from "./schema/types.js";
 
-export { z } from "./schema/index.js";
-export type * from "./schema/types.js";
 type VetraCloudEnvironmentLocalState = Record<PropertyKey, never>;
-export type VetraCloudEnvironmentDocument =
-  PHDocument<VetraCloudEnvironmentPHState>;
+
+type VetraCloudEnvironmentPHState = PHBaseState & {
+  global: VetraCloudEnvironmentGlobalState;
+  local: VetraCloudEnvironmentLocalState;
+};
+type VetraCloudEnvironmentDocument = PHDocument<VetraCloudEnvironmentPHState>;
+
+export * from "./schema/types.js";
+
 export type {
-  VetraCloudEnvironmentState,
+  VetraCloudEnvironmentGlobalState,
   VetraCloudEnvironmentLocalState,
+  VetraCloudEnvironmentPHState,
   VetraCloudEnvironmentAction,
+  VetraCloudEnvironmentDocument,
 };

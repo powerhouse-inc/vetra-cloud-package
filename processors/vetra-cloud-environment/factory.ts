@@ -1,9 +1,9 @@
-import {
-  type ProcessorRecord,
-  type IProcessorHostModule,
+import type {
+  IProcessorHostModule,
+  ProcessorRecord,
+  RelationalDbProcessorFilter,
 } from "document-drive/processors/types";
-import { type RelationalDbProcessorFilter } from "document-drive/processors/relational";
-import { type PHDocumentHeader } from "document-model";
+import type { PHDocumentHeader } from "document-model";
 import { VetraCloudEnvironmentProcessor } from "./index.js";
 
 export const vetraCloudEnvironmentProcessorFactory =
