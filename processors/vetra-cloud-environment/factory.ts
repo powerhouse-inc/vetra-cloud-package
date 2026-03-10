@@ -1,46 +1,36 @@
-import type {
-  IProcessorHostModuleLegacy,
-  ProcessorRecordLegacy,
-  RelationalDbProcessorFilterLegacy,
-} from "document-drive/processors/types";
+import type { IProcessorHostModule, ProcessorRecord } from "@powerhousedao/reactor-browser";
+import type { Kysely } from "kysely";
 import type { PHDocumentHeader } from "document-model";
+import { type DB } from "./schema.js";
 import { VetraCloudEnvironmentProcessor } from "./index.js";
+import { up } from "./migrations.js";
+import { childLogger } from "document-drive";
+
+const logger = childLogger(["vetra-cloud-environment-factory"]);
 
 export const vetraCloudEnvironmentProcessorFactory =
-  (module: IProcessorHostModuleLegacy) =>
-  async (driveHeader: PHDocumentHeader): Promise<ProcessorRecordLegacy[]> => {
-    // Create a namespace for the processor and the provided drive id
-    const namespace = VetraCloudEnvironmentProcessor.getNamespace(
-      driveHeader.id
-    );
+  (module: IProcessorHostModule) =>
+  async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
+    console.log(`[vetra-cloud-environment] Creating processor for drive ${driveHeader.id}`);
+    logger.info(`Creating processor for drive ${driveHeader.id}`);
 
-    // Create a namespaced db for the processor
-    const store =
-      await module.relationalDb.createNamespace<VetraCloudEnvironmentProcessor>(
-        namespace
-      );
+    const db = await module.relationalDb.createNamespace("vetra-cloud-environments") as unknown as Kysely<DB>;
 
-    // Create a filter for the processor
-    const filter: RelationalDbProcessorFilterLegacy = {
-      branch: ["main"],
-      documentId: ["*"],
-      documentType: ["powerhouse/vetra-cloud-environment"],
-      scope: ["global"],
-    };
+    await up(db);
 
-    console.log("filter", filter);
+    const processor = new VetraCloudEnvironmentProcessor(db);
 
-    // Create the processor
-    const processor = new VetraCloudEnvironmentProcessor(
-      namespace,
-      filter,
-      store
-    );
-    await processor.initAndUpgrade();
+    logger.info(`Processor created for drive ${driveHeader.id}`);
+
     return [
       {
         processor,
-        filter,
+        filter: {
+          branch: ["main"],
+          documentId: ["*"],
+          documentType: ["powerhouse/vetra-cloud-environment"],
+          scope: ["global"],
+        },
       },
     ];
   };

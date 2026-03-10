@@ -1,73 +1,82 @@
-import { RelationalDbProcessorLegacy } from "document-drive/processors/relational";
-import type { InternalTransmitterUpdate } from "document-drive/server/transmitter/types";
+import type { IProcessor, OperationWithContext } from "@powerhousedao/reactor-browser";
+import type { Kysely } from "kysely";
 import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
-import { up } from "./migrations.js";
 import { syncEnvironment } from "./gitops.js";
 import { type DB } from "./schema.js";
 import { childLogger } from "document-drive";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
-export class VetraCloudEnvironmentProcessor extends RelationalDbProcessorLegacy<DB> {
-  static override getNamespace(driveId: string): string {
-    // Default namespace: `${this.name}_${driveId.replaceAll("-", "_")}`
-    logger.warn("Getting namespace for VetraCloudEnvironmentProcessor");
-    return super.getNamespace(driveId);
+export class VetraCloudEnvironmentProcessor implements IProcessor {
+  private relationalDb: Kysely<DB>;
+
+  constructor(relationalDb: Kysely<DB>) {
+    this.relationalDb = relationalDb;
   }
 
-  override async initAndUpgrade(): Promise<void> {
-    logger.warn("Initializing VetraCloudEnvironmentProcessor");
-    await up(this.relationalDb);
-  }
+  async onOperations(operations: OperationWithContext[]): Promise<void> {
+    if (operations.length === 0) return;
 
-  override async onStrands(
-    strands: InternalTransmitterUpdate[]
-  ): Promise<void> {
-    if (strands.length === 0) {
-      return;
-    }
+    logger.info(`Received ${operations.length} operations`);
 
-    logger.info(`Received ${strands.length} strands`);
+    for (const { operation, context } of operations) {
+      if (context.documentType !== "powerhouse/vetra-cloud-environment") continue;
 
-    for (const strand of strands) {
-      if (strand.operations.length === 0) {
+      const state: VetraCloudEnvironmentState | undefined = context.resultingState
+        ? JSON.parse(context.resultingState)
+        : undefined;
+
+      if (!state) {
+        logger.warn(`No resulting state for operation ${operation.index} on ${context.documentId}`);
         continue;
       }
 
-      const uncastState = strand.state as VetraCloudEnvironmentState;
-      const { name, packages, services, status } = uncastState;
+      const { name, packages, services, status } = state;
+
+      logger.info(
+        `Processing document ${context.documentId} (op ${operation.index}): ` +
+        `name=${name}, status=${status}, services=[${services?.join(", ")}], ` +
+        `packages=[${packages?.map((p) => `${p.name}@${p.version}`).join(", ")}]`,
+      );
 
       const environment = await this.relationalDb
         .selectFrom("environments")
-        .where("name", "=", name ?? "")
-        .where("id", "=", strand.documentId)
+        .where("id", "=", context.documentId)
         .executeTakeFirst();
 
       if (!environment) {
+        logger.info(`Creating new environment record for "${name}" (${context.documentId})`);
         await this.relationalDb
           .insertInto("environments")
           .values({
-            name,
-            id: strand.documentId,
+            name: name ?? null,
+            id: context.documentId,
             packages: JSON.stringify(packages),
             services: JSON.stringify(services),
             status: status,
           })
           .execute();
       } else {
+        logger.info(`Updating existing environment record for "${name}" (${context.documentId})`);
         await this.relationalDb
           .updateTable("environments")
           .set({
+            name: name ?? null,
             packages: JSON.stringify(packages),
             services: JSON.stringify(services),
             status: status,
           })
-          .where("name", "=", name ?? "")
-          .where("id", "=", strand.documentId)
+          .where("id", "=", context.documentId)
           .execute();
       }
 
-      await syncEnvironment(uncastState);
+      logger.info(`Triggering gitops sync for "${name}"`);
+      try {
+        await syncEnvironment(state);
+        logger.info(`Gitops sync completed for "${name}"`);
+      } catch (error) {
+        logger.error(`Gitops sync failed for "${name}": ${error}`);
+      }
     }
   }
 

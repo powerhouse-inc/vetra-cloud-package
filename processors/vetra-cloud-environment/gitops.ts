@@ -259,13 +259,26 @@ export async function syncEnvironment(
   const name = toKebabCase(state.name);
   const tenantDir = join(config.repoPath, "tenants", name);
 
-  logger.info(`Syncing environment "${name}" to gitops repo`);
+  logger.info(
+    `Syncing environment "${name}" to gitops repo at ${config.repoPath} ` +
+    `(remote=${config.remote}, branch=${config.branch})`,
+  );
+  logger.info(
+    `Environment state: status=${state.status}, ` +
+    `services=[${state.services?.join(", ")}], ` +
+    `packages=[${state.packages?.map((p) => `${p.name}@${p.version}`).join(", ")}]`,
+  );
 
   // Pull latest
-  git(["pull", config.remote, config.branch, "--rebase"], config);
+  logger.info("Pulling latest from remote...");
+  const pullOutput = git(["pull", config.remote, config.branch, "--rebase"], config);
+  if (pullOutput) {
+    logger.info(`Pull result: ${pullOutput}`);
+  }
 
   // Create tenant directory if needed
   if (!existsSync(tenantDir)) {
+    logger.info(`Creating tenant directory: ${tenantDir}`);
     mkdirSync(tenantDir, { recursive: true });
   }
 
@@ -273,26 +286,25 @@ export async function syncEnvironment(
   const valuesPath = join(tenantDir, "powerhouse-values.yaml");
   const yaml = generateValuesYaml(state);
   writeFileSync(valuesPath, yaml, "utf-8");
+  logger.info(`Wrote values file to ${valuesPath}`);
 
   // Stage, commit, push
   git(["add", `tenants/${name}/powerhouse-values.yaml`], config);
 
   const hasChanges = git(["diff", "--cached", "--name-only"], config);
   if (!hasChanges) {
-    logger.info("No changes to commit");
+    logger.info("No changes detected in values file, skipping commit");
     return;
   }
 
+  logger.info(`Changes detected: ${hasChanges}`);
   const statusLabel = state.status === "STARTED" ? "enable" : "disable";
-  git(
-    [
-      "commit",
-      "-m",
-      `chore(${name}): ${statusLabel} tenant — synced from vetra-cloud-environment`,
-    ],
-    config,
-  );
+  const commitMsg = `chore(${name}): ${statusLabel} tenant — synced from vetra-cloud-environment`;
+  logger.info(`Committing: ${commitMsg}`);
+  git(["commit", "-m", commitMsg], config);
+
+  logger.info(`Pushing to ${config.remote}/${config.branch}...`);
   git(["push", config.remote, config.branch], config);
 
-  logger.info(`Successfully synced environment "${name}"`);
+  logger.info(`Successfully synced and pushed environment "${name}"`);
 }
