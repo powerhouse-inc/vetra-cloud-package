@@ -2,7 +2,7 @@ import { RelationalDbProcessorLegacy } from "document-drive/processors/relationa
 import type { InternalTransmitterUpdate } from "document-drive/server/transmitter/types";
 import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { up } from "./migrations.js";
-import { start, stop } from "./pulumi.js";
+import { syncEnvironment } from "./gitops.js";
 import { type DB } from "./schema.js";
 import { childLogger } from "document-drive";
 
@@ -67,11 +67,7 @@ export class VetraCloudEnvironmentProcessor extends RelationalDbProcessorLegacy<
           .execute();
       }
 
-      if (status === "STARTED") {
-        await start(name!);
-      } else if (status === "STOPPED") {
-        await stop(name!);
-      }
+      await syncEnvironment(uncastState);
     }
   }
 
