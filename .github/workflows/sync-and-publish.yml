@@ -26,11 +26,6 @@ on:
         required: false
         type: boolean
         default: false
-      skip-docker:
-        description: "Skip Docker build and push"
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: sync-and-publish
@@ -39,8 +34,6 @@ concurrency:
 env:
   NODE_VERSION: "24"
   PNPM_VERSION: "10"
-  DOCKER_REGISTRY: cr.vetra.io
-  GHCR_REGISTRY: ghcr.io
 
 jobs:
   # ==========================================================================
@@ -53,9 +46,7 @@ jobs:
       channel: ${{ steps.params.outputs.channel }}
       version: ${{ steps.params.outputs.version }}
       branch: ${{ steps.params.outputs.branch }}
-      project_name: ${{ steps.params.outputs.project_name }}
       dry_run: ${{ steps.params.outputs.dry_run }}
-      skip_docker: ${{ steps.params.outputs.skip_docker }}
       dep_package: ${{ steps.params.outputs.dep_package }}
       dep_version: ${{ steps.params.outputs.dep_version }}
     steps:
@@ -71,12 +62,10 @@ jobs:
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_DRY_RUN: ${{ inputs.dry-run }}
-          INPUT_SKIP_DOCKER: ${{ inputs.skip-docker }}
         run: |
           if [ "$EVENT_NAME" = "repository_dispatch" ]; then
             CHANNEL="$PAYLOAD_CHANNEL"
             DRY_RUN="false"
-            SKIP_DOCKER="false"
 
             if [ "$EVENT_ACTION" = "dependency-release" ]; then
               DEP_PACKAGE="$PAYLOAD_PACKAGE"
@@ -91,7 +80,6 @@ jobs:
             CHANNEL="$INPUT_CHANNEL"
             VERSION="$INPUT_VERSION"
             DRY_RUN="$INPUT_DRY_RUN"
-            SKIP_DOCKER="$INPUT_SKIP_DOCKER"
             DEP_PACKAGE=""
             DEP_VERSION=""
           fi
@@ -107,23 +95,17 @@ jobs:
             *) BRANCH="main" ;;
           esac
 
-          PROJECT_NAME="vetra"
-
           echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
-          echo "skip_docker=$SKIP_DOCKER" >> $GITHUB_OUTPUT
           echo "dep_package=$DEP_PACKAGE" >> $GITHUB_OUTPUT
           echo "dep_version=$DEP_VERSION" >> $GITHUB_OUTPUT
 
           echo "Channel: $CHANNEL"
           echo "Version: $VERSION"
           echo "Branch: $BRANCH"
-          echo "Project: $PROJECT_NAME"
           echo "Dry Run: $DRY_RUN"
-          echo "Skip Docker: $SKIP_DOCKER"
           echo "Dependency Package: $DEP_PACKAGE"
           echo "Dependency Version: $DEP_VERSION"
 
@@ -295,190 +277,11 @@ jobs:
           fi
 
   # ==========================================================================
-  # Build and push Docker images
-  # ==========================================================================
-  build-docker:
-    name: Build Docker Images
-    needs: [prepare, update-and-publish]
-    if: |
-      needs.prepare.outputs.skip_docker != 'true' &&
-      needs.prepare.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        target: [connect, switchboard]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.branch }}
-
-      - name: Pull latest changes
-        env:
-          BRANCH: ${{ needs.prepare.outputs.branch }}
-        run: git pull origin "$BRANCH"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Ensure Docker project exists
-        env:
-          PROJECT_NAME: ${{ needs.prepare.outputs.project_name }}
-          DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASS: ${{ secrets.DOCKER_PASSWORD }}
-          REGISTRY: ${{ env.DOCKER_REGISTRY }}
-        run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -u "${DOCKER_USER}:${DOCKER_PASS}" \
-            "https://${REGISTRY}/api/v2.0/projects?name=${PROJECT_NAME}")
-
-          if [ "$STATUS" = "200" ]; then
-            EXISTS=$(curl -s \
-              -u "${DOCKER_USER}:${DOCKER_PASS}" \
-              "https://${REGISTRY}/api/v2.0/projects?name=${PROJECT_NAME}" | \
-              jq -r ".[] | select(.name==\"${PROJECT_NAME}\") | .name")
-
-            if [ "$EXISTS" = "$PROJECT_NAME" ]; then
-              echo "Project ${PROJECT_NAME} already exists"
-            else
-              echo "Creating project ${PROJECT_NAME}..."
-              curl -X POST \
-                -u "${DOCKER_USER}:${DOCKER_PASS}" \
-                -H "Content-Type: application/json" \
-                -d "{\"project_name\": \"${PROJECT_NAME}\", \"public\": false}" \
-                "https://${REGISTRY}/api/v2.0/projects"
-            fi
-          else
-            echo "Creating project ${PROJECT_NAME}..."
-            curl -X POST \
-              -u "${DOCKER_USER}:${DOCKER_PASS}" \
-              -H "Content-Type: application/json" \
-              -d "{\"project_name\": \"${PROJECT_NAME}\", \"public\": false}" \
-              "https://${REGISTRY}/api/v2.0/projects"
-          fi
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Docker Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Extract package name
-        id: package
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          echo "name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Determine image tags
-        id: tags
-        env:
-          VERSION: ${{ needs.update-and-publish.outputs.new_version }}
-          CHANNEL: ${{ needs.prepare.outputs.channel }}
-          PROJECT: ${{ needs.prepare.outputs.project_name }}
-          TARGET: ${{ matrix.target }}
-          GHCR_REG: ${{ env.GHCR_REGISTRY }}
-          DOCKER_REG: ${{ env.DOCKER_REGISTRY }}
-          REPO_OWNER: ${{ github.repository_owner }}
-        run: |
-          GHCR_BASE="${GHCR_REG}/${REPO_OWNER}/${PROJECT}/${TARGET}"
-          DOCKER_BASE="${DOCKER_REG}/${PROJECT}/${TARGET}"
-
-          TAGS="${GHCR_BASE}:v${VERSION}"
-          TAGS="${TAGS},${DOCKER_BASE}:v${VERSION}"
-
-          if [ "$CHANNEL" = "latest" ] || [ "$CHANNEL" = "main" ]; then
-            TAGS="${TAGS},${GHCR_BASE}:latest"
-            TAGS="${TAGS},${DOCKER_BASE}:latest"
-          else
-            TAGS="${TAGS},${GHCR_BASE}:${CHANNEL}"
-            TAGS="${TAGS},${DOCKER_BASE}:${CHANNEL}"
-          fi
-
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "Image tags: $TAGS"
-
-      - name: Build and push ${{ matrix.target }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          target: ${{ matrix.target }}
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          build-args: |
-            TAG=${{ needs.prepare.outputs.channel == 'latest' && 'latest' || needs.prepare.outputs.version }}
-            PACKAGE_NAME=${{ steps.package.outputs.name }}
-            PH_CONNECT_BASE_PATH=/
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ==========================================================================
-  # Update k8s-hosting repo with new image tags (GitOps)
-  # ==========================================================================
-  update-k8s:
-    name: Update K8s Hosting
-    needs: [prepare, update-and-publish, build-docker]
-    if: needs.prepare.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout k8s-hosting repository
-        uses: actions/checkout@v4
-        with:
-          repository: powerhouse-inc/powerhouse-k8s-hosting
-          token: ${{ secrets.K8S_REPO_PAT }}
-          path: k8s-hosting
-
-      - name: Install yq
-        uses: mikefarah/yq@v4
-
-      - name: Update image tags
-        env:
-          VERSION: "v${{ needs.update-and-publish.outputs.new_version }}"
-        run: |
-          VALUES_FILE="k8s-hosting/tenants/vetra/powerhouse-values.yaml"
-
-          echo "Updating ${VALUES_FILE} with version ${VERSION}"
-
-          yq -i ".switchboard.image.tag = \"${VERSION}\"" "$VALUES_FILE"
-          yq -i ".connect.image.tag = \"${VERSION}\"" "$VALUES_FILE"
-
-          echo "Updated image tags to ${VERSION}"
-          cat "$VALUES_FILE" | grep -A2 "image:" | head -20
-
-      - name: Commit and push changes
-        env:
-          VERSION: "v${{ needs.update-and-publish.outputs.new_version }}"
-        run: |
-          cd k8s-hosting
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add "tenants/vetra/powerhouse-values.yaml"
-
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore(vetra): update image tags to ${VERSION}"
-            git push
-          fi
-
-  # ==========================================================================
   # Summary
   # ==========================================================================
   summary:
     name: Release Summary
-    needs: [prepare, update-and-publish, build-docker, update-k8s]
+    needs: [prepare, update-and-publish]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -489,8 +292,6 @@ jobs:
           PH_VERSION: ${{ needs.prepare.outputs.version }}
           PKG_VERSION: ${{ needs.update-and-publish.outputs.new_version }}
           DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
-          PROJECT: ${{ needs.prepare.outputs.project_name }}
-          DOCKER_REG: ${{ env.DOCKER_REGISTRY }}
         run: |
           echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -501,7 +302,3 @@ jobs:
           echo "| Powerhouse Version | ${PH_VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Package Version | ${PKG_VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry Run | ${DRY_RUN} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Docker Images" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${DOCKER_REG}/${PROJECT}/connect:v${PKG_VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${DOCKER_REG}/${PROJECT}/switchboard:v${PKG_VERSION}\`" >> $GITHUB_STEP_SUMMARY
