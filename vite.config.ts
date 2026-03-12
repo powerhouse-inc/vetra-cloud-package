@@ -15,8 +15,8 @@ export default defineConfig(({ mode }) => {
         resolve: {
             conditions: ["source", "browser", "module", "jsnext:main", "jsnext"],
             alias: {
-                "@powerhousedao/connect/style.css": resolve(connectPkg, "lib/style.css"),
-                "@powerhousedao/connect/main.js": resolve(connectPkg, "lib/src/main.js"),
+                "@powerhousedao/connect/style.css": resolve(connectPkg, "dist/style.css"),
+                "@powerhousedao/connect/main.js": resolve(connectPkg, "dist/src/main.js"),
             },
         },
         optimizeDeps: {

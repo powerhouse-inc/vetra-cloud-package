@@ -11,7 +11,7 @@ const logger = childLogger(["vetra-cloud-environment-factory"]);
 export const vetraCloudEnvironmentProcessorFactory =
   (module: IProcessorHostModule) =>
   async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
-    console.log(`[vetra-cloud-environment] Creating processor for drive ${driveHeader.id}`);
+    console.log(`[vetra-cloud-environment] Creating processor for drive ${driveHeader.id}`, JSON.stringify(driveHeader));
     logger.info(`Creating processor for drive ${driveHeader.id}`);
 
     const db = await module.relationalDb.createNamespace("vetra-cloud-environments") as unknown as Kysely<DB>;
@@ -20,7 +20,12 @@ export const vetraCloudEnvironmentProcessorFactory =
 
     const processor = new VetraCloudEnvironmentProcessor(db);
 
-    logger.info(`Processor created for drive ${driveHeader.id}`);
+    console.log(`[vetra-cloud-environment] Processor created with filter:`, JSON.stringify({
+      branch: ["main"],
+      documentId: ["*"],
+      documentType: ["powerhouse/vetra-cloud-environment"],
+      scope: ["global"],
+    }));
 
     return [
       {

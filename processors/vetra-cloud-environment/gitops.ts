@@ -112,8 +112,8 @@ switchboard:
   name: switchboard
   replicaCount: 1
   image:
-    repository: cr.vetra.io/vetra/switchboard
-    tag: v0.0.4-staging.3
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
+    tag: staging
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -177,8 +177,8 @@ connect:
   name: connect
   replicaCount: 1
   image:
-    repository: cr.vetra.io/vetra/connect
-    tag: v0.0.4-staging.3
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
+    tag: staging
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -239,8 +239,7 @@ serviceMonitor:
   interval: 30s
   path: /metrics
 glitchtip:
-  enabled: true
-  dsn: ""
+  enabled: false
   environment: ${name}
 networkPolicy:
   enabled: false

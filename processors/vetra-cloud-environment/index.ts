@@ -15,6 +15,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
   }
 
   async onOperations(operations: OperationWithContext[]): Promise<void> {
+    console.log(`[vetra-cloud-environment] onOperations called with ${operations.length} operations`);
     if (operations.length === 0) return;
 
     logger.info(`Received ${operations.length} operations`);
@@ -22,21 +23,24 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     for (const { operation, context } of operations) {
       if (context.documentType !== "powerhouse/vetra-cloud-environment") continue;
 
-      const state: VetraCloudEnvironmentState | undefined = context.resultingState
+      const phState = context.resultingState
         ? JSON.parse(context.resultingState)
         : undefined;
 
-      if (!state) {
+      if (!phState) {
         logger.warn(`No resulting state for operation ${operation.index} on ${context.documentId}`);
         continue;
       }
 
+      const state = phState.global as VetraCloudEnvironmentState;
       const { name, packages, services, status } = state;
+      const label = name ?? context.documentId;
 
       logger.info(
-        `Processing document ${context.documentId} (op ${operation.index}): ` +
-        `name=${name}, status=${status}, services=[${services?.join(", ")}], ` +
-        `packages=[${packages?.map((p) => `${p.name}@${p.version}`).join(", ")}]`,
+        `Processing document ${label} (op ${operation.index}): ` +
+        `name=${name ?? "unset"}, status=${status ?? "unset"}, ` +
+        `services=[${services?.join(", ") ?? ""}], ` +
+        `packages=[${packages?.map((p) => `${p.name}@${p.version}`).join(", ") ?? ""}]`,
       );
 
       const environment = await this.relationalDb
@@ -45,29 +49,34 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         .executeTakeFirst();
 
       if (!environment) {
-        logger.info(`Creating new environment record for "${name}" (${context.documentId})`);
+        logger.info(`Creating new environment record for "${label}"`);
         await this.relationalDb
           .insertInto("environments")
           .values({
             name: name ?? null,
             id: context.documentId,
-            packages: JSON.stringify(packages),
-            services: JSON.stringify(services),
-            status: status,
+            packages: JSON.stringify(packages ?? []),
+            services: JSON.stringify(services ?? []),
+            status: status ?? null,
           })
           .execute();
       } else {
-        logger.info(`Updating existing environment record for "${name}" (${context.documentId})`);
+        logger.info(`Updating existing environment record for "${label}"`);
         await this.relationalDb
           .updateTable("environments")
           .set({
             name: name ?? null,
-            packages: JSON.stringify(packages),
-            services: JSON.stringify(services),
-            status: status,
+            packages: JSON.stringify(packages ?? []),
+            services: JSON.stringify(services ?? []),
+            status: status ?? null,
           })
           .where("id", "=", context.documentId)
           .execute();
+      }
+
+      if (!name) {
+        logger.info(`Skipping gitops sync for ${context.documentId} — name not yet set`);
+        continue;
       }
 
       logger.info(`Triggering gitops sync for "${name}"`);

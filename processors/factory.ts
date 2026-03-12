@@ -6,10 +6,15 @@ import type { PHDocumentHeader } from "document-model";
 import { vetraCloudEnvironmentProcessorFactory } from "./vetra-cloud-environment/factory.js";
 
 export const processorFactory = (module: IProcessorHostModule) => {
-  console.log("[vetra-cloud-environment] processorFactory initialized");
+  console.log("[vetra-cloud-environment] processorFactory called, module keys:", Object.keys(module));
   const factory = vetraCloudEnvironmentProcessorFactory(module);
 
-  return async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
-    return factory(driveHeader);
+  const wrappedFactory = async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
+    console.log("[vetra-cloud-environment] wrappedFactory called for drive:", driveHeader.id);
+    const result = await factory(driveHeader);
+    console.log("[vetra-cloud-environment] wrappedFactory returning", result.length, "processor records");
+    return result;
   };
+
+  return wrappedFactory;
 };
