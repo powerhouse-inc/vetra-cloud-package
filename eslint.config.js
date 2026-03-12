@@ -12,6 +12,8 @@ export default tseslint.config(
     "dist/",
     ".ph/",
     "eslint.config.js",
+    "vitest.config.ts",
+    "**/gen/",
   ]),
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

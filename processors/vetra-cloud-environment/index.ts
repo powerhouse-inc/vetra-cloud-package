@@ -24,7 +24,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       if (context.documentType !== "powerhouse/vetra-cloud-environment") continue;
 
       const phState = context.resultingState
-        ? JSON.parse(context.resultingState)
+        ? JSON.parse(context.resultingState) as { global: VetraCloudEnvironmentState }
         : undefined;
 
       if (!phState) {
@@ -32,7 +32,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         continue;
       }
 
-      const state = phState.global as VetraCloudEnvironmentState;
+      const state = phState.global;
       const { name, packages, services, status } = state;
       const label = name ?? context.documentId;
 
@@ -84,7 +84,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         await syncEnvironment(state);
         logger.info(`Gitops sync completed for "${name}"`);
       } catch (error) {
-        logger.error(`Gitops sync failed for "${name}": ${error}`);
+        logger.error(`Gitops sync failed for "${name}": ${String(error)}`);
       }
     }
   }
