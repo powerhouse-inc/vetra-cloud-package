@@ -1,7 +1,7 @@
 import type { IProcessor, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { Kysely } from "kysely";
 import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
-import { syncEnvironment } from "./gitops.js";
+import { syncEnvironment, getTenantId } from "./gitops.js";
 import { type DB } from "./schema.js";
 import { childLogger } from "document-drive";
 
@@ -15,7 +15,6 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
   }
 
   async onOperations(operations: OperationWithContext[]): Promise<void> {
-    console.log(`[vetra-cloud-environment] onOperations called with ${operations.length} operations`);
     if (operations.length === 0) return;
 
     logger.info(`Received ${operations.length} operations`);
@@ -33,15 +32,29 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       }
 
       const state = phState.global;
-      const { name, packages, services, status } = state;
+      const { name, subdomain, customDomain, packages, services, status } = state;
       const label = name ?? context.documentId;
+      const tenantId = subdomain
+        ? getTenantId(subdomain, context.documentId)
+        : null;
 
       logger.info(
         `Processing document ${label} (op ${operation.index}): ` +
         `name=${name ?? "unset"}, status=${status ?? "unset"}, ` +
+        `subdomain=${subdomain ?? "unset"}, tenantId=${tenantId ?? "unset"}, ` +
         `services=[${services?.join(", ") ?? ""}], ` +
-        `packages=[${packages?.map((p) => `${p.name}@${p.version}`).join(", ") ?? ""}]`,
+        `packages=[${(packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}]`,
       );
+
+      const row = {
+        name: name ?? null,
+        subdomain: subdomain ?? null,
+        tenantId,
+        customDomain: customDomain ?? null,
+        packages: JSON.stringify(packages ?? []),
+        services: JSON.stringify(services ?? []),
+        status: status ?? null,
+      };
 
       const environment = await this.relationalDb
         .selectFrom("environments")
@@ -52,39 +65,23 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         logger.info(`Creating new environment record for "${label}"`);
         await this.relationalDb
           .insertInto("environments")
-          .values({
-            name: name ?? null,
-            id: context.documentId,
-            packages: JSON.stringify(packages ?? []),
-            services: JSON.stringify(services ?? []),
-            status: status ?? null,
-          })
+          .values({ id: context.documentId, ...row })
           .execute();
       } else {
         logger.info(`Updating existing environment record for "${label}"`);
         await this.relationalDb
           .updateTable("environments")
-          .set({
-            name: name ?? null,
-            packages: JSON.stringify(packages ?? []),
-            services: JSON.stringify(services ?? []),
-            status: status ?? null,
-          })
+          .set(row)
           .where("id", "=", context.documentId)
           .execute();
       }
 
-      if (!name) {
-        logger.info(`Skipping gitops sync for ${context.documentId} — name not yet set`);
-        continue;
-      }
-
-      logger.info(`Triggering gitops sync for "${name}"`);
+      logger.info(`Triggering gitops sync for "${label}"`);
       try {
-        await syncEnvironment(state);
-        logger.info(`Gitops sync completed for "${name}"`);
+        await syncEnvironment(state, context.documentId);
+        logger.info(`Gitops sync completed for "${label}"`);
       } catch (error) {
-        logger.error(`Gitops sync failed for "${name}": ${String(error)}`);
+        logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
       }
     }
   }
