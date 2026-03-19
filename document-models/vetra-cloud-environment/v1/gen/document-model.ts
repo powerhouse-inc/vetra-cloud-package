@@ -30,6 +30,29 @@ export const documentModel: DocumentModelGlobalState = {
               scope: "global",
               template: "",
             },
+            {
+              description:
+                "Sets the auto-generated subdomain derived from the document ID",
+              errors: [],
+              examples: [],
+              id: "a1b2c3d4-1111-4444-aaaa-000000000001",
+              name: "SET_SUBDOMAIN",
+              reducer: "",
+              schema: "input SetSubdomainInput {\n  subdomain: String!\n}",
+              scope: "global",
+              template: "",
+            },
+            {
+              description: "Sets or clears a custom domain for the environment",
+              errors: [],
+              examples: [],
+              id: "a1b2c3d4-2222-4444-aaaa-000000000002",
+              name: "SET_CUSTOM_DOMAIN",
+              reducer: "",
+              schema: "input SetCustomDomainInput {\n  customDomain: String\n}",
+              scope: "global",
+              template: "",
+            },
           ],
         },
         {
@@ -130,9 +153,9 @@ export const documentModel: DocumentModelGlobalState = {
         global: {
           examples: [],
           initialValue:
-            '{\n  "name": null,\n  "services": [],\n  "packages": null,\n  "status": "STOPPED"\n}',
+            '{\n  "name": null,\n  "subdomain": null,\n  "customDomain": null,\n  "services": [],\n  "packages": null,\n  "status": "STOPPED"\n}',
           schema:
-            "enum VetraCloudEnvironmentService {\n  CONNECT\n  SWITCHBOARD\n}\n\nenum VetraCloudEnvironmentStatus {\n  STOPPED\n  STARTED\n}\n\ntype VetraCloudPackage {\n  name: String!\n  version: String\n}\n\ntype VetraCloudEnvironmentState {\n  name: String\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]\n  status: VetraCloudEnvironmentStatus!\n}",
+            "enum VetraCloudEnvironmentService {\n  CONNECT\n  SWITCHBOARD\n}\n\nenum VetraCloudEnvironmentStatus {\n  STOPPED\n  STARTED\n}\n\ntype VetraCloudPackage {\n  name: String!\n  version: String\n}\n\ntype VetraCloudEnvironmentState {\n  name: String\n  subdomain: String\n  customDomain: String\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]\n  status: VetraCloudEnvironmentStatus!\n}",
         },
         local: {
           examples: [],

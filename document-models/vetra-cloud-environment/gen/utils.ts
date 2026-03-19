@@ -22,6 +22,8 @@ import {
 
 export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   name: null,
+  subdomain: null,
+  customDomain: null,
   services: [],
   packages: null,
   status: "STOPPED",

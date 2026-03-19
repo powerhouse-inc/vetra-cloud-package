@@ -36,6 +36,8 @@ type VetraCloudPackage {
 
 type VetraCloudEnvironmentState {
   name: String
+  subdomain: String
+  customDomain: String
   services: [VetraCloudEnvironmentService!]!
   packages: [VetraCloudPackage!]
   status: VetraCloudEnvironmentStatus!
@@ -46,6 +48,14 @@ type VetraCloudEnvironmentState {
 input SetEnvironmentNameInput {
   "Add your inputs here"
   name: String!
+}
+
+input SetSubdomainInput {
+  subdomain: String!
+}
+
+input SetCustomDomainInput {
+  customDomain: String
 }
 
 # services

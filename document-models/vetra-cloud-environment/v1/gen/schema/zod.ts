@@ -4,7 +4,9 @@ import type {
   DisableServiceInput,
   EnableServiceInput,
   RemovePackageInput,
+  SetCustomDomainInput,
   SetEnvironmentNameInput,
+  SetSubdomainInput,
   StartInput,
   StopInput,
   VetraCloudEnvironmentService,
@@ -66,11 +68,27 @@ export function RemovePackageInputSchema(): z.ZodObject<
   });
 }
 
+export function SetCustomDomainInputSchema(): z.ZodObject<
+  Properties<SetCustomDomainInput>
+> {
+  return z.object({
+    customDomain: z.string().nullish(),
+  });
+}
+
 export function SetEnvironmentNameInputSchema(): z.ZodObject<
   Properties<SetEnvironmentNameInput>
 > {
   return z.object({
     name: z.string(),
+  });
+}
+
+export function SetSubdomainInputSchema(): z.ZodObject<
+  Properties<SetSubdomainInput>
+> {
+  return z.object({
+    subdomain: z.string(),
   });
 }
 
@@ -91,10 +109,12 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
+    customDomain: z.string().nullish(),
     name: z.string().nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())).nullish(),
     services: z.array(VetraCloudEnvironmentServiceSchema),
     status: VetraCloudEnvironmentStatusSchema,
+    subdomain: z.string().nullish(),
   });
 }
 

@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 import type { StateReducer } from "document-model";
 import { isDocumentAction, createReducer } from "document-model/core";
-import type { VetraCloudEnvironmentPHState } from "vetra-cloud-package/document-models/vetra-cloud-environment";
+import type { VetraCloudEnvironmentPHState } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/data-management.js";
 import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
@@ -12,6 +12,8 @@ import { vetraCloudEnvironmentStatusOperations } from "../src/reducers/status.js
 
 import {
   SetEnvironmentNameInputSchema,
+  SetSubdomainInputSchema,
+  SetCustomDomainInputSchema,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
   AddPackageInputSchema,
@@ -33,6 +35,30 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetEnvironmentNameInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setEnvironmentNameOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_SUBDOMAIN": {
+      SetSubdomainInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setSubdomainOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_CUSTOM_DOMAIN": {
+      SetCustomDomainInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setCustomDomainOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

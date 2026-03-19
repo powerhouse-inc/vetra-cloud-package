@@ -80,9 +80,17 @@ export type RemovePackageInput = {
   packageName: Scalars["String"]["input"];
 };
 
+export type SetCustomDomainInput = {
+  customDomain?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type SetEnvironmentNameInput = {
   /** Add your inputs here */
   name: Scalars["String"]["input"];
+};
+
+export type SetSubdomainInput = {
+  subdomain: Scalars["String"]["input"];
 };
 
 export type StartInput = {
@@ -98,10 +106,12 @@ export type StopInput = {
 export type VetraCloudEnvironmentService = "CONNECT" | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
+  customDomain: Maybe<Scalars["String"]["output"]>;
   name: Maybe<Scalars["String"]["output"]>;
   packages: Maybe<Array<VetraCloudPackage>>;
   services: Array<VetraCloudEnvironmentService>;
   status: VetraCloudEnvironmentStatus;
+  subdomain: Maybe<Scalars["String"]["output"]>;
 };
 
 export type VetraCloudEnvironmentStatus = "STARTED" | "STOPPED";

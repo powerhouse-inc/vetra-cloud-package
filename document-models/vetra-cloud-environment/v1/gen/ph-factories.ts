@@ -14,6 +14,8 @@ import { createDocument } from "./utils.js";
 export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
   return {
     name: null,
+    subdomain: null,
+    customDomain: null,
     services: [],
     packages: null,
     status: "STOPPED",
