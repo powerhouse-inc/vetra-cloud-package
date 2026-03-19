@@ -1,13 +1,16 @@
-import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { childLogger } from "document-drive";
 import type {
   VetraCloudEnvironmentState,
   VetraCloudEnvironmentService,
 } from "../../document-models/vetra-cloud-environment/index.js";
+
+const execFileAsync = promisify(execFile);
 
 const logger = childLogger(["gitops"]);
 
@@ -41,6 +44,9 @@ class GitMutex {
 
 const gitMutex = new GitMutex();
 const MAX_PUSH_RETRIES = 3;
+
+const GIT_AUTHOR_NAME = process.env.GITOPS_AUTHOR_NAME ?? "vetra-cloud-processor";
+const GIT_AUTHOR_EMAIL = process.env.GITOPS_AUTHOR_EMAIL ?? "noreply@vetra.io";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -102,17 +108,40 @@ function getRepoUrl(): string {
   return url;
 }
 
+/**
+ * Redact credentials from a URL for safe logging.
+ */
+function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = "***";
+      parsed.password = "***";
+      return parsed.toString();
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------
 
-function git(args: string[], cwd: string): string {
-  logger.info(`Running: git ${args.join(" ")}`);
-  return execFileSync("git", args, {
+async function git(args: string[], cwd: string): Promise<string> {
+  // Redact repo URLs from logged args to avoid leaking credentials
+  const safeArgs = args.map((arg) =>
+    arg.startsWith("https://") ? redactUrl(arg) : arg,
+  );
+  logger.info(`Running: git ${safeArgs.join(" ")}`);
+
+  const { stdout } = await execFileAsync("git", args, {
     cwd,
     encoding: "utf-8",
     timeout: 60_000,
-  }).trim();
+  });
+  return stdout.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +172,23 @@ export function getTenantId(
 }
 
 // ---------------------------------------------------------------------------
+// YAML escaping
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape a string for safe interpolation into a YAML value.
+ * Wraps in double quotes and escapes inner backslashes, double quotes,
+ * and newlines.
+ */
+function yamlQuote(value: string): string {
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n");
+  return `"${escaped}"`;
+}
+
+// ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
 
@@ -150,14 +196,18 @@ function generateCustomDomainIngress(
   service: string,
   customDomain: string,
 ): string {
+  const host = service === "switchboard"
+    ? customDomain
+    : `${service}.${customDomain}`;
+  const secretSuffix = customDomain.replace(/\./g, "-");
   return `
   additionalIngresses:
     - enabled: true
       className: traefik
-      host: ${service === "switchboard" ? "" : `${service}.`}${customDomain}
+      host: ${yamlQuote(host)}
       tls:
         enabled: true
-        secretName: ${service}-custom-${customDomain.replace(/\./g, "-")}-tls
+        secretName: ${service}-custom-${secretSuffix}-tls
       annotations:
         cert-manager.io/cluster-issuer: letsencrypt-prod`;
 }
@@ -194,9 +244,12 @@ export function generateValuesYaml(
     ? generateCustomDomainIngress("connect", customDomain)
     : "";
 
+  const tenantName = yamlQuote(state.name ?? name);
+  const dbName = tenantId.replace(/-/g, "_");
+
   return `global:
   disabled: ${disabled}
-  subdomain: ${subdomain}
+  subdomain: ${yamlQuote(subdomain)}
   imagePullSecrets:
     enabled: true
     name: harbor-credentials
@@ -238,8 +291,8 @@ database:
         memory: 8Gi
         cpu: "8"
     bootstrap:
-      database: ${tenantId.replace(/-/g, "_")}_db
-      owner: ${tenantId.replace(/-/g, "_")}_user
+      database: ${dbName}_db
+      owner: ${dbName}_user
 switchboard:
   enabled: ${switchboardEnabled}
   name: switchboard
@@ -263,10 +316,10 @@ switchboard:
   env:
     PORT: "3000"
     NODE_ENV: production
-    PH_PACKAGES: "${phPackages}"
+    PH_PACKAGES: ${yamlQuote(phPackages)}
   envConfigMap:
     TENANT_ID: ${tenantId}
-    TENANT_NAME: "${state.name ?? name}"
+    TENANT_NAME: ${tenantName}
   resources:
     requests:
       cpu: 1
@@ -327,10 +380,10 @@ connect:
   env:
     PORT: "3001"
     NODE_ENV: production
-    PH_PACKAGES: "${phPackages}"
+    PH_PACKAGES: ${yamlQuote(phPackages)}
   envConfigMap:
     TENANT_ID: ${tenantId}
-    TENANT_NAME: "${state.name ?? name}"
+    TENANT_NAME: ${tenantName}
   resources:
     requests:
       cpu: 1
@@ -414,17 +467,48 @@ export async function syncEnvironment(
   }
 }
 
+/**
+ * Remove a tenant's directory from the gitops repo.
+ *
+ * Called when an environment document is deleted. Removes the tenant
+ * directory, commits, and pushes so ArgoCD/Flux tears down the deployment.
+ */
+export async function deleteEnvironmentFromGitops(
+  tenantId: string,
+): Promise<void> {
+  await gitMutex.acquire();
+  try {
+    await withEphemeralClone(async (cloneDir, config) => {
+      const tenantDir = join(cloneDir, "tenants", tenantId);
+
+      if (!existsSync(tenantDir)) {
+        logger.info(`Tenant directory "tenants/${tenantId}" does not exist in gitops repo, nothing to remove`);
+        return;
+      }
+
+      await git(["rm", "-r", `tenants/${tenantId}`], cloneDir);
+
+      const commitMsg = `chore(${tenantId}): remove tenant — environment deleted`;
+      logger.info(`Committing: ${commitMsg}`);
+      await git(["commit", "-m", commitMsg], cloneDir);
+
+      await pushWithRetry(cloneDir, config);
+      logger.info(`Successfully removed tenant "${tenantId}" from gitops repo`);
+    });
+  } finally {
+    gitMutex.release();
+  }
+}
+
 async function syncEnvironmentEphemeral(
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): Promise<void> {
-  const config = getConfig();
   const subdomain = state.subdomain!;
   const tenantId = getTenantId(subdomain, documentId);
 
   logger.info(
-    `Syncing environment "${tenantId}" (subdomain=${subdomain}) ` +
-    `to gitops repo (branch=${config.branch})`,
+    `Syncing environment "${tenantId}" (subdomain=${subdomain})`,
   );
   logger.info(
     `Environment state: status=${state.status}, ` +
@@ -433,16 +517,7 @@ async function syncEnvironmentEphemeral(
     `subdomain=${subdomain}, customDomain=${state.customDomain ?? "unset"}`,
   );
 
-  // Create ephemeral shallow clone
-  const cloneDir = mkdtempSync(join(tmpdir(), "gitops-"));
-  logger.info(`Cloning into ephemeral directory: ${cloneDir}`);
-
-  try {
-    git(
-      ["clone", "--depth", "1", "--branch", config.branch, config.repoUrl, "."],
-      cloneDir,
-    );
-
+  await withEphemeralClone(async (cloneDir, config) => {
     // Create tenant directory
     const tenantDir = join(cloneDir, "tenants", tenantId);
     mkdirSync(tenantDir, { recursive: true });
@@ -454,9 +529,9 @@ async function syncEnvironmentEphemeral(
     logger.info(`Wrote values file to ${valuesPath}`);
 
     // Stage
-    git(["add", `tenants/${tenantId}/powerhouse-values.yaml`], cloneDir);
+    await git(["add", `tenants/${tenantId}/powerhouse-values.yaml`], cloneDir);
 
-    const hasChanges = git(["diff", "--cached", "--name-only"], cloneDir);
+    const hasChanges = await git(["diff", "--cached", "--name-only"], cloneDir);
     if (!hasChanges) {
       logger.info("No changes detected in values file, skipping commit");
       return;
@@ -467,39 +542,74 @@ async function syncEnvironmentEphemeral(
     const statusLabel = state.status === "STARTED" ? "enable" : "disable";
     const commitMsg = `chore(${tenantId}): ${statusLabel} tenant — synced from vetra-cloud-environment`;
     logger.info(`Committing: ${commitMsg}`);
-    git(["commit", "-m", commitMsg], cloneDir);
+    await git(["commit", "-m", commitMsg], cloneDir);
 
-    // Push with retry — handles cross-instance races
-    for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-      try {
-        logger.info(
-          `Pushing to ${config.remote}/${config.branch} (attempt ${attempt})...`,
-        );
-        git(["push", config.remote, config.branch], cloneDir);
-        logger.info(`Successfully synced and pushed environment "${tenantId}"`);
-        return;
-      } catch (error) {
-        if (attempt === MAX_PUSH_RETRIES) {
-          throw error;
-        }
-        logger.warn(
-          `Push attempt ${attempt} failed, pulling with rebase and retrying: ${String(error)}`,
-        );
-        // Unshallow enough to rebase on top of the new remote tip
-        git(["fetch", config.remote, config.branch], cloneDir);
-        git(
-          ["rebase", `${config.remote}/${config.branch}`],
-          cloneDir,
-        );
-      }
-    }
+    await pushWithRetry(cloneDir, config);
+    logger.info(`Successfully synced and pushed environment "${tenantId}"`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+async function withEphemeralClone(
+  fn: (cloneDir: string, config: GitOpsConfig) => Promise<void>,
+): Promise<void> {
+  const config = getConfig();
+  const cloneDir = mkdtempSync(join(tmpdir(), "gitops-"));
+  logger.info(`Cloning into ephemeral directory: ${cloneDir}`);
+
+  try {
+    await git(
+      ["clone", "--depth", "1", "--branch", config.branch, config.repoUrl, "."],
+      cloneDir,
+    );
+
+    // Set git identity for commits in this ephemeral clone
+    await git(["config", "user.name", GIT_AUTHOR_NAME], cloneDir);
+    await git(["config", "user.email", GIT_AUTHOR_EMAIL], cloneDir);
+
+    await fn(cloneDir, config);
   } finally {
-    // Always clean up the ephemeral clone
     logger.info(`Cleaning up ephemeral clone: ${cloneDir}`);
     try {
       rmSync(cloneDir, { recursive: true, force: true });
     } catch (cleanupError) {
       logger.warn(`Failed to clean up ${cloneDir}: ${String(cleanupError)}`);
+    }
+  }
+}
+
+async function pushWithRetry(
+  cloneDir: string,
+  config: GitOpsConfig,
+): Promise<void> {
+  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+    try {
+      logger.info(
+        `Pushing to ${config.remote}/${config.branch} (attempt ${attempt})...`,
+      );
+      await git(["push", config.remote, config.branch], cloneDir);
+      return;
+    } catch (error) {
+      if (attempt === MAX_PUSH_RETRIES) {
+        throw error;
+      }
+      logger.warn(
+        `Push attempt ${attempt} failed, pulling with rebase and retrying: ${String(error)}`,
+      );
+      await git(["fetch", config.remote, config.branch], cloneDir);
+      try {
+        await git(
+          ["rebase", `${config.remote}/${config.branch}`],
+          cloneDir,
+        );
+      } catch (rebaseError) {
+        logger.warn(`Rebase failed with conflict, aborting: ${String(rebaseError)}`);
+        await git(["rebase", "--abort"], cloneDir);
+        throw rebaseError;
+      }
     }
   }
 }
