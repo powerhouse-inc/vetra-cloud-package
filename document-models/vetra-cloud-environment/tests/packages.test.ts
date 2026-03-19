@@ -8,7 +8,7 @@ import {
   removePackage,
   AddPackageInputSchema,
   RemovePackageInputSchema,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment";
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 describe("PackagesOperations", () => {
   it("should handle addPackage operation", () => {

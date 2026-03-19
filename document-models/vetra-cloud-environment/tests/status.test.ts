@@ -8,7 +8,7 @@ import {
   stop,
   StartInputSchema,
   StopInputSchema,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment";
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 describe("StatusOperations", () => {
   it("should handle start operation", () => {

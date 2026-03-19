@@ -5,8 +5,12 @@ import {
   utils,
   isVetraCloudEnvironmentDocument,
   setEnvironmentName,
+  setSubdomain,
+  setCustomDomain,
   SetEnvironmentNameInputSchema,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment";
+  SetSubdomainInputSchema,
+  SetCustomDomainInputSchema,
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 describe("DataManagementOperations", () => {
   it("should handle setEnvironmentName operation", () => {
@@ -19,6 +23,40 @@ describe("DataManagementOperations", () => {
     expect(updatedDocument.operations.global).toHaveLength(1);
     expect(updatedDocument.operations.global[0].action.type).toBe(
       "SET_ENVIRONMENT_NAME",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setSubdomain operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetSubdomainInputSchema());
+
+    const updatedDocument = reducer(document, setSubdomain(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_SUBDOMAIN",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setCustomDomain operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetCustomDomainInputSchema());
+
+    const updatedDocument = reducer(document, setCustomDomain(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_CUSTOM_DOMAIN",
     );
     expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
       input,

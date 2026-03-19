@@ -8,7 +8,7 @@ import {
   disableService,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment";
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 describe("ServicesOperations", () => {
   it("should handle enableService operation", () => {
