@@ -1,4 +1,4 @@
-import type { VetraCloudEnvironmentPackagesOperations } from "vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { VetraCloudEnvironmentPackagesOperations } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPackagesOperations =
   {
@@ -7,24 +7,13 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
       if (!state.packages) {
         state.packages = [];
       }
-      if (packageName) {
-        if (state.packages.find((p) => p.name === packageName)) {
-          if (
-            state.packages.find(
-              (p) => p.name === packageName && p.version === version,
-            )
-          ) {
-            return;
-          }
-          state.packages = state.packages.map((p) =>
-            p.name === packageName ? { ...p, version: version ?? "latest" } : p,
-          );
-        } else {
-          state.packages.push({
-            name: packageName,
-            version: version ?? "latest",
-          });
-        }
+      const resolvedVersion = version ?? "latest";
+      const existing = state.packages.find((p) => p.name === packageName);
+      if (existing) {
+        if (existing.version === resolvedVersion) return;
+        existing.version = resolvedVersion;
+      } else {
+        state.packages.push({ name: packageName, version: resolvedVersion });
       }
     },
     removePackageOperation(state, action) {
