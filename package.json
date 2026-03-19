@@ -27,6 +27,14 @@
       "types": "./dist/processors/index.d.ts",
       "default": "./dist/processors/index.js"
     },
+    "./processors/connect": {
+      "types": "./dist/processors/connect.d.ts",
+      "default": "./dist/processors/connect.js"
+    },
+    "./processors/switchboard": {
+      "types": "./dist/processors/switchboard.d.ts",
+      "default": "./dist/processors/switchboard.js"
+    },
     "./manifest": {
       "default": "./dist/powerhouse.manifest.json"
     },
@@ -65,13 +73,13 @@
     "migrate": "ph-cli migrate"
   },
   "dependencies": {
-    "@powerhousedao/builder-tools": "6.0.0-dev.78",
-    "@powerhousedao/common": "6.0.0-dev.78",
-    "@powerhousedao/connect": "6.0.0-dev.78",
-    "@powerhousedao/design-system": "6.0.0-dev.78",
+    "@powerhousedao/builder-tools": "6.0.0-dev.100",
+    "@powerhousedao/common": "6.0.0-dev.100",
+    "@powerhousedao/connect": "6.0.0-dev.100",
+    "@powerhousedao/design-system": "6.0.0-dev.100",
     "@powerhousedao/document-engineering": "^1.34.0",
     "cmd-ts": "^0.15.0",
-    "document-model": "6.0.0-dev.78",
+    "document-model": "6.0.0-dev.100",
     "graphql": "^16.10.0",
     "graphql-tag": "^2.12.6",
     "kysely": "^0.28.11",
@@ -82,20 +90,21 @@
     "@electric-sql/pglite": "^0.3.15",
     "@eslint/js": "^9.22.0",
     "@powerhousedao/analytics-engine-core": "^0.5.0",
-    "@powerhousedao/codegen": "6.0.0-dev.78",
-    "@powerhousedao/ph-cli": "6.0.0-dev.78",
-    "@powerhousedao/reactor-api": "6.0.0-dev.78",
-    "@powerhousedao/reactor-browser": "6.0.0-dev.78",
-    "@powerhousedao/reactor-local": "6.0.0-dev.78",
+    "@powerhousedao/codegen": "6.0.0-dev.100",
+    "@powerhousedao/ph-cli": "6.0.0-dev.100",
+    "@powerhousedao/reactor-api": "6.0.0-dev.100",
+    "@powerhousedao/reactor-browser": "6.0.0-dev.100",
+    "@powerhousedao/reactor-local": "6.0.0-dev.100",
     "@powerhousedao/scalars": "staging",
-    "@powerhousedao/switchboard": "6.0.0-dev.78",
-    "@powerhousedao/vetra": "6.0.0-dev.78",
+    "@powerhousedao/switchboard": "6.0.0-dev.100",
+    "@powerhousedao/vetra": "6.0.0-dev.100",
     "@tailwindcss/cli": "^4.0.15",
+    "@tailwindcss/vite": "^4.2.1",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^22.13.11",
     "@types/react": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "document-drive": "6.0.0-dev.78",
+    "document-drive": "6.0.0-dev.100",
     "eslint": "^9.22.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.2.0",
@@ -108,7 +117,9 @@
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.30.1",
     "vite": "^6.2.3",
+    "vite-plugin-html": "^3.2.2",
     "vite-plugin-node-polyfills": "^0.25.0",
+    "vite-plugin-svgr": "^4.5.0",
     "vitest": "^3.0.9"
   },
   "pnpm": {
@@ -121,5 +132,5 @@
     "react-dom": "^19.2.0"
   },
   "readme": "ERROR: No README data found!",
-  "_id": "vetra-cloud-package@1.0.0"
+  "_id": "@powerhousedao/vetra-cloud-package@0.0.0"
 }

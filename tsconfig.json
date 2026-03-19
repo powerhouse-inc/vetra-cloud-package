@@ -36,19 +36,8 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
-    "paths": {
-      "vetra-cloud-package/document-models/vetra-cloud-environment": ["./document-models/vetra-cloud-environment/index.ts"],
-      "vetra-cloud-package/document-models/vetra-cloud-environment/v1": ["./document-models/vetra-cloud-environment/v1/index.ts"]
-    }
+    "skipLibCheck": true
   },
   "include": ["**/*", "./powerhouse.manifest.json"],
-  "exclude": [
-    "dist",
-    "node_modules",
-    ".ph",
-    "vitest.config.ts",
-    "**/gen/object.ts",
-    "**/gen/*/object.ts"
-  ]
+  "exclude": ["dist", "node_modules", ".ph", "vitest.config.ts", "**/*.test.ts", "**/e2e.test.ts", "**/gen/**/object.ts", "**/gen/object.ts"]
 }

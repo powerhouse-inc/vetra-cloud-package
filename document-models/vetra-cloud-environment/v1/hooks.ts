@@ -8,7 +8,7 @@ import {
 import type {
   VetraCloudEnvironmentAction,
   VetraCloudEnvironmentDocument,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
 import {
   assertIsVetraCloudEnvironmentDocument,
   isVetraCloudEnvironmentDocument,

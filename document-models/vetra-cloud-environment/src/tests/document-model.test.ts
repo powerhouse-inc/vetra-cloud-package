@@ -3,7 +3,7 @@
  * - change it by adding new tests or modifying the existing ones
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { utils,
   initialGlobalState,
   initialLocalState,

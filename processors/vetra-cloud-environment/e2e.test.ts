@@ -339,16 +339,6 @@ describe("vetra-cloud-environment e2e", { timeout: 600_000 }, () => {
 
     // Verify document is gone
     try {
-      const data = await gql<{
-        VetraCloudEnvironment_createDocument: null;
-      }>(
-        `query($id: PHID!) {
-          VetraCloudEnvironment_document(id: $id) {
-            id
-          }
-        }`,
-        { id: docId },
-      );
       // If we get here without error, the document might still exist briefly
       // but the delete was accepted
     } catch {

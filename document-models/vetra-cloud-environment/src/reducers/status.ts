@@ -1,4 +1,4 @@
-import type { VetraCloudEnvironmentStatusOperations } from "vetra-cloud-package/document-models/vetra-cloud-environment";
+import type { VetraCloudEnvironmentStatusOperations } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment";
 
 export const vetraCloudEnvironmentStatusOperations: VetraCloudEnvironmentStatusOperations =
   {
