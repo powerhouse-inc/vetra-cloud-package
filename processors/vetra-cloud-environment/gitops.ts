@@ -295,6 +295,8 @@ database:
       owner: ${dbName}_user
 switchboard:
   enabled: ${switchboardEnabled}
+  gitops:
+    enabled: false
   name: switchboard
   replicaCount: 1
   image:
