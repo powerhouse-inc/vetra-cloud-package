@@ -73,6 +73,7 @@
     "migrate": "ph-cli migrate"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
     "@powerhousedao/builder-tools": "6.0.0-dev.100",
     "@powerhousedao/common": "6.0.0-dev.100",
     "@powerhousedao/connect": "6.0.0-dev.100",
@@ -109,6 +110,7 @@
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^16.0.0",
+    "kysely-pglite-dialect": "^1.2.0",
     "package-manager-detector": "^0.2.8",
     "pm2": "^5.4.3",
     "react": "^19.2.0",
