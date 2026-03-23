@@ -1,0 +1,521 @@
+import type { Kysely } from "kysely";
+import type {
+  EnvironmentStatus,
+  EnvironmentPods,
+  EnvironmentEvents,
+  ObservabilityDB,
+} from "./db/schema.js";
+
+// ---------------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------------
+
+export function classifyPodService(podName: string): string {
+  if (podName.startsWith("connect")) return "CONNECT";
+  if (podName.startsWith("switchboard")) return "SWITCHBOARD";
+  return "OTHER";
+}
+
+// ---------------------------------------------------------------------------
+// DB helpers
+// ---------------------------------------------------------------------------
+
+export async function upsertEnvironmentStatus(
+  db: Kysely<ObservabilityDB>,
+  row: EnvironmentStatus,
+): Promise<void> {
+  await db
+    .insertInto("environment_status")
+    .values(row)
+    .onConflict((oc) =>
+      oc.column("tenantId").doUpdateSet({
+        argoSyncStatus: row.argoSyncStatus,
+        argoHealthStatus: row.argoHealthStatus,
+        argoLastSyncedAt: row.argoLastSyncedAt,
+        argoMessage: row.argoMessage,
+        configDriftDetected: row.configDriftDetected,
+        tlsCertValid: row.tlsCertValid,
+        tlsCertExpiresAt: row.tlsCertExpiresAt,
+        domainResolves: row.domainResolves,
+        updatedAt: row.updatedAt,
+      }),
+    )
+    .execute();
+}
+
+export async function upsertPod(
+  db: Kysely<ObservabilityDB>,
+  row: EnvironmentPods,
+): Promise<void> {
+  await db
+    .insertInto("environment_pods")
+    .values(row)
+    .onConflict((oc) =>
+      oc.column("id").doUpdateSet({
+        phase: row.phase,
+        ready: row.ready,
+        restartCount: row.restartCount,
+        service: row.service,
+        updatedAt: row.updatedAt,
+      }),
+    )
+    .execute();
+}
+
+export async function insertEvent(
+  db: Kysely<ObservabilityDB>,
+  row: EnvironmentEvents,
+): Promise<void> {
+  await db
+    .insertInto("environment_events")
+    .values(row)
+    .onConflict((oc) => oc.column("id").doNothing())
+    .execute();
+}
+
+export async function pruneEvents(
+  db: Kysely<ObservabilityDB>,
+  tenantId: string,
+  keepCount = 50,
+): Promise<void> {
+  const topIds = await db
+    .selectFrom("environment_events")
+    .select("id")
+    .where("tenantId", "=", tenantId)
+    .orderBy("timestamp", "desc")
+    .limit(keepCount)
+    .execute();
+
+  if (topIds.length < keepCount) return;
+
+  await db
+    .deleteFrom("environment_events")
+    .where("tenantId", "=", tenantId)
+    .where(
+      "id",
+      "not in",
+      topIds.map((r) => r.id),
+    )
+    .execute();
+}
+
+// ---------------------------------------------------------------------------
+// Watcher lifecycle types
+// ---------------------------------------------------------------------------
+
+export interface WatcherDeps {
+  db: Kysely<ObservabilityDB>;
+  k8sToken: string;
+  k8sApiUrl?: string;
+}
+
+export interface WatcherHandle {
+  stop(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Internal: reconnecting watch helper
+// ---------------------------------------------------------------------------
+
+type WatchCallback = (type: string, obj: unknown) => Promise<void>;
+
+function watchWithReconnect(
+  watch: {
+    watch(
+      path: string,
+      queryParams: Record<string, string>,
+      callback: (phase: string, obj: unknown) => void,
+      done: (err: unknown) => void,
+    ): Promise<{ abort(): void }>;
+  },
+  path: string,
+  queryParams: Record<string, string>,
+  onEvent: WatchCallback,
+  label: string,
+): { abort(): void } {
+  let active = true;
+  let consecutiveFailures = 0;
+  let requestHandle: { abort(): void } | null = null;
+
+  function start() {
+    if (!active) return;
+
+    watch
+      .watch(
+        path,
+        queryParams,
+        (phase: string, obj: unknown) => {
+          consecutiveFailures = 0;
+          onEvent(phase, obj).catch((err: unknown) => {
+            console.warn(`[watcher:${label}] event handler error`, err);
+          });
+        },
+        (err: unknown) => {
+          if (!active) return;
+          if (err) {
+            consecutiveFailures++;
+            console.warn(
+              `[watcher:${label}] watch error (consecutive=${consecutiveFailures})`,
+              err,
+            );
+          }
+          if (consecutiveFailures >= 3) {
+            console.warn(
+              `[watcher:${label}] 3 consecutive failures, stopping watcher`,
+            );
+            active = false;
+            return;
+          }
+          // reconnect
+          start();
+        },
+      )
+      .then((handle) => {
+        requestHandle = handle;
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        consecutiveFailures++;
+        console.warn(`[watcher:${label}] failed to start watch`, err);
+        if (consecutiveFailures >= 3) {
+          console.warn(
+            `[watcher:${label}] 3 consecutive failures, stopping watcher`,
+          );
+          active = false;
+          return;
+        }
+        start();
+      });
+  }
+
+  start();
+
+  return {
+    abort() {
+      active = false;
+      requestHandle?.abort();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation (lists current state and upserts to DB)
+// ---------------------------------------------------------------------------
+
+async function reconcile(
+  db: Kysely<ObservabilityDB>,
+  k8sToken: string,
+  k8sApiUrl: string,
+): Promise<void> {
+  try {
+    const { KubeConfig, CustomObjectsApi, CoreV1Api } = await import(
+      "@kubernetes/client-node"
+    );
+
+    const kc = new KubeConfig();
+    if (k8sApiUrl) {
+      kc.loadFromOptions({
+        clusters: [{ name: "cluster", server: k8sApiUrl, skipTLSVerify: true }],
+        users: [{ name: "user", token: k8sToken }],
+        contexts: [{ name: "ctx", cluster: "cluster", user: "user" }],
+        currentContext: "ctx",
+      });
+    } else {
+      kc.loadFromDefault();
+    }
+
+    const customApi = kc.makeApiClient(CustomObjectsApi);
+    const coreApi = kc.makeApiClient(CoreV1Api);
+
+    // List ArgoCD apps
+    const appsResponse = await customApi.listClusterCustomObject({
+      group: "argoproj.io",
+      version: "v1alpha1",
+      plural: "applications",
+    });
+
+    const appsBody = appsResponse as {
+      items?: Array<{
+        metadata?: {
+          name?: string;
+          labels?: Record<string, string>;
+          creationTimestamp?: string;
+        };
+        status?: {
+          sync?: { status?: string; revision?: string };
+          health?: { status?: string; message?: string };
+          operationState?: { finishedAt?: string; message?: string };
+          conditions?: Array<{ type?: string }>;
+        };
+      }>;
+    };
+
+    for (const app of appsBody.items ?? []) {
+      const tenantId = app.metadata?.labels?.["vetra.io/tenant-id"];
+      if (!tenantId) continue;
+
+      const syncStatus = app.status?.sync?.status ?? "Unknown";
+      const healthStatus = app.status?.health?.status ?? "Unknown";
+      const lastSyncedAt = app.status?.operationState?.finishedAt ?? null;
+      const message =
+        app.status?.health?.message ??
+        app.status?.operationState?.message ??
+        null;
+      const driftDetected = (app.status?.conditions ?? []).some(
+        (c) => c.type === "ComparisonError",
+      )
+        ? 1
+        : 0;
+
+      await upsertEnvironmentStatus(db, {
+        tenantId,
+        argoSyncStatus: syncStatus,
+        argoHealthStatus: healthStatus,
+        argoLastSyncedAt: lastSyncedAt,
+        argoMessage: message,
+        configDriftDetected: driftDetected,
+        tlsCertValid: null,
+        tlsCertExpiresAt: null,
+        domainResolves: null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    // List pods with vetra label
+    const podsResponse = await coreApi.listPodForAllNamespaces({
+      labelSelector: "app.kubernetes.io/part-of=vetra-tenant",
+    });
+
+    const podsBody = podsResponse as {
+      items?: Array<{
+        metadata?: { name?: string; namespace?: string; uid?: string };
+        status?: {
+          phase?: string;
+          containerStatuses?: Array<{
+            ready?: boolean;
+            restartCount?: number;
+          }>;
+        };
+      }>;
+    };
+
+    for (const pod of podsBody.items ?? []) {
+      const tenantId = pod.metadata?.namespace;
+      const name = pod.metadata?.name;
+      if (!tenantId || !name) continue;
+
+      const containerStatuses = pod.status?.containerStatuses ?? [];
+      const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
+      const restartCount = containerStatuses.reduce(
+        (sum, cs) => sum + (cs.restartCount ?? 0),
+        0,
+      );
+
+      await upsertPod(db, {
+        id: `${tenantId}/${name}`,
+        tenantId,
+        name,
+        service: classifyPodService(name),
+        phase: pod.status?.phase ?? "Unknown",
+        ready,
+        restartCount,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.warn("[reconcile] error during reconciliation", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// startWatchers
+// ---------------------------------------------------------------------------
+
+export function startWatchers(deps: WatcherDeps): WatcherHandle {
+  const { db, k8sToken, k8sApiUrl = "" } = deps;
+
+  const watcherAborts: Array<{ abort(): void }> = [];
+
+  // Reconciliation interval (60 seconds)
+  const intervalId = setInterval(() => {
+    void reconcile(db, k8sToken, k8sApiUrl);
+  }, 60_000);
+
+  // Run an initial reconcile
+  void reconcile(db, k8sToken, k8sApiUrl);
+
+  // Start K8s watches via dynamic import so tests don't require a live cluster
+  (async () => {
+    try {
+      const { KubeConfig, Watch } = await import("@kubernetes/client-node");
+
+      const kc = new KubeConfig();
+      if (k8sApiUrl) {
+        kc.loadFromOptions({
+          clusters: [
+            { name: "cluster", server: k8sApiUrl, skipTLSVerify: true },
+          ],
+          users: [{ name: "user", token: k8sToken }],
+          contexts: [{ name: "ctx", cluster: "cluster", user: "user" }],
+          currentContext: "ctx",
+        });
+      } else {
+        kc.loadFromDefault();
+      }
+
+      const watch = new Watch(kc);
+
+      // ArgoCD applications watcher
+      const argoAbort = watchWithReconnect(
+        watch,
+        "/apis/argoproj.io/v1alpha1/applications",
+        {},
+        async (_phase: string, obj: unknown) => {
+          const app = obj as {
+            metadata?: {
+              labels?: Record<string, string>;
+            };
+            status?: {
+              sync?: { status?: string };
+              health?: { status?: string; message?: string };
+              operationState?: { finishedAt?: string; message?: string };
+              conditions?: Array<{ type?: string }>;
+            };
+          };
+
+          const tenantId = app.metadata?.labels?.["vetra.io/tenant-id"];
+          if (!tenantId) return;
+
+          const syncStatus = app.status?.sync?.status ?? "Unknown";
+          const healthStatus = app.status?.health?.status ?? "Unknown";
+          const lastSyncedAt =
+            app.status?.operationState?.finishedAt ?? null;
+          const message =
+            app.status?.health?.message ??
+            app.status?.operationState?.message ??
+            null;
+          const driftDetected = (app.status?.conditions ?? []).some(
+            (c) => c.type === "ComparisonError",
+          )
+            ? 1
+            : 0;
+
+          await upsertEnvironmentStatus(db, {
+            tenantId,
+            argoSyncStatus: syncStatus,
+            argoHealthStatus: healthStatus,
+            argoLastSyncedAt: lastSyncedAt,
+            argoMessage: message,
+            configDriftDetected: driftDetected,
+            tlsCertValid: null,
+            tlsCertExpiresAt: null,
+            domainResolves: null,
+            updatedAt: new Date().toISOString(),
+          });
+        },
+        "argo-apps",
+      );
+      watcherAborts.push(argoAbort);
+
+      // Pod watcher
+      const podAbort = watchWithReconnect(
+        watch,
+        "/api/v1/pods",
+        { labelSelector: "app.kubernetes.io/part-of=vetra-tenant" },
+        async (_phase: string, obj: unknown) => {
+          const pod = obj as {
+            metadata?: { name?: string; namespace?: string };
+            status?: {
+              phase?: string;
+              containerStatuses?: Array<{
+                ready?: boolean;
+                restartCount?: number;
+              }>;
+            };
+          };
+
+          const tenantId = pod.metadata?.namespace;
+          const name = pod.metadata?.name;
+          if (!tenantId || !name) return;
+
+          const containerStatuses = pod.status?.containerStatuses ?? [];
+          const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
+          const restartCount = containerStatuses.reduce(
+            (sum, cs) => sum + (cs.restartCount ?? 0),
+            0,
+          );
+
+          await upsertPod(db, {
+            id: `${tenantId}/${name}`,
+            tenantId,
+            name,
+            service: classifyPodService(name),
+            phase: pod.status?.phase ?? "Unknown",
+            ready,
+            restartCount,
+            updatedAt: new Date().toISOString(),
+          });
+        },
+        "pods",
+      );
+      watcherAborts.push(podAbort);
+
+      // Event watcher
+      const eventAbort = watchWithReconnect(
+        watch,
+        "/api/v1/events",
+        {},
+        async (_phase: string, obj: unknown) => {
+          const event = obj as {
+            metadata?: { uid?: string };
+            involvedObject?: { namespace?: string; kind?: string; name?: string };
+            type?: string;
+            reason?: string;
+            message?: string;
+            lastTimestamp?: string;
+            eventTime?: string;
+          };
+
+          const id = event.metadata?.uid;
+          const tenantId = event.involvedObject?.namespace;
+          if (!id || !tenantId) return;
+
+          const involvedObject = event.involvedObject
+            ? `${event.involvedObject.kind ?? ""}/${event.involvedObject.name ?? ""}`
+            : "";
+
+          await insertEvent(db, {
+            id,
+            tenantId,
+            type: event.type ?? "Normal",
+            reason: event.reason ?? "",
+            message: event.message ?? "",
+            involvedObject,
+            timestamp:
+              event.lastTimestamp ??
+              event.eventTime ??
+              new Date().toISOString(),
+          });
+
+          await pruneEvents(db, tenantId);
+        },
+        "events",
+      );
+      watcherAborts.push(eventAbort);
+    } catch (err) {
+      console.warn(
+        "[startWatchers] failed to start K8s watches, relying on reconcile loop only",
+        err,
+      );
+    }
+  })();
+
+  return {
+    stop() {
+      clearInterval(intervalId);
+      for (const handle of watcherAborts) {
+        handle.abort();
+      }
+    },
+  };
+}
