@@ -228,7 +228,7 @@ async function reconcile(
     const coreApi = kc.makeApiClient(CoreV1Api);
 
     // List ArgoCD apps
-    const appsResponse = await customApi.listClusterCustomObject({
+    const appsResponse: unknown = await customApi.listClusterCustomObject({
       group: "argoproj.io",
       version: "v1alpha1",
       plural: "applications",
