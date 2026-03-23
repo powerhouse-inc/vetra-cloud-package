@@ -319,6 +319,9 @@ switchboard:
     PORT: "3000"
     NODE_ENV: production
     PH_PACKAGES: ${yamlQuote(phPackages)}
+    OPENBAO_ADDR: https://openbao.vetra.io
+    PROMETHEUS_URL: http://prometheus-server.monitoring.svc
+    LOKI_URL: http://loki.monitoring.svc:3100
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
