@@ -367,7 +367,7 @@ class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 Exported from `subgraphs/index.ts`. The existing `export {};` stub must be replaced with:
 
 ```typescript
-export * as VetraCloudObservabilitySubgraph from "./vetra-cloud-observability/index.js";
+export { VetraCloudObservabilitySubgraph } from "./vetra-cloud-observability/index.js";
 ```
 
 The package's `powerhouse.config.json` already points `subgraphsDir` to `./subgraphs`, so it gets picked up automatically.
