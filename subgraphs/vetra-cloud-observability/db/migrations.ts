@@ -1,0 +1,52 @@
+import type { Kysely } from "kysely";
+
+export async function up(db: Kysely<any>): Promise<void> {
+  await db.schema
+    .createTable("environment_status")
+    .addColumn("tenantId", "varchar(255)")
+    .addColumn("argoSyncStatus", "varchar(50)")
+    .addColumn("argoHealthStatus", "varchar(50)")
+    .addColumn("argoLastSyncedAt", "varchar(255)")
+    .addColumn("argoMessage", "text")
+    .addColumn("configDriftDetected", "integer")
+    .addColumn("tlsCertValid", "integer")
+    .addColumn("tlsCertExpiresAt", "varchar(255)")
+    .addColumn("domainResolves", "integer")
+    .addColumn("updatedAt", "varchar(255)")
+    .addPrimaryKeyConstraint("environment_status_pkey", ["tenantId"])
+    .ifNotExists()
+    .execute();
+
+  await db.schema
+    .createTable("environment_pods")
+    .addColumn("id", "varchar(512)")
+    .addColumn("tenantId", "varchar(255)")
+    .addColumn("name", "varchar(255)")
+    .addColumn("service", "varchar(50)")
+    .addColumn("phase", "varchar(50)")
+    .addColumn("ready", "integer")
+    .addColumn("restartCount", "integer")
+    .addColumn("updatedAt", "varchar(255)")
+    .addPrimaryKeyConstraint("environment_pods_pkey", ["id"])
+    .ifNotExists()
+    .execute();
+
+  await db.schema
+    .createTable("environment_events")
+    .addColumn("id", "varchar(255)")
+    .addColumn("tenantId", "varchar(255)")
+    .addColumn("type", "varchar(50)")
+    .addColumn("reason", "varchar(255)")
+    .addColumn("message", "text")
+    .addColumn("involvedObject", "varchar(255)")
+    .addColumn("timestamp", "varchar(255)")
+    .addPrimaryKeyConstraint("environment_events_pkey", ["id"])
+    .ifNotExists()
+    .execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("environment_events").execute();
+  await db.schema.dropTable("environment_pods").execute();
+  await db.schema.dropTable("environment_status").execute();
+}
