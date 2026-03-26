@@ -7,7 +7,6 @@ export default defineConfig({
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
-      "**/v1/tests/**",
       "**/document-models/*/tests/**",
       "**/e2e*",
     ],

@@ -15,7 +15,7 @@
     "editors": [
         {
             "id": "vetra-cloud-environment",
-            "name": "Vetra Cloud Environment",
+            "name": "vetra-cloud-environment",
             "documentTypes": [
                 "powerhouse/vetra-cloud-environment"
             ]
