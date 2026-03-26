@@ -13,12 +13,18 @@ import { createDocument } from "./utils.js";
 
 export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
   return {
-    name: null,
-    subdomain: null,
-    customDomain: null,
+    label: null,
+    genericSubdomain: null,
+    genericBaseDomain: null,
+    customDomain: {
+      enabled: false,
+      domain: null,
+      dnsRecords: [],
+    },
+    defaultPackageRegistry: null,
     services: [],
-    packages: null,
-    status: "STOPPED",
+    packages: [],
+    status: "DRAFT",
   };
 }
 

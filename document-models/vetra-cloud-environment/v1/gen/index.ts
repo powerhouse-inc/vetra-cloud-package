@@ -18,4 +18,4 @@ export * from "./document-schema.js";
 export * from "./data-management/operations.js";
 export * from "./services/operations.js";
 export * from "./packages/operations.js";
-export * from "./status/operations.js";
+export * from "./status-transitions/operations.js";

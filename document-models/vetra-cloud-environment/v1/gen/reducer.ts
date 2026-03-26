@@ -8,18 +8,30 @@ import type { VetraCloudEnvironmentPHState } from "@powerhousedao/vetra-cloud-pa
 import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/data-management.js";
 import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
 import { vetraCloudEnvironmentPackagesOperations } from "../src/reducers/packages.js";
-import { vetraCloudEnvironmentStatusOperations } from "../src/reducers/status.js";
+import { vetraCloudEnvironmentStatusTransitionsOperations } from "../src/reducers/status-transitions.js";
 
 import {
-  SetEnvironmentNameInputSchema,
-  SetSubdomainInputSchema,
+  SetLabelInputSchema,
+  SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
+  SetDnsRecordsInputSchema,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
+  ToggleServiceInputSchema,
+  UpdateServicePrefixInputSchema,
+  SetServiceStatusInputSchema,
   AddPackageInputSchema,
   RemovePackageInputSchema,
-  StartInputSchema,
-  StopInputSchema,
+  InitializeInputSchema,
+  MarkChangesPushedInputSchema,
+  MarkDeploymentStartedInputSchema,
+  ReportDeploymentSucceededInputSchema,
+  ReportDeploymentFailedInputSchema,
+  ApproveChangesInputSchema,
+  TerminateEnvironmentInputSchema,
+  MarkDestroyedInputSchema,
+  ArchiveInputSchema,
+  UnarchiveInputSchema,
 } from "./schema/zod.js";
 
 const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
@@ -31,10 +43,10 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
     return state;
   }
   switch (action.type) {
-    case "SET_ENVIRONMENT_NAME": {
-      SetEnvironmentNameInputSchema().parse(action.input);
+    case "SET_LABEL": {
+      SetLabelInputSchema().parse(action.input);
 
-      vetraCloudEnvironmentDataManagementOperations.setEnvironmentNameOperation(
+      vetraCloudEnvironmentDataManagementOperations.setLabelOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
@@ -43,10 +55,10 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       break;
     }
 
-    case "SET_SUBDOMAIN": {
-      SetSubdomainInputSchema().parse(action.input);
+    case "SET_GENERIC_SUBDOMAIN": {
+      SetGenericSubdomainInputSchema().parse(action.input);
 
-      vetraCloudEnvironmentDataManagementOperations.setSubdomainOperation(
+      vetraCloudEnvironmentDataManagementOperations.setGenericSubdomainOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
@@ -59,6 +71,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetCustomDomainInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setCustomDomainOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_DNS_RECORDS": {
+      SetDnsRecordsInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setDnsRecordsOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
@@ -91,6 +115,42 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       break;
     }
 
+    case "TOGGLE_SERVICE": {
+      ToggleServiceInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.toggleServiceOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "UPDATE_SERVICE_PREFIX": {
+      UpdateServicePrefixInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.updateServicePrefixOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_SERVICE_STATUS": {
+      SetServiceStatusInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.setServiceStatusOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
     case "ADD_PACKAGE": {
       AddPackageInputSchema().parse(action.input);
 
@@ -115,10 +175,10 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       break;
     }
 
-    case "START": {
-      StartInputSchema().parse(action.input);
+    case "INITIALIZE": {
+      InitializeInputSchema().parse(action.input);
 
-      vetraCloudEnvironmentStatusOperations.startOperation(
+      vetraCloudEnvironmentStatusTransitionsOperations.initializeOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
@@ -127,10 +187,106 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       break;
     }
 
-    case "STOP": {
-      StopInputSchema().parse(action.input);
+    case "MARK_CHANGES_PUSHED": {
+      MarkChangesPushedInputSchema().parse(action.input);
 
-      vetraCloudEnvironmentStatusOperations.stopOperation(
+      vetraCloudEnvironmentStatusTransitionsOperations.markChangesPushedOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "MARK_DEPLOYMENT_STARTED": {
+      MarkDeploymentStartedInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.markDeploymentStartedOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "REPORT_DEPLOYMENT_SUCCEEDED": {
+      ReportDeploymentSucceededInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.reportDeploymentSucceededOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "REPORT_DEPLOYMENT_FAILED": {
+      ReportDeploymentFailedInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.reportDeploymentFailedOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "APPROVE_CHANGES": {
+      ApproveChangesInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.approveChangesOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "TERMINATE_ENVIRONMENT": {
+      TerminateEnvironmentInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.terminateEnvironmentOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "MARK_DESTROYED": {
+      MarkDestroyedInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.markDestroyedOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "ARCHIVE": {
+      ArchiveInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.archiveOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "UNARCHIVE": {
+      UnarchiveInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.unarchiveOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

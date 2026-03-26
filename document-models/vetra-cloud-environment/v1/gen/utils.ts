@@ -21,12 +21,18 @@ import {
 } from "./document-schema.js";
 
 export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
-  name: null,
-  subdomain: null,
-  customDomain: null,
+  label: null,
+  genericSubdomain: null,
+  genericBaseDomain: null,
+  customDomain: {
+    enabled: false,
+    domain: null,
+    dnsRecords: [],
+  },
+  defaultPackageRegistry: null,
   services: [],
-  packages: null,
-  status: "STOPPED",
+  packages: [],
+  status: "DRAFT",
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

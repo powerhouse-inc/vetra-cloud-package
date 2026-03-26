@@ -3,7 +3,7 @@ import {
   dataManagementActions,
   servicesActions,
   packagesActions,
-  statusActions,
+  statusTransitionsActions,
 } from "./gen/creators.js";
 
 /** Actions for the VetraCloudEnvironment document model */
@@ -13,5 +13,5 @@ export const actions = {
   ...dataManagementActions,
   ...servicesActions,
   ...packagesActions,
-  ...statusActions,
+  ...statusTransitionsActions,
 };

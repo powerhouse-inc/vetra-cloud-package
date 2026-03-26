@@ -1,359 +1,444 @@
-import { Icon, TextInput } from "@powerhousedao/document-engineering";
-import { useDocumentById } from "@powerhousedao/reactor-browser";
-import { childLogger } from "document-drive";
-import type { EditorProps } from "document-model";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
+  useSelectedVetraCloudEnvironmentDocument,
   actions,
-  type VetraCloudEnvironmentDocument,
-  type VetraCloudEnvironmentService,
-} from "../../document-models/vetra-cloud-environment/index.js";
-import { DomainConfig } from "./domain-config.js";
-import { ServiceCard } from "./service-card.js";
-import { generateSubdomain } from "./subdomain-generator.js";
-import { useServiceHealth } from "./use-service-health.js";
+} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { VetraCloudEnvironmentStatus } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import { StatusBadge } from "./components/StatusBadge.js";
+import { ServicesList } from "./components/ServicesList.js";
+import { PackagesList } from "./components/PackagesList.js";
+import { SectionCard } from "./components/SectionCard.js";
+import { DnsRecordsTable } from "./components/DnsRecordsTable.js";
+import { vetraThemeCSS } from "./components/vetra-theme.js";
+import { DocumentToolbar } from "@powerhousedao/design-system/connect/components/document-toolbar/document-toolbar";
 
-const logger = childLogger(["vetra-cloud-environment-editor"]);
+const READONLY_STATUSES: Set<VetraCloudEnvironmentStatus> = new Set([
+  "TERMINATING",
+  "DESTROYED",
+  "ARCHIVED",
+]);
 
-export type IProps = EditorProps & { documentId?: string };
+export default function Editor() {
+  const [document, dispatch] = useSelectedVetraCloudEnvironmentDocument();
+  const state = document.state.global;
+  const isDraft = state.status === "DRAFT";
+  const isReadonly = READONLY_STATUSES.has(state.status);
 
-const SERVICE_META: Record<
-  VetraCloudEnvironmentService,
-  { label: string; prefix: string; icon: "Globe" | "Connect" }
-> = {
-  CONNECT: { label: "Powerhouse Connect", prefix: "connect", icon: "Globe" },
-  SWITCHBOARD: {
-    label: "Powerhouse Switchboard",
-    prefix: "switchboard",
-    icon: "Connect",
-  },
-};
+  const [initSubdomain, setInitSubdomain] = useState("");
+  const [initBaseDomain, setInitBaseDomain] = useState("");
+  const [initRegistry, setInitRegistry] = useState("");
 
-export default function Editor(props: IProps) {
-  const documentId = props.documentId ?? props.document?.header.id ?? "";
-  const [document, dispatch] = useDocumentById(documentId || undefined);
-  const typedDocument = document as
-    | VetraCloudEnvironmentDocument
-    | undefined;
-  const global = typedDocument?.state?.global;
+  const handleInitialize = useCallback(() => {
+    if (!initSubdomain.trim() || !initBaseDomain.trim()) return;
+    dispatch(
+      actions.initialize({
+        genericSubdomain: initSubdomain.trim(),
+        genericBaseDomain: initBaseDomain.trim(),
+        defaultPackageRegistry: initRegistry.trim() || undefined,
+      }),
+    );
+  }, [dispatch, initSubdomain, initBaseDomain, initRegistry]);
 
-  const [localName, setLocalName] = useState("");
-  const [selectedServices, setSelectedServices] = useState<
-    VetraCloudEnvironmentService[]
-  >([]);
-  const [initialized, setInitialized] = useState(false);
-  const [newPackageName, setNewPackageName] = useState("");
-  const [newPackageVersion, setNewPackageVersion] = useState("");
-  const [moduleSearch, setModuleSearch] = useState("");
-
-  // Track pending operations to disable buttons during gitops-triggering actions
-  const [pendingStatus, setPendingStatus] = useState(false);
-  const [pendingService, setPendingService] = useState<string | null>(null);
-  const prevStatus = useRef(global?.status);
-  const prevServices = useRef(global?.services);
-
-  // Clear pending flags when document state catches up
-  useEffect(() => {
-    if (pendingStatus && global?.status !== prevStatus.current) {
-      setPendingStatus(false);
-    }
-    prevStatus.current = global?.status;
-  }, [global?.status, pendingStatus]);
-
-  useEffect(() => {
-    if (pendingService && global?.services !== prevServices.current) {
-      setPendingService(null);
-    }
-    prevServices.current = global?.services;
-  }, [global?.services, pendingService]);
-
-  const busy = pendingStatus || pendingService !== null;
-
-  // Initialize local state from document
-  if (global && !initialized) {
-    setLocalName(global.name || "");
-    setSelectedServices(global.services || []);
-    setInitialized(true);
-  }
-
-  // Auto-generate subdomain on first load (ref guard prevents re-dispatch loop)
-  const subdomainDispatched = useRef(false);
-  useEffect(() => {
-    if (global && !global.subdomain && documentId && !subdomainDispatched.current) {
-      subdomainDispatched.current = true;
-      const subdomain = generateSubdomain(documentId);
-      logger.info(`Auto-generating subdomain: ${subdomain}`);
-      dispatch(actions.setSubdomain({ subdomain }));
-    }
-  }, [global, documentId, dispatch]);
-
-  // Use stored subdomain, or derive one from document ID as fallback
-  const subdomain = global?.subdomain ?? (documentId ? generateSubdomain(documentId) : null);
-  const isRunning = global?.status === "STARTED";
-
-  const serviceHealth = useServiceHealth(
-    subdomain,
-    global?.services ?? [],
-    isRunning,
-  );
-
-  // Commit name on blur or Enter
-  const commitName = useCallback(() => {
-    const trimmed = localName.trim();
-    if (trimmed && trimmed !== (global?.name ?? "")) {
-      dispatch(actions.setEnvironmentName({ name: trimmed }));
-    }
-  }, [localName, global?.name, dispatch]);
-
-  const handleNameKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") commitName();
-    },
-    [commitName],
-  );
-
-  const handleCustomDomainChange = useCallback(
-    (domain: string) => {
-      dispatch(actions.setCustomDomain({ customDomain: domain || undefined }));
-    },
-    [dispatch],
-  );
-
-  const handleServiceToggle = useCallback(
-    (service: VetraCloudEnvironmentService, enabled: boolean) => {
-      if (busy) return;
-      logger.info("Toggling service:", service, enabled);
-      setPendingService(service);
-      if (enabled) {
-        dispatch(actions.enableService({ serviceName: service }));
-        setSelectedServices((prev) => [...prev, service]);
-      } else {
-        dispatch(actions.disableService({ serviceName: service }));
-        setSelectedServices((prev) => prev.filter((s) => s !== service));
+  const handleSetLabel = useCallback(
+    (value: string) => {
+      if (value.trim() && value.trim() !== state.label) {
+        dispatch(actions.setLabel({ label: value.trim() }));
       }
     },
-    [dispatch, busy],
+    [dispatch, state.label],
   );
 
-  const handleAddPackage = useCallback(() => {
-    if (newPackageName.trim()) {
+  const handleSetSubdomain = useCallback(
+    (value: string) => {
+      if (value.trim() && value.trim() !== state.genericSubdomain) {
+        dispatch(
+          actions.setGenericSubdomain({ genericSubdomain: value.trim() }),
+        );
+      }
+    },
+    [dispatch, state.genericSubdomain],
+  );
+
+  const handleToggleCustomDomain = useCallback(
+    (enabled: boolean) => {
       dispatch(
-        actions.addPackage({
-          packageName: newPackageName.trim(),
-          version: newPackageVersion.trim() || undefined,
+        actions.setCustomDomain({
+          enabled,
+          domain: enabled ? state.customDomain.domain : undefined,
         }),
       );
-      setNewPackageName("");
-      setNewPackageVersion("");
-    }
-  }, [newPackageName, newPackageVersion, dispatch]);
-
-  const handleRemovePackage = useCallback(
-    (packageName: string) => {
-      dispatch(actions.removePackage({ packageName }));
     },
-    [dispatch],
+    [dispatch, state.customDomain.domain],
   );
 
-  const handleStartStop = useCallback(() => {
-    if (busy) return;
-    setPendingStatus(true);
-    if (global?.status === "STARTED") {
-      dispatch(actions.stop({}));
-    } else {
-      dispatch(actions.start({}));
-    }
-  }, [global?.status, dispatch, busy]);
+  const handleSetCustomDomainValue = useCallback(
+    (domain: string) => {
+      dispatch(
+        actions.setCustomDomain({
+          enabled: state.customDomain.enabled,
+          domain: domain.trim() || undefined,
+        }),
+      );
+    },
+    [dispatch, state.customDomain.enabled],
+  );
 
-  const filteredPackages = useMemo(() => {
-    const pkgs = global?.packages ?? [];
-    if (!moduleSearch.trim()) return pkgs;
-    const q = moduleSearch.toLowerCase();
-    return pkgs.filter((p) => p.name.toLowerCase().includes(q));
-  }, [global?.packages, moduleSearch]);
+  const handleApproveChanges = useCallback(() => {
+    dispatch(actions.approveChanges({}));
+  }, [dispatch]);
 
-  if (!global) {
+  const handleTerminate = useCallback(() => {
+    dispatch(actions.terminateEnvironment({}));
+  }, [dispatch]);
+
+  const genericDomain = [state.genericSubdomain, state.genericBaseDomain]
+    .filter(Boolean)
+    .join(".");
+
+  // ========== DRAFT VIEW ==========
+  if (isDraft) {
     return (
-      <div className="flex h-64 items-center justify-center text-gray-500">
-        Loading environment...
+      <div className="vetra-editor" style={containerStyle}>
+        <style>{vetraThemeCSS}</style>
+        <DocumentToolbar />
+        <div style={headerStyle}>
+          <div>
+            <h1 style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.2, color: "var(--v-fg)" }}>
+              New Environment
+            </h1>
+            <p style={{ fontSize: 14, color: "var(--v-muted-fg)", marginTop: 4 }}>
+              Initialize your Vetra Cloud environment to get started.
+            </p>
+          </div>
+          <StatusBadge status={state.status} />
+        </div>
+
+        <SectionCard title="Initialize Environment">
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>Subdomain *</label>
+              <input
+                type="text"
+                value={initSubdomain}
+                onChange={(e) => setInitSubdomain(e.target.value)}
+                placeholder="my-environment"
+                style={inputStyle}
+              />
+              <span style={hintStyle}>
+                Will be used as the generic subdomain for your environment
+              </span>
+            </div>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>Base Domain *</label>
+              <input
+                type="text"
+                value={initBaseDomain}
+                onChange={(e) => setInitBaseDomain(e.target.value)}
+                placeholder="vetra.io"
+                style={inputStyle}
+              />
+              <span style={hintStyle}>
+                The base domain for all service URLs (e.g. vetra.io)
+              </span>
+            </div>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>Default Package Registry</label>
+              <input
+                type="text"
+                value={initRegistry}
+                onChange={(e) => setInitRegistry(e.target.value)}
+                placeholder="https://registry.example.com"
+                style={inputStyle}
+              />
+              <span style={hintStyle}>
+                Optional. Default registry for packages added to this environment.
+              </span>
+            </div>
+            <button
+              onClick={handleInitialize}
+              disabled={!initSubdomain.trim() || !initBaseDomain.trim()}
+              style={{
+                ...btnPrimaryStyle,
+                alignSelf: "flex-start",
+                opacity: initSubdomain.trim() && initBaseDomain.trim() ? 1 : 0.5,
+              }}
+            >
+              Initialize Environment
+            </button>
+          </div>
+        </SectionCard>
       </div>
     );
   }
 
-  const statusLabel = pendingStatus
-    ? isRunning ? "STOPPING..." : "STARTING..."
-    : isRunning ? "ACTIVE" : "STOPPED";
-
+  // ========== MAIN VIEW ==========
   return (
-    <div className="html-defaults-container w-full space-y-8 p-8">
-      {/* Environment */}
-      <section>
-        <h1 className="mb-5 text-2xl font-bold text-gray-900">Environment</h1>
-        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <div className="grid grid-cols-[120px_1fr] items-center gap-y-4">
-            <span className="text-sm font-medium text-gray-500">Name:</span>
-            <TextInput
-              value={localName}
-              onChange={(e) => setLocalName(e.target.value)}
-              onBlur={commitName}
-              onKeyDown={handleNameKeyDown}
-              placeholder="e.g. Acme Project - Production"
+    <div className="vetra-editor" style={containerStyle}>
+      <style>{vetraThemeCSS}</style>
+      <DocumentToolbar />
+
+      {/* ---- Environment section ---- */}
+      <SectionCard title="Environment">
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Name</label>
+            <input
+              type="text"
+              defaultValue={state.label ?? ""}
+              placeholder="Environment name"
+              onBlur={(e) => handleSetLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+              disabled={isReadonly}
+              style={inputStyle}
             />
-
-            <span className="text-sm font-medium text-gray-500">Status:</span>
-            <div>
-              <button
-                type="button"
-                onClick={handleStartStop}
-                disabled={busy}
-                className={`inline-flex cursor-pointer items-center rounded-md px-3 py-1 text-xs font-bold uppercase tracking-wider text-white transition-colors ${
-                  busy
-                    ? "cursor-not-allowed bg-amber-500"
-                    : isRunning
-                      ? "bg-green-600 hover:bg-green-700"
-                      : "bg-gray-400 hover:bg-gray-500"
-                }`}
-              >
-                {statusLabel}
+          </div>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Status</label>
+            <div style={{ paddingTop: 2 }}>
+              <StatusBadge status={state.status} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {state.status === "CHANGES_PENDING" && (
+              <button onClick={handleApproveChanges} style={btnPrimaryStyle}>
+                Approve Changes
               </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Domain Configuration */}
-      <DomainConfig
-        subdomain={subdomain}
-        customDomain={global.customDomain ?? null}
-        onCustomDomainChange={handleCustomDomainChange}
-      />
-
-      {/* Reactor Modules */}
-      <section>
-        <h2 className="mb-4 text-xl font-semibold text-gray-900">
-          Reactor Modules
-        </h2>
-
-        <div className="relative mb-4">
-          <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-            <Icon name="Search" size={16} />
-          </div>
-          <input
-            type="text"
-            value={moduleSearch}
-            onChange={(e) => setModuleSearch(e.target.value)}
-            placeholder="Search modules..."
-            className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-10 pr-4 text-sm shadow-sm outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-          />
-        </div>
-
-        <div className="space-y-2">
-          {filteredPackages.length > 0 ? (
-            filteredPackages.map((pkg) => (
-              <div
-                key={pkg.name}
-                className="flex items-center rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm"
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100">
-                    <Icon
-                      name="PackageManager"
-                      size={16}
-                      className="text-gray-500"
-                    />
-                  </div>
-                  <span className="truncate font-medium text-gray-900">
-                    {pkg.name}
-                  </span>
-                  {pkg.version && (
-                    <span className="shrink-0 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-medium text-gray-500">
-                      v{pkg.version}
-                    </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemovePackage(pkg.name)}
-                  className="ml-3 shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700"
-                >
-                  Uninstall
+            )}
+            {!READONLY_STATUSES.has(state.status) &&
+              state.status !== "DEPLOYING" && (
+                <button onClick={handleTerminate} style={btnDestructiveStyle}>
+                  Terminate
                 </button>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/50 py-8 text-center text-sm text-gray-400">
-              {moduleSearch
-                ? "No modules match your search."
-                : "No modules installed yet."}
-            </div>
-          )}
-        </div>
-
-        <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4 shadow-sm">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Add Module
-          </p>
-          <div className="flex items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <TextInput
-                value={newPackageName}
-                onChange={(e) => setNewPackageName(e.target.value)}
-                placeholder="Package name, e.g. @scope/package"
-              />
-            </div>
-            <div className="w-28 shrink-0">
-              <TextInput
-                value={newPackageVersion}
-                onChange={(e) => setNewPackageVersion(e.target.value)}
-                placeholder="Version"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handleAddPackage}
-              disabled={!newPackageName.trim()}
-              className="shrink-0 rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Install
-            </button>
+              )}
           </div>
         </div>
-      </section>
+      </SectionCard>
 
-      {/* Services */}
-      <section>
-        <h2 className="mb-4 text-xl font-semibold text-gray-900">Services</h2>
-        <div className="space-y-3">
-          {(
-            Object.entries(SERVICE_META) as [
-              VetraCloudEnvironmentService,
-              (typeof SERVICE_META)[VetraCloudEnvironmentService],
-            ][]
-          ).map(([service, meta]) => {
-            const enabled = selectedServices.includes(service);
-            const serviceUrl = subdomain
-              ? `https://${meta.prefix}.${subdomain}.vetra.io`
-              : null;
-            const health =
-              service === "CONNECT"
-                ? serviceHealth.connect
-                : serviceHealth.switchboard;
-
-            return (
-              <ServiceCard
-                key={service}
-                label={meta.label}
-                icon={meta.icon}
-                url={serviceUrl}
-                enabled={enabled}
-                health={health}
-                disabled={busy}
-                onToggle={(checked) => handleServiceToggle(service, checked)}
+      {/* ---- Domain Configuration ---- */}
+      <SectionCard title="Domain Configuration">
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Generic Domain</label>
+            <div
+              style={{
+                ...inputStyle,
+                background: "var(--v-accent)",
+                opacity: 0.85,
+                fontFamily: "monospace",
+              }}
+            >
+              {genericDomain || "—"}
+            </div>
+            <span style={hintStyle}>
+              Subdomain is auto-generated. Service URLs are derived from this domain.
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>Subdomain</label>
+              <input
+                type="text"
+                defaultValue={state.genericSubdomain ?? ""}
+                placeholder="subdomain"
+                onBlur={(e) => handleSetSubdomain(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                disabled={isReadonly}
+                style={inputStyle}
               />
-            );
-          })}
+            </div>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>Base Domain</label>
+              <input
+                type="text"
+                value={state.genericBaseDomain ?? ""}
+                readOnly
+                style={{ ...inputStyle, opacity: 0.6 }}
+              />
+            </div>
+          </div>
+
+          {/* Custom Domain */}
+          <div
+            style={{
+              borderTop: "1px solid var(--v-border)",
+              paddingTop: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                cursor: isReadonly ? "default" : "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={state.customDomain.enabled}
+                onChange={(e) => handleToggleCustomDomain(e.target.checked)}
+                disabled={isReadonly}
+                style={{ width: 18, height: 18, accentColor: "var(--v-primary)" }}
+              />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--v-fg)" }}>
+                Custom Domain
+              </span>
+            </label>
+            {state.customDomain.enabled && (
+              <div style={fieldStyle}>
+                <input
+                  type="text"
+                  defaultValue={state.customDomain.domain ?? ""}
+                  placeholder="project.acme.net"
+                  onBlur={(e) => handleSetCustomDomainValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  disabled={isReadonly}
+                  style={inputStyle}
+                />
+              </div>
+            )}
+
+            {/* DNS Records */}
+            {state.customDomain.dnsRecords &&
+              state.customDomain.dnsRecords.length > 0 && (
+                <DnsRecordsTable records={state.customDomain.dnsRecords} />
+              )}
+          </div>
         </div>
-      </section>
+      </SectionCard>
+
+      {/* ---- Reactor Modules ---- */}
+      <SectionCard title="Reactor Modules">
+        <PackagesList
+          packages={state.packages}
+          defaultRegistry={state.defaultPackageRegistry}
+          dispatch={dispatch}
+          disabled={isReadonly}
+        />
+      </SectionCard>
+
+      {/* ---- Services ---- */}
+      <SectionCard title="Services">
+        <ServicesList
+          services={state.services}
+          genericDomain={genericDomain}
+          dispatch={dispatch}
+          disabled={isReadonly}
+        />
+      </SectionCard>
+
+      {/* Metadata footer */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: 16,
+          padding: "16px 0",
+          borderTop: "1px solid var(--v-border)",
+          fontSize: 12,
+          color: "var(--v-muted-fg)",
+        }}
+      >
+        <div>
+          <span style={metaLabelStyle}>ID</span>
+          <br />
+          <span style={{ fontFamily: "monospace", fontSize: 11 }}>
+            {document.header.id}
+          </span>
+        </div>
+        <div>
+          <span style={metaLabelStyle}>Created</span>
+          <br />
+          {new Date(document.header.createdAtUtcIso).toLocaleString()}
+        </div>
+        <div>
+          <span style={metaLabelStyle}>Modified</span>
+          <br />
+          {new Date(document.header.lastModifiedAtUtcIso).toLocaleString()}
+        </div>
+      </div>
     </div>
   );
 }
+
+// ========== SHARED STYLES ==========
+
+const containerStyle: React.CSSProperties = {
+  maxWidth: 960,
+  margin: "0 auto",
+  padding: 32,
+  display: "flex",
+  flexDirection: "column",
+  gap: 20,
+};
+
+const headerStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  paddingBottom: 20,
+  borderBottom: "1px solid var(--v-border)",
+};
+
+const fieldStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+};
+
+const inputStyle: React.CSSProperties = {
+  padding: "10px 14px",
+  borderRadius: 8,
+  border: "1px solid var(--v-border)",
+  background: "var(--v-input)",
+  color: "var(--v-fg)",
+  fontFamily: "inherit",
+  fontSize: 14,
+};
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: "var(--v-fg)",
+};
+
+const hintStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--v-muted-fg)",
+};
+
+const metaLabelStyle: React.CSSProperties = {
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: 1,
+};
+
+const btnPrimaryStyle: React.CSSProperties = {
+  background: "var(--v-primary)",
+  color: "var(--v-primary-fg)",
+  border: "none",
+  borderRadius: 8,
+  padding: "10px 24px",
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const btnDestructiveStyle: React.CSSProperties = {
+  background: "var(--v-destructive)",
+  color: "var(--v-destructive-fg)",
+  border: "none",
+  borderRadius: 8,
+  padding: "10px 24px",
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: "pointer",
+};

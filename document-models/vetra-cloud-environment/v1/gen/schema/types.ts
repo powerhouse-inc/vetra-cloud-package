@@ -60,63 +60,161 @@ export type Scalars = {
 };
 
 export type AddPackageInput = {
-  /** Add your inputs here */
   packageName: Scalars["String"]["input"];
+  registry?: InputMaybe<Scalars["URL"]["input"]>;
   version?: InputMaybe<Scalars["String"]["input"]>;
 };
 
+export type ApproveChangesInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type ArchiveInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type DisableServiceInput = {
-  /** Add your inputs here */
-  serviceName: VetraCloudEnvironmentService;
+  type: VetraCloudEnvironmentServiceType;
+};
+
+export type DnsRecord = {
+  host: Scalars["String"]["output"];
+  type: Scalars["String"]["output"];
+  value: Scalars["String"]["output"];
+};
+
+export type DnsRecordInput = {
+  host: Scalars["String"]["input"];
+  type: Scalars["String"]["input"];
+  value: Scalars["String"]["input"];
 };
 
 export type EnableServiceInput = {
-  /** Add your inputs here */
-  serviceName: VetraCloudEnvironmentService;
+  prefix: Scalars["String"]["input"];
+  type: VetraCloudEnvironmentServiceType;
+};
+
+export type InitializeInput = {
+  defaultPackageRegistry?: InputMaybe<Scalars["URL"]["input"]>;
+  genericBaseDomain: Scalars["String"]["input"];
+  genericSubdomain: Scalars["String"]["input"];
+};
+
+export type MarkChangesPushedInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type MarkDeploymentStartedInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type MarkDestroyedInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export type RemovePackageInput = {
-  /** Add your inputs here */
   packageName: Scalars["String"]["input"];
 };
 
+export type ReportDeploymentFailedInput = {
+  code: Scalars["String"]["input"];
+  message: Scalars["String"]["input"];
+};
+
+export type ReportDeploymentSucceededInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type ServiceStatus =
+  | "ACTIVE"
+  | "BILLING_ISSUE"
+  | "PROVISIONING"
+  | "SUSPENDED";
+
 export type SetCustomDomainInput = {
-  customDomain?: InputMaybe<Scalars["String"]["input"]>;
+  domain?: InputMaybe<Scalars["String"]["input"]>;
+  enabled: Scalars["Boolean"]["input"];
 };
 
-export type SetEnvironmentNameInput = {
-  /** Add your inputs here */
-  name: Scalars["String"]["input"];
+export type SetDnsRecordsInput = {
+  records: Array<DnsRecordInput>;
 };
 
-export type SetSubdomainInput = {
-  subdomain: Scalars["String"]["input"];
+export type SetGenericSubdomainInput = {
+  genericSubdomain: Scalars["String"]["input"];
 };
 
-export type StartInput = {
-  /** Add your inputs here */
+export type SetLabelInput = {
+  label: Scalars["String"]["input"];
+};
+
+export type SetServiceStatusInput = {
+  status: ServiceStatus;
+  type: VetraCloudEnvironmentServiceType;
+  url?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type TerminateEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
 
-export type StopInput = {
-  /** Add your inputs here */
+export type ToggleServiceInput = {
+  type: VetraCloudEnvironmentServiceType;
+};
+
+export type UnarchiveInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
 
-export type VetraCloudEnvironmentService = "CONNECT" | "SWITCHBOARD";
+export type UpdateServicePrefixInput = {
+  prefix: Scalars["String"]["input"];
+  type: VetraCloudEnvironmentServiceType;
+};
+
+export type VetraCloudEnvironmentService = {
+  enabled: Scalars["Boolean"]["output"];
+  prefix: Scalars["String"]["output"];
+  status: ServiceStatus;
+  type: VetraCloudEnvironmentServiceType;
+  url: Maybe<Scalars["String"]["output"]>;
+};
+
+export type VetraCloudEnvironmentServiceType =
+  | "CONNECT"
+  | "FUSION"
+  | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
-  customDomain: Maybe<Scalars["String"]["output"]>;
-  name: Maybe<Scalars["String"]["output"]>;
-  packages: Maybe<Array<VetraCloudPackage>>;
+  customDomain: VetraCustomDomain;
+  defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
+  genericBaseDomain: Maybe<Scalars["String"]["output"]>;
+  genericSubdomain: Maybe<Scalars["String"]["output"]>;
+  label: Maybe<Scalars["String"]["output"]>;
+  packages: Array<VetraCloudPackage>;
   services: Array<VetraCloudEnvironmentService>;
   status: VetraCloudEnvironmentStatus;
-  subdomain: Maybe<Scalars["String"]["output"]>;
 };
 
-export type VetraCloudEnvironmentStatus = "STARTED" | "STOPPED";
+export type VetraCloudEnvironmentStatus =
+  | "ARCHIVED"
+  | "CHANGES_APPROVED"
+  | "CHANGES_PENDING"
+  | "CHANGES_PUSHED"
+  | "DEPLOYING"
+  | "DEPLOYMENt_FAILED"
+  | "DESTROYED"
+  | "DRAFT"
+  | "READY"
+  | "TERMINATING";
 
 export type VetraCloudPackage = {
   name: Scalars["String"]["output"];
+  registry: Scalars["URL"]["output"];
   version: Maybe<Scalars["String"]["output"]>;
+};
+
+export type VetraCustomDomain = {
+  dnsRecords: Array<DnsRecord>;
+  domain: Maybe<Scalars["String"]["output"]>;
+  enabled: Scalars["Boolean"]["output"];
 };

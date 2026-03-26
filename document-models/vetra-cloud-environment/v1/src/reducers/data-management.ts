@@ -2,20 +2,31 @@ import type { VetraCloudEnvironmentDataManagementOperations } from "@powerhoused
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
   {
-    setEnvironmentNameOperation(state, action) {
-      const { name } = action.input;
-      if (name) {
-        state.name = name;
+    setLabelOperation(state, action) {
+      if (action.input.label) {
+        state.label = action.input.label;
+        state.status = "CHANGES_PENDING";
       }
     },
-    setSubdomainOperation(state, action) {
-      if (state.subdomain) return;
-      const { subdomain } = action.input;
-      if (subdomain) {
-        state.subdomain = subdomain;
+    setGenericSubdomainOperation(state, action) {
+      if (action.input.genericSubdomain) {
+        state.genericSubdomain = action.input.genericSubdomain;
+        state.status = "CHANGES_PENDING";
       }
     },
     setCustomDomainOperation(state, action) {
-      state.customDomain = action.input.customDomain || null;
+      state.customDomain = {
+        enabled: action.input.enabled,
+        domain: action.input.domain || null,
+        dnsRecords: state.customDomain.dnsRecords || [],
+      };
+      state.status = "CHANGES_PENDING";
+    },
+    setDnsRecordsOperation(state, action) {
+      state.customDomain.dnsRecords = action.input.records.map((r) => ({
+        type: r.type,
+        host: r.host,
+        value: r.value,
+      }));
     },
   };

@@ -8,6 +8,6 @@ export const VetraCloudEnvironment: EditorModule = {
     documentTypes: ["powerhouse/vetra-cloud-environment"],
     config: {
         id: "vetra-cloud-environment",
-        name: "Vetra Cloud Environment",
+        name: "vetra-cloud-environment",
     },
 };

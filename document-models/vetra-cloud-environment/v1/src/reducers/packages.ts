@@ -3,18 +3,24 @@ import type { VetraCloudEnvironmentPackagesOperations } from "@powerhousedao/vet
 export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPackagesOperations =
   {
     addPackageOperation(state, action) {
-      const { packageName, version } = action.input;
+      const { packageName, version, registry } = action.input;
       if (!state.packages) {
         state.packages = [];
       }
       const resolvedVersion = version ?? "latest";
+      const resolvedRegistry = registry || state.defaultPackageRegistry || "";
       const existing = state.packages.find((p) => p.name === packageName);
       if (existing) {
-        if (existing.version === resolvedVersion) return;
         existing.version = resolvedVersion;
+        if (registry) existing.registry = resolvedRegistry;
       } else {
-        state.packages.push({ name: packageName, version: resolvedVersion });
+        state.packages.push({
+          registry: resolvedRegistry,
+          name: packageName,
+          version: resolvedVersion,
+        });
       }
+      state.status = "CHANGES_PENDING";
     },
     removePackageOperation(state, action) {
       const { packageName } = action.input;
@@ -23,6 +29,7 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
       }
       if (packageName) {
         state.packages = state.packages.filter((p) => p.name !== packageName);
+        state.status = "CHANGES_PENDING";
       }
     },
   };

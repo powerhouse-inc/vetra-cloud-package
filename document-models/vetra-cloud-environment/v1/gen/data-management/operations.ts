@@ -1,25 +1,31 @@
 import { type SignalDispatch } from "document-model";
 import type {
-  SetEnvironmentNameAction,
-  SetSubdomainAction,
+  SetLabelAction,
+  SetGenericSubdomainAction,
   SetCustomDomainAction,
+  SetDnsRecordsAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
-  setEnvironmentNameOperation: (
+  setLabelOperation: (
     state: VetraCloudEnvironmentState,
-    action: SetEnvironmentNameAction,
+    action: SetLabelAction,
     dispatch?: SignalDispatch,
   ) => void;
-  setSubdomainOperation: (
+  setGenericSubdomainOperation: (
     state: VetraCloudEnvironmentState,
-    action: SetSubdomainAction,
+    action: SetGenericSubdomainAction,
     dispatch?: SignalDispatch,
   ) => void;
   setCustomDomainOperation: (
     state: VetraCloudEnvironmentState,
     action: SetCustomDomainAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setDnsRecordsOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetDnsRecordsAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

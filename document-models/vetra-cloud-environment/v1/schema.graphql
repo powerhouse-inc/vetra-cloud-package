@@ -19,78 +19,173 @@ scalar Amount_Crypto
 scalar Amount
 scalar Upload
 
-enum VetraCloudEnvironmentService {
+type VetraCloudEnvironmentState {
+  label: String
+  genericSubdomain: String
+  genericBaseDomain: String
+  customDomain: VetraCustomDomain!
+  defaultPackageRegistry: URL
+  services: [VetraCloudEnvironmentService!]!
+  packages: [VetraCloudPackage!]!
+  status: VetraCloudEnvironmentStatus!
+}
+
+type VetraCustomDomain {
+  enabled: Boolean!
+  domain: String
+  dnsRecords: [DnsRecord!]!
+}
+
+type DnsRecord {
+  type: String!
+  host: String!
+  value: String!
+}
+
+type VetraCloudEnvironmentService {
+  type: VetraCloudEnvironmentServiceType!
+  prefix: String!
+  enabled: Boolean!
+  url: String
+  status: ServiceStatus!
+}
+
+enum VetraCloudEnvironmentServiceType {
   CONNECT
   SWITCHBOARD
+  FUSION
+}
+
+enum ServiceStatus {
+  ACTIVE
+  SUSPENDED
+  PROVISIONING
+  BILLING_ISSUE
 }
 
 enum VetraCloudEnvironmentStatus {
-  STOPPED
-  STARTED
+  DRAFT
+  CHANGES_PENDING
+  CHANGES_APPROVED
+  CHANGES_PUSHED
+  DEPLOYING
+  DEPLOYMENt_FAILED
+  READY
+  TERMINATING
+  DESTROYED
+  ARCHIVED
 }
 
 type VetraCloudPackage {
+  registry: URL!
   name: String!
   version: String
 }
 
-type VetraCloudEnvironmentState {
-  name: String
-  subdomain: String
-  customDomain: String
-  services: [VetraCloudEnvironmentService!]!
-  packages: [VetraCloudPackage!]
-  status: VetraCloudEnvironmentStatus!
-}
-
 # data_management
 
-input SetEnvironmentNameInput {
-  "Add your inputs here"
-  name: String!
+input SetLabelInput {
+  label: String!
 }
 
-input SetSubdomainInput {
-  subdomain: String!
+input SetGenericSubdomainInput {
+  genericSubdomain: String!
 }
 
 input SetCustomDomainInput {
-  customDomain: String
+  enabled: Boolean!
+  domain: String
+}
+
+input SetDnsRecordsInput {
+  records: [DnsRecordInput!]!
+}
+
+input DnsRecordInput {
+  type: String!
+  host: String!
+  value: String!
 }
 
 # services
 
 input EnableServiceInput {
-  "Add your inputs here"
-  serviceName: VetraCloudEnvironmentService!
+  type: VetraCloudEnvironmentServiceType!
+  prefix: String!
 }
 
 input DisableServiceInput {
-  "Add your inputs here"
-  serviceName: VetraCloudEnvironmentService!
+  type: VetraCloudEnvironmentServiceType!
+}
+
+input ToggleServiceInput {
+  type: VetraCloudEnvironmentServiceType!
+}
+
+input UpdateServicePrefixInput {
+  type: VetraCloudEnvironmentServiceType!
+  prefix: String!
+}
+
+input SetServiceStatusInput {
+  type: VetraCloudEnvironmentServiceType!
+  status: ServiceStatus!
+  url: String
 }
 
 # packages
 
 input AddPackageInput {
-  "Add your inputs here"
+  registry: URL
   packageName: String!
   version: String
 }
 
 input RemovePackageInput {
-  "Add your inputs here"
   packageName: String!
 }
 
-# status
+# status_transitions
 
-input StartInput {
-  "Add your inputs here"
+input InitializeInput {
+  genericSubdomain: String!
+  genericBaseDomain: String!
+  defaultPackageRegistry: URL
+}
+
+input MarkChangesPushedInput {
   _placeholder: String
 }
 
-input StopInput {
-  "Add your inputs here"
+input MarkDeploymentStartedInput {
+  _placeholder: String
+}
+
+input ReportDeploymentSucceededInput {
+  _placeholder: String
+}
+
+input ReportDeploymentFailedInput {
+  code: String!
+  message: String!
+}
+
+input ApproveChangesInput {
+  _placeholder: String
+}
+
+input TerminateEnvironmentInput {
+  _placeholder: String
+}
+
+input MarkDestroyedInput {
+  _placeholder: String
+}
+
+input ArchiveInput {
+  _placeholder: String
+}
+
+input UnarchiveInput {
   _placeholder: String
 }

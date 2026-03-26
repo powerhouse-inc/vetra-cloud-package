@@ -1,52 +1,13 @@
-import { generateMock } from "@powerhousedao/common/utils";
-import { describe, expect, it } from "vitest";
-import {
-  reducer,
-  utils,
-  isVetraCloudEnvironmentDocument,
-  start,
-  stop,
-  StartInputSchema,
-  StopInputSchema,
-} from "vetra-cloud-package/document-models/vetra-cloud-environment/v1";
-import {
-  reducer,
-  utils,
-  isVetraCloudEnvironmentDocument,
-  start,
-  stop,
-  StartInputSchema,
-  StopInputSchema,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+/**
+ * The old START/STOP status operations have been replaced by the
+ * status_transitions module. See status-transitions.test.ts for tests.
+ */
+import { describe, it, expect } from "vitest";
+import { utils } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
 
-describe("StatusOperations", () => {
-  it("should handle start operation", () => {
+describe("StatusOperations (legacy)", () => {
+  it("should have DRAFT as initial status", () => {
     const document = utils.createDocument();
-    const input = generateMock(StartInputSchema());
-
-    const updatedDocument = reducer(document, start(input));
-
-    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
-    expect(updatedDocument.operations.global).toHaveLength(1);
-    expect(updatedDocument.operations.global[0].action.type).toBe("START");
-    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
-      input,
-    );
-    expect(updatedDocument.operations.global[0].index).toEqual(0);
-  });
-
-  it("should handle stop operation", () => {
-    const document = utils.createDocument();
-    const input = generateMock(StopInputSchema());
-
-    const updatedDocument = reducer(document, stop(input));
-
-    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
-    expect(updatedDocument.operations.global).toHaveLength(1);
-    expect(updatedDocument.operations.global[0].action.type).toBe("STOP");
-    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
-      input,
-    );
-    expect(updatedDocument.operations.global[0].index).toEqual(0);
+    expect(document.state.global.status).toBe("DRAFT");
   });
 });

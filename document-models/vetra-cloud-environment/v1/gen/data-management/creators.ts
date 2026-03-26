@@ -1,35 +1,38 @@
 import { createAction } from "document-model/core";
 import {
-  SetEnvironmentNameInputSchema,
-  SetSubdomainInputSchema,
+  SetLabelInputSchema,
+  SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
+  SetDnsRecordsInputSchema,
 } from "../schema/zod.js";
 import type {
-  SetEnvironmentNameInput,
-  SetSubdomainInput,
+  SetLabelInput,
+  SetGenericSubdomainInput,
   SetCustomDomainInput,
+  SetDnsRecordsInput,
 } from "../types.js";
 import type {
-  SetEnvironmentNameAction,
-  SetSubdomainAction,
+  SetLabelAction,
+  SetGenericSubdomainAction,
   SetCustomDomainAction,
+  SetDnsRecordsAction,
 } from "./actions.js";
 
-export const setEnvironmentName = (input: SetEnvironmentNameInput) =>
-  createAction<SetEnvironmentNameAction>(
-    "SET_ENVIRONMENT_NAME",
+export const setLabel = (input: SetLabelInput) =>
+  createAction<SetLabelAction>(
+    "SET_LABEL",
     { ...input },
     undefined,
-    SetEnvironmentNameInputSchema,
+    SetLabelInputSchema,
     "global",
   );
 
-export const setSubdomain = (input: SetSubdomainInput) =>
-  createAction<SetSubdomainAction>(
-    "SET_SUBDOMAIN",
+export const setGenericSubdomain = (input: SetGenericSubdomainInput) =>
+  createAction<SetGenericSubdomainAction>(
+    "SET_GENERIC_SUBDOMAIN",
     { ...input },
     undefined,
-    SetSubdomainInputSchema,
+    SetGenericSubdomainInputSchema,
     "global",
   );
 
@@ -39,5 +42,14 @@ export const setCustomDomain = (input: SetCustomDomainInput) =>
     { ...input },
     undefined,
     SetCustomDomainInputSchema,
+    "global",
+  );
+
+export const setDnsRecords = (input: SetDnsRecordsInput) =>
+  createAction<SetDnsRecordsAction>(
+    "SET_DNS_RECORDS",
+    { ...input },
+    undefined,
+    SetDnsRecordsInputSchema,
     "global",
   );
