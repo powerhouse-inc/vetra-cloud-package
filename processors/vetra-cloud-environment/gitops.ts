@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { childLogger } from "document-drive";
 import type {
   VetraCloudEnvironmentState,
-  VetraCloudEnvironmentService,
 } from "../../document-models/vetra-cloud-environment/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -220,23 +219,23 @@ export function generateValuesYaml(
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): string {
-  const subdomain = state.subdomain!;
+  const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
-  const name = toKebabCase(state.name ?? "unnamed");
-  const switchboardEnabled = state.services.includes(
-    "SWITCHBOARD" as VetraCloudEnvironmentService,
+  const name = toKebabCase(state.label ?? "unnamed");
+  const switchboardEnabled = state.services.some(
+    (s) => s.type === "SWITCHBOARD" && s.enabled,
   );
-  const connectEnabled = state.services.includes(
-    "CONNECT" as VetraCloudEnvironmentService,
+  const connectEnabled = state.services.some(
+    (s) => s.type === "CONNECT" && s.enabled,
   );
-  const disabled = state.status !== "STARTED";
+  const disabled = state.status !== "READY";
 
   const phPackages =
     state.packages
       ?.map((p) => `${p.name}@${p.version ?? "latest"}`)
       .join(",") ?? "";
 
-  const customDomain = state.customDomain ?? null;
+  const customDomain = state.customDomain?.enabled ? state.customDomain.domain ?? null : null;
   const switchboardCustomIngress = customDomain && switchboardEnabled
     ? generateCustomDomainIngress("switchboard", customDomain)
     : "";
@@ -244,7 +243,7 @@ export function generateValuesYaml(
     ? generateCustomDomainIngress("connect", customDomain)
     : "";
 
-  const tenantName = yamlQuote(state.name ?? name);
+  const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
 
   return `global:
@@ -453,13 +452,13 @@ export async function syncEnvironment(
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): Promise<void> {
-  if (!state.name) {
-    logger.warn("Environment has no name, skipping gitops sync");
+  if (!state.label) {
+    logger.warn("Environment has no label, skipping gitops sync");
     return;
   }
-  if (!state.subdomain) {
+  if (!state.genericSubdomain) {
     logger.warn(
-      `Environment "${state.name}" has no subdomain, skipping gitops sync`,
+      `Environment "${state.label}" has no subdomain, skipping gitops sync`,
     );
     return;
   }
@@ -509,7 +508,7 @@ async function syncEnvironmentEphemeral(
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): Promise<void> {
-  const subdomain = state.subdomain!;
+  const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
 
   logger.info(
@@ -517,9 +516,9 @@ async function syncEnvironmentEphemeral(
   );
   logger.info(
     `Environment state: status=${state.status}, ` +
-    `services=[${state.services?.join(", ")}], ` +
+    `services=[${state.services?.map((s) => `${s.type}:${s.enabled}`).join(", ")}], ` +
     `packages=[${(state.packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}], ` +
-    `subdomain=${subdomain}, customDomain=${state.customDomain ?? "unset"}`,
+    `subdomain=${subdomain}, customDomain=${state.customDomain?.domain ?? "unset"}`,
   );
 
   await withEphemeralClone(async (cloneDir, config) => {
@@ -544,7 +543,7 @@ async function syncEnvironmentEphemeral(
 
     // Commit
     logger.info(`Changes detected: ${hasChanges}`);
-    const statusLabel = state.status === "STARTED" ? "enable" : "disable";
+    const statusLabel = state.status === "READY" ? "enable" : "disable";
     const commitMsg = `chore(${tenantId}): ${statusLabel} tenant — synced from vetra-cloud-environment`;
     logger.info(`Committing: ${commitMsg}`);
     await git(["commit", "-m", commitMsg], cloneDir);

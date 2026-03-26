@@ -56,25 +56,25 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       }
 
       const state = phState.global;
-      const { name, subdomain, customDomain, packages, services, status } = state;
-      const label = name ?? documentId;
-      const tenantId = subdomain
-        ? getTenantId(subdomain, documentId)
+      const { label: envLabel, genericSubdomain, customDomain, packages, services, status } = state;
+      const label = envLabel ?? documentId;
+      const tenantId = genericSubdomain
+        ? getTenantId(genericSubdomain, documentId)
         : null;
 
       logger.info(
         `Processing document ${label} (op ${operation.index}): ` +
-        `name=${name ?? "unset"}, status=${status ?? "unset"}, ` +
-        `subdomain=${subdomain ?? "unset"}, tenantId=${tenantId ?? "unset"}, ` +
-        `services=[${services?.join(", ") ?? ""}], ` +
+        `label=${envLabel ?? "unset"}, status=${status ?? "unset"}, ` +
+        `subdomain=${genericSubdomain ?? "unset"}, tenantId=${tenantId ?? "unset"}, ` +
+        `services=[${services?.map((s) => `${s.type}:${s.enabled}`).join(", ") ?? ""}], ` +
         `packages=[${(packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}]`,
       );
 
       const row = {
-        name: name ?? null,
-        subdomain: subdomain ?? null,
+        name: envLabel ?? null,
+        subdomain: genericSubdomain ?? null,
         tenantId,
-        customDomain: customDomain ?? null,
+        customDomain: customDomain?.domain ?? null,
         packages: JSON.stringify(packages ?? []),
         services: JSON.stringify(services ?? []),
         status: status ?? null,
