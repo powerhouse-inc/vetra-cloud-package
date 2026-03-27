@@ -62,6 +62,7 @@ jobs:
       project_name: ${{ steps.params.outputs.project_name }}
       dry_run: ${{ steps.params.outputs.dry_run }}
       skip_docker: ${{ steps.params.outputs.skip_docker }}
+      skip_ph_update: ${{ steps.params.outputs.skip_ph_update }}
     steps:
       - name: Determine parameters
         id: params
@@ -86,6 +87,7 @@ jobs:
             VERSION=""
             DRY_RUN="false"
             SKIP_DOCKER="true"
+            SKIP_PH_UPDATE="true"
           else
             CHANNEL="${{ inputs.channel }}"
             VERSION="${{ inputs.version }}"
@@ -117,6 +119,7 @@ jobs:
           echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
           echo "skip_docker=$SKIP_DOCKER" >> $GITHUB_OUTPUT
+          echo "skip_ph_update=${SKIP_PH_UPDATE:-false}" >> $GITHUB_OUTPUT
 
           echo "Channel: $CHANNEL"
           echo "Version: $VERSION"
@@ -124,6 +127,7 @@ jobs:
           echo "Project: $PROJECT_NAME"
           echo "Dry Run: $DRY_RUN"
           echo "Skip Docker: $SKIP_DOCKER"
+          echo "Skip ph update: ${SKIP_PH_UPDATE:-false}"
 
   # ==========================================================================
   # Update dependencies and publish to npm
@@ -162,6 +166,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Install ph-cli
+        if: needs.prepare.outputs.skip_ph_update != 'true'
         run: |
           CHANNEL="${{ needs.prepare.outputs.channel }}"
           case "$CHANNEL" in
@@ -169,8 +174,10 @@ jobs:
             staging) pnpm add -g @powerhousedao/ph-cli@staging ;;
             *) pnpm add -g @powerhousedao/ph-cli@latest ;;
           esac
+          echo "$PNPM_HOME" >> $GITHUB_PATH
 
       - name: Update Powerhouse dependencies
+        if: needs.prepare.outputs.skip_ph_update != 'true'
         run: ph update
 
       - name: Install dependencies
