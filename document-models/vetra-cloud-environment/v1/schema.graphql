@@ -23,7 +23,7 @@ type VetraCloudEnvironmentState {
   label: String
   genericSubdomain: String
   genericBaseDomain: String
-  customDomain: VetraCustomDomain!
+  customDomain: VetraCustomDomain
   defaultPackageRegistry: URL
   services: [VetraCloudEnvironmentService!]!
   packages: [VetraCloudPackage!]!

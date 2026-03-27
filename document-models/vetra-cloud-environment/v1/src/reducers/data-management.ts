@@ -18,11 +18,14 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       state.customDomain = {
         enabled: action.input.enabled,
         domain: action.input.domain || null,
-        dnsRecords: state.customDomain.dnsRecords || [],
+        dnsRecords: state.customDomain?.dnsRecords || [],
       };
       state.status = "CHANGES_PENDING";
     },
     setDnsRecordsOperation(state, action) {
+      if (!state.customDomain) {
+        state.customDomain = { enabled: false, domain: null, dnsRecords: [] };
+      }
       state.customDomain.dnsRecords = action.input.records.map((r) => ({
         type: r.type,
         host: r.host,
