@@ -6,6 +6,13 @@ on:
   repository_dispatch:
     types: [powerhouse-release]
 
+  # Auto-publish on push to release branches (skip bot version-bump commits)
+  push:
+    branches:
+      - dev
+      - staging
+      - main
+
   # Manual trigger
   workflow_dispatch:
     inputs:
@@ -46,6 +53,8 @@ jobs:
   prepare:
     name: Prepare Release
     runs-on: ubuntu-latest
+    # Skip commits made by the bot (version bump) to prevent infinite loops
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && github.actor != 'github-actions[bot]'"
     outputs:
       channel: ${{ steps.params.outputs.channel }}
       version: ${{ steps.params.outputs.version }}
@@ -57,12 +66,26 @@ jobs:
       - name: Determine parameters
         id: params
         run: |
-          # Get channel from dispatch payload or input
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          EVENT_NAME="${{ github.event_name }}"
+
+          # Get channel from dispatch payload, push branch, or manual input
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
             CHANNEL="${{ github.event.client_payload.channel }}"
             VERSION="${{ github.event.client_payload.version }}"
             DRY_RUN="false"
             SKIP_DOCKER="false"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            # Derive channel from branch name
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            case "$BRANCH_NAME" in
+              dev) CHANNEL="dev" ;;
+              staging) CHANNEL="staging" ;;
+              main) CHANNEL="latest" ;;
+              *) CHANNEL="dev" ;;
+            esac
+            VERSION=""
+            DRY_RUN="false"
+            SKIP_DOCKER="true"
           else
             CHANNEL="${{ inputs.channel }}"
             VERSION="${{ inputs.version }}"
@@ -182,10 +205,10 @@ jobs:
       - name: Commit changes
         run: |
           git add package.json pnpm-lock.yaml
-          git commit -m "chore: sync powerhouse dependencies to ${{ needs.prepare.outputs.version }}
+          git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }} [skip ci]
 
-          - Updated to powerhouse ${{ needs.prepare.outputs.version }}
-          - Bumped version to ${{ steps.version.outputs.new_version }}" || echo "No changes to commit"
+          - Bumped version to ${{ steps.version.outputs.new_version }}
+          - Powerhouse version: ${{ needs.prepare.outputs.version }}" || echo "No changes to commit"
 
       - name: Push changes
         if: needs.prepare.outputs.dry_run != 'true'
