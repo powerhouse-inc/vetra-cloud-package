@@ -282,7 +282,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
-    customDomain: z.lazy(() => VetraCustomDomainSchema()),
+    customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),

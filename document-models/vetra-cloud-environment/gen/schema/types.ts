@@ -185,7 +185,7 @@ export type VetraCloudEnvironmentServiceType =
   | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
-  customDomain: VetraCustomDomain;
+  customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
