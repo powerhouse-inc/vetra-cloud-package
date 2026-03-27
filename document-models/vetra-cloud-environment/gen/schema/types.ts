@@ -205,6 +205,7 @@ export type VetraCloudEnvironmentStatus =
   | "DESTROYED"
   | "DRAFT"
   | "READY"
+  | "STOPPED"
   | "TERMINATING";
 
 export type VetraCloudPackage = {

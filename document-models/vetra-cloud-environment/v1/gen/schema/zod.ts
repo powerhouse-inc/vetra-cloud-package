@@ -68,6 +68,7 @@ export const VetraCloudEnvironmentStatusSchema = z.enum([
   "DESTROYED",
   "DRAFT",
   "READY",
+  "STOPPED",
   "TERMINATING",
 ]);
 

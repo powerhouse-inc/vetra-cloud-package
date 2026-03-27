@@ -74,6 +74,7 @@ enum VetraCloudEnvironmentStatus {
   TERMINATING
   DESTROYED
   ARCHIVED
+  STOPPED
 }
 
 type VetraCloudPackage {

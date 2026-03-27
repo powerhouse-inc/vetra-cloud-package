@@ -64,6 +64,12 @@ const STATUS_CONFIG: Record<
     bg: "var(--v-purple-30)",
     text: "var(--v-purple)",
   },
+  STOPPED: {
+    label: "Stopped",
+    dot: "var(--v-muted)",
+    bg: "var(--v-muted)",
+    text: "var(--v-fg-70)",
+  },
 };
 
 interface StatusBadgeProps {
