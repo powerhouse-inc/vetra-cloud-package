@@ -1,6 +1,6 @@
 {
   "name": "@powerhousedao/vetra-cloud-package",
-  "version": "0.0.0-dev.6",
+  "version": "0.0.0-dev.7",
   "license": "AGPL-3.0-only",
   "type": "module",
   "files": [
@@ -133,6 +133,5 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
-  "readme": "ERROR: No README data found!",
-  "_id": "@powerhousedao/vetra-cloud-package@0.0.0"
+  "readme": "ERROR: No README data found!"
 }
