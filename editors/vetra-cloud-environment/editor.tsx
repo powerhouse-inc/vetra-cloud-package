@@ -64,23 +64,23 @@ export default function Editor() {
       dispatch(
         actions.setCustomDomain({
           enabled,
-          domain: enabled ? state.customDomain.domain : undefined,
+          domain: enabled ? state.customDomain?.domain : undefined,
         }),
       );
     },
-    [dispatch, state.customDomain.domain],
+    [dispatch, state.customDomain?.domain],
   );
 
   const handleSetCustomDomainValue = useCallback(
     (domain: string) => {
       dispatch(
         actions.setCustomDomain({
-          enabled: state.customDomain.enabled,
+          enabled: state.customDomain?.enabled ?? false,
           domain: domain.trim() || undefined,
         }),
       );
     },
-    [dispatch, state.customDomain.enabled],
+    [dispatch, state.customDomain?.enabled],
   );
 
   const handleApproveChanges = useCallback(() => {
@@ -281,7 +281,7 @@ export default function Editor() {
             >
               <input
                 type="checkbox"
-                checked={state.customDomain.enabled}
+                checked={state.customDomain?.enabled ?? false}
                 onChange={(e) => handleToggleCustomDomain(e.target.checked)}
                 disabled={isReadonly}
                 style={{ width: 18, height: 18, accentColor: "var(--v-primary)" }}
@@ -290,11 +290,11 @@ export default function Editor() {
                 Custom Domain
               </span>
             </label>
-            {state.customDomain.enabled && (
+            {state.customDomain?.enabled && (
               <div style={fieldStyle}>
                 <input
                   type="text"
-                  defaultValue={state.customDomain.domain ?? ""}
+                  defaultValue={state.customDomain?.domain ?? ""}
                   placeholder="project.acme.net"
                   onBlur={(e) => handleSetCustomDomainValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -307,7 +307,7 @@ export default function Editor() {
             )}
 
             {/* DNS Records */}
-            {state.customDomain.dnsRecords &&
+            {state.customDomain?.dnsRecords &&
               state.customDomain.dnsRecords.length > 0 && (
                 <DnsRecordsTable records={state.customDomain.dnsRecords} />
               )}
