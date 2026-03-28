@@ -35,6 +35,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       process.env.PROMETHEUS_URL ?? "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
     const lokiUrl =
       process.env.LOKI_URL ?? "http://loki.monitoring.svc:3100";
+
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
 
     // 3. Acquire K8s credentials via OpenBao (skip if not configured)

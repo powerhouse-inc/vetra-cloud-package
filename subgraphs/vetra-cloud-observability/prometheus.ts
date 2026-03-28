@@ -1,3 +1,19 @@
+import http from "node:http";
+
+/** Simple HTTP GET that bypasses any Vite SSR fetch interception. */
+function httpGet<T>(url: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk: string) => { data += chunk; });
+      res.on("end", () => {
+        try { resolve(JSON.parse(data) as T); }
+        catch (e) { reject(e); }
+      });
+    }).on("error", reject);
+  });
+}
+
 export interface Datapoint {
   timestamp: number;
   value: number;
@@ -73,19 +89,12 @@ export class PrometheusClient {
 
     const url = `${this.baseUrl}/api/v1/query_range?${params.toString()}`;
     try {
-      const res = await fetch(url);
-      if (!res.ok) {
-        console.warn(`[prometheus] HTTP ${res.status} for ${url.substring(0, 120)}`);
-        return [];
-      }
-      const json = (await res.json()) as PrometheusQueryRangeResponse;
+      const json = await httpGet<PrometheusQueryRangeResponse>(url);
       if (json.status !== "success" || json.data.resultType !== "matrix") {
-        console.warn(`[prometheus] unexpected response: status=${json.status} resultType=${json.data?.resultType}`);
         return [];
       }
       return parseMatrixResult(json.data.result);
-    } catch (err) {
-      console.error(`[prometheus] fetch failed for ${url.substring(0, 120)}:`, err);
+    } catch {
       return [];
     }
   }
