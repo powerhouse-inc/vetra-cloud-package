@@ -124,16 +124,26 @@ export class PrometheusClient {
     tenantId: string,
     range = "ONE_HOUR",
   ): Promise<MetricSeries[]> {
-    const query = `sum(rate(http_requests_total{namespace="${tenantId}"}[${METRIC_RANGE_VALUES[range] ?? "1h"}])) by (pod)`;
-    return this.queryRange(query, range);
+    const r = METRIC_RANGE_VALUES[range] ?? "1h";
+    // Try OTel metric first, fall back to classic http_requests_total
+    const otelQuery = `sum(rate(http_server_request_duration_seconds_count{namespace="${tenantId}"}[${r}])) by (pod)`;
+    const result = await this.queryRange(otelQuery, range);
+    if (result.length > 0) return result;
+    const classicQuery = `sum(rate(http_requests_total{namespace="${tenantId}"}[${r}])) by (pod)`;
+    return this.queryRange(classicQuery, range);
   }
 
   async httpLatency(
     tenantId: string,
     range = "ONE_HOUR",
   ): Promise<MetricSeries[]> {
-    const query = `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="${tenantId}"}[${METRIC_RANGE_VALUES[range] ?? "1h"}])) by (le, pod))`;
-    return this.queryRange(query, range);
+    const r = METRIC_RANGE_VALUES[range] ?? "1h";
+    // Try OTel metric first, fall back to classic http_request_duration_seconds_bucket
+    const otelQuery = `histogram_quantile(0.99, sum(rate(http_server_request_duration_seconds_bucket{namespace="${tenantId}"}[${r}])) by (le, pod))`;
+    const result = await this.queryRange(otelQuery, range);
+    if (result.length > 0) return result;
+    const classicQuery = `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="${tenantId}"}[${r}])) by (le, pod))`;
+    return this.queryRange(classicQuery, range);
   }
 }
 
