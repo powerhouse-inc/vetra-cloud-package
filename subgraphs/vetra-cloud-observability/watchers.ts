@@ -11,9 +11,14 @@ import type {
 // ---------------------------------------------------------------------------
 
 export function classifyPodService(podName: string): string {
-  if (podName.startsWith("connect")) return "CONNECT";
-  if (podName.startsWith("switchboard")) return "SWITCHBOARD";
+  if (podName.includes("connect")) return "CONNECT";
+  if (podName.includes("switchboard")) return "SWITCHBOARD";
   return "OTHER";
+}
+
+/** Uppercase enum values to match GraphQL schema (K8s returns Mixed case). */
+function toUpperEnum(val: string): string {
+  return val.toUpperCase().replace(/ /g, "_");
 }
 
 // ---------------------------------------------------------------------------
@@ -270,8 +275,8 @@ async function reconcile(
 
       await upsertEnvironmentStatus(db, {
         tenantId,
-        argoSyncStatus: syncStatus,
-        argoHealthStatus: healthStatus,
+        argoSyncStatus: toUpperEnum(syncStatus),
+        argoHealthStatus: toUpperEnum(healthStatus),
         argoLastSyncedAt: lastSyncedAt,
         argoMessage: message,
         configDriftDetected: driftDetected,
@@ -317,7 +322,7 @@ async function reconcile(
         tenantId,
         name,
         service: classifyPodService(name),
-        phase: pod.status?.phase ?? "Unknown",
+        phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
         ready,
         restartCount,
         updatedAt: new Date().toISOString(),
@@ -405,8 +410,8 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
 
           await upsertEnvironmentStatus(db, {
             tenantId,
-            argoSyncStatus: syncStatus,
-            argoHealthStatus: healthStatus,
+            argoSyncStatus: toUpperEnum(syncStatus),
+            argoHealthStatus: toUpperEnum(healthStatus),
             argoLastSyncedAt: lastSyncedAt,
             argoMessage: message,
             configDriftDetected: driftDetected,
@@ -453,7 +458,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
             tenantId,
             name,
             service: classifyPodService(name),
-            phase: pod.status?.phase ?? "Unknown",
+            phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
             ready,
             restartCount,
             updatedAt: new Date().toISOString(),
@@ -490,7 +495,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
           await insertEvent(db, {
             id,
             tenantId,
-            type: event.type ?? "Normal",
+            type: toUpperEnum(event.type ?? "Normal"),
             reason: event.reason ?? "",
             message: event.message ?? "",
             involvedObject,
