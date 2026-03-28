@@ -287,10 +287,8 @@ async function reconcile(
       });
     }
 
-    // List pods with vetra label
-    const podsResponse = await coreApi.listPodForAllNamespaces({
-      labelSelector: "app.kubernetes.io/part-of=vetra-tenant",
-    });
+    // List all pods across all namespaces (filtered by tenant namespace in DB)
+    const podsResponse = await coreApi.listPodForAllNamespaces({});
 
     const podsBody = podsResponse as {
       items?: Array<{
@@ -429,7 +427,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
       const podAbort = watchWithReconnect(
         watch,
         "/api/v1/pods",
-        { labelSelector: "app.kubernetes.io/part-of=vetra-tenant" },
+        {},
         async (_phase: string, obj: unknown) => {
           const pod = obj as {
             metadata?: { name?: string; namespace?: string };
