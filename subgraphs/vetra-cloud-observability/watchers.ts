@@ -213,15 +213,16 @@ async function reconcile(
     );
 
     const kc = new KubeConfig();
-    if (k8sApiUrl) {
+    if (k8sToken) {
+      const server = k8sApiUrl || "https://kubernetes.default.svc";
       kc.loadFromOptions({
-        clusters: [{ name: "cluster", server: k8sApiUrl, skipTLSVerify: true }],
+        clusters: [{ name: "cluster", server, skipTLSVerify: true }],
         users: [{ name: "user", token: k8sToken }],
         contexts: [{ name: "ctx", cluster: "cluster", user: "user" }],
         currentContext: "ctx",
       });
     } else {
-      kc.loadFromDefault();
+      kc.loadFromCluster();
     }
 
     const customApi = kc.makeApiClient(CustomObjectsApi);
@@ -350,17 +351,19 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
       const { KubeConfig, Watch } = await import("@kubernetes/client-node");
 
       const kc = new KubeConfig();
-      if (k8sApiUrl) {
+      if (k8sToken) {
+        const server = k8sApiUrl || "https://kubernetes.default.svc";
         kc.loadFromOptions({
           clusters: [
-            { name: "cluster", server: k8sApiUrl, skipTLSVerify: true },
+            { name: "cluster", server, skipTLSVerify: true },
           ],
           users: [{ name: "user", token: k8sToken }],
           contexts: [{ name: "ctx", cluster: "cluster", user: "user" }],
           currentContext: "ctx",
         });
       } else {
-        kc.loadFromDefault();
+        // Use in-cluster SA token (mounted at /var/run/secrets/...)
+        kc.loadFromCluster();
       }
 
       const watch = new Watch(kc);

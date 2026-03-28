@@ -38,31 +38,34 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
 
-    // 3. Acquire K8s credentials via OpenBao (skip if not configured)
+    // 3. Acquire K8s credentials and start watchers
     const openbaoAddr = process.env.OPENBAO_ADDR;
+    let k8sToken: string | null = null;
+
     if (openbaoAddr) {
       try {
         this.openbao = new OpenBaoClient(openbaoAddr);
         await this.openbao.authenticate();
         const creds = await this.openbao.getK8sToken();
+        k8sToken = creds.token;
         this.leaseId = creds.leaseId;
         this.leaseDuration = creds.leaseDuration;
-
-        // 4. Start watchers
-        this.watcherHandle = startWatchers({ db, k8sToken: creds.token });
-
-        // 5. Schedule token renewal at 80% of TTL
         this.scheduleRenewal(creds.leaseDuration);
+        console.info("[observability] Acquired K8s token via OpenBao");
       } catch (err) {
-        console.warn(
-          "[observability] OpenBao/K8s setup failed, watchers disabled:",
-          err,
-        );
+        console.warn("[observability] OpenBao failed, falling back to in-cluster SA:", err);
       }
-    } else {
-      console.info(
-        "[observability] OPENBAO_ADDR not set, watchers disabled (resolvers still active)",
-      );
+    }
+
+    // Start watchers: use OpenBao token if available, otherwise in-cluster SA
+    try {
+      this.watcherHandle = startWatchers({
+        db,
+        k8sToken: k8sToken ?? "",
+      });
+      console.info(`[observability] Watchers started (${k8sToken ? "OpenBao token" : "in-cluster SA"})`);
+    } catch (err) {
+      console.warn("[observability] Failed to start watchers:", err);
     }
   }
 
