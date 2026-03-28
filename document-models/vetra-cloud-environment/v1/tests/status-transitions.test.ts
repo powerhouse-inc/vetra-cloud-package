@@ -36,6 +36,7 @@ function createInitializedDocument() {
     document,
     initialize({
       genericSubdomain: "test-env",
+      genericBaseDomain: "test.example.com",
       defaultPackageRegistry: "https://registry.example.com",
     }),
   );
@@ -60,6 +61,7 @@ describe("StatusTransitionsOperations", () => {
         document,
         initialize({
           genericSubdomain: "my-env",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: "https://registry.example.com",
         }),
       );
@@ -73,6 +75,7 @@ describe("StatusTransitionsOperations", () => {
         document,
         initialize({
           genericSubdomain: "my-env",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: "https://registry.example.com",
         }),
       );
@@ -89,6 +92,7 @@ describe("StatusTransitionsOperations", () => {
         document,
         initialize({
           genericSubdomain: "my-env",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -96,19 +100,20 @@ describe("StatusTransitionsOperations", () => {
       expect(updatedDocument.state.global.defaultPackageRegistry).toBeNull();
     });
 
-    it("should throw when not in DRAFT status", () => {
+    it("should error when not in DRAFT status", () => {
       const document = createInitializedDocument();
       expect(document.state.global.status).toBe("CHANGES_APPROVED");
 
-      expect(() =>
-        reducer(
-          document,
-          initialize({
-            genericSubdomain: "another",
-            defaultPackageRegistry: null,
-          }),
-        ),
-      ).toThrow("INITIALIZE can only be called from DRAFT status");
+      const result = reducer(
+        document,
+        initialize({
+          genericSubdomain: "another",
+          genericBaseDomain: "test.example.com",
+          defaultPackageRegistry: null,
+        }),
+      );
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain("INITIALIZE can only be called from DRAFT status");
     });
   });
 
@@ -121,9 +126,11 @@ describe("StatusTransitionsOperations", () => {
       expect(updatedDocument.state.global.status).toBe("CHANGES_PUSHED");
     });
 
-    it("should throw when not in CHANGES_APPROVED status", () => {
+    it("should error when not in CHANGES_APPROVED status", () => {
       const document = utils.createDocument();
-      expect(() => reducer(document, markChangesPushed({}))).toThrow(
+      const result = reducer(document, markChangesPushed({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "MARK_CHANGES_PUSHED can only be called from CHANGES_APPROVED status",
       );
     });
@@ -139,9 +146,11 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("DEPLOYING");
     });
 
-    it("should throw when not in CHANGES_PUSHED status", () => {
+    it("should error when not in CHANGES_PUSHED status", () => {
       const document = createInitializedDocument();
-      expect(() => reducer(document, markDeploymentStarted({}))).toThrow(
+      const result = reducer(document, markDeploymentStarted({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "MARK_DEPLOYMENT_STARTED can only be called from CHANGES_PUSHED status",
       );
     });
@@ -158,9 +167,11 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("READY");
     });
 
-    it("should throw when not in DEPLOYING status", () => {
+    it("should error when not in DEPLOYING status", () => {
       const document = createInitializedDocument();
-      expect(() => reducer(document, reportDeploymentSucceeded({}))).toThrow(
+      const result = reducer(document, reportDeploymentSucceeded({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "REPORT_DEPLOYMENT_SUCCEEDED can only be called from DEPLOYING status",
       );
     });
@@ -183,14 +194,14 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("DEPLOYMENt_FAILED");
     });
 
-    it("should throw when not in DEPLOYING status", () => {
+    it("should error when not in DEPLOYING status", () => {
       const document = createInitializedDocument();
-      expect(() =>
-        reducer(
-          document,
-          reportDeploymentFailed({ code: "ERR", message: "fail" }),
-        ),
-      ).toThrow(
+      const result = reducer(
+        document,
+        reportDeploymentFailed({ code: "ERR", message: "fail" }),
+      );
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "REPORT_DEPLOYMENT_FAILED can only be called from DEPLOYING status",
       );
     });
@@ -207,17 +218,21 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("CHANGES_APPROVED");
     });
 
-    it("should throw when not in CHANGES_PENDING status", () => {
+    it("should error when not in CHANGES_PENDING status", () => {
       const document = createInitializedDocument();
       expect(document.state.global.status).toBe("CHANGES_APPROVED");
-      expect(() => reducer(document, approveChanges({}))).toThrow(
+      const result = reducer(document, approveChanges({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "APPROVE_CHANGES can only be called from CHANGES_PENDING status",
       );
     });
 
-    it("should throw from DRAFT status", () => {
+    it("should error from DRAFT status", () => {
       const document = utils.createDocument();
-      expect(() => reducer(document, approveChanges({}))).toThrow();
+      const result = reducer(document, approveChanges({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toBeTruthy();
     });
   });
 
@@ -262,9 +277,11 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("DESTROYED");
     });
 
-    it("should throw when not in TERMINATING status", () => {
+    it("should error when not in TERMINATING status", () => {
       const document = createReadyDocument();
-      expect(() => reducer(document, markDestroyed({}))).toThrow(
+      const result = reducer(document, markDestroyed({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "MARK_DESTROYED can only be called from TERMINATING status",
       );
     });
@@ -281,9 +298,11 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("ARCHIVED");
     });
 
-    it("should throw when not in DESTROYED status", () => {
+    it("should error when not in DESTROYED status", () => {
       const document = createReadyDocument();
-      expect(() => reducer(document, archive({}))).toThrow(
+      const result = reducer(document, archive({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "ARCHIVE can only be called from DESTROYED status",
       );
     });
@@ -301,13 +320,15 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("DESTROYED");
     });
 
-    it("should throw when not in ARCHIVED status", () => {
+    it("should error when not in ARCHIVED status", () => {
       let document = createReadyDocument();
       document = reducer(document, terminateEnvironment({}));
       document = reducer(document, markDestroyed({}));
       expect(document.state.global.status).toBe("DESTROYED");
 
-      expect(() => reducer(document, unarchive({}))).toThrow(
+      const result = reducer(document, unarchive({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
         "UNARCHIVE can only be called from ARCHIVED status",
       );
     });
@@ -335,6 +356,7 @@ describe("StatusTransitionsOperations", () => {
         document,
         initialize({
           genericSubdomain: "prod-env",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: "https://registry.example.com",
         }),
       );

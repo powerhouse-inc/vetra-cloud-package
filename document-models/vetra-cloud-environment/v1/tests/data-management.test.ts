@@ -42,6 +42,7 @@ describe("DataManagementOperations", () => {
         document,
         initialize({
           genericSubdomain: "test-sub",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -57,6 +58,7 @@ describe("DataManagementOperations", () => {
         document,
         initialize({
           genericSubdomain: "sub-1",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -66,6 +68,7 @@ describe("DataManagementOperations", () => {
       expect(document.state.global.customDomain).toStrictEqual({
         enabled: false,
         domain: null,
+        dnsRecords: [],
       });
       expect(document.state.global.services).toStrictEqual([]);
       expect(document.state.global.packages).toStrictEqual([]);
@@ -105,6 +108,7 @@ describe("DataManagementOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -128,6 +132,7 @@ describe("DataManagementOperations", () => {
       expect(updatedDocument.state.global.customDomain).toStrictEqual({
         enabled: true,
         domain: "example.com",
+        dnsRecords: [],
       });
     });
 
@@ -141,6 +146,7 @@ describe("DataManagementOperations", () => {
       expect(updatedDocument.state.global.customDomain).toStrictEqual({
         enabled: false,
         domain: null,
+        dnsRecords: [],
       });
     });
 
@@ -155,6 +161,7 @@ describe("DataManagementOperations", () => {
       expect(document.state.global.customDomain).toStrictEqual({
         enabled: true,
         domain: null,
+        dnsRecords: [],
       });
     });
 
@@ -164,6 +171,7 @@ describe("DataManagementOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );

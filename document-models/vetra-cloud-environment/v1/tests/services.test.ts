@@ -27,7 +27,7 @@ describe("ServicesOperations", () => {
       );
 
       expect(updatedDocument.state.global.services).toStrictEqual([
-        { type: "CONNECT", prefix: "connect" },
+        { type: "CONNECT", prefix: "connect", enabled: true, url: null, status: "PROVISIONING" },
       ]);
     });
 
@@ -48,13 +48,13 @@ describe("ServicesOperations", () => {
 
       expect(document.state.global.services).toHaveLength(3);
       expect(document.state.global.services).toStrictEqual([
-        { type: "CONNECT", prefix: "connect" },
-        { type: "SWITCHBOARD", prefix: "switchboard" },
-        { type: "FUSION", prefix: "fusion" },
+        { type: "CONNECT", prefix: "connect", enabled: true, url: null, status: "PROVISIONING" },
+        { type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "PROVISIONING" },
+        { type: "FUSION", prefix: "fusion", enabled: true, url: null, status: "PROVISIONING" },
       ]);
     });
 
-    it("should prevent duplicate services of the same type", () => {
+    it("should prevent duplicate services of the same type and update prefix", () => {
       let document = utils.createDocument();
       document = reducer(
         document,
@@ -68,7 +68,10 @@ describe("ServicesOperations", () => {
       expect(document.state.global.services).toHaveLength(1);
       expect(document.state.global.services[0]).toStrictEqual({
         type: "CONNECT",
-        prefix: "connect",
+        prefix: "different-prefix",
+        enabled: true,
+        url: null,
+        status: "PROVISIONING",
       });
     });
 
@@ -78,6 +81,7 @@ describe("ServicesOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -92,7 +96,7 @@ describe("ServicesOperations", () => {
   });
 
   describe("DISABLE_SERVICE", () => {
-    it("should remove a service from the services array", () => {
+    it("should disable a service in the services array", () => {
       let document = utils.createDocument();
       document = reducer(
         document,
@@ -104,10 +108,20 @@ describe("ServicesOperations", () => {
       );
       document = reducer(document, disableService({ type: "CONNECT" }));
 
-      expect(document.state.global.services).toHaveLength(1);
+      expect(document.state.global.services).toHaveLength(2);
       expect(document.state.global.services[0]).toStrictEqual({
+        type: "CONNECT",
+        prefix: "connect",
+        enabled: false,
+        url: null,
+        status: "PROVISIONING",
+      });
+      expect(document.state.global.services[1]).toStrictEqual({
         type: "SWITCHBOARD",
         prefix: "switchboard",
+        enabled: true,
+        url: null,
+        status: "PROVISIONING",
       });
     });
 
@@ -127,6 +141,7 @@ describe("ServicesOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -145,15 +160,20 @@ describe("ServicesOperations", () => {
         enableService({ type: "CONNECT", prefix: "connect" }),
       );
       document = reducer(document, disableService({ type: "CONNECT" }));
-      expect(document.state.global.services).toStrictEqual([]);
+      expect(document.state.global.services[0].enabled).toBe(false);
 
       document = reducer(
         document,
         enableService({ type: "CONNECT", prefix: "new-prefix" }),
       );
-      expect(document.state.global.services).toStrictEqual([
-        { type: "CONNECT", prefix: "new-prefix" },
-      ]);
+      expect(document.state.global.services).toHaveLength(1);
+      expect(document.state.global.services[0]).toStrictEqual({
+        type: "CONNECT",
+        prefix: "new-prefix",
+        enabled: true,
+        url: null,
+        status: "PROVISIONING",
+      });
     });
   });
 

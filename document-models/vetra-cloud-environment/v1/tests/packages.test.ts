@@ -58,6 +58,7 @@ describe("PackagesOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: "https://default-registry.com",
         }),
       );
@@ -129,6 +130,7 @@ describe("PackagesOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -185,6 +187,7 @@ describe("PackagesOperations", () => {
         document,
         initialize({
           genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
           defaultPackageRegistry: null,
         }),
       );
@@ -200,7 +203,10 @@ describe("PackagesOperations", () => {
 
   it("should handle addPackage operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(AddPackageInputSchema());
+    const input = {
+      ...generateMock(AddPackageInputSchema()),
+      registry: "https://registry.example.com",
+    };
 
     const updatedDocument = reducer(document, addPackage(input));
 

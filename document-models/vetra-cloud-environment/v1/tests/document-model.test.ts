@@ -36,6 +36,7 @@ describe("VetraCloudEnvironment Document Model", () => {
     expect(document.state.global.customDomain).toStrictEqual({
       enabled: false,
       domain: null,
+      dnsRecords: [],
     });
     expect(document.state.global.defaultPackageRegistry).toBeNull();
     expect(document.state.global.services).toStrictEqual([]);
