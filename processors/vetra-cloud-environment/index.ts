@@ -3,7 +3,7 @@ import type { Kysely } from "kysely";
 import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { type DB } from "./schema.js";
-import { childLogger } from "document-drive";
+import { childLogger } from "document-model";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 

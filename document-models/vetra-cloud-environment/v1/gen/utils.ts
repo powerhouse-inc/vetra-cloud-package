@@ -5,20 +5,20 @@ import {
   baseLoadFromInput,
   defaultBaseState,
   generateId,
-} from "document-model/core";
-import type {
-  VetraCloudEnvironmentGlobalState,
-  VetraCloudEnvironmentLocalState,
-} from "./types.js";
-import type { VetraCloudEnvironmentPHState } from "./types.js";
+} from "document-model";
 import { reducer } from "./reducer.js";
 import { vetraCloudEnvironmentDocumentType } from "./document-type.js";
 import {
-  isVetraCloudEnvironmentDocument,
   assertIsVetraCloudEnvironmentDocument,
-  isVetraCloudEnvironmentState,
   assertIsVetraCloudEnvironmentState,
+  isVetraCloudEnvironmentDocument,
+  isVetraCloudEnvironmentState,
 } from "./document-schema.js";
+import type {
+  VetraCloudEnvironmentGlobalState,
+  VetraCloudEnvironmentLocalState,
+  VetraCloudEnvironmentPHState,
+} from "./types.js";
 
 export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   label: null,
@@ -74,12 +74,3 @@ export const utils: DocumentModelUtils<VetraCloudEnvironmentPHState> = {
     return assertIsVetraCloudEnvironmentDocument(document);
   },
 };
-
-export const createDocument = utils.createDocument;
-export const createState = utils.createState;
-export const saveToFileHandle = utils.saveToFileHandle;
-export const loadFromInput = utils.loadFromInput;
-export const isStateOfType = utils.isStateOfType;
-export const assertIsStateOfType = utils.assertIsStateOfType;
-export const isDocumentOfType = utils.isDocumentOfType;
-export const assertIsDocumentOfType = utils.assertIsDocumentOfType;

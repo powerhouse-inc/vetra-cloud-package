@@ -1,43 +1,58 @@
-
 {
-  // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
-    // File Layout
     "outDir": "./dist",
     "rootDir": ".",
-    // Environment Settings
-    // See also https://aka.ms/tsconfig/module
     "module": "nodenext",
     "target": "esnext",
-    "types": ["node", "vitest/globals"],
-    "lib": ["ESNext", "dom", "dom.iterable"],
-
-    // Other Outputs
+    "types": [
+      "node",
+      "vitest/globals"
+    ],
+    "lib": [
+      "ESNext",
+      "dom",
+      "dom.iterable"
+    ],
     "sourceMap": false,
     "declaration": true,
     "declarationMap": true,
-
-    // Stricter Typechecking Options
-    // "noUncheckedIndexedAccess": true,
-    // "exactOptionalPropertyTypes": true,
-
-    // Style Options
-    // "noImplicitReturns": true,
-    // "noImplicitOverride": true,
-    // "noUnusedLocals": true,
-    // "noUnusedParameters": true,
-    // "noFallthroughCasesInSwitch": true,
-    // "noPropertyAccessFromIndexSignature": true,
-
-    // Recommended Options
     "strict": true,
     "jsx": "react-jsx",
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@powerhousedao/vetra-cloud-package/document-models": [
+        "./document-models/index.ts"
+      ],
+      "@powerhousedao/vetra-cloud-package/document-models/*": [
+        "./document-models/*/index.ts"
+      ],
+      "@powerhousedao/vetra-cloud-package/editors": [
+        "./editors/index.ts"
+      ],
+      "@powerhousedao/vetra-cloud-package/editors/*": [
+        "./editors/*/index.ts"
+      ],
+      "document-models/vetra-cloud-environment/v1": [
+        "./document-models/vetra-cloud-environment/v1/index.ts"
+      ]
+    }
   },
-  "include": ["**/*", "./powerhouse.manifest.json"],
-  "exclude": ["dist", "node_modules", ".ph", "vitest.config.ts", "**/*.test.ts", "**/e2e.test.ts", "**/gen/**/object.ts", "**/gen/object.ts"]
+  "include": [
+    "**/*",
+    "./powerhouse.manifest.json"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    ".ph",
+    "vitest.config.ts",
+    "**/*.test.ts",
+    "**/e2e.test.ts",
+    "**/gen/**/object.ts",
+    "**/gen/object.ts"
+  ]
 }

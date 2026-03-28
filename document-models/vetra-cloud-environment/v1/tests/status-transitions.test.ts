@@ -26,7 +26,7 @@ import {
   ApproveChangesInputSchema,
   TerminateEnvironmentInputSchema,
   MarkDestroyedInputSchema,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
 /** Helper to create an initialized document (CHANGES_APPROVED status) */
@@ -112,8 +112,11 @@ describe("StatusTransitionsOperations", () => {
           defaultPackageRegistry: null,
         }),
       );
-      const lastOp = result.operations.global[result.operations.global.length - 1];
-      expect(lastOp.error).toContain("INITIALIZE can only be called from DRAFT status");
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
+        "INITIALIZE can only be called from DRAFT status",
+      );
     });
   });
 
@@ -129,7 +132,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error when not in CHANGES_APPROVED status", () => {
       const document = utils.createDocument();
       const result = reducer(document, markChangesPushed({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "MARK_CHANGES_PUSHED can only be called from CHANGES_APPROVED status",
       );
@@ -149,7 +153,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error when not in CHANGES_PUSHED status", () => {
       const document = createInitializedDocument();
       const result = reducer(document, markDeploymentStarted({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "MARK_DEPLOYMENT_STARTED can only be called from CHANGES_PUSHED status",
       );
@@ -170,7 +175,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error when not in DEPLOYING status", () => {
       const document = createInitializedDocument();
       const result = reducer(document, reportDeploymentSucceeded({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "REPORT_DEPLOYMENT_SUCCEEDED can only be called from DEPLOYING status",
       );
@@ -200,7 +206,8 @@ describe("StatusTransitionsOperations", () => {
         document,
         reportDeploymentFailed({ code: "ERR", message: "fail" }),
       );
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "REPORT_DEPLOYMENT_FAILED can only be called from DEPLOYING status",
       );
@@ -222,7 +229,8 @@ describe("StatusTransitionsOperations", () => {
       const document = createInitializedDocument();
       expect(document.state.global.status).toBe("CHANGES_APPROVED");
       const result = reducer(document, approveChanges({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "APPROVE_CHANGES can only be called from CHANGES_PENDING status",
       );
@@ -231,7 +239,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error from DRAFT status", () => {
       const document = utils.createDocument();
       const result = reducer(document, approveChanges({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toBeTruthy();
     });
   });
@@ -280,7 +289,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error when not in TERMINATING status", () => {
       const document = createReadyDocument();
       const result = reducer(document, markDestroyed({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "MARK_DESTROYED can only be called from TERMINATING status",
       );
@@ -301,7 +311,8 @@ describe("StatusTransitionsOperations", () => {
     it("should error when not in DESTROYED status", () => {
       const document = createReadyDocument();
       const result = reducer(document, archive({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "ARCHIVE can only be called from DESTROYED status",
       );
@@ -327,7 +338,8 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("DESTROYED");
 
       const result = reducer(document, unarchive({}));
-      const lastOp = result.operations.global[result.operations.global.length - 1];
+      const lastOp =
+        result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
         "UNARCHIVE can only be called from ARCHIVED status",
       );

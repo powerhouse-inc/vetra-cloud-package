@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-empty-object-type */
 import * as z from "zod";
 import type {
   AddPackageInput,

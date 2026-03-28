@@ -4,7 +4,7 @@ import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
 import { VetraCloudEnvironmentProcessor } from "./index.js";
 import { up } from "./migrations.js";
-import { childLogger } from "document-drive";
+import { childLogger } from "document-model";
 
 const logger = childLogger(["vetra-cloud-environment-factory"]);
 

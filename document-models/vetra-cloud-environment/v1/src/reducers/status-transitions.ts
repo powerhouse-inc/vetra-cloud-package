@@ -1,5 +1,5 @@
 import { InvalidStatusTransitionError } from "../../gen/status-transitions/error.js";
-import type { VetraCloudEnvironmentStatusTransitionsOperations } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { VetraCloudEnvironmentStatusTransitionsOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnvironmentStatusTransitionsOperations =
   {

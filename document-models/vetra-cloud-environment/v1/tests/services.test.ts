@@ -14,7 +14,7 @@ import {
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
   SetServiceStatusInputSchema,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
 describe("ServicesOperations", () => {
@@ -27,7 +27,13 @@ describe("ServicesOperations", () => {
       );
 
       expect(updatedDocument.state.global.services).toStrictEqual([
-        { type: "CONNECT", prefix: "connect", enabled: true, url: null, status: "PROVISIONING" },
+        {
+          type: "CONNECT",
+          prefix: "connect",
+          enabled: true,
+          url: null,
+          status: "PROVISIONING",
+        },
       ]);
     });
 
@@ -48,9 +54,27 @@ describe("ServicesOperations", () => {
 
       expect(document.state.global.services).toHaveLength(3);
       expect(document.state.global.services).toStrictEqual([
-        { type: "CONNECT", prefix: "connect", enabled: true, url: null, status: "PROVISIONING" },
-        { type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "PROVISIONING" },
-        { type: "FUSION", prefix: "fusion", enabled: true, url: null, status: "PROVISIONING" },
+        {
+          type: "CONNECT",
+          prefix: "connect",
+          enabled: true,
+          url: null,
+          status: "PROVISIONING",
+        },
+        {
+          type: "SWITCHBOARD",
+          prefix: "switchboard",
+          enabled: true,
+          url: null,
+          status: "PROVISIONING",
+        },
+        {
+          type: "FUSION",
+          prefix: "fusion",
+          enabled: true,
+          url: null,
+          status: "PROVISIONING",
+        },
       ]);
     });
 

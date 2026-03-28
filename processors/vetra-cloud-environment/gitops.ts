@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { childLogger } from "document-drive";
+import { childLogger } from "document-model";
 import type {
   VetraCloudEnvironmentState,
 } from "../../document-models/vetra-cloud-environment/index.js";

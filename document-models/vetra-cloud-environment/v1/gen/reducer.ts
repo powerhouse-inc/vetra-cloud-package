@@ -1,9 +1,8 @@
-// TODO: remove eslint-disable rules once refactor is done
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
-import type { StateReducer } from "document-model";
-import { isDocumentAction, createReducer } from "document-model/core";
-import type { VetraCloudEnvironmentPHState } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { Reducer, StateReducer } from "document-model";
+import { isDocumentAction, createReducer } from "document-model";
+import type { VetraCloudEnvironmentPHState } from "document-models/vetra-cloud-environment/v1";
 
 import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/data-management.js";
 import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
@@ -300,5 +299,5 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
   }
 };
 
-export const reducer =
-  createReducer<VetraCloudEnvironmentPHState>(stateReducer);
+export const reducer: Reducer<VetraCloudEnvironmentPHState> =
+  createReducer(stateReducer);

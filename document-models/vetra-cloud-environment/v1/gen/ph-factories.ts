@@ -2,14 +2,14 @@
  * Factory methods for creating VetraCloudEnvironmentDocument instances
  */
 import type { PHAuthState, PHDocumentState, PHBaseState } from "document-model";
-import { createBaseState, defaultBaseState } from "document-model/core";
+import { createBaseState, defaultBaseState } from "document-model";
 import type {
   VetraCloudEnvironmentDocument,
-  VetraCloudEnvironmentLocalState,
   VetraCloudEnvironmentGlobalState,
+  VetraCloudEnvironmentLocalState,
   VetraCloudEnvironmentPHState,
 } from "./types.js";
-import { createDocument } from "./utils.js";
+import { utils } from "./utils.js";
 
 export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
   return {
@@ -83,7 +83,7 @@ export function createVetraCloudEnvironmentDocument(
     local?: Partial<VetraCloudEnvironmentLocalState>;
   }>,
 ): VetraCloudEnvironmentDocument {
-  const document = createDocument(
+  const document = utils.createDocument(
     state
       ? createState(
           createBaseState(state.auth, state.document),

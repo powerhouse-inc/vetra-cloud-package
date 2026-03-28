@@ -8,7 +8,7 @@ import {
   isVetraCloudEnvironmentDocument,
   AddPackageInputSchema,
   RemovePackageInputSchema,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
 describe("PackagesOperations", () => {

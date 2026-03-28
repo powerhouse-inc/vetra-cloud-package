@@ -1,6 +1,5 @@
 import type { DocumentModelModule } from "document-model";
-import { createState } from "document-model";
-import { defaultBaseState } from "document-model/core";
+import { createState, defaultBaseState } from "document-model";
 import type { VetraCloudEnvironmentPHState } from "./gen/types.js";
 import { documentModel } from "./gen/document-model.js";
 import { reducer } from "./gen/reducer.js";

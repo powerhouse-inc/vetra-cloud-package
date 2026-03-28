@@ -1,5 +1,5 @@
 import { ServiceNotFoundError } from "../../gen/services/error.js";
-import type { VetraCloudEnvironmentServicesOperations } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
   {
