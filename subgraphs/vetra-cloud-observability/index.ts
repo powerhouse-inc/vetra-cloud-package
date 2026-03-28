@@ -32,7 +32,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     // 2. Set up resolvers
     const prometheusUrl =
-      process.env.PROMETHEUS_URL ?? "http://prometheus-server.monitoring.svc";
+      process.env.PROMETHEUS_URL ?? "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
     const lokiUrl =
       process.env.LOKI_URL ?? "http://loki.monitoring.svc:3100";
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
