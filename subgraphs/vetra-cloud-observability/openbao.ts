@@ -56,8 +56,14 @@ export class OpenBaoClient {
     const res = await fetch(
       `${this.addr}/v1/kubernetes/creds/${ROLE}`,
       {
-        method: "GET",
-        headers: { "X-Vault-Token": vaultToken },
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Vault-Token": vaultToken,
+        },
+        body: JSON.stringify({
+          kubernetes_namespace: process.env.OPENBAO_K8S_NAMESPACE || "staging",
+        }),
       },
     );
 
