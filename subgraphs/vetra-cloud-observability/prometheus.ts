@@ -71,19 +71,21 @@ export class PrometheusClient {
       step: String(step),
     });
 
+    const url = `${this.baseUrl}/api/v1/query_range?${params.toString()}`;
     try {
-      const res = await fetch(
-        `${this.baseUrl}/api/v1/query_range?${params.toString()}`,
-      );
+      const res = await fetch(url);
       if (!res.ok) {
+        console.warn(`[prometheus] HTTP ${res.status} for ${url.substring(0, 120)}`);
         return [];
       }
       const json = (await res.json()) as PrometheusQueryRangeResponse;
       if (json.status !== "success" || json.data.resultType !== "matrix") {
+        console.warn(`[prometheus] unexpected response: status=${json.status} resultType=${json.data?.resultType}`);
         return [];
       }
       return parseMatrixResult(json.data.result);
-    } catch {
+    } catch (err) {
+      console.error(`[prometheus] fetch failed for ${url.substring(0, 120)}:`, err);
       return [];
     }
   }
