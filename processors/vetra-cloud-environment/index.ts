@@ -10,6 +10,7 @@ const logger = childLogger(["vetra-cloud-environment-processor"]);
 import { v4 as uuidv4 } from "uuid";
 
 interface IReactorClient {
+  get(identifier: string): Promise<unknown>;
   execute(documentIdentifier: string, branch: string, actions: Array<{ id: string; type: string; input: Record<string, unknown>; scope: string; timestampUtcMs: number }>): Promise<unknown>;
 }
 
@@ -71,12 +72,25 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     }
 
     for (const [documentId, { operation, context }] of lastByDocument) {
-      const phState = context.resultingState
+      let phState = context.resultingState
         ? JSON.parse(context.resultingState) as { global: VetraCloudEnvironmentState }
         : undefined;
 
+      // Fallback: fetch current document state if resultingState is missing
+      if (!phState && this.reactorClient) {
+        try {
+          const doc = await this.reactorClient.get(documentId) as any;
+          phState = doc?.state as { global: VetraCloudEnvironmentState } | undefined;
+          if (phState) {
+            logger.info(`Fetched current state for ${documentId} (resultingState was missing)`);
+          }
+        } catch (err) {
+          logger.warn(`Failed to fetch state for ${documentId}: ${String(err)}`);
+        }
+      }
+
       if (!phState) {
-        logger.warn(`No resulting state for operation ${operation.index} on ${documentId}`);
+        logger.warn(`No state available for operation ${operation.index} on ${documentId}`);
         continue;
       }
 
