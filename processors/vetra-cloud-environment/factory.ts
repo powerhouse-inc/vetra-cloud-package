@@ -17,7 +17,7 @@ export const vetraCloudEnvironmentProcessorFactory =
 
     await up(db);
 
-    const processor = new VetraCloudEnvironmentProcessor(db);
+    const processor = new VetraCloudEnvironmentProcessor(db, (module as any).reactorClient);
 
     return [
       {

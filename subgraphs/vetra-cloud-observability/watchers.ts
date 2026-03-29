@@ -108,10 +108,17 @@ export async function pruneEvents(
 // Watcher lifecycle types
 // ---------------------------------------------------------------------------
 
+export interface ReactorClient {
+  addActions(documentId: string, actions: Array<{ type: string; input: Record<string, unknown> }>): Promise<void>;
+}
+
 export interface WatcherDeps {
   db: Kysely<ObservabilityDB>;
   k8sToken: string;
   k8sApiUrl?: string;
+  reactorClient?: ReactorClient;
+  /** Map of tenantId → documentId for dispatching document actions */
+  tenantDocumentMap?: Map<string, string>;
 }
 
 export interface WatcherHandle {

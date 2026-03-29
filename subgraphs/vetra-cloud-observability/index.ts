@@ -16,21 +16,18 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
   private watcherHandle: WatcherHandle | null = null;
   private renewalTimer: ReturnType<typeof setTimeout> | null = null;
+  private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
   private leaseId: string | null = null;
   private openbao: OpenBaoClient | null = null;
   private leaseDuration: number = 3600;
 
   async onSetup() {
-    // Get a namespaced DB handle following the processor pattern.
-    // BaseSubgraph exposes relationalDb: IRelationalDbLegacy which has createNamespace().
     const db = (await this.relationalDb.createNamespace(
       "vetra-cloud-observability",
     )) as unknown as Kysely<ObservabilityDB>;
 
-    // 1. Run migrations
     await up(db as Kysely<any>);
 
-    // 2. Set up resolvers
     const prometheusUrl =
       process.env.PROMETHEUS_URL ?? "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
     const lokiUrl =
@@ -38,7 +35,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
 
-    // 3. Acquire K8s credentials and start watchers
+    // Acquire K8s credentials and start watchers
     const openbaoAddr = process.env.OPENBAO_ADDR;
     let k8sToken: string | null = null;
 
@@ -57,7 +54,6 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       }
     }
 
-    // Start watchers: use OpenBao token if available, otherwise in-cluster SA
     try {
       this.watcherHandle = startWatchers({
         db,
@@ -67,11 +63,18 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     } catch (err) {
       console.warn("[observability] Failed to start watchers:", err);
     }
+
+    // Start deployment reconciler: bridges ArgoCD status → document status
+    this.startDeploymentReconciler(db);
   }
 
   async onDisconnect() {
     this.watcherHandle?.stop();
     this.watcherHandle = null;
+    if (this.deploymentReconciler) {
+      clearInterval(this.deploymentReconciler);
+      this.deploymentReconciler = null;
+    }
     if (this.renewalTimer) {
       clearTimeout(this.renewalTimer);
       this.renewalTimer = null;
@@ -85,12 +88,103 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     }
   }
 
+  /**
+   * Periodically checks for environments in CHANGES_PUSHED/DEPLOYING status
+   * and transitions them to READY/FAILED based on ArgoCD state.
+   *
+   * Queries the processor's environments table (via a shared DB namespace)
+   * and the observability environment_status table.
+   */
+  private startDeploymentReconciler(observabilityDb: Kysely<ObservabilityDB>) {
+    const reconcile = async () => {
+      try {
+        // Get the processor's environments namespace to read document states
+        const envDb = (await this.relationalDb.createNamespace(
+          "vetra-cloud-environments",
+        )) as unknown as Kysely<any>;
+
+        // Find environments waiting for deployment
+        const pendingEnvs = await envDb
+          .selectFrom("environments")
+          .select(["id", "tenantId", "status", "name"])
+          .where("status", "in", ["CHANGES_PUSHED", "DEPLOYING"])
+          .execute() as Array<{ id: string; tenantId: string | null; status: string; name: string | null }>;
+
+        if (pendingEnvs.length === 0) return;
+
+        for (const env of pendingEnvs) {
+          if (!env.tenantId) continue;
+
+          // Check ArgoCD status for this tenant
+          const argoStatus = await observabilityDb
+            .selectFrom("environment_status")
+            .select(["argoSyncStatus", "argoHealthStatus"])
+            .where("tenantId", "=", env.tenantId)
+            .executeTakeFirst();
+
+          if (!argoStatus) continue;
+
+          const label = env.name ?? env.id;
+          const { argoSyncStatus, argoHealthStatus } = argoStatus;
+
+          if (env.status === "CHANGES_PUSHED") {
+            // ArgoCD started deploying
+            if (argoSyncStatus === "OUT_OF_SYNC" || argoHealthStatus === "PROGRESSING") {
+              console.info(`[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`);
+              await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
+            }
+          }
+
+          if (env.status === "DEPLOYING" || env.status === "CHANGES_PUSHED") {
+            // ArgoCD completed successfully
+            if (argoSyncStatus === "SYNCED" && argoHealthStatus === "HEALTHY") {
+              console.info(`[deployment-reconciler] ${label}: → READY (synced + healthy)`);
+              await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_SUCCEEDED", {});
+            }
+            // ArgoCD failed
+            if (argoHealthStatus === "DEGRADED" || argoHealthStatus === "MISSING") {
+              console.info(`[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus})`);
+              await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
+                code: argoHealthStatus,
+                message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
+              });
+            }
+          }
+        }
+      } catch (err) {
+        // Don't log on every tick if the processor table doesn't exist yet
+        if (String(err).includes("does not exist")) return;
+        console.warn("[deployment-reconciler] error:", err);
+      }
+    };
+
+    // Run every 30 seconds
+    this.deploymentReconciler = setInterval(() => void reconcile(), 30_000);
+    // Run once immediately
+    void reconcile();
+  }
+
+  private async dispatchAction(documentId: string, type: string, input: Record<string, unknown>) {
+    try {
+      const action = {
+        id: `${type}-${Date.now()}`,
+        type,
+        input,
+        scope: "global",
+        timestampUtcMs: Date.now(),
+      };
+      await this.reactorClient.execute(documentId, "main", [action] as any);
+      console.info(`[deployment-reconciler] Dispatched ${type} for ${documentId}`);
+    } catch (err) {
+      console.error(`[deployment-reconciler] Failed to dispatch ${type}: ${String(err)}`);
+    }
+  }
+
   private scheduleRenewal(leaseDuration: number) {
     const renewAt = Math.floor(leaseDuration * 0.8) * 1000;
     this.renewalTimer = setTimeout(async () => {
       if (!this.openbao || !this.leaseId) return;
       try {
-        // renewLease returns void; re-schedule with the same TTL
         await this.openbao.renewLease(this.leaseId);
         this.scheduleRenewal(leaseDuration);
       } catch (err) {

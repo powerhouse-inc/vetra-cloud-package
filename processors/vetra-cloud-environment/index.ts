@@ -7,11 +7,36 @@ import { childLogger } from "document-model";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
+import { v4 as uuidv4 } from "uuid";
+
+interface IReactorClient {
+  execute(documentIdentifier: string, branch: string, actions: Array<{ id: string; type: string; input: Record<string, unknown>; scope: string; timestampUtcMs: number }>): Promise<unknown>;
+}
+
+function makeAction(type: string, input: Record<string, unknown> = {}) {
+  return { id: uuidv4(), type, input, scope: "global", timestampUtcMs: Date.now() };
+}
+
 export class VetraCloudEnvironmentProcessor implements IProcessor {
   private relationalDb: Kysely<DB>;
+  private reactorClient?: IReactorClient;
 
-  constructor(relationalDb: Kysely<DB>) {
+  constructor(relationalDb: Kysely<DB>, reactorClient?: IReactorClient) {
     this.relationalDb = relationalDb;
+    this.reactorClient = reactorClient;
+  }
+
+  private async dispatchAction(documentId: string, type: string, input: Record<string, unknown> = {}) {
+    if (!this.reactorClient) {
+      logger.warn(`Cannot dispatch ${type}: no reactor client`);
+      return;
+    }
+    try {
+      await this.reactorClient.execute(documentId, "main", [makeAction(type, input)]);
+      logger.info(`Dispatched ${type} for ${documentId}`);
+    } catch (err) {
+      logger.error(`Failed to dispatch ${type} for ${documentId}: ${String(err)}`);
+    }
   }
 
   async onOperations(operations: OperationWithContext[]): Promise<void> {
@@ -100,12 +125,22 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           .execute();
       }
 
-      logger.info(`Triggering gitops sync for "${label}"`);
-      try {
-        await syncEnvironment(state, documentId);
-        logger.info(`Gitops sync completed for "${label}"`);
-      } catch (error) {
-        logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
+      // Only sync to git when changes are approved
+      if (status === "CHANGES_APPROVED" || status === "CHANGES_PENDING") {
+        logger.info(`Triggering gitops sync for "${label}" (status: ${status})`);
+        try {
+          await syncEnvironment(state, documentId);
+          logger.info(`Gitops sync completed for "${label}"`);
+
+          // After successful git push, transition to CHANGES_PUSHED
+          if (status === "CHANGES_APPROVED") {
+            await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+          }
+        } catch (error) {
+          logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
+        }
+      } else {
+        logger.info(`Skipping gitops sync for "${label}" (status: ${status})`);
       }
     }
   }
