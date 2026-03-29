@@ -264,7 +264,7 @@ async function reconcile(
     };
 
     for (const app of appsBody.items ?? []) {
-      const tenantId = app.metadata?.labels?.["vetra.io/tenant-id"];
+      const tenantId = app.metadata?.labels?.["tenant"];
       if (!tenantId) continue;
 
       const syncStatus = app.status?.sync?.status ?? "Unknown";
@@ -396,7 +396,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
             };
           };
 
-          const tenantId = app.metadata?.labels?.["vetra.io/tenant-id"];
+          const tenantId = app.metadata?.labels?.["tenant"];
           if (!tenantId) return;
 
           const syncStatus = app.status?.sync?.status ?? "Unknown";
