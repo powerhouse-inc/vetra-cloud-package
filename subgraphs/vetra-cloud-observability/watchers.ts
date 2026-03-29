@@ -16,9 +16,13 @@ export function classifyPodService(podName: string): string {
   return "OTHER";
 }
 
-/** Uppercase enum values to match GraphQL schema (K8s returns Mixed case). */
+/** Uppercase enum values to match GraphQL schema (K8s returns Mixed case).
+ *  Handles camelCase (e.g. OutOfSync → OUT_OF_SYNC) and spaces. */
 function toUpperEnum(val: string): string {
-  return val.toUpperCase().replace(/ /g, "_");
+  return val
+    .replace(/([a-z])([A-Z])/g, "$1_$2")
+    .toUpperCase()
+    .replace(/ /g, "_");
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +113,10 @@ export async function pruneEvents(
 // ---------------------------------------------------------------------------
 
 export interface ReactorClient {
-  addActions(documentId: string, actions: Array<{ type: string; input: Record<string, unknown> }>): Promise<void>;
+  addActions(
+    documentId: string,
+    actions: Array<{ type: string; input: Record<string, unknown> }>,
+  ): Promise<void>;
 }
 
 export interface WatcherDeps {
@@ -220,9 +227,8 @@ async function reconcile(
   k8sApiUrl: string,
 ): Promise<void> {
   try {
-    const { KubeConfig, CustomObjectsApi, CoreV1Api } = await import(
-      "@kubernetes/client-node"
-    );
+    const { KubeConfig, CustomObjectsApi, CoreV1Api } =
+      await import("@kubernetes/client-node");
 
     const kc = new KubeConfig();
     if (k8sToken) {
@@ -364,9 +370,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
       if (k8sToken) {
         const server = k8sApiUrl || "https://kubernetes.default.svc";
         kc.loadFromOptions({
-          clusters: [
-            { name: "cluster", server, skipTLSVerify: true },
-          ],
+          clusters: [{ name: "cluster", server, skipTLSVerify: true }],
           users: [{ name: "user", token: k8sToken }],
           contexts: [{ name: "ctx", cluster: "cluster", user: "user" }],
           currentContext: "ctx",
@@ -401,8 +405,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
 
           const syncStatus = app.status?.sync?.status ?? "Unknown";
           const healthStatus = app.status?.health?.status ?? "Unknown";
-          const lastSyncedAt =
-            app.status?.operationState?.finishedAt ?? null;
+          const lastSyncedAt = app.status?.operationState?.finishedAt ?? null;
           const message =
             app.status?.health?.message ??
             app.status?.operationState?.message ??
@@ -427,13 +430,16 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
           });
 
           // Also record sync/health changes as deployment events
-          const eventType = healthStatus === "Degraded" || healthStatus === "Missing"
-            ? "WARNING" : "NORMAL";
-          const reason = syncStatus === "Synced" && healthStatus === "Healthy"
-            ? "SyncSucceeded"
-            : syncStatus === "OutOfSync"
-              ? "SyncOutOfSync"
-              : `${syncStatus}/${healthStatus}`;
+          const eventType =
+            healthStatus === "Degraded" || healthStatus === "Missing"
+              ? "WARNING"
+              : "NORMAL";
+          const reason =
+            syncStatus === "Synced" && healthStatus === "Healthy"
+              ? "SyncSucceeded"
+              : syncStatus === "OutOfSync"
+                ? "SyncOutOfSync"
+                : `${syncStatus}/${healthStatus}`;
 
           await insertEvent(db, {
             id: `argo-${tenantId}-${Date.now()}`,
@@ -501,7 +507,11 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
         async (_phase: string, obj: unknown) => {
           const event = obj as {
             metadata?: { uid?: string };
-            involvedObject?: { namespace?: string; kind?: string; name?: string };
+            involvedObject?: {
+              namespace?: string;
+              kind?: string;
+              name?: string;
+            };
             type?: string;
             reason?: string;
             message?: string;

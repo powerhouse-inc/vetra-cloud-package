@@ -29,9 +29,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     await up(db as Kysely<any>);
 
     const prometheusUrl =
-      process.env.PROMETHEUS_URL ?? "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
-    const lokiUrl =
-      process.env.LOKI_URL ?? "http://loki.monitoring.svc:3100";
+      process.env.PROMETHEUS_URL ??
+      "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
+    const lokiUrl = process.env.LOKI_URL ?? "http://loki.monitoring.svc:3100";
 
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
 
@@ -50,7 +50,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         this.scheduleRenewal(creds.leaseDuration);
         console.info("[observability] Acquired K8s token via OpenBao");
       } catch (err) {
-        console.warn("[observability] OpenBao failed, falling back to in-cluster SA:", err);
+        console.warn(
+          "[observability] OpenBao failed, falling back to in-cluster SA:",
+          err,
+        );
       }
     }
 
@@ -59,7 +62,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         db,
         k8sToken: k8sToken ?? "",
       });
-      console.info(`[observability] Watchers started (${k8sToken ? "OpenBao token" : "in-cluster SA"})`);
+      console.info(
+        `[observability] Watchers started (${k8sToken ? "OpenBao token" : "in-cluster SA"})`,
+      );
     } catch (err) {
       console.warn("[observability] Failed to start watchers:", err);
     }
@@ -104,11 +109,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         )) as unknown as Kysely<any>;
 
         // Find environments waiting for deployment
-        const pendingEnvs = await envDb
+        const pendingEnvs = (await envDb
           .selectFrom("environments")
           .select(["id", "tenantId", "status", "name"])
           .where("status", "in", ["CHANGES_PUSHED", "DEPLOYING"])
-          .execute() as Array<{ id: string; tenantId: string | null; status: string; name: string | null }>;
+          .execute()) as Array<{
+          id: string;
+          tenantId: string | null;
+          status: string;
+          name: string | null;
+        }>;
 
         if (pendingEnvs.length === 0) return;
 
@@ -128,27 +138,43 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           const { argoSyncStatus, argoHealthStatus } = argoStatus;
 
           if (env.status === "CHANGES_PUSHED") {
-            // ArgoCD started deploying
-            if (argoSyncStatus === "OUT_OF_SYNC" || argoHealthStatus === "PROGRESSING") {
-              console.info(`[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`);
+            if (argoHealthStatus === "HEALTHY") {
+              // Fast path: already healthy — go straight through DEPLOYING → READY
+              console.info(
+                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING → READY (healthy)`,
+              );
+              await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
+              await this.dispatchAction(
+                env.id,
+                "REPORT_DEPLOYMENT_SUCCEEDED",
+                {},
+              );
+            } else if (
+              argoHealthStatus === "PROGRESSING" ||
+              argoSyncStatus === "OUT_OF_SYNC"
+            ) {
+              console.info(
+                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`,
+              );
               await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
             }
-          }
-
-          if (env.status === "DEPLOYING" || env.status === "CHANGES_PUSHED") {
-            // ArgoCD completed successfully
-            if (argoSyncStatus === "SYNCED" && argoHealthStatus === "HEALTHY") {
-              // Must go through DEPLOYING before READY
-              if (env.status === "CHANGES_PUSHED") {
-                console.info(`[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`);
-                await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
-              }
-              console.info(`[deployment-reconciler] ${label}: → READY (synced + healthy)`);
-              await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_SUCCEEDED", {});
-            }
-            // ArgoCD failed
-            if (argoHealthStatus === "DEGRADED" || argoHealthStatus === "MISSING") {
-              console.info(`[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus})`);
+          } else if (env.status === "DEPLOYING") {
+            if (argoHealthStatus === "HEALTHY") {
+              console.info(
+                `[deployment-reconciler] ${label}: DEPLOYING → READY (healthy)`,
+              );
+              await this.dispatchAction(
+                env.id,
+                "REPORT_DEPLOYMENT_SUCCEEDED",
+                {},
+              );
+            } else if (
+              argoHealthStatus === "DEGRADED" ||
+              argoHealthStatus === "MISSING"
+            ) {
+              console.info(
+                `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus})`,
+              );
               await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
                 code: argoHealthStatus,
                 message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
@@ -169,7 +195,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     void reconcile();
   }
 
-  private async dispatchAction(documentId: string, type: string, input: Record<string, unknown>) {
+  private async dispatchAction(
+    documentId: string,
+    type: string,
+    input: Record<string, unknown>,
+  ) {
     try {
       const action = {
         id: `${type}-${Date.now()}`,
@@ -179,9 +209,13 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         timestampUtcMs: Date.now(),
       };
       await this.reactorClient.execute(documentId, "main", [action] as any);
-      console.info(`[deployment-reconciler] Dispatched ${type} for ${documentId}`);
+      console.info(
+        `[deployment-reconciler] Dispatched ${type} for ${documentId}`,
+      );
     } catch (err) {
-      console.error(`[deployment-reconciler] Failed to dispatch ${type}: ${String(err)}`);
+      console.error(
+        `[deployment-reconciler] Failed to dispatch ${type}: ${String(err)}`,
+      );
     }
   }
 
