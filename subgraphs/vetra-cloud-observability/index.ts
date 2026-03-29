@@ -138,6 +138,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           if (env.status === "DEPLOYING" || env.status === "CHANGES_PUSHED") {
             // ArgoCD completed successfully
             if (argoSyncStatus === "SYNCED" && argoHealthStatus === "HEALTHY") {
+              // Must go through DEPLOYING before READY
+              if (env.status === "CHANGES_PUSHED") {
+                console.info(`[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`);
+                await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
+              }
               console.info(`[deployment-reconciler] ${label}: → READY (synced + healthy)`);
               await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_SUCCEEDED", {});
             }
