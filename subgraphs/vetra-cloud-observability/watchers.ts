@@ -418,6 +418,26 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
             domainResolves: null,
             updatedAt: new Date().toISOString(),
           });
+
+          // Also record sync/health changes as deployment events
+          const eventType = healthStatus === "Degraded" || healthStatus === "Missing"
+            ? "WARNING" : "NORMAL";
+          const reason = syncStatus === "Synced" && healthStatus === "Healthy"
+            ? "SyncSucceeded"
+            : syncStatus === "OutOfSync"
+              ? "SyncOutOfSync"
+              : `${syncStatus}/${healthStatus}`;
+
+          await insertEvent(db, {
+            id: `argo-${tenantId}-${Date.now()}`,
+            tenantId,
+            type: eventType,
+            reason,
+            message: message ?? `Sync: ${syncStatus}, Health: ${healthStatus}`,
+            involvedObject: `Application/${tenantId}`,
+            timestamp: lastSyncedAt ?? new Date().toISOString(),
+          });
+          await pruneEvents(db, tenantId);
         },
         "argo-apps",
       );
