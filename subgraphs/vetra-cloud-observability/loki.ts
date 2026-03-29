@@ -83,7 +83,7 @@ export class LokiClient {
   ): Promise<LogEntry[]> {
     let query = `{namespace="${tenantId}"}`;
     if (service) {
-      query = `{namespace="${tenantId}", app="${service.toLowerCase()}"}`;
+      query = `{namespace="${tenantId}", container="${service.toLowerCase()}"}`;
     }
     return this.queryRange(query, since, limit);
   }
