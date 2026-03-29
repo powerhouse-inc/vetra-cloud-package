@@ -228,7 +228,7 @@ export function generateValuesYaml(
   const connectEnabled = state.services.some(
     (s) => s.type === "CONNECT" && s.enabled,
   );
-  const DISABLED_STATUSES = new Set(["DRAFT", "TERMINATING", "DESTROYED", "ARCHIVED"]);
+  const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
   const disabled = DISABLED_STATUSES.has(state.status);
 
   const phPackages =
