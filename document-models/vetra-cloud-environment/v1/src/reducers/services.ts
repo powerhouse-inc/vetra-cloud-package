@@ -1,5 +1,6 @@
 import { ServiceNotFoundError } from "../../gen/services/error.js";
 import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
+import { markPendingIfDeployed } from "./utils.js";
 
 export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
   {
@@ -21,7 +22,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           status: "PROVISIONING",
         });
       }
-      if (state.status === "READY") state.status = "CHANGES_PENDING";
+      markPendingIfDeployed(state);
     },
     disableServiceOperation(state, action) {
       const { type } = action.input;
@@ -31,7 +32,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       const service = state.services.find((s) => s.type === type);
       if (service) {
         service.enabled = false;
-        if (state.status === "READY") state.status = "CHANGES_PENDING";
+        markPendingIfDeployed(state);
       }
     },
     toggleServiceOperation(state, action) {
@@ -42,7 +43,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         );
       }
       service.enabled = !service.enabled;
-      if (state.status === "READY") state.status = "CHANGES_PENDING";
+      markPendingIfDeployed(state);
     },
     updateServicePrefixOperation(state, action) {
       const service = state.services.find((s) => s.type === action.input.type);
@@ -52,7 +53,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         );
       }
       service.prefix = action.input.prefix;
-      if (state.status === "READY") state.status = "CHANGES_PENDING";
+      markPendingIfDeployed(state);
     },
     setServiceStatusOperation(state, action) {
       const service = state.services.find((s) => s.type === action.input.type);

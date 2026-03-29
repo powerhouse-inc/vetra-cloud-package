@@ -1,4 +1,5 @@
 import type { VetraCloudEnvironmentPackagesOperations } from "document-models/vetra-cloud-environment/v1";
+import { markPendingIfDeployed } from "./utils.js";
 
 export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPackagesOperations =
   {
@@ -20,7 +21,7 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
           version: resolvedVersion,
         });
       }
-      if (state.status === "READY") state.status = "CHANGES_PENDING";
+      markPendingIfDeployed(state);
     },
     removePackageOperation(state, action) {
       const { packageName } = action.input;
@@ -29,7 +30,7 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
       }
       if (packageName) {
         state.packages = state.packages.filter((p) => p.name !== packageName);
-        if (state.status === "READY") state.status = "CHANGES_PENDING";
+        markPendingIfDeployed(state);
       }
     },
   };

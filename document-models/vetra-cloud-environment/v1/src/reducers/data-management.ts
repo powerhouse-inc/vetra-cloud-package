@@ -1,17 +1,18 @@
 import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
+import { markPendingIfDeployed } from "./utils.js";
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
   {
     setLabelOperation(state, action) {
       if (action.input.label) {
         state.label = action.input.label;
-        if (state.status === "READY") state.status = "CHANGES_PENDING";
+        markPendingIfDeployed(state);
       }
     },
     setGenericSubdomainOperation(state, action) {
       if (action.input.genericSubdomain) {
         state.genericSubdomain = action.input.genericSubdomain;
-        if (state.status === "READY") state.status = "CHANGES_PENDING";
+        markPendingIfDeployed(state);
       }
     },
     setCustomDomainOperation(state, action) {
@@ -20,18 +21,19 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       const enabled = action.input.enabled;
 
       // Auto-generate DNS A records for each enabled service when domain is set
-      const dnsRecords = enabled && domain
-        ? (state.services ?? [])
-            .filter((s) => s.enabled)
-            .map((s) => ({
-              type: "A",
-              host: `${s.prefix}.${domain}`,
-              value: LB_IP,
-            }))
-        : [];
+      const dnsRecords =
+        enabled && domain
+          ? (state.services ?? [])
+              .filter((s) => s.enabled)
+              .map((s) => ({
+                type: "A",
+                host: `${s.prefix}.${domain}`,
+                value: LB_IP,
+              }))
+          : [];
 
       state.customDomain = { enabled, domain, dnsRecords };
-      if (state.status === "READY") state.status = "CHANGES_PENDING";
+      markPendingIfDeployed(state);
     },
     setDnsRecordsOperation(state, action) {
       if (!state.customDomain) {
