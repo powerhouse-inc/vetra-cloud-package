@@ -12,6 +12,8 @@ import {
   SetCustomDomainInputSchema,
   setDnsRecords,
   SetDnsRecordsInputSchema,
+  setDefaultPackageRegistry,
+  SetDefaultPackageRegistryInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
@@ -243,6 +245,23 @@ describe("DataManagementOperations", () => {
     expect(updatedDocument.operations.global).toHaveLength(1);
     expect(updatedDocument.operations.global[0].action.type).toBe(
       "SET_DNS_RECORDS",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setDefaultPackageRegistry operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetDefaultPackageRegistryInputSchema());
+
+    const updatedDocument = reducer(document, setDefaultPackageRegistry(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_DEFAULT_PACKAGE_REGISTRY",
     );
     expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
       input,

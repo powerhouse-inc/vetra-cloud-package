@@ -98,6 +98,10 @@ input SetCustomDomainInput {
   domain: String
 }
 
+input SetDefaultPackageRegistryInput {
+  defaultPackageRegistry: URL!
+}
+
 input SetDnsRecordsInput {
   records: [DnsRecordInput!]!
 }

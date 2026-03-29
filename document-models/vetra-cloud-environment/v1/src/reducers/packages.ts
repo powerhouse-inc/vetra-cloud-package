@@ -1,5 +1,5 @@
-import type { VetraCloudEnvironmentPackagesOperations } from "document-models/vetra-cloud-environment/v1";
 import { markPendingIfDeployed } from "./utils.js";
+import type { VetraCloudEnvironmentPackagesOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPackagesOperations =
   {

@@ -3,6 +3,7 @@ import type {
   SetLabelAction,
   SetGenericSubdomainAction,
   SetCustomDomainAction,
+  SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
@@ -21,6 +22,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setCustomDomainOperation: (
     state: VetraCloudEnvironmentState,
     action: SetCustomDomainAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setDefaultPackageRegistryOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetDefaultPackageRegistryAction,
     dispatch?: SignalDispatch,
   ) => void;
   setDnsRecordsOperation: (

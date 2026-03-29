@@ -17,6 +17,7 @@ import type {
   ReportDeploymentSucceededInput,
   ServiceStatus,
   SetCustomDomainInput,
+  SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
@@ -198,6 +199,14 @@ export function SetCustomDomainInputSchema(): z.ZodObject<
   return z.object({
     domain: z.string().nullish(),
     enabled: z.boolean(),
+  });
+}
+
+export function SetDefaultPackageRegistryInputSchema(): z.ZodObject<
+  Properties<SetDefaultPackageRegistryInput>
+> {
+  return z.object({
+    defaultPackageRegistry: z.url(),
   });
 }
 

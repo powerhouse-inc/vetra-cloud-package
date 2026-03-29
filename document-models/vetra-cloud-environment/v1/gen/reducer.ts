@@ -13,6 +13,7 @@ import {
   SetLabelInputSchema,
   SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
+  SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
@@ -70,6 +71,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetCustomDomainInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setCustomDomainOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_DEFAULT_PACKAGE_REGISTRY": {
+      SetDefaultPackageRegistryInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setDefaultPackageRegistryOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

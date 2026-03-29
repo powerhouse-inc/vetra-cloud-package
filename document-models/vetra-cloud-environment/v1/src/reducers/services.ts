@@ -1,6 +1,6 @@
 import { ServiceNotFoundError } from "../../gen/services/error.js";
-import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 import { markPendingIfDeployed } from "./utils.js";
+import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
   {

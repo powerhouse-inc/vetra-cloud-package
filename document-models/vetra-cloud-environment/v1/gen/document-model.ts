@@ -70,6 +70,20 @@ export const documentModel: DocumentModelGlobalState = {
               scope: "global",
             },
             {
+              id: "op-set-default-registry",
+              name: "SET_DEFAULT_PACKAGE_REGISTRY",
+              description:
+                "Set the default package registry URL for this environment",
+              schema:
+                "input SetDefaultPackageRegistryInput {\n  defaultPackageRegistry: URL!\n}",
+              template: "",
+              reducer:
+                "state.defaultPackageRegistry = action.input.defaultPackageRegistry;",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
               id: "op-set-dns-records",
               name: "SET_DNS_RECORDS",
               description: "",

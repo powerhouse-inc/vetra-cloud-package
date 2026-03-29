@@ -136,6 +136,10 @@ export type SetCustomDomainInput = {
   enabled: Scalars["Boolean"]["input"];
 };
 
+export type SetDefaultPackageRegistryInput = {
+  defaultPackageRegistry: Scalars["URL"]["input"];
+};
+
 export type SetDnsRecordsInput = {
   records: Array<DnsRecordInput>;
 };

@@ -3,18 +3,21 @@ import {
   SetLabelInputSchema,
   SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
+  SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
 } from "../schema/zod.js";
 import type {
   SetLabelInput,
   SetGenericSubdomainInput,
   SetCustomDomainInput,
+  SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
 } from "../types.js";
 import type {
   SetLabelAction,
   SetGenericSubdomainAction,
   SetCustomDomainAction,
+  SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
 } from "./actions.js";
 
@@ -42,6 +45,17 @@ export const setCustomDomain = (input: SetCustomDomainInput) =>
     { ...input },
     undefined,
     SetCustomDomainInputSchema,
+    "global",
+  );
+
+export const setDefaultPackageRegistry = (
+  input: SetDefaultPackageRegistryInput,
+) =>
+  createAction<SetDefaultPackageRegistryAction>(
+    "SET_DEFAULT_PACKAGE_REGISTRY",
+    { ...input },
+    undefined,
+    SetDefaultPackageRegistryInputSchema,
     "global",
   );
 

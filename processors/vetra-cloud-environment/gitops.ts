@@ -325,13 +325,6 @@ switchboard:
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
-  resources:
-    requests:
-      cpu: 1
-      memory: 2Gi
-    limits:
-      cpu: 2
-      memory: 4Gi
   livenessProbe:
     enabled: true
     exec:
@@ -389,13 +382,6 @@ connect:
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
-  resources:
-    requests:
-      cpu: 1
-      memory: 2Gi
-    limits:
-      cpu: 2
-      memory: 4Gi
   livenessProbe:
     enabled: true
     httpGet:

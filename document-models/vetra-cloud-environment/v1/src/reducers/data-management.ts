@@ -1,5 +1,5 @@
-import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 import { markPendingIfDeployed } from "./utils.js";
+import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
   {
@@ -44,5 +44,8 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
         host: r.host,
         value: r.value,
       }));
+    },
+    setDefaultPackageRegistryOperation(state, action) {
+      state.defaultPackageRegistry = action.input.defaultPackageRegistry;
     },
   };
