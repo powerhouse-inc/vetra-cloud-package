@@ -5,13 +5,13 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
     setLabelOperation(state, action) {
       if (action.input.label) {
         state.label = action.input.label;
-        state.status = "CHANGES_PENDING";
+        if (state.status === "READY") state.status = "CHANGES_PENDING";
       }
     },
     setGenericSubdomainOperation(state, action) {
       if (action.input.genericSubdomain) {
         state.genericSubdomain = action.input.genericSubdomain;
-        state.status = "CHANGES_PENDING";
+        if (state.status === "READY") state.status = "CHANGES_PENDING";
       }
     },
     setCustomDomainOperation(state, action) {
@@ -31,7 +31,7 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
         : [];
 
       state.customDomain = { enabled, domain, dnsRecords };
-      state.status = "CHANGES_PENDING";
+      if (state.status === "READY") state.status = "CHANGES_PENDING";
     },
     setDnsRecordsOperation(state, action) {
       if (!state.customDomain) {

@@ -20,7 +20,7 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
           version: resolvedVersion,
         });
       }
-      state.status = "CHANGES_PENDING";
+      if (state.status === "READY") state.status = "CHANGES_PENDING";
     },
     removePackageOperation(state, action) {
       const { packageName } = action.input;
@@ -29,7 +29,7 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
       }
       if (packageName) {
         state.packages = state.packages.filter((p) => p.name !== packageName);
-        state.status = "CHANGES_PENDING";
+        if (state.status === "READY") state.status = "CHANGES_PENDING";
       }
     },
   };

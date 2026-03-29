@@ -14,7 +14,7 @@ export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnviron
       state.genericBaseDomain = action.input.genericBaseDomain;
       state.defaultPackageRegistry =
         action.input.defaultPackageRegistry || null;
-      state.status = "CHANGES_APPROVED";
+      // Stay in DRAFT — user must explicitly approve to trigger deployment
     },
     markChangesPushedOperation(state, action) {
       if (state.status !== "CHANGES_APPROVED") {
@@ -53,9 +53,9 @@ export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnviron
       state.status = "DEPLOYMENt_FAILED";
     },
     approveChangesOperation(state, action) {
-      if (state.status !== "CHANGES_PENDING") {
+      if (state.status !== "CHANGES_PENDING" && state.status !== "DRAFT") {
         throw new InvalidStatusTransitionError(
-          "APPROVE_CHANGES can only be called from CHANGES_PENDING status, current: " +
+          "APPROVE_CHANGES can only be called from DRAFT or CHANGES_PENDING status, current: " +
             state.status,
         );
       }

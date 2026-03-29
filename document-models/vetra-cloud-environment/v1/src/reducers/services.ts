@@ -21,7 +21,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           status: "PROVISIONING",
         });
       }
-      state.status = "CHANGES_PENDING";
+      if (state.status === "READY") state.status = "CHANGES_PENDING";
     },
     disableServiceOperation(state, action) {
       const { type } = action.input;
@@ -31,7 +31,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       const service = state.services.find((s) => s.type === type);
       if (service) {
         service.enabled = false;
-        state.status = "CHANGES_PENDING";
+        if (state.status === "READY") state.status = "CHANGES_PENDING";
       }
     },
     toggleServiceOperation(state, action) {
@@ -42,7 +42,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         );
       }
       service.enabled = !service.enabled;
-      state.status = "CHANGES_PENDING";
+      if (state.status === "READY") state.status = "CHANGES_PENDING";
     },
     updateServicePrefixOperation(state, action) {
       const service = state.services.find((s) => s.type === action.input.type);
@@ -52,7 +52,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         );
       }
       service.prefix = action.input.prefix;
-      state.status = "CHANGES_PENDING";
+      if (state.status === "READY") state.status = "CHANGES_PENDING";
     },
     setServiceStatusOperation(state, action) {
       const service = state.services.find((s) => s.type === action.input.type);
