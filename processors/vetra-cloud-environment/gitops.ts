@@ -301,7 +301,7 @@ switchboard:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
-    tag: staging
+    tag: dev
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -361,7 +361,7 @@ connect:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
-    tag: staging
+    tag: dev
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
