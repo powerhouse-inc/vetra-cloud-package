@@ -139,6 +139,16 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           .execute();
       }
 
+      // Auto-approve changes for environments with autoUpdate enabled
+      if (status === "CHANGES_PENDING" && state.autoUpdate) {
+        logger.info(`Auto-approving changes for "${label}" (autoUpdate enabled)`);
+        try {
+          await this.dispatchAction(documentId, "APPROVE_CHANGES", {});
+        } catch (error) {
+          logger.error(`Auto-approve failed for "${label}": ${String(error)}`);
+        }
+      }
+
       // Only sync to git when changes are approved
       if (status === "CHANGES_APPROVED" || status === "CHANGES_PENDING") {
         logger.info(`Triggering gitops sync for "${label}" (status: ${status})`);

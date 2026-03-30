@@ -247,6 +247,11 @@ export function generateValuesYaml(
   const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
 
+  const switchboardService = state.services.find((s) => s.type === "SWITCHBOARD");
+  const connectService = state.services.find((s) => s.type === "CONNECT");
+  const switchboardTag = switchboardService?.imageTag ?? state.autoUpdateChannel ?? "dev";
+  const connectTag = connectService?.imageTag ?? state.autoUpdateChannel ?? "dev";
+
   return `global:
   disabled: ${disabled}
   subdomain: ${yamlQuote(subdomain)}
@@ -301,7 +306,7 @@ switchboard:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
-    tag: dev
+    tag: ${switchboardTag}
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -361,7 +366,7 @@ connect:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
-    tag: dev
+    tag: ${connectTag}
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
