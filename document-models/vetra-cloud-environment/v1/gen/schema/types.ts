@@ -131,6 +131,10 @@ export type ServiceStatus =
   | "PROVISIONING"
   | "SUSPENDED";
 
+export type SetAutoUpdateChannelInput = {
+  channel: Scalars["String"]["input"];
+};
+
 export type SetCustomDomainInput = {
   domain?: InputMaybe<Scalars["String"]["input"]>;
   enabled: Scalars["Boolean"]["input"];
@@ -148,6 +152,11 @@ export type SetGenericSubdomainInput = {
   genericSubdomain: Scalars["String"]["input"];
 };
 
+export type SetImageTagInput = {
+  serviceType: VetraCloudEnvironmentServiceType;
+  tag: Scalars["String"]["input"];
+};
+
 export type SetLabelInput = {
   label: Scalars["String"]["input"];
 };
@@ -160,6 +169,10 @@ export type SetServiceStatusInput = {
 
 export type TerminateEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type ToggleAutoUpdateInput = {
+  enabled: Scalars["Boolean"]["input"];
 };
 
 export type ToggleServiceInput = {
@@ -177,6 +190,7 @@ export type UpdateServicePrefixInput = {
 
 export type VetraCloudEnvironmentService = {
   enabled: Scalars["Boolean"]["output"];
+  imageTag: Maybe<Scalars["String"]["output"]>;
   prefix: Scalars["String"]["output"];
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
@@ -189,6 +203,8 @@ export type VetraCloudEnvironmentServiceType =
   | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
+  autoUpdate: Maybe<Scalars["Boolean"]["output"]>;
+  autoUpdateChannel: Maybe<Scalars["String"]["output"]>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;

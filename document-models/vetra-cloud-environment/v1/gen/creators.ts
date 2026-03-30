@@ -6,3 +6,5 @@ export * from "./packages/creators.js";
 export * as vetraCloudEnvironmentPackagesActions from "./packages/creators.js";
 export * from "./status-transitions/creators.js";
 export * as vetraCloudEnvironmentStatusTransitionsActions from "./status-transitions/creators.js";
+export * from "./auto-update/creators.js";
+export * as vetraCloudEnvironmentAutoUpdateActions from "./auto-update/creators.js";

@@ -28,6 +28,8 @@ type VetraCloudEnvironmentState {
   services: [VetraCloudEnvironmentService!]!
   packages: [VetraCloudPackage!]!
   status: VetraCloudEnvironmentStatus!
+  autoUpdate: Boolean
+  autoUpdateChannel: String
 }
 
 type VetraCustomDomain {
@@ -48,6 +50,7 @@ type VetraCloudEnvironmentService {
   enabled: Boolean!
   url: String
   status: ServiceStatus!
+  imageTag: String
 }
 
 enum VetraCloudEnvironmentServiceType {
@@ -193,4 +196,19 @@ input ArchiveInput {
 
 input UnarchiveInput {
   _placeholder: String
+}
+
+# auto_update
+
+input ToggleAutoUpdateInput {
+  enabled: Boolean!
+}
+
+input SetAutoUpdateChannelInput {
+  channel: String!
+}
+
+input SetImageTagInput {
+  serviceType: VetraCloudEnvironmentServiceType!
+  tag: String!
 }
