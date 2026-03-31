@@ -228,6 +228,12 @@ export function generateValuesYaml(
   const connectEnabled = state.services.some(
     (s) => s.type === "CONNECT" && s.enabled,
   );
+  const switchboardService = state.services.find(
+    (s) => s.type === "SWITCHBOARD",
+  );
+  const connectService = state.services.find(
+    (s) => s.type === "CONNECT",
+  );
   const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
   const disabled = DISABLED_STATUSES.has(state.status);
 
@@ -301,7 +307,7 @@ switchboard:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
-    tag: dev
+    tag: ${switchboardService?.version ?? "dev"}
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -361,7 +367,7 @@ connect:
   replicaCount: 1
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
-    tag: dev
+    tag: ${connectService?.version ?? "dev"}
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
