@@ -4,7 +4,6 @@ import {
   vetraCloudEnvironmentServicesActions,
   vetraCloudEnvironmentPackagesActions,
   vetraCloudEnvironmentStatusTransitionsActions,
-  vetraCloudEnvironmentAutoUpdateActions,
 } from "./gen/creators.js";
 
 /** Actions for the VetraCloudEnvironment document model */
@@ -15,5 +14,4 @@ export const actions = {
   ...vetraCloudEnvironmentServicesActions,
   ...vetraCloudEnvironmentPackagesActions,
   ...vetraCloudEnvironmentStatusTransitionsActions,
-  ...vetraCloudEnvironmentAutoUpdateActions,
 };

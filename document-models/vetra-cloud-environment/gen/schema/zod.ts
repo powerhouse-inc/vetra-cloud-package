@@ -16,16 +16,13 @@ import type {
   ReportDeploymentFailedInput,
   ReportDeploymentSucceededInput,
   ServiceStatus,
-  SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
-  SetImageTagInput,
   SetLabelInput,
   SetServiceStatusInput,
   TerminateEnvironmentInput,
-  ToggleAutoUpdateInput,
   ToggleServiceInput,
   UnarchiveInput,
   UpdateServicePrefixInput,
@@ -196,14 +193,6 @@ export function ReportDeploymentSucceededInputSchema(): z.ZodObject<
   });
 }
 
-export function SetAutoUpdateChannelInputSchema(): z.ZodObject<
-  Properties<SetAutoUpdateChannelInput>
-> {
-  return z.object({
-    channel: z.string(),
-  });
-}
-
 export function SetCustomDomainInputSchema(): z.ZodObject<
   Properties<SetCustomDomainInput>
 > {
@@ -237,15 +226,6 @@ export function SetGenericSubdomainInputSchema(): z.ZodObject<
   });
 }
 
-export function SetImageTagInputSchema(): z.ZodObject<
-  Properties<SetImageTagInput>
-> {
-  return z.object({
-    serviceType: VetraCloudEnvironmentServiceTypeSchema,
-    tag: z.string(),
-  });
-}
-
 export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   return z.object({
     label: z.string(),
@@ -267,14 +247,6 @@ export function TerminateEnvironmentInputSchema(): z.ZodObject<
 > {
   return z.object({
     _placeholder: z.string().nullish(),
-  });
-}
-
-export function ToggleAutoUpdateInputSchema(): z.ZodObject<
-  Properties<ToggleAutoUpdateInput>
-> {
-  return z.object({
-    enabled: z.boolean(),
   });
 }
 
@@ -309,7 +281,6 @@ export function VetraCloudEnvironmentServiceSchema(): z.ZodObject<
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentService").optional(),
     enabled: z.boolean(),
-    imageTag: z.string().nullish(),
     prefix: z.string(),
     status: ServiceStatusSchema,
     type: VetraCloudEnvironmentServiceTypeSchema,
@@ -322,8 +293,6 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
-    autoUpdate: z.boolean().nullish(),
-    autoUpdateChannel: z.string().nullish(),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     genericBaseDomain: z.string().nullish(),

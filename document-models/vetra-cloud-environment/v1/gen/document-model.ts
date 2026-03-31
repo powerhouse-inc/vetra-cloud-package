@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  autoUpdate: Boolean\n  autoUpdateChannel: String\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  imageTag: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
-            '{\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "autoUpdate": null,\n  "autoUpdateChannel": null\n}',
+            '{\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT"\n}',
         },
       },
       modules: [
@@ -435,62 +435,6 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "INVALID_STATUS_TRANSITION",
                   description:
                     "The operation cannot be performed from the current environment status",
-                  template: "",
-                },
-              ],
-              examples: [],
-              scope: "global",
-            },
-          ],
-        },
-        {
-          id: "au-mod-001",
-          name: "auto_update",
-          description: "Operations for managing automatic image updates",
-          operations: [
-            {
-              id: "op-toggle-auto-update",
-              name: "TOGGLE_AUTO_UPDATE",
-              description:
-                "Enable or disable automatic image updates for this environment",
-              schema: "input ToggleAutoUpdateInput {\n  enabled: Boolean!\n}",
-              template: "",
-              reducer:
-                'state.autoUpdate = action.input.enabled;\nconst deployedStatuses = ["READY", "CHANGES_PENDING", "CHANGES_APPROVED", "CHANGES_PUSHED", "DEPLOYING"];\nif (deployedStatuses.includes(state.status)) {\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
-              examples: [],
-              scope: "global",
-            },
-            {
-              id: "op-set-auto-update-channel",
-              name: "SET_AUTO_UPDATE_CHANNEL",
-              description:
-                "Set the release channel for automatic image updates (dev, staging, latest)",
-              schema:
-                "input SetAutoUpdateChannelInput {\n  channel: String!\n}",
-              template: "",
-              reducer:
-                'state.autoUpdateChannel = action.input.channel;\nconst deployedStatuses = ["READY", "CHANGES_PENDING", "CHANGES_APPROVED", "CHANGES_PUSHED", "DEPLOYING"];\nif (deployedStatuses.includes(state.status)) {\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
-              examples: [],
-              scope: "global",
-            },
-            {
-              id: "op-set-image-tag",
-              name: "SET_IMAGE_TAG",
-              description: "Set the Docker image tag for a specific service",
-              schema:
-                "input SetImageTagInput {\n  serviceType: VetraCloudEnvironmentServiceType!\n  tag: String!\n}",
-              template: "",
-              reducer:
-                'const service = state.services.find((s) => s.type === action.input.serviceType);\nif (!service) {\n  throw new ServiceNotFoundError("Service " + action.input.serviceType + " not found");\n}\nservice.imageTag = action.input.tag;\nconst deployedStatuses = ["READY", "CHANGES_PENDING", "CHANGES_APPROVED", "CHANGES_PUSHED", "DEPLOYING"];\nif (deployedStatuses.includes(state.status)) {\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [
-                {
-                  id: "err-svc-not-found-au",
-                  name: "ServiceNotFoundError",
-                  code: "SERVICE_NOT_FOUND",
-                  description:
-                    "The specified service type was not found in the environment",
                   template: "",
                 },
               ],

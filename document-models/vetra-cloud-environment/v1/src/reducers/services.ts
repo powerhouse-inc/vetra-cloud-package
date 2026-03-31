@@ -20,7 +20,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           enabled: true,
           url: null,
           status: "PROVISIONING",
-          imageTag: null,
         });
       }
       markPendingIfDeployed(state);

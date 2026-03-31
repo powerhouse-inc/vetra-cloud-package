@@ -8,7 +8,6 @@ import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/d
 import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
 import { vetraCloudEnvironmentPackagesOperations } from "../src/reducers/packages.js";
 import { vetraCloudEnvironmentStatusTransitionsOperations } from "../src/reducers/status-transitions.js";
-import { vetraCloudEnvironmentAutoUpdateOperations } from "../src/reducers/auto-update.js";
 
 import {
   SetLabelInputSchema,
@@ -33,9 +32,6 @@ import {
   MarkDestroyedInputSchema,
   ArchiveInputSchema,
   UnarchiveInputSchema,
-  ToggleAutoUpdateInputSchema,
-  SetAutoUpdateChannelInputSchema,
-  SetImageTagInputSchema,
 } from "./schema/zod.js";
 
 const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
@@ -303,42 +299,6 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       UnarchiveInputSchema().parse(action.input);
 
       vetraCloudEnvironmentStatusTransitionsOperations.unarchiveOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
-
-      break;
-    }
-
-    case "TOGGLE_AUTO_UPDATE": {
-      ToggleAutoUpdateInputSchema().parse(action.input);
-
-      vetraCloudEnvironmentAutoUpdateOperations.toggleAutoUpdateOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
-
-      break;
-    }
-
-    case "SET_AUTO_UPDATE_CHANNEL": {
-      SetAutoUpdateChannelInputSchema().parse(action.input);
-
-      vetraCloudEnvironmentAutoUpdateOperations.setAutoUpdateChannelOperation(
-        (state as any)[action.scope],
-        action as any,
-        dispatch,
-      );
-
-      break;
-    }
-
-    case "SET_IMAGE_TAG": {
-      SetImageTagInputSchema().parse(action.input);
-
-      vetraCloudEnvironmentAutoUpdateOperations.setImageTagOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
