@@ -7,10 +7,7 @@ import {
   setPackageVersion,
   initialize,
   isVetraCloudEnvironmentDocument,
-  AddPackageInputSchema,
-  RemovePackageInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 describe("PackagesOperations", () => {
   describe("ADD_PACKAGE", () => {
@@ -205,7 +202,8 @@ describe("PackagesOperations", () => {
   it("should handle addPackage operation", () => {
     const document = utils.createDocument();
     const input = {
-      ...generateMock(AddPackageInputSchema()),
+      packageName: "test-package",
+      version: "1.0.0",
       registry: "https://registry.example.com",
     };
 
@@ -224,7 +222,7 @@ describe("PackagesOperations", () => {
 
   it("should handle removePackage operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(RemovePackageInputSchema());
+    const input = { packageName: "test-package" };
 
     const updatedDocument = reducer(document, removePackage(input));
 

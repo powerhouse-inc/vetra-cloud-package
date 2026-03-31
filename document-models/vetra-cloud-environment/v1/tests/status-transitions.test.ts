@@ -18,16 +18,7 @@ import {
   setCustomDomain,
   setGenericSubdomain,
   isVetraCloudEnvironmentDocument,
-  InitializeInputSchema,
-  MarkChangesPushedInputSchema,
-  MarkDeploymentStartedInputSchema,
-  ReportDeploymentSucceededInputSchema,
-  ReportDeploymentFailedInputSchema,
-  ApproveChangesInputSchema,
-  TerminateEnvironmentInputSchema,
-  MarkDestroyedInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 /** Helper to create an initialized document (CHANGES_APPROVED status) */
 function createInitializedDocument() {
@@ -476,7 +467,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle initialize operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(InitializeInputSchema());
+    const input = { genericSubdomain: "test-env", genericBaseDomain: "test.example.com", defaultPackageRegistry: null };
 
     const updatedDocument = reducer(document, initialize(input));
 
@@ -491,7 +482,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle markChangesPushed operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(MarkChangesPushedInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, markChangesPushed(input));
 
@@ -508,7 +499,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle markDeploymentStarted operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(MarkDeploymentStartedInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, markDeploymentStarted(input));
 
@@ -525,7 +516,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle reportDeploymentSucceeded operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(ReportDeploymentSucceededInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, reportDeploymentSucceeded(input));
 
@@ -542,7 +533,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle reportDeploymentFailed operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(ReportDeploymentFailedInputSchema());
+    const input = { code: "ERR_TIMEOUT", message: "Deployment timed out" };
 
     const updatedDocument = reducer(document, reportDeploymentFailed(input));
 
@@ -559,7 +550,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle approveChanges operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(ApproveChangesInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, approveChanges(input));
 
@@ -576,7 +567,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle terminateEnvironment operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(TerminateEnvironmentInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, terminateEnvironment(input));
 
@@ -593,7 +584,7 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle markDestroyed operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(MarkDestroyedInputSchema());
+    const input = {};
 
     const updatedDocument = reducer(document, markDestroyed(input));
 

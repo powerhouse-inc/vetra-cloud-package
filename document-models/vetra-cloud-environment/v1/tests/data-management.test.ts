@@ -7,15 +7,9 @@ import {
   setCustomDomain,
   initialize,
   isVetraCloudEnvironmentDocument,
-  SetLabelInputSchema,
-  SetGenericSubdomainInputSchema,
-  SetCustomDomainInputSchema,
   setDnsRecords,
-  SetDnsRecordsInputSchema,
   setDefaultPackageRegistry,
-  SetDefaultPackageRegistryInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 describe("DataManagementOperations", () => {
   describe("SET_LABEL", () => {
@@ -188,7 +182,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setLabel operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetLabelInputSchema());
+    const input = { label: "test-label" };
 
     const updatedDocument = reducer(document, setLabel(input));
 
@@ -203,7 +197,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setGenericSubdomain operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetGenericSubdomainInputSchema());
+    const input = { genericSubdomain: "test-subdomain" };
 
     const updatedDocument = reducer(document, setGenericSubdomain(input));
 
@@ -220,7 +214,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setCustomDomain operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetCustomDomainInputSchema());
+    const input = { enabled: true, domain: "custom.example.com" };
 
     const updatedDocument = reducer(document, setCustomDomain(input));
 
@@ -237,7 +231,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setDnsRecords operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetDnsRecordsInputSchema());
+    const input = { records: [{ type: "A", host: "example.com", value: "1.2.3.4" }] };
 
     const updatedDocument = reducer(document, setDnsRecords(input));
 
@@ -254,7 +248,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setDefaultPackageRegistry operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetDefaultPackageRegistryInputSchema());
+    const input = { defaultPackageRegistry: "https://registry.example.com" };
 
     const updatedDocument = reducer(document, setDefaultPackageRegistry(input));
 

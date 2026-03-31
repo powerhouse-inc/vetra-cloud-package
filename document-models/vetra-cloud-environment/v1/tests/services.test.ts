@@ -6,17 +6,11 @@ import {
   disableService,
   initialize,
   isVetraCloudEnvironmentDocument,
-  EnableServiceInputSchema,
-  DisableServiceInputSchema,
   toggleService,
   updateServicePrefix,
   setServiceStatus,
   setServiceVersion,
-  ToggleServiceInputSchema,
-  UpdateServicePrefixInputSchema,
-  SetServiceStatusInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 describe("ServicesOperations", () => {
   describe("ENABLE_SERVICE", () => {
@@ -212,7 +206,7 @@ describe("ServicesOperations", () => {
 
   it("should handle enableService operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(EnableServiceInputSchema());
+    const input = { type: "CONNECT" as const, prefix: "connect" };
 
     const updatedDocument = reducer(document, enableService(input));
 
@@ -229,7 +223,7 @@ describe("ServicesOperations", () => {
 
   it("should handle disableService operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(DisableServiceInputSchema());
+    const input = { type: "CONNECT" as const };
 
     const updatedDocument = reducer(document, disableService(input));
 
@@ -246,7 +240,7 @@ describe("ServicesOperations", () => {
 
   it("should handle toggleService operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(ToggleServiceInputSchema());
+    const input = { type: "SWITCHBOARD" as const };
 
     const updatedDocument = reducer(document, toggleService(input));
 
@@ -263,7 +257,7 @@ describe("ServicesOperations", () => {
 
   it("should handle updateServicePrefix operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(UpdateServicePrefixInputSchema());
+    const input = { type: "CONNECT" as const, prefix: "new-prefix" };
 
     const updatedDocument = reducer(document, updateServicePrefix(input));
 
@@ -280,7 +274,7 @@ describe("ServicesOperations", () => {
 
   it("should handle setServiceStatus operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetServiceStatusInputSchema());
+    const input = { type: "CONNECT" as const, status: "ACTIVE" as const };
 
     const updatedDocument = reducer(document, setServiceStatus(input));
 
