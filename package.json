@@ -13,44 +13,41 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "browser": "./dist/browser/index.js",
+      "node": "./dist/node/index.mjs"
     },
     "./document-models": {
       "types": "./dist/document-models/index.d.ts",
-      "default": "./dist/document-models/index.js"
+      "browser": "./dist/browser/document-models/index.js",
+      "node": "./dist/node/document-models/index.mjs"
+    },
+    "./document-models/*": {
+      "types": "./dist/document-models/*/index.d.ts",
+      "browser": "./dist/browser/document-models/*/index.js",
+      "node": "./dist/node/document-models/*/index.mjs"
     },
     "./editors": {
       "types": "./dist/editors/index.d.ts",
-      "default": "./dist/editors/index.js"
-    },
-    "./subgraphs": {
-      "types": "./dist/subgraphs/index.d.ts",
-      "default": "./dist/subgraphs/index.js"
-    },
-    "./processors": {
-      "types": "./dist/processors/index.d.ts",
-      "default": "./dist/processors/index.js"
-    },
-    "./processors/connect": {
-      "types": "./dist/processors/connect.d.ts",
-      "default": "./dist/processors/connect.js"
-    },
-    "./processors/switchboard": {
-      "types": "./dist/processors/switchboard.d.ts",
-      "default": "./dist/processors/switchboard.js"
-    },
-    "./manifest": {
-      "default": "./dist/powerhouse.manifest.json"
-    },
-    "./style.css": "./dist/style.css",
-    "./document-models/*": {
-      "types": "./dist/document-models/*/index.d.ts",
-      "default": "./dist/document-models/*/index.js"
+      "browser": "./dist/browser/editors/index.js",
+      "node": "./dist/node/editors/index.mjs"
     },
     "./editors/*": {
       "types": "./dist/editors/*/index.d.ts",
-      "default": "./dist/editors/*/index.js"
-    }
+      "browser": "./dist/browser/editors/*/index.js",
+      "node": "./dist/node/editors/*/index.mjs"
+    },
+    "./subgraphs": {
+      "types": "./dist/subgraphs/index.d.ts",
+      "browser": "./dist/browser/subgraphs/index.js",
+      "node": "./dist/node/subgraphs/index.mjs"
+    },
+    "./processors": {
+      "types": "./dist/processors/index.d.ts",
+      "browser": "./dist/browser/processors/index.js",
+      "node": "./dist/node/processors/index.mjs"
+    },
+    "./manifest": "./dist/powerhouse.manifest.json",
+    "./style.css": "./dist/style.css"
   },
   "scripts": {
     "lint": "eslint --config eslint.config.js --cache --cache-strategy content",
@@ -78,13 +75,13 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
-    "@powerhousedao/builder-tools": "6.0.0-dev.140",
-    "@powerhousedao/common": "6.0.0-dev.140",
-    "@powerhousedao/connect": "6.0.0-dev.140",
-    "@powerhousedao/design-system": "6.0.0-dev.140",
+    "@powerhousedao/builder-tools": "6.0.0-dev.143",
+    "@powerhousedao/common": "6.0.0-dev.143",
+    "@powerhousedao/connect": "6.0.0-dev.143",
+    "@powerhousedao/design-system": "6.0.0-dev.143",
     "@powerhousedao/document-engineering": "^1.34.0",
     "cmd-ts": "^0.15.0",
-    "document-model": "6.0.0-dev.140",
+    "document-model": "6.0.0-dev.143",
     "graphql": "^16.10.0",
     "graphql-tag": "^2.12.6",
     "kysely": "^0.28.11",
@@ -94,15 +91,15 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.15",
     "@eslint/js": "^9.22.0",
-    "@powerhousedao/analytics-engine-core": "6.0.0-dev.140",
-    "@powerhousedao/codegen": "6.0.0-dev.140",
-    "@powerhousedao/ph-cli": "6.0.0-dev.140",
-    "@powerhousedao/reactor-api": "6.0.0-dev.140",
-    "@powerhousedao/reactor-browser": "6.0.0-dev.140",
-    "@powerhousedao/reactor-local": "6.0.0-dev.140",
+    "@powerhousedao/analytics-engine-core": "6.0.0-dev.143",
+    "@powerhousedao/codegen": "6.0.0-dev.143",
+    "@powerhousedao/ph-cli": "6.0.0-dev.143",
+    "@powerhousedao/reactor-api": "6.0.0-dev.143",
+    "@powerhousedao/reactor-browser": "6.0.0-dev.143",
+    "@powerhousedao/reactor-local": "6.0.0-dev.143",
     "@powerhousedao/scalars": "staging",
-    "@powerhousedao/switchboard": "6.0.0-dev.140",
-    "@powerhousedao/vetra": "6.0.0-dev.140",
+    "@powerhousedao/switchboard": "6.0.0-dev.143",
+    "@powerhousedao/vetra": "6.0.0-dev.143",
     "@tailwindcss/cli": "^4.0.15",
     "@tailwindcss/vite": "^4.2.1",
     "@testing-library/react": "^16.3.0",
