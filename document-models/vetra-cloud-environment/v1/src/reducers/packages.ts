@@ -1,3 +1,4 @@
+import { PackageNotFoundError } from "../../gen/packages/error.js";
 import { markPendingIfDeployed } from "./utils.js";
 import type { VetraCloudEnvironmentPackagesOperations } from "document-models/vetra-cloud-environment/v1";
 
@@ -32,5 +33,17 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
         state.packages = state.packages.filter((p) => p.name !== packageName);
         markPendingIfDeployed(state);
       }
+    },
+    setPackageVersionOperation(state, action) {
+      const pkg = state.packages.find(
+        (p) => p.name === action.input.packageName,
+      );
+      if (!pkg) {
+        throw new PackageNotFoundError(
+          "Package " + action.input.packageName + " not found",
+        );
+      }
+      pkg.version = action.input.version;
+      markPendingIfDeployed(state);
     },
   };

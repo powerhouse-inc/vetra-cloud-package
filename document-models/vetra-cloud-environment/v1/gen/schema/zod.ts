@@ -21,7 +21,9 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetPackageVersionInput,
   SetServiceStatusInput,
+  SetServiceVersionInput,
   TerminateEnvironmentInput,
   ToggleServiceInput,
   UnarchiveInput,
@@ -232,6 +234,15 @@ export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   });
 }
 
+export function SetPackageVersionInputSchema(): z.ZodObject<
+  Properties<SetPackageVersionInput>
+> {
+  return z.object({
+    packageName: z.string(),
+    version: z.string(),
+  });
+}
+
 export function SetServiceStatusInputSchema(): z.ZodObject<
   Properties<SetServiceStatusInput>
 > {
@@ -239,6 +250,15 @@ export function SetServiceStatusInputSchema(): z.ZodObject<
     status: ServiceStatusSchema,
     type: VetraCloudEnvironmentServiceTypeSchema,
     url: z.string().nullish(),
+  });
+}
+
+export function SetServiceVersionInputSchema(): z.ZodObject<
+  Properties<SetServiceVersionInput>
+> {
+  return z.object({
+    type: VetraCloudEnvironmentServiceTypeSchema,
+    version: z.string(),
   });
 }
 
@@ -285,6 +305,7 @@ export function VetraCloudEnvironmentServiceSchema(): z.ZodObject<
     status: ServiceStatusSchema,
     type: VetraCloudEnvironmentServiceTypeSchema,
     url: z.string().nullish(),
+    version: z.string().nullish(),
   });
 }
 

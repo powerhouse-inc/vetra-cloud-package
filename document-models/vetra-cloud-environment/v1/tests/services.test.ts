@@ -11,6 +11,7 @@ import {
   toggleService,
   updateServicePrefix,
   setServiceStatus,
+  setServiceVersion,
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
   SetServiceStatusInputSchema,
@@ -33,6 +34,7 @@ describe("ServicesOperations", () => {
           enabled: true,
           url: null,
           status: "PROVISIONING",
+          version: null,
         },
       ]);
     });
@@ -60,6 +62,7 @@ describe("ServicesOperations", () => {
           enabled: true,
           url: null,
           status: "PROVISIONING",
+          version: null,
         },
         {
           type: "SWITCHBOARD",
@@ -67,6 +70,7 @@ describe("ServicesOperations", () => {
           enabled: true,
           url: null,
           status: "PROVISIONING",
+          version: null,
         },
         {
           type: "FUSION",
@@ -74,6 +78,7 @@ describe("ServicesOperations", () => {
           enabled: true,
           url: null,
           status: "PROVISIONING",
+          version: null,
         },
       ]);
     });
@@ -96,6 +101,7 @@ describe("ServicesOperations", () => {
         enabled: true,
         url: null,
         status: "PROVISIONING",
+        version: null,
       });
     });
 
@@ -139,6 +145,7 @@ describe("ServicesOperations", () => {
         enabled: false,
         url: null,
         status: "PROVISIONING",
+        version: null,
       });
       expect(document.state.global.services[1]).toStrictEqual({
         type: "SWITCHBOARD",
@@ -146,6 +153,7 @@ describe("ServicesOperations", () => {
         enabled: true,
         url: null,
         status: "PROVISIONING",
+        version: null,
       });
     });
 
@@ -197,6 +205,7 @@ describe("ServicesOperations", () => {
         enabled: true,
         url: null,
         status: "PROVISIONING",
+        version: null,
       });
     });
   });
@@ -284,5 +293,79 @@ describe("ServicesOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_SERVICE_VERSION", () => {
+    it("should set version on an existing service", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        enableService({ type: "CONNECT", prefix: "connect" }),
+      );
+      document = reducer(
+        document,
+        setServiceVersion({ type: "CONNECT", version: "1.2.3" }),
+      );
+
+      expect(document.state.global.services[0].version).toBe("1.2.3");
+    });
+
+    it("should error for unknown service", () => {
+      const document = utils.createDocument();
+      const result = reducer(
+        document,
+        setServiceVersion({ type: "FUSION", version: "1.0.0" }),
+      );
+      expect(result.operations.global[0].error).toBeDefined();
+    });
+
+    it("should set CHANGES_PENDING when deployed", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        initialize({
+          genericSubdomain: "test",
+          genericBaseDomain: "test.example.com",
+          defaultPackageRegistry: null,
+        }),
+      );
+      document = reducer(
+        document,
+        enableService({ type: "CONNECT", prefix: "connect" }),
+      );
+      // Simulate deployed state
+      document = {
+        ...document,
+        state: {
+          ...document.state,
+          global: { ...document.state.global, status: "READY" as const },
+        },
+      };
+      document = reducer(
+        document,
+        setServiceVersion({ type: "CONNECT", version: "2.0.0" }),
+      );
+      expect(document.state.global.status).toBe("CHANGES_PENDING");
+    });
+  });
+
+  it("should handle setServiceVersion operation", () => {
+    let document = utils.createDocument();
+    document = reducer(
+      document,
+      enableService({ type: "CONNECT", prefix: "connect" }),
+    );
+    const input = { type: "CONNECT" as const, version: "1.0.0" };
+
+    const updatedDocument = reducer(document, setServiceVersion(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(2);
+    expect(updatedDocument.operations.global[1].action.type).toBe(
+      "SET_SERVICE_VERSION",
+    );
+    expect(updatedDocument.operations.global[1].action.input).toStrictEqual(
+      input,
+    );
   });
 });

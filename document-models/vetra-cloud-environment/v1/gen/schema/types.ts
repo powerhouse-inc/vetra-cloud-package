@@ -152,10 +152,20 @@ export type SetLabelInput = {
   label: Scalars["String"]["input"];
 };
 
+export type SetPackageVersionInput = {
+  packageName: Scalars["String"]["input"];
+  version: Scalars["String"]["input"];
+};
+
 export type SetServiceStatusInput = {
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
   url?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type SetServiceVersionInput = {
+  type: VetraCloudEnvironmentServiceType;
+  version: Scalars["String"]["input"];
 };
 
 export type TerminateEnvironmentInput = {
@@ -181,6 +191,7 @@ export type VetraCloudEnvironmentService = {
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
   url: Maybe<Scalars["String"]["output"]>;
+  version: Maybe<Scalars["String"]["output"]>;
 };
 
 export type VetraCloudEnvironmentServiceType =

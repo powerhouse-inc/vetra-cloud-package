@@ -48,6 +48,7 @@ type VetraCloudEnvironmentService {
   enabled: Boolean!
   url: String
   status: ServiceStatus!
+  version: String
 }
 
 enum VetraCloudEnvironmentServiceType {
@@ -138,6 +139,11 @@ input SetServiceStatusInput {
   url: String
 }
 
+input SetServiceVersionInput {
+  type: VetraCloudEnvironmentServiceType!
+  version: String!
+}
+
 # packages
 
 input AddPackageInput {
@@ -148,6 +154,11 @@ input AddPackageInput {
 
 input RemovePackageInput {
   packageName: String!
+}
+
+input SetPackageVersionInput {
+  packageName: String!
+  version: String!
 }
 
 # status_transitions

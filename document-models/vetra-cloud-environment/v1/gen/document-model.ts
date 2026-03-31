@@ -19,7 +19,7 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
             '{\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT"\n}',
@@ -111,7 +111,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input EnableServiceInput {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n}",
               template: "",
               reducer:
-                'const { type, prefix } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst existing = state.services.find((s) => s.type === type);\nif (existing) {\n  existing.enabled = true;\n  existing.prefix = prefix;\n} else {\n  state.services.push({ type, prefix, enabled: true, url: null, status: "PROVISIONING" });\n}\nstate.status = "CHANGES_PENDING";',
+                'const { type, prefix } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst existing = state.services.find((s) => s.type === type);\nif (existing) {\n  existing.enabled = true;\n  existing.prefix = prefix;\n} else {\n  state.services.push({ type, prefix, enabled: true, url: null, status: "PROVISIONING", version: null });\n}\nstate.status = "CHANGES_PENDING";',
               errors: [],
               examples: [],
               scope: "global",
@@ -195,6 +195,28 @@ export const documentModel: DocumentModelGlobalState = {
               examples: [],
               scope: "global",
             },
+            {
+              id: "op-set-svc-version",
+              name: "SET_SERVICE_VERSION",
+              description: "Set the version/image tag for a service",
+              schema:
+                "input SetServiceVersionInput {\n  type: VetraCloudEnvironmentServiceType!\n  version: String!\n}",
+              template: "",
+              reducer:
+                'const service = state.services.find((s) => s.type === action.input.type);\nif (!service) {\n  throw new ServiceNotFoundError("Service " + action.input.type + " not found");\n}\nservice.version = action.input.version;\nmarkPendingIfDeployed(state);',
+              errors: [
+                {
+                  id: "err-svc-not-found-4",
+                  name: "ServiceNotFoundError",
+                  code: "SERVICE_NOT_FOUND",
+                  description:
+                    "The specified service type was not found in the environment",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
           ],
         },
         {
@@ -224,6 +246,28 @@ export const documentModel: DocumentModelGlobalState = {
               reducer:
                 'const { packageName } = action.input;\nif (!state.packages) {\n  state.packages = [];\n}\nif (packageName) {\n  state.packages = state.packages.filter((p) => p.name !== packageName);\n  state.status = "CHANGES_PENDING";\n}',
               errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-pkg-version",
+              name: "SET_PACKAGE_VERSION",
+              description: "Set the version of an installed package",
+              schema:
+                "input SetPackageVersionInput {\n  packageName: String!\n  version: String!\n}",
+              template: "",
+              reducer:
+                'const pkg = state.packages.find((p) => p.name === action.input.packageName);\nif (!pkg) {\n  throw new PackageNotFoundError("Package " + action.input.packageName + " not found");\n}\npkg.version = action.input.version;\nmarkPendingIfDeployed(state);',
+              errors: [
+                {
+                  id: "err-pkg-not-found",
+                  name: "PackageNotFoundError",
+                  code: "PACKAGE_NOT_FOUND",
+                  description:
+                    "The specified package was not found in the environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },

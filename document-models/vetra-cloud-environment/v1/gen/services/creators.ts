@@ -5,6 +5,7 @@ import {
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
   SetServiceStatusInputSchema,
+  SetServiceVersionInputSchema,
 } from "../schema/zod.js";
 import type {
   EnableServiceInput,
@@ -12,6 +13,7 @@ import type {
   ToggleServiceInput,
   UpdateServicePrefixInput,
   SetServiceStatusInput,
+  SetServiceVersionInput,
 } from "../types.js";
 import type {
   EnableServiceAction,
@@ -19,6 +21,7 @@ import type {
   ToggleServiceAction,
   UpdateServicePrefixAction,
   SetServiceStatusAction,
+  SetServiceVersionAction,
 } from "./actions.js";
 
 export const enableService = (input: EnableServiceInput) =>
@@ -63,5 +66,14 @@ export const setServiceStatus = (input: SetServiceStatusInput) =>
     { ...input },
     undefined,
     SetServiceStatusInputSchema,
+    "global",
+  );
+
+export const setServiceVersion = (input: SetServiceVersionInput) =>
+  createAction<SetServiceVersionAction>(
+    "SET_SERVICE_VERSION",
+    { ...input },
+    undefined,
+    SetServiceVersionInputSchema,
     "global",
   );

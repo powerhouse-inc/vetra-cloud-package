@@ -20,6 +20,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           enabled: true,
           url: null,
           status: "PROVISIONING",
+          version: null,
         });
       }
       markPendingIfDeployed(state);
@@ -66,5 +67,15 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       if (action.input.url) {
         service.url = action.input.url;
       }
+    },
+    setServiceVersionOperation(state, action) {
+      const service = state.services.find((s) => s.type === action.input.type);
+      if (!service) {
+        throw new ServiceNotFoundError(
+          "Service " + action.input.type + " not found",
+        );
+      }
+      service.version = action.input.version;
+      markPendingIfDeployed(state);
     },
   };

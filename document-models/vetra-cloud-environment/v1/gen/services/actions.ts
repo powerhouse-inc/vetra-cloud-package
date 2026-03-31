@@ -5,6 +5,7 @@ import type {
   ToggleServiceInput,
   UpdateServicePrefixInput,
   SetServiceStatusInput,
+  SetServiceVersionInput,
 } from "../types.js";
 
 export type EnableServiceAction = Action & {
@@ -27,10 +28,15 @@ export type SetServiceStatusAction = Action & {
   type: "SET_SERVICE_STATUS";
   input: SetServiceStatusInput;
 };
+export type SetServiceVersionAction = Action & {
+  type: "SET_SERVICE_VERSION";
+  input: SetServiceVersionInput;
+};
 
 export type VetraCloudEnvironmentServicesAction =
   | EnableServiceAction
   | DisableServiceAction
   | ToggleServiceAction
   | UpdateServicePrefixAction
-  | SetServiceStatusAction;
+  | SetServiceStatusAction
+  | SetServiceVersionAction;

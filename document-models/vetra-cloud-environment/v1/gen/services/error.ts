@@ -15,4 +15,5 @@ export const errors = {
   ToggleService: { ServiceNotFoundError },
   UpdateServicePrefix: { ServiceNotFoundError },
   SetServiceStatus: { ServiceNotFoundError },
+  SetServiceVersion: { ServiceNotFoundError },
 };

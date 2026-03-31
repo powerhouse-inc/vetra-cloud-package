@@ -1,5 +1,9 @@
 import { type SignalDispatch } from "document-model";
-import type { AddPackageAction, RemovePackageAction } from "./actions.js";
+import type {
+  AddPackageAction,
+  RemovePackageAction,
+  SetPackageVersionAction,
+} from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentPackagesOperations {
@@ -11,6 +15,11 @@ export interface VetraCloudEnvironmentPackagesOperations {
   removePackageOperation: (
     state: VetraCloudEnvironmentState,
     action: RemovePackageAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setPackageVersionOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetPackageVersionAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

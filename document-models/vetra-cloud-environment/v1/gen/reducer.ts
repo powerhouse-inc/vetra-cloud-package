@@ -20,8 +20,10 @@ import {
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
   SetServiceStatusInputSchema,
+  SetServiceVersionInputSchema,
   AddPackageInputSchema,
   RemovePackageInputSchema,
+  SetPackageVersionInputSchema,
   InitializeInputSchema,
   MarkChangesPushedInputSchema,
   MarkDeploymentStartedInputSchema,
@@ -163,6 +165,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       break;
     }
 
+    case "SET_SERVICE_VERSION": {
+      SetServiceVersionInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.setServiceVersionOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
     case "ADD_PACKAGE": {
       AddPackageInputSchema().parse(action.input);
 
@@ -179,6 +193,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       RemovePackageInputSchema().parse(action.input);
 
       vetraCloudEnvironmentPackagesOperations.removePackageOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_PACKAGE_VERSION": {
+      SetPackageVersionInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentPackagesOperations.setPackageVersionOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
