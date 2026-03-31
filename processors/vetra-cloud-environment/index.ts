@@ -140,16 +140,12 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       }
 
       // Only sync to git when changes are approved
-      if (status === "CHANGES_APPROVED" || status === "CHANGES_PENDING") {
-        logger.info(`Triggering gitops sync for "${label}" (status: ${status})`);
+      if (status === "CHANGES_APPROVED") {
+        logger.info(`Triggering gitops sync for "${label}"`);
         try {
           await syncEnvironment(state, documentId);
           logger.info(`Gitops sync completed for "${label}"`);
-
-          // After successful git push, transition to CHANGES_PUSHED
-          if (status === "CHANGES_APPROVED") {
-            await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
-          }
+          await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
         }
