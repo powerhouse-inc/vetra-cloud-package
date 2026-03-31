@@ -113,7 +113,7 @@ describe("OpenBaoClient", () => {
 
       const [getUrl, getOpts] = mockFetch.mock.calls[1];
       expect(getUrl).toContain("/v1/kubernetes/creds/vetra-observability");
-      expect(getOpts.method).toBe("GET");
+      expect(getOpts.method).toBe("POST");
       expect(getOpts.headers["X-Vault-Token"]).toBe(MOCK_VAULT_TOKEN);
 
       expect(creds.token).toBe("k8s-token-abc");

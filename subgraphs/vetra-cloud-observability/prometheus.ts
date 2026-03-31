@@ -1,17 +1,10 @@
-import http from "node:http";
-
-/** Simple HTTP GET that bypasses any Vite SSR fetch interception. */
-function httpGet<T>(url: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let data = "";
-      res.on("data", (chunk: string) => { data += chunk; });
-      res.on("end", () => {
-        try { resolve(JSON.parse(data) as T); }
-        catch (e) { reject(e); }
-      });
-    }).on("error", reject);
-  });
+/** Simple HTTP GET using fetch. */
+async function httpGet<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
 }
 
 export interface Datapoint {

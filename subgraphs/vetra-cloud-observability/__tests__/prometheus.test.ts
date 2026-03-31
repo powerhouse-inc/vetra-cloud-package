@@ -132,7 +132,17 @@ describe("PrometheusClient", () => {
   });
 
   describe("httpRequestRate", () => {
-    it("includes http_requests_total in query", async () => {
+    it("includes http request metric in query", async () => {
+      // httpRequestRate tries multiple OTel metric names in order;
+      // the first call uses http_server_duration_count
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => makeMatrixResponse([]),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => makeMatrixResponse([]),
+      });
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => makeMatrixResponse([]),
@@ -140,8 +150,12 @@ describe("PrometheusClient", () => {
 
       await client.httpRequestRate("my-tenant", "ONE_HOUR");
 
-      const url: string = mockFetch.mock.calls[0][0];
-      expect(url).toContain("http_requests_total");
+      // Verify all three query variants were tried
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      const url0: string = mockFetch.mock.calls[0][0];
+      const url2: string = mockFetch.mock.calls[2][0];
+      expect(url0).toContain("http_server_duration_count");
+      expect(url2).toContain("http_requests_total");
     });
   });
 
