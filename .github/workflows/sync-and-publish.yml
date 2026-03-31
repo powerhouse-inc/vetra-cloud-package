@@ -172,13 +172,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: 'https://registry.dev.vetra.io'
 
-      - name: Publish to npm with provenance
+      - name: Publish to Vetra registry
         if: needs.prepare.outputs.dry_run != 'true'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+          NODE_AUTH_TOKEN: ${{ secrets.VETRA_REGISTRY_TOKEN }}
         run: |
           CHANNEL="${{ needs.prepare.outputs.channel }}"
           if [ "$CHANNEL" = "latest" ]; then
