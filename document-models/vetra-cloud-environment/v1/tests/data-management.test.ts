@@ -231,7 +231,9 @@ describe("DataManagementOperations", () => {
 
   it("should handle setDnsRecords operation", () => {
     const document = utils.createDocument();
-    const input = { records: [{ type: "A", host: "example.com", value: "1.2.3.4" }] };
+    const input = {
+      records: [{ type: "A", host: "example.com", value: "1.2.3.4" }],
+    };
 
     const updatedDocument = reducer(document, setDnsRecords(input));
 

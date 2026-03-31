@@ -14,7 +14,7 @@ export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnviron
       state.genericBaseDomain = action.input.genericBaseDomain;
       state.defaultPackageRegistry =
         action.input.defaultPackageRegistry || null;
-      // Stay in DRAFT — user must explicitly approve to trigger deployment
+      state.status = "CHANGES_APPROVED";
     },
     markChangesPushedOperation(state, action) {
       if (state.status !== "CHANGES_APPROVED") {

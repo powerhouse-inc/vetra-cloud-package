@@ -216,23 +216,21 @@ describe("StatusTransitionsOperations", () => {
       expect(document.state.global.status).toBe("CHANGES_APPROVED");
     });
 
-    it("should error when not in CHANGES_PENDING status", () => {
-      const document = createInitializedDocument();
-      expect(document.state.global.status).toBe("CHANGES_APPROVED");
+    it("should error when not in DRAFT or CHANGES_PENDING status", () => {
+      const document = createReadyDocument();
+      expect(document.state.global.status).toBe("READY");
       const result = reducer(document, approveChanges({}));
       const lastOp =
         result.operations.global[result.operations.global.length - 1];
       expect(lastOp.error).toContain(
-        "APPROVE_CHANGES can only be called from CHANGES_PENDING status",
+        "APPROVE_CHANGES can only be called from DRAFT or CHANGES_PENDING status",
       );
     });
 
-    it("should error from DRAFT status", () => {
+    it("should allow approval from DRAFT status", () => {
       const document = utils.createDocument();
       const result = reducer(document, approveChanges({}));
-      const lastOp =
-        result.operations.global[result.operations.global.length - 1];
-      expect(lastOp.error).toBeTruthy();
+      expect(result.state.global.status).toBe("CHANGES_APPROVED");
     });
   });
 
@@ -467,7 +465,11 @@ describe("StatusTransitionsOperations", () => {
 
   it("should handle initialize operation", () => {
     const document = utils.createDocument();
-    const input = { genericSubdomain: "test-env", genericBaseDomain: "test.example.com", defaultPackageRegistry: null };
+    const input = {
+      genericSubdomain: "test-env",
+      genericBaseDomain: "test.example.com",
+      defaultPackageRegistry: null,
+    };
 
     const updatedDocument = reducer(document, initialize(input));
 
