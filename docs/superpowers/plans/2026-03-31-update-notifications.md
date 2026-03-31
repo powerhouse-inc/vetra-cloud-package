@@ -4,7 +4,7 @@
 
 **Goal:** Let users discover and apply available updates for services and packages through the cloud detail UI, with version checks against `cr.vetra.io` and the configurable package registry.
 
-**Architecture:** The document model gains a `version` field on services plus two new operations (`SET_SERVICE_VERSION`, `UPDATE_PACKAGE_VERSION`). The processor uses service versions for image tags. `vetra.to` adds registry-checking hooks and an "Available Updates" card that dispatches these operations, feeding into the existing approve → deploy flow.
+**Architecture:** The document model gains a `version` field on services plus two new operations (`SET_SERVICE_VERSION`, `SET_PACKAGE_VERSION`). The processor uses service versions for image tags. `vetra.to` adds registry-checking hooks and an "Available Updates" card that dispatches these operations, feeding into the existing approve → deploy flow.
 
 **Tech Stack:** Powerhouse document model (GraphQL schema, reducers, MCP), Next.js API routes, React hooks, TypeScript
 
@@ -280,7 +280,7 @@ git commit -m "feat(model): add SET_SERVICE_VERSION operation"
 
 ---
 
-### Task 3: Add `UPDATE_PACKAGE_VERSION` operation via MCP
+### Task 3: Add `SET_PACKAGE_VERSION` operation via MCP
 
 **Files:**
 - Modify (via MCP): `document-models/vetra-cloud-environment/vetra-cloud-environment.json`
@@ -294,8 +294,8 @@ Use `addActions` with `ADD_OPERATION`:
 ```json
 {
   "moduleId": "pkg-mod-001",
-  "name": "UPDATE_PACKAGE_VERSION",
-  "id": "op-update-pkg-version",
+  "name": "SET_PACKAGE_VERSION",
+  "id": "op-set-pkg-version",
   "description": "Update the version of an installed package",
   "scope": "global"
 }
@@ -303,10 +303,10 @@ Use `addActions` with `ADD_OPERATION`:
 
 - [ ] **Step 2: Set the operation schema via MCP**
 
-Use `SET_OPERATION_SCHEMA` on `op-update-pkg-version`:
+Use `SET_OPERATION_SCHEMA` on `op-set-pkg-version`:
 
 ```graphql
-input UpdatePackageVersionInput {
+input SetPackageVersionInput {
   packageName: String!
   version: String!
 }
@@ -314,11 +314,11 @@ input UpdatePackageVersionInput {
 
 - [ ] **Step 3: Add the operation error via MCP**
 
-Use `ADD_OPERATION_ERROR` on `op-update-pkg-version`:
+Use `ADD_OPERATION_ERROR` on `op-set-pkg-version`:
 
 ```json
 {
-  "operationId": "op-update-pkg-version",
+  "operationId": "op-set-pkg-version",
   "id": "err-pkg-not-found",
   "code": "PACKAGE_NOT_FOUND",
   "name": "PackageNotFoundError",
@@ -328,7 +328,7 @@ Use `ADD_OPERATION_ERROR` on `op-update-pkg-version`:
 
 - [ ] **Step 4: Set the operation reducer via MCP**
 
-Use `SET_OPERATION_REDUCER` on `op-update-pkg-version`:
+Use `SET_OPERATION_REDUCER` on `op-set-pkg-version`:
 
 ```javascript
 const pkg = state.packages.find((p) => p.name === action.input.packageName);
@@ -341,7 +341,7 @@ markPendingIfDeployed(state);
 
 - [ ] **Step 5: Implement the reducer in src**
 
-Add `updatePackageVersionOperation` to `v1/src/reducers/packages.ts`. Add the error import:
+Add `setPackageVersionOperation` to `v1/src/reducers/packages.ts`. Add the error import:
 
 ```typescript
 import { PackageNotFoundError } from "../../gen/packages/error.js";
@@ -350,7 +350,7 @@ import { PackageNotFoundError } from "../../gen/packages/error.js";
 Add the operation inside the `vetraCloudEnvironmentPackagesOperations` object:
 
 ```typescript
-updatePackageVersionOperation(state, action) {
+setPackageVersionOperation(state, action) {
   const pkg = state.packages.find(
     (p) => p.name === action.input.packageName,
   );
@@ -366,19 +366,19 @@ updatePackageVersionOperation(state, action) {
 
 - [ ] **Step 6: Write tests**
 
-Add to `v1/tests/packages.test.ts`. Import `updatePackageVersion`:
+Add to `v1/tests/packages.test.ts`. Import `setPackageVersion`:
 
 ```typescript
 import {
   // ... existing imports ...
-  updatePackageVersion,
+  setPackageVersion,
 } from "document-models/vetra-cloud-environment/v1";
 ```
 
 Add test block:
 
 ```typescript
-describe("UPDATE_PACKAGE_VERSION", () => {
+describe("SET_PACKAGE_VERSION", () => {
   it("should update version of an existing package", () => {
     let document = utils.createDocument();
     document = reducer(
@@ -387,7 +387,7 @@ describe("UPDATE_PACKAGE_VERSION", () => {
     );
     document = reducer(
       document,
-      updatePackageVersion({ packageName: "my-package", version: "2.0.0" }),
+      setPackageVersion({ packageName: "my-package", version: "2.0.0" }),
     );
 
     expect(document.state.global.packages[0].version).toBe("2.0.0");
@@ -398,7 +398,7 @@ describe("UPDATE_PACKAGE_VERSION", () => {
     expect(() =>
       reducer(
         document,
-        updatePackageVersion({ packageName: "nonexistent", version: "1.0.0" }),
+        setPackageVersion({ packageName: "nonexistent", version: "1.0.0" }),
       ),
     ).toThrow();
   });
@@ -419,25 +419,25 @@ describe("UPDATE_PACKAGE_VERSION", () => {
     );
     document = reducer(
       document,
-      updatePackageVersion({ packageName: "my-package", version: "2.0.0" }),
+      setPackageVersion({ packageName: "my-package", version: "2.0.0" }),
     );
     expect(document.state.global.status).toBe("CHANGES_PENDING");
   });
 });
 
-it("should handle updatePackageVersion operation", () => {
+it("should handle setPackageVersion operation", () => {
   let document = utils.createDocument();
   document = reducer(
     document,
     addPackage({ packageName: "my-package", version: "1.0.0" }),
   );
   const input = { packageName: "my-package", version: "2.0.0" };
-  const updatedDocument = reducer(document, updatePackageVersion(input));
+  const updatedDocument = reducer(document, setPackageVersion(input));
 
   expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
   expect(updatedDocument.operations.global).toHaveLength(2);
   expect(updatedDocument.operations.global[1].action.type).toBe(
-    "UPDATE_PACKAGE_VERSION",
+    "SET_PACKAGE_VERSION",
   );
   expect(updatedDocument.operations.global[1].action.input).toStrictEqual(
     input,
@@ -459,7 +459,7 @@ Expected: No errors.
 
 ```bash
 git add document-models/
-git commit -m "feat(model): add UPDATE_PACKAGE_VERSION operation"
+git commit -m "feat(model): add SET_PACKAGE_VERSION operation"
 ```
 
 ---
@@ -839,7 +839,7 @@ export async function setServiceVersion(
   return mapDocument(data.VetraCloudEnvironment.setServiceVersion)
 }
 
-export async function updatePackageVersion(
+export async function setPackageVersion(
   docId: string,
   packageName: string,
   version: string,
@@ -847,12 +847,12 @@ export async function updatePackageVersion(
 ): Promise<CloudEnvironment> {
   const data = await gql<
     Namespaced<{
-      updatePackageVersion: RawDocument
+      setPackageVersion: RawDocument
     }>
   >(
-    `mutation ($docId: PHID!, $input: VetraCloudEnvironment_UpdatePackageVersionInput!) {
+    `mutation ($docId: PHID!, $input: VetraCloudEnvironment_SetPackageVersionInput!) {
       VetraCloudEnvironment {
-        updatePackageVersion(docId: $docId, input: $input) {
+        setPackageVersion(docId: $docId, input: $input) {
           ${DOCUMENT_FIELDS}
         }
       }
@@ -861,7 +861,7 @@ export async function updatePackageVersion(
     token,
   )
 
-  return mapDocument(data.VetraCloudEnvironment.updatePackageVersion)
+  return mapDocument(data.VetraCloudEnvironment.setPackageVersion)
 }
 ```
 
@@ -873,7 +873,7 @@ In `/home/froid/projects/powerhouse/vetra.to/modules/cloud/hooks/use-environment
 import {
   // ... existing imports ...
   setServiceVersion as gqlSetServiceVersion,
-  updatePackageVersion as gqlUpdatePackageVersion,
+  setPackageVersion as gqlSetPackageVersion,
 } from '../graphql'
 ```
 
@@ -885,9 +885,9 @@ const setServiceVersion = useCallback(
     mutate((t) => gqlSetServiceVersion(documentId, type, version, t)),
   [documentId, mutate],
 )
-const updatePackageVersion = useCallback(
+const setPackageVersion = useCallback(
   (packageName: string, version: string) =>
-    mutate((t) => gqlUpdatePackageVersion(documentId, packageName, version, t)),
+    mutate((t) => gqlSetPackageVersion(documentId, packageName, version, t)),
   [documentId, mutate],
 )
 ```
@@ -900,7 +900,7 @@ Add to the return object:
 return {
   // ... existing ...
   setServiceVersion,
-  updatePackageVersion,
+  setPackageVersion,
 }
 ```
 
@@ -914,7 +914,7 @@ Expected: No errors.
 ```bash
 cd /home/froid/projects/powerhouse/vetra.to
 git add modules/cloud/
-git commit -m "feat: add setServiceVersion and updatePackageVersion mutations and types"
+git commit -m "feat: add setServiceVersion and setPackageVersion mutations and types"
 ```
 
 ---
@@ -1123,7 +1123,7 @@ In `/home/froid/projects/powerhouse/vetra.to/app/cloud/[project]/tabs/overview.t
 
 ```typescript
 setServiceVersion?: (type: CloudEnvironmentServiceType, version: string) => Promise<void>
-updatePackageVersion?: (packageName: string, version: string) => Promise<void>
+setPackageVersion?: (packageName: string, version: string) => Promise<void>
 ```
 
 Destructure them in the `OverviewTab` function parameters.
@@ -1153,14 +1153,14 @@ const { updates: packageUpdates } = usePackageUpdates(
 In the JSX, add the `AvailableUpdatesCard` just before the services/packages grid (the `<div className="grid gap-6 md:grid-cols-2">` that contains the Services card and Packages card):
 
 ```tsx
-{setServiceVersion && updatePackageVersion && (
+{setServiceVersion && setPackageVersion && (
   <AvailableUpdatesCard
     serviceUpdates={serviceUpdates}
     packageUpdates={packageUpdates}
     onUpdateService={(type, version) =>
       setServiceVersion(type as CloudEnvironmentServiceType, version)
     }
-    onUpdatePackage={updatePackageVersion}
+    onUpdatePackage={setPackageVersion}
   />
 )}
 ```
@@ -1173,7 +1173,7 @@ In `/home/froid/projects/powerhouse/vetra.to/app/cloud/[project]/page.tsx`, add 
 <OverviewTab
   // ... existing props ...
   setServiceVersion={detail.setServiceVersion}
-  updatePackageVersion={detail.updatePackageVersion}
+  setPackageVersion={detail.setPackageVersion}
 />
 ```
 

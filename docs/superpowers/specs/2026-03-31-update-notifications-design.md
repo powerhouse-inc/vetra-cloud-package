@@ -22,7 +22,7 @@ Page load
   → Render AvailableUpdatesCard if any differ
 
 User clicks "Update"
-  → dispatch SET_SERVICE_VERSION / UPDATE_PACKAGE_VERSION
+  → dispatch SET_SERVICE_VERSION / SET_PACKAGE_VERSION
   → status → CHANGES_PENDING
   → User clicks "Approve Changes"
   → Processor syncs to gitops (uses service.version for image tags)
@@ -67,10 +67,10 @@ Reducer:
 - Set `service.version = action.input.version`
 - Call `markPendingIfDeployed(state)`
 
-**`UPDATE_PACKAGE_VERSION`** (packages module)
+**`SET_PACKAGE_VERSION`** (packages module)
 
 ```graphql
-input UpdatePackageVersionInput {
+input SetPackageVersionInput {
   packageName: String!
   version: String!
 }
@@ -146,7 +146,7 @@ connect:
 #### Actions
 
 - "Update" on a service row → dispatch `SET_SERVICE_VERSION` mutation with `{ type, version: latestVersion }`
-- "Update" on a package row → dispatch `UPDATE_PACKAGE_VERSION` mutation with `{ packageName, version: latestVersion }`
+- "Update" on a package row → dispatch `SET_PACKAGE_VERSION` mutation with `{ packageName, version: latestVersion }`
 - "Update All" → dispatch all pending updates sequentially
 - After any update, the environment transitions to `CHANGES_PENDING` and the existing "Approve Changes" button appears
 
@@ -159,9 +159,9 @@ mutation ($docId: PHID!, $input: VetraCloudEnvironment_SetServiceVersionInput!) 
   }
 }
 
-mutation ($docId: PHID!, $input: VetraCloudEnvironment_UpdatePackageVersionInput!) {
+mutation ($docId: PHID!, $input: VetraCloudEnvironment_SetPackageVersionInput!) {
   VetraCloudEnvironment {
-    updatePackageVersion(docId: $docId, input: $input) { ...DocumentFields }
+    setPackageVersion(docId: $docId, input: $input) { ...DocumentFields }
   }
 }
 ```
@@ -196,7 +196,7 @@ type PackageUpdate = {
 |------|--------|-------------|
 | `v1/schema.graphql` | Modify | Add `version` to service type, add new input types |
 | `v1/src/reducers/services.ts` | Modify | Add `SET_SERVICE_VERSION` reducer, set `version: null` on enable |
-| `v1/src/reducers/packages.ts` | Modify | Add `UPDATE_PACKAGE_VERSION` reducer |
+| `v1/src/reducers/packages.ts` | Modify | Add `SET_PACKAGE_VERSION` reducer |
 | `processors/vetra-cloud-environment/gitops.ts` | Modify | Use `service.version` for image tags |
 
 ### `vetra.to`
@@ -207,7 +207,7 @@ type PackageUpdate = {
 | `modules/cloud/graphql.ts` | Modify | Add `version` to service query fields, add mutation functions |
 | `modules/cloud/hooks/use-service-updates.ts` | Create | Hook to check container registry for service updates |
 | `modules/cloud/hooks/use-package-updates.ts` | Create | Hook to check package registry for package updates |
-| `modules/cloud/hooks/use-environment-detail.ts` | Modify | Add `setServiceVersion` and `updatePackageVersion` callbacks |
+| `modules/cloud/hooks/use-environment-detail.ts` | Modify | Add `setServiceVersion` and `setPackageVersion` callbacks |
 | `modules/cloud/components/available-updates-card.tsx` | Create | The updates card component |
 | `app/cloud/[project]/tabs/overview.tsx` | Modify | Wire in updates card and new props |
 | `app/cloud/[project]/page.tsx` | Modify | Pass new callbacks to OverviewTab |
