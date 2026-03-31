@@ -119,25 +119,12 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         status: status ?? null,
       };
 
-      const environment = await this.relationalDb
-        .selectFrom("environments")
-        .where("id", "=", documentId)
-        .executeTakeFirst();
-
-      if (!environment) {
-        logger.info(`Creating new environment record for "${label}"`);
-        await this.relationalDb
-          .insertInto("environments")
-          .values({ id: documentId, ...row })
-          .execute();
-      } else {
-        logger.info(`Updating existing environment record for "${label}"`);
-        await this.relationalDb
-          .updateTable("environments")
-          .set(row)
-          .where("id", "=", documentId)
-          .execute();
-      }
+      logger.info(`Upserting environment record for "${label}"`);
+      await this.relationalDb
+        .insertInto("environments")
+        .values({ id: documentId, ...row })
+        .onConflict((oc) => oc.column("id").doUpdateSet(row))
+        .execute();
 
       // Only sync to git when changes are approved
       if (status === "CHANGES_APPROVED") {
@@ -145,7 +132,20 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         try {
           await syncEnvironment(state, documentId);
           logger.info(`Gitops sync completed for "${label}"`);
-          await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+
+          // Re-check status before dispatching to avoid duplicate transitions
+          // when multiple processor instances process the same document
+          if (this.reactorClient) {
+            const freshDoc = await this.reactorClient.get(documentId) as any;
+            const freshStatus = freshDoc?.state?.global?.status;
+            if (freshStatus !== "CHANGES_APPROVED") {
+              logger.info(`Skipping MARK_CHANGES_PUSHED for "${label}" — status already changed to ${freshStatus}`);
+            } else {
+              await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+            }
+          } else {
+            await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+          }
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
         }
