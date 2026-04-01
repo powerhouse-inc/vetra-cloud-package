@@ -1,4 +1,5 @@
 import type { IProcessorHostModule, ProcessorRecord } from "@powerhousedao/reactor-browser";
+import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
@@ -17,7 +18,8 @@ export const vetraCloudEnvironmentProcessorFactory =
 
     await up(db);
 
-    const processor = new VetraCloudEnvironmentProcessor(db, (module as any).reactorClient);
+    const documentView = module.getReadModel<IDocumentView>("document-view");
+    const processor = new VetraCloudEnvironmentProcessor(db, module.dispatch, documentView);
 
     return [
       {
