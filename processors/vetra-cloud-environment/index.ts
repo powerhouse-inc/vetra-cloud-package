@@ -1,22 +1,13 @@
 import type { IProcessor, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { Kysely } from "kysely";
-import { type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
-import { type DB } from "./schema.js";
+import type { DB } from "./schema.js";
 import { childLogger } from "document-model";
+import type { IReactorClient } from "@powerhousedao/reactor";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
-import { v4 as uuidv4 } from "uuid";
-
-interface IReactorClient {
-  get(identifier: string): Promise<unknown>;
-  execute(documentIdentifier: string, branch: string, actions: Array<{ id: string; type: string; input: Record<string, unknown>; scope: string; timestampUtcMs: number }>): Promise<unknown>;
-}
-
-function makeAction(type: string, input: Record<string, unknown> = {}) {
-  return { id: uuidv4(), type, input, scope: "global", timestampUtcMs: Date.now() };
-}
 
 export class VetraCloudEnvironmentProcessor implements IProcessor {
   private relationalDb: Kysely<DB>;
@@ -27,16 +18,16 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     this.reactorClient = reactorClient;
   }
 
-  private async dispatchAction(documentId: string, type: string, input: Record<string, unknown> = {}) {
+  private async dispatchAction(documentId: string, action: VetraCloudEnvironmentAction) {
     if (!this.reactorClient) {
-      logger.warn(`Cannot dispatch ${type}: no reactor client`);
+      logger.warn(`Cannot dispatch ${action.type}: no reactor client`);
       return;
     }
     try {
-      await this.reactorClient.execute(documentId, "main", [makeAction(type, input)]);
-      logger.info(`Dispatched ${type} for ${documentId}`);
+      await this.reactorClient.execute(documentId, "main", [action]);
+      logger.info(`Dispatched ${action.type} for ${documentId}`);
     } catch (err) {
-      logger.error(`Failed to dispatch ${type} for ${documentId}: ${String(err)}`);
+      logger.error(`Failed to dispatch ${action.type} for ${documentId}: ${String(err)}`);
     }
   }
 
@@ -79,8 +70,8 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       // Fallback: fetch current document state if resultingState is missing
       if (!phState && this.reactorClient) {
         try {
-          const doc = await this.reactorClient.get(documentId) as any;
-          phState = doc?.state as { global: VetraCloudEnvironmentState } | undefined;
+          const doc = await this.reactorClient.get<VetraCloudEnvironmentDocument>(documentId);
+          phState = doc.state;
           if (phState) {
             logger.info(`Fetched current state for ${documentId} (resultingState was missing)`);
           }
@@ -136,15 +127,15 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           // Re-check status before dispatching to avoid duplicate transitions
           // when multiple processor instances process the same document
           if (this.reactorClient) {
-            const freshDoc = await this.reactorClient.get(documentId) as any;
+            const freshDoc = await this.reactorClient.get<VetraCloudEnvironmentDocument>(documentId);
             const freshStatus = freshDoc?.state?.global?.status;
             if (freshStatus !== "CHANGES_APPROVED") {
               logger.info(`Skipping MARK_CHANGES_PUSHED for "${label}" — status already changed to ${freshStatus}`);
             } else {
-              await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+              await this.dispatchAction(documentId, markChangesPushed({}));
             }
           } else {
-            await this.dispatchAction(documentId, "MARK_CHANGES_PUSHED", {});
+            await this.dispatchAction(documentId, markChangesPushed({}));
           }
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
