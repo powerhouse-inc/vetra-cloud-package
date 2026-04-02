@@ -168,10 +168,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                 "REPORT_DEPLOYMENT_SUCCEEDED",
                 {},
               );
-            } else if (
-              argoHealthStatus === "DEGRADED" ||
-              argoHealthStatus === "MISSING"
-            ) {
+            } else if (argoHealthStatus === "DEGRADED") {
               console.info(
                 `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus})`,
               );
@@ -179,6 +176,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                 code: argoHealthStatus,
                 message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
               });
+            } else if (argoHealthStatus === "MISSING") {
+              // MISSING is expected for new tenants — ArgoCD hasn't synced yet
+              console.info(
+                `[deployment-reconciler] ${label}: waiting (ArgoCD health: MISSING)`,
+              );
             }
           }
         }
