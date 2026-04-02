@@ -215,76 +215,11 @@ function generateCustomDomainIngress(
 // Values YAML generation
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Container registry tag resolution
-// ---------------------------------------------------------------------------
-
-const CONTAINER_REGISTRY = process.env.CONTAINER_REGISTRY_URL ?? "https://cr.vetra.io";
-
-const IMAGE_PATHS: Record<string, string> = {
-  SWITCHBOARD: "powerhouse-inc-powerhouse/switchboard",
-  CONNECT: "powerhouse-inc-powerhouse/connect",
-};
-
-/**
- * Resolve a mutable tag (e.g. "dev") to the latest concrete version tag
- * from the container registry. Returns the original tag if resolution fails
- * or the tag already looks like a version (e.g. "v1.2.3").
- */
-async function resolveImageTag(
-  serviceType: string,
-  tag: string,
-): Promise<string> {
-  // Already a pinned version — nothing to resolve
-  if (tag.match(/^v?\d+\.\d+\.\d+/)) return tag;
-
-  const imagePath = IMAGE_PATHS[serviceType];
-  if (!imagePath) return tag;
-
-  try {
-    const url = `${CONTAINER_REGISTRY}/v2/${imagePath}/tags/list`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) return tag;
-
-    const data = (await res.json()) as { tags?: string[] };
-    const tags = data.tags ?? [];
-    if (tags.length === 0) return tag;
-
-    // Find all version tags matching the channel (e.g. "dev" -> "v6.0.0-dev.147")
-    const channelTags = tags.filter((t) => t.includes(`-${tag}.`));
-    if (channelTags.length === 0) return tag;
-
-    // Sort and pick the latest
-    channelTags.sort();
-    return channelTags[channelTags.length - 1];
-  } catch (err) {
-    logger.warn(`Failed to resolve image tag "${tag}" for ${serviceType}: ${String(err)}`);
-    return tag;
-  }
-}
-
-/**
- * Resolve image tags for all services in the state. Mutable tags like "dev"
- * are resolved to the latest concrete version from the container registry.
- * Returns a map of serviceType -> resolved tag.
- */
-export async function resolveServiceImageTags(
-  state: VetraCloudEnvironmentState,
-): Promise<Record<string, string>> {
-  const tags: Record<string, string> = {};
-  for (const service of state.services) {
-    tags[service.type] = await resolveImageTag(
-      service.type,
-      service.version ?? "dev",
-    );
-  }
-  return tags;
-}
+const DEFAULT_IMAGE_TAG = "v6.0.0-dev.152";
 
 export function generateValuesYaml(
   state: VetraCloudEnvironmentState,
   documentId: string,
-  imageTags: Record<string, string>,
 ): string {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -295,8 +230,14 @@ export function generateValuesYaml(
   const connectEnabled = state.services.some(
     (s) => s.type === "CONNECT" && s.enabled,
   );
-  const switchboardTag = imageTags["SWITCHBOARD"] ?? "dev";
-  const connectTag = imageTags["CONNECT"] ?? "dev";
+  const switchboardService = state.services.find(
+    (s) => s.type === "SWITCHBOARD",
+  );
+  const connectService = state.services.find(
+    (s) => s.type === "CONNECT",
+  );
+  const switchboardTag = switchboardService?.version ?? DEFAULT_IMAGE_TAG;
+  const connectTag = connectService?.version ?? DEFAULT_IMAGE_TAG;
   const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
   const disabled = DISABLED_STATUSES.has(state.status);
 
@@ -586,8 +527,7 @@ async function syncEnvironmentEphemeral(
 
     // Write values file
     const valuesPath = join(tenantDir, "powerhouse-values.yaml");
-    const imageTags = await resolveServiceImageTags(state);
-    const yaml = generateValuesYaml(state, documentId, imageTags);
+    const yaml = generateValuesYaml(state, documentId);
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
 
