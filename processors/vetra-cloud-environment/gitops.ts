@@ -195,9 +195,7 @@ function generateCustomDomainIngress(
   service: string,
   customDomain: string,
 ): string {
-  const host = service === "switchboard"
-    ? customDomain
-    : `${service}.${customDomain}`;
+  const host = `${service}.${customDomain}`;
   const secretSuffix = customDomain.replace(/\./g, "-");
   return `
   additionalIngresses:
