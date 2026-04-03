@@ -1,30 +1,28 @@
-import type { IProcessor, OperationWithContext } from "@powerhousedao/reactor-browser";
+import type { IProcessor, IProcessorDispatch, OperationWithContext } from "@powerhousedao/reactor-browser";
+import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import type { DB } from "./schema.js";
 import { childLogger } from "document-model";
-import type { IReactorClient } from "@powerhousedao/reactor";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
 
 export class VetraCloudEnvironmentProcessor implements IProcessor {
   private relationalDb: Kysely<DB>;
-  private reactorClient?: IReactorClient;
+  private dispatch: IProcessorDispatch;
+  private documentView: IDocumentView;
 
-  constructor(relationalDb: Kysely<DB>, reactorClient?: IReactorClient) {
+  constructor(relationalDb: Kysely<DB>, dispatch: IProcessorDispatch, documentView: IDocumentView) {
     this.relationalDb = relationalDb;
-    this.reactorClient = reactorClient;
+    this.dispatch = dispatch;
+    this.documentView = documentView;
   }
 
   private async dispatchAction(documentId: string, action: VetraCloudEnvironmentAction) {
-    if (!this.reactorClient) {
-      logger.warn(`Cannot dispatch ${action.type}: no reactor client`);
-      return;
-    }
     try {
-      await this.reactorClient.execute(documentId, "main", [action]);
+      await this.dispatch.execute(documentId, "main", [action]);
       logger.info(`Dispatched ${action.type} for ${documentId}`);
     } catch (err) {
       logger.error(`Failed to dispatch ${action.type} for ${documentId}: ${String(err)}`);
@@ -68,9 +66,9 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         : undefined;
 
       // Fallback: fetch current document state if resultingState is missing
-      if (!phState && this.reactorClient) {
+      if (!phState) {
         try {
-          const doc = await this.reactorClient.get<VetraCloudEnvironmentDocument>(documentId);
+          const doc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
           phState = doc.state;
           if (phState) {
             logger.info(`Fetched current state for ${documentId} (resultingState was missing)`);
@@ -126,14 +124,10 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
 
           // Re-check status before dispatching to avoid duplicate transitions
           // when multiple processor instances process the same document
-          if (this.reactorClient) {
-            const freshDoc = await this.reactorClient.get<VetraCloudEnvironmentDocument>(documentId);
-            const freshStatus = freshDoc?.state?.global?.status;
-            if (freshStatus !== "CHANGES_APPROVED") {
-              logger.info(`Skipping MARK_CHANGES_PUSHED for "${label}" — status already changed to ${freshStatus}`);
-            } else {
-              await this.dispatchAction(documentId, markChangesPushed({}));
-            }
+          const freshDoc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
+          const freshStatus = freshDoc?.state?.global?.status;
+          if (freshStatus !== "CHANGES_APPROVED") {
+            logger.info(`Skipping MARK_CHANGES_PUSHED for "${label}" — status already changed to ${freshStatus}`);
           } else {
             await this.dispatchAction(documentId, markChangesPushed({}));
           }
