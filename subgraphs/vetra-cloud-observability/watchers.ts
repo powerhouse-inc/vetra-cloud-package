@@ -1,3 +1,4 @@
+import { resolve4 } from "node:dns/promises";
 import type { Kysely } from "kysely";
 import type {
   EnvironmentStatus,
@@ -218,6 +219,105 @@ function watchWithReconnect(
 }
 
 // ---------------------------------------------------------------------------
+// Custom domain validation helpers
+// ---------------------------------------------------------------------------
+
+interface DomainCheck {
+  domainResolves: number | null;
+  tlsCertValid: number | null;
+  tlsCertExpiresAt: string | null;
+}
+
+async function checkCustomDomain(
+  kc: { makeApiClient<T>(apiClass: new (...args: unknown[]) => T): T },
+  coreApi: { readNamespacedSecret(params: { name: string; namespace: string }): Promise<unknown> },
+  tenantId: string,
+): Promise<DomainCheck> {
+  const result: DomainCheck = {
+    domainResolves: null,
+    tlsCertValid: null,
+    tlsCertExpiresAt: null,
+  };
+
+  try {
+    const { NetworkingV1Api } = await import("@kubernetes/client-node");
+    const networkingApi = kc.makeApiClient(NetworkingV1Api);
+
+    const ingressResponse = await networkingApi.listNamespacedIngress({ namespace: tenantId });
+    const ingresses = ingressResponse as {
+      items?: Array<{
+        metadata?: { name?: string };
+        spec?: {
+          tls?: Array<{ hosts?: string[]; secretName?: string }>;
+          rules?: Array<{ host?: string }>;
+        };
+      }>;
+    };
+
+    const customIngress = ingresses.items?.find((ing) =>
+      ing.metadata?.name?.includes("-custom-"),
+    );
+    if (!customIngress) return result;
+
+    const customHost = customIngress.spec?.rules?.[0]?.host;
+    if (!customHost) return result;
+
+    // DNS check
+    try {
+      const addresses = await resolve4(customHost);
+      result.domainResolves = addresses.length > 0 ? 1 : 0;
+    } catch {
+      result.domainResolves = 0;
+    }
+
+    // TLS check — read the secret created by cert-manager
+    const tlsSecretName = customIngress.spec?.tls?.[0]?.secretName;
+    if (tlsSecretName) {
+      try {
+        const secret = (await coreApi.readNamespacedSecret({
+          name: tlsSecretName,
+          namespace: tenantId,
+        })) as {
+          data?: { "tls.crt"?: string };
+        };
+
+        const certB64 = secret.data?.["tls.crt"];
+        if (certB64) {
+          const pem = Buffer.from(certB64, "base64").toString("utf-8");
+          const expiresAt = extractCertExpiry(pem);
+          if (expiresAt) {
+            result.tlsCertExpiresAt = expiresAt.toISOString();
+            result.tlsCertValid = expiresAt > new Date() ? 1 : 0;
+          } else {
+            result.tlsCertValid = 1;
+          }
+        } else {
+          result.tlsCertValid = 0;
+        }
+      } catch {
+        result.tlsCertValid = 0;
+      }
+    }
+  } catch (err) {
+    console.warn(`[domain-check] error checking custom domain for ${tenantId}:`, err);
+  }
+
+  return result;
+}
+
+/** Extract the notAfter date from a PEM certificate. */
+function extractCertExpiry(pem: string): Date | null {
+  try {
+    // Use Node's built-in X509Certificate (available since Node 15)
+    const { X509Certificate } = require("node:crypto") as typeof import("node:crypto");
+    const cert = new X509Certificate(pem);
+    return new Date(cert.validTo);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Reconciliation (lists current state and upserts to DB)
 // ---------------------------------------------------------------------------
 
@@ -286,6 +386,8 @@ async function reconcile(
         ? 1
         : 0;
 
+      const domainCheck = await checkCustomDomain(kc, coreApi, tenantId);
+
       await upsertEnvironmentStatus(db, {
         tenantId,
         argoSyncStatus: toUpperEnum(syncStatus),
@@ -293,9 +395,9 @@ async function reconcile(
         argoLastSyncedAt: lastSyncedAt,
         argoMessage: message,
         configDriftDetected: driftDetected,
-        tlsCertValid: null,
-        tlsCertExpiresAt: null,
-        domainResolves: null,
+        tlsCertValid: domainCheck.tlsCertValid,
+        tlsCertExpiresAt: domainCheck.tlsCertExpiresAt,
+        domainResolves: domainCheck.domainResolves,
         updatedAt: new Date().toISOString(),
       });
     }
