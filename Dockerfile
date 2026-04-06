@@ -55,9 +55,6 @@ RUN if [ -n "$PACKAGE_NAME" ]; then \
         pnpm install; \
     fi
 
-# Regenerate Prisma client for Alpine Linux
-RUN prisma generate --schema node_modules/document-drive/dist/prisma/schema.prisma || true
-
 # -----------------------------------------------------------------------------
 # Connect build stage
 # -----------------------------------------------------------------------------

@@ -145,7 +145,7 @@ git commit -m "feat(chart): add global.disabled flag to disable entire tenant"
 import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { childLogger } from "document-drive";
+import { childLogger } from "document-model";
 import type {
   VetraCloudEnvironmentState,
   VetraCloudEnvironmentService,

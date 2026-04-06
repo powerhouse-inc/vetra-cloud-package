@@ -10,7 +10,7 @@ import { PackagesList } from "./components/PackagesList.js";
 import { SectionCard } from "./components/SectionCard.js";
 import { DnsRecordsTable } from "./components/DnsRecordsTable.js";
 import { vetraThemeCSS } from "./components/vetra-theme.js";
-import { DocumentToolbar } from "@powerhousedao/design-system/connect/components/document-toolbar/document-toolbar";
+import { DocumentToolbar } from "@powerhousedao/design-system/connect";
 
 const READONLY_STATUSES: Set<VetraCloudEnvironmentStatus> = new Set([
   "TERMINATING",

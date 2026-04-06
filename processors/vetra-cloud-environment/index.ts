@@ -1,4 +1,4 @@
-import type { IProcessor, IProcessorDispatch, OperationWithContext } from "@powerhousedao/reactor-browser";
+import type { IProcessor, IProcessorHostModule, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
@@ -11,10 +11,10 @@ const logger = childLogger(["vetra-cloud-environment-processor"]);
 
 export class VetraCloudEnvironmentProcessor implements IProcessor {
   private relationalDb: Kysely<DB>;
-  private dispatch: IProcessorDispatch;
+  private dispatch: IProcessorHostModule["dispatch"];
   private documentView: IDocumentView;
 
-  constructor(relationalDb: Kysely<DB>, dispatch: IProcessorDispatch, documentView: IDocumentView) {
+  constructor(relationalDb: Kysely<DB>, dispatch: IProcessorHostModule["dispatch"], documentView: IDocumentView) {
     this.relationalDb = relationalDb;
     this.dispatch = dispatch;
     this.documentView = documentView;

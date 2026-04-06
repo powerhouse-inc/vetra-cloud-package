@@ -1,4 +1,5 @@
 import { resolve4 } from "node:dns/promises";
+import type { KubeConfig } from "@kubernetes/client-node";
 import type { Kysely } from "kysely";
 import type {
   EnvironmentStatus,
@@ -229,7 +230,7 @@ interface DomainCheck {
 }
 
 async function checkCustomDomain(
-  kc: { makeApiClient<T>(apiClass: new (...args: unknown[]) => T): T },
+  kc: Pick<KubeConfig, "makeApiClient">,
   coreApi: { readNamespacedSecret(params: { name: string; namespace: string }): Promise<unknown> },
   tenantId: string,
 ): Promise<DomainCheck> {
