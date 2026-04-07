@@ -334,6 +334,13 @@ switchboard:
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
+  envFrom:
+    - configMapRef:
+        name: ${tenantId}-env
+        optional: true
+    - secretRef:
+        name: ${tenantId}-secrets
+        optional: true
   livenessProbe:
     enabled: true
     exec:
@@ -392,6 +399,13 @@ connect:
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
+  envFrom:
+    - configMapRef:
+        name: ${tenantId}-env
+        optional: true
+    - secretRef:
+        name: ${tenantId}-secrets
+        optional: true
   livenessProbe:
     enabled: true
     httpGet:
