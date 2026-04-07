@@ -1,6 +1,7 @@
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
+import { createAction } from "document-model";
 import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
@@ -93,6 +94,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     }
   }
 
+  /** Grace period (ms) before marking a DEPLOYING environment as failed.
+   *  Services like switchboard need time for image pulls, migrations, and
+   *  health-probe warm-up — ArgoCD will report DEGRADED during this window. */
+  private static DEPLOYMENT_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+
   /**
    * Periodically checks for environments in CHANGES_PUSHED/DEPLOYING status
    * and transitions them to READY/FAILED based on ArgoCD state.
@@ -111,13 +117,14 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         // Find environments waiting for deployment
         const pendingEnvs = (await envDb
           .selectFrom("environments")
-          .select(["id", "tenantId", "status", "name"])
+          .select(["id", "tenantId", "status", "name", "deployingSince"])
           .where("status", "in", ["CHANGES_PUSHED", "DEPLOYING"])
           .execute()) as Array<{
           id: string;
           tenantId: string | null;
           status: string;
           name: string | null;
+          deployingSince: string | null;
         }>;
 
         if (pendingEnvs.length === 0) return;
@@ -151,11 +158,18 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
               );
             } else if (
               argoHealthStatus === "PROGRESSING" ||
+              argoHealthStatus === "DEGRADED" ||
               argoSyncStatus === "OUT_OF_SYNC"
             ) {
               console.info(
-                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING`,
+                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING (health: ${argoHealthStatus}, sync: ${argoSyncStatus})`,
               );
+              const now = new Date().toISOString();
+              await envDb
+                .updateTable("environments")
+                .set({ deployingSince: now })
+                .where("id", "=", env.id)
+                .execute();
               await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
             }
           } else if (env.status === "DEPLOYING") {
@@ -163,23 +177,60 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
               console.info(
                 `[deployment-reconciler] ${label}: DEPLOYING → READY (healthy)`,
               );
+              await envDb
+                .updateTable("environments")
+                .set({ deployingSince: null })
+                .where("id", "=", env.id)
+                .execute();
               await this.dispatchAction(
                 env.id,
                 "REPORT_DEPLOYMENT_SUCCEEDED",
                 {},
               );
             } else if (argoHealthStatus === "DEGRADED") {
-              console.info(
-                `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus})`,
-              );
-              await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
-                code: argoHealthStatus,
-                message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
-              });
+              const deployingSince = env.deployingSince
+                ? new Date(env.deployingSince).getTime()
+                : Date.now();
+
+              // Backfill deployingSince if missing (e.g. environments already
+              // DEPLOYING before this code was deployed)
+              if (!env.deployingSince) {
+                await envDb
+                  .updateTable("environments")
+                  .set({ deployingSince: new Date().toISOString() })
+                  .where("id", "=", env.id)
+                  .execute();
+              }
+
+              const elapsed = Date.now() - deployingSince;
+              if (elapsed < VetraCloudObservabilitySubgraph.DEPLOYMENT_GRACE_MS) {
+                console.info(
+                  `[deployment-reconciler] ${label}: DEPLOYING, health DEGRADED — ` +
+                  `waiting (${Math.round(elapsed / 1000)}s / ${VetraCloudObservabilitySubgraph.DEPLOYMENT_GRACE_MS / 1000}s grace)`,
+                );
+              } else {
+                console.info(
+                  `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus}, ` +
+                  `grace period exceeded after ${Math.round(elapsed / 1000)}s)`,
+                );
+                await envDb
+                  .updateTable("environments")
+                  .set({ deployingSince: null })
+                  .where("id", "=", env.id)
+                  .execute();
+                await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
+                  code: argoHealthStatus,
+                  message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
+                });
+              }
             } else if (argoHealthStatus === "MISSING") {
               // MISSING is expected for new tenants — ArgoCD hasn't synced yet
               console.info(
                 `[deployment-reconciler] ${label}: waiting (ArgoCD health: MISSING)`,
+              );
+            } else if (argoHealthStatus === "PROGRESSING") {
+              console.info(
+                `[deployment-reconciler] ${label}: waiting (ArgoCD health: PROGRESSING)`,
               );
             }
           }
@@ -203,14 +254,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     input: Record<string, unknown>,
   ) {
     try {
-      const action = {
-        id: `${type}-${Date.now()}`,
-        type,
-        input,
-        scope: "global",
-        timestampUtcMs: Date.now(),
-      };
-      await this.reactorClient.execute(documentId, "main", [action] as any);
+      const action = createAction(type, input);
+      await this.reactorClient.execute(documentId, "main", [action]);
       console.info(
         `[deployment-reconciler] Dispatched ${type} for ${documentId}`,
       );
