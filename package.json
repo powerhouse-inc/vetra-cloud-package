@@ -1,6 +1,6 @@
 {
   "name": "@powerhousedao/vetra-cloud-package",
-  "version": "0.0.3-dev.13",
+  "version": "0.0.3-dev.14",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -12,52 +12,42 @@
   ],
   "exports": {
     ".": {
-      "types": "./dist/node/index.d.mts",
-      "import": "./dist/node/index.mjs",
-      "default": "./dist/index.js"
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/browser/index.js",
+      "node": "./dist/node/index.mjs"
     },
     "./document-models": {
-      "types": "./dist/node/document-models/index.d.mts",
-      "import": "./dist/node/document-models/index.mjs",
-      "default": "./dist/document-models/index.js"
+      "types": "./dist/document-models/index.d.ts",
+      "browser": "./dist/browser/document-models/index.js",
+      "node": "./dist/node/document-models/index.mjs"
+    },
+    "./document-models/*": {
+      "types": "./dist/document-models/*/index.d.ts",
+      "browser": "./dist/browser/document-models/*/index.js",
+      "node": "./dist/node/document-models/*/index.mjs"
     },
     "./editors": {
       "types": "./dist/editors/index.d.ts",
-      "import": "./dist/node/editors/index.mjs",
-      "default": "./dist/editors/index.js"
-    },
-    "./subgraphs": {
-      "types": "./dist/subgraphs/index.d.ts",
-      "import": "./dist/node/subgraphs/index.mjs",
-      "default": "./dist/subgraphs/index.js"
-    },
-    "./processors": {
-      "types": "./dist/node/processors/index.d.mts",
-      "import": "./dist/node/processors/index.mjs",
-      "default": "./dist/processors/index.js"
-    },
-    "./processors/connect": {
-      "types": "./dist/processors/connect.d.ts",
-      "default": "./dist/processors/connect.js"
-    },
-    "./processors/switchboard": {
-      "types": "./dist/processors/switchboard.d.ts",
-      "default": "./dist/processors/switchboard.js"
-    },
-    "./manifest": {
-      "default": "./dist/powerhouse.manifest.json"
-    },
-    "./style.css": "./dist/style.css",
-    "./document-models/*": {
-      "types": "./dist/node/document-models/*/index.d.mts",
-      "import": "./dist/node/document-models/*/index.mjs",
-      "default": "./dist/document-models/*/index.js"
+      "browser": "./dist/browser/editors/index.js",
+      "node": "./dist/node/editors/index.mjs"
     },
     "./editors/*": {
       "types": "./dist/editors/*/index.d.ts",
-      "import": "./dist/node/editors/*/module.mjs",
-      "default": "./dist/editors/*/index.js"
-    }
+      "browser": "./dist/browser/editors/*/index.js",
+      "node": "./dist/node/editors/*/index.mjs"
+    },
+    "./subgraphs": {
+      "types": "./dist/subgraphs/index.d.ts",
+      "browser": "./dist/browser/subgraphs/index.js",
+      "node": "./dist/node/subgraphs/index.mjs"
+    },
+    "./processors": {
+      "types": "./dist/processors/index.d.ts",
+      "browser": "./dist/browser/processors/index.js",
+      "node": "./dist/node/processors/index.mjs"
+    },
+    "./manifest": "./dist/powerhouse.manifest.json",
+    "./style.css": "./dist/style.css"
   },
   "scripts": {
     "lint": "eslint --config eslint.config.js --cache --cache-strategy content",
@@ -65,7 +55,7 @@
     "build:tsc:watch": "tsc --watch",
     "build:css": "npx @tailwindcss/cli -i ./style.css -o ./dist/style.css",
     "build:css:watch": "npx @tailwindcss/cli -i ./style.css -o ./dist/style.css --watch",
-    "build": "npm run tsc && npm run tailwind && ph-cli build",
+    "build": "ph-cli build",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
