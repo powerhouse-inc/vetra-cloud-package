@@ -22,6 +22,18 @@
         }
     ],
     "apps": [],
-    "subgraphs": [],
-    "processors": []
+    "subgraphs": [
+        {
+            "id": "vetra-cloud-observability",
+            "name": "Vetra Cloud Observability",
+            "documentTypes": ["powerhouse/vetra-cloud-environment"]
+        }
+    ],
+    "processors": [
+        {
+            "id": "vetra-cloud-environment",
+            "name": "Vetra Cloud Environment Processor",
+            "documentTypes": ["powerhouse/vetra-cloud-environment", "powerhouse/document-drive"]
+        }
+    ]
 }
