@@ -1,5 +1,5 @@
 import { ServiceNotFoundError } from "../../gen/services/error.js";
-import { markPendingIfDeployed } from "./utils.js";
+import { markPendingIfDeployed, regenerateDnsRecords } from "./utils.js";
 import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
@@ -23,6 +23,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           version: null,
         });
       }
+      regenerateDnsRecords(state);
       markPendingIfDeployed(state);
     },
     disableServiceOperation(state, action) {
@@ -33,6 +34,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       const service = state.services.find((s) => s.type === type);
       if (service) {
         service.enabled = false;
+        regenerateDnsRecords(state);
         markPendingIfDeployed(state);
       }
     },
@@ -44,6 +46,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         );
       }
       service.enabled = !service.enabled;
+      regenerateDnsRecords(state);
       markPendingIfDeployed(state);
     },
     updateServicePrefixOperation(state, action) {

@@ -1,4 +1,4 @@
-import { markPendingIfDeployed } from "./utils.js";
+import { markPendingIfDeployed, regenerateDnsRecords } from "./utils.js";
 import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
@@ -16,23 +16,11 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       }
     },
     setCustomDomainOperation(state, action) {
-      const LB_IP = "138.199.129.93";
       const domain = action.input.domain || null;
       const enabled = action.input.enabled;
 
-      // Auto-generate DNS A records for each enabled service when domain is set
-      const dnsRecords =
-        enabled && domain
-          ? (state.services ?? [])
-              .filter((s) => s.enabled)
-              .map((s) => ({
-                type: "A",
-                host: `${s.prefix}.${domain}`,
-                value: LB_IP,
-              }))
-          : [];
-
-      state.customDomain = { enabled, domain, dnsRecords };
+      state.customDomain = { enabled, domain, dnsRecords: [] };
+      regenerateDnsRecords(state);
       markPendingIfDeployed(state);
     },
     setDnsRecordsOperation(state, action) {

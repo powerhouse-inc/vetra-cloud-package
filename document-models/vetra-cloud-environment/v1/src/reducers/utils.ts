@@ -18,3 +18,29 @@ export function markPendingIfDeployed(state: { status: string }) {
     state.status = "CHANGES_PENDING";
   }
 }
+
+const LB_IP = "138.199.129.93";
+
+/**
+ * Regenerate custom domain DNS records based on currently enabled services.
+ * Call this whenever services change to keep DNS records in sync.
+ */
+export function regenerateDnsRecords(state: {
+  customDomain?: {
+    enabled: boolean;
+    domain?: string | null;
+    dnsRecords: Array<{ type: string; host: string; value: string }>;
+  } | null;
+  services: Array<{ type: string; prefix: string; enabled: boolean }>;
+}) {
+  if (!state.customDomain?.enabled || !state.customDomain.domain) return;
+
+  const domain = state.customDomain.domain;
+  state.customDomain.dnsRecords = state.services
+    .filter((s) => s.enabled)
+    .map((s) => ({
+      type: "A",
+      host: `${s.prefix}.${domain}`,
+      value: LB_IP,
+    }));
+}
