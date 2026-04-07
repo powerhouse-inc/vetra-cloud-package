@@ -7,6 +7,7 @@ export interface Environments {
   packages: string | null;
   services: string | null;
   status: string | null;
+  deployingSince: string | null;
 }
 
 export interface DB {

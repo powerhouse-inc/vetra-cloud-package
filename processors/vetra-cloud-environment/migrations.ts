@@ -11,6 +11,7 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("packages", "text")
     .addColumn("services", "text")
     .addColumn("status", "varchar(50)")
+    .addColumn("deployingSince", "varchar(255)")
     .addPrimaryKeyConstraint("environments_pkey", ["id"])
     .ifNotExists()
     .execute();
@@ -35,6 +36,16 @@ export async function up(db: Kysely<any>): Promise<void> {
       .execute();
   } catch {
     // Column doesn't exist — expected for fresh installs
+  }
+
+  // Add deployingSince column for tracking deployment grace period
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("deployingSince", "varchar(255)")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
   }
 }
 
