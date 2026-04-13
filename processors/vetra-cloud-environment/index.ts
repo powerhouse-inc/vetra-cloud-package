@@ -46,10 +46,21 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     // Deduplicate environment operations: only process the last operation per document.
     // Skip documents that were deleted in this same batch to avoid resurrecting them.
     const lastByDocument = new Map<string, OperationWithContext>();
+    // Capture the FIRST user-signed signer per document for the createdBy field.
+    // We iterate in order so the earliest user op wins. System actions (e.g. signed by
+    // the switchboard service identity) are skipped because we want the human creator.
+    const firstUserSignerByDocument = new Map<string, string>();
     for (const entry of operations) {
       if (entry.context.documentType === "powerhouse/vetra-cloud-environment"
         && !deletedIds.has(entry.context.documentId)) {
         lastByDocument.set(entry.context.documentId, entry);
+
+        if (!firstUserSignerByDocument.has(entry.context.documentId)) {
+          const userAddress = extractUserSignerAddress(entry.operation);
+          if (userAddress) {
+            firstUserSignerByDocument.set(entry.context.documentId, userAddress);
+          }
+        }
       }
     }
 
@@ -108,10 +119,14 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         status: status ?? null,
       };
 
-      logger.info(`Upserting environment record for "${label}"`);
+      // createdBy is INSERT-only — never overwritten by later updates.
+      // Pulled from the first user-signed op in this batch for this document.
+      const createdBy = firstUserSignerByDocument.get(documentId) ?? null;
+
+      logger.info(`Upserting environment record for "${label}"${createdBy ? ` (createdBy=${createdBy})` : ""}`);
       await this.relationalDb
         .insertInto("environments")
-        .values({ id: documentId, ...row })
+        .values({ id: documentId, ...row, createdBy })
         .onConflict((oc) => oc.column("id").doUpdateSet(row))
         .execute();
 
@@ -183,4 +198,28 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
   }
 
   async onDisconnect() {}
+}
+
+/**
+ * Extract a user's EthereumAddress from a signed action's signer context.
+ * Returns null for unsigned actions, or for actions signed by system identities
+ * (e.g. switchboard) where there is no human user.
+ *
+ * The returned address is lowercased to match the convention used by
+ * reactor-api's AuthService when comparing against the configured ADMINS list.
+ */
+function extractUserSignerAddress(
+  operation: OperationWithContext["operation"],
+): string | null {
+  const signer = operation.action?.context?.signer;
+  if (!signer) return null;
+
+  const userAddress = signer.user?.address;
+  if (!userAddress) return null;
+
+  // System actions have an empty user address (only an app signer);
+  // we only want human creators here.
+  if (typeof userAddress !== "string" || userAddress.length === 0) return null;
+
+  return userAddress.toLowerCase();
 }
