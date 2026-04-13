@@ -34,7 +34,13 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       "http://kube-prometheus-stack-prometheus.monitoring.svc:9090";
     const lokiUrl = process.env.LOKI_URL ?? "http://loki.monitoring.svc:3100";
 
-    this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl });
+    // The processor's `environments` table lives in a separate namespace.
+    // The `myEnvironments` / `viewer` resolvers read from it.
+    const envDb = (await this.relationalDb.createNamespace(
+      "vetra-cloud-environments",
+    )) as unknown as Kysely<any>;
+
+    this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl, envDb });
 
     // Acquire K8s credentials and start watchers
     const openbaoAddr = process.env.OPENBAO_ADDR;

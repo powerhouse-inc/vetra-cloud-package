@@ -6,7 +6,19 @@ import { LokiClient } from "./loki.js";
 export interface ResolverConfig {
   prometheusUrl: string;
   lokiUrl: string;
+  /**
+   * Kysely client for the processor's `vetra-cloud-environments` namespace.
+   * Used by `myEnvironments` to filter rows by `createdBy` against the
+   * authenticated user (from reactor-api's AuthService).
+   */
+  envDb: Kysely<any>;
 }
+
+/** Auth context shape injected by reactor-api into resolver `context`. */
+type AuthAwareContext = {
+  user?: { address: string };
+  isAdmin?: (address: string) => boolean;
+};
 
 export function createResolvers(
   db: Kysely<ObservabilityDB>,
@@ -14,6 +26,7 @@ export function createResolvers(
 ): Record<string, any> {
   const prometheus = new PrometheusClient(config.prometheusUrl);
   const loki = new LokiClient(config.lokiUrl);
+  const envDb = config.envDb;
 
   return {
     Query: {
@@ -117,6 +130,47 @@ export function createResolvers(
           limit?: number | null;
         },
       ) => loki.errorLogs(tenantId, since ?? "FIVE_MIN", limit ?? 100),
+
+      myEnvironments: async (
+        _parent: unknown,
+        { scope }: { scope?: "MINE" | "ALL" | null },
+        ctx: AuthAwareContext,
+      ) => {
+        const userAddress = ctx.user?.address?.toLowerCase();
+        if (!userAddress) {
+          // Unauthenticated → empty list. The UI can prompt for login.
+          return [];
+        }
+
+        const isAdmin = ctx.isAdmin?.(userAddress) ?? false;
+        const wantAll = scope === "ALL";
+
+        // Build the query — admins requesting ALL get everything; everyone else
+        // (including admins requesting MINE) gets only rows they created.
+        const query = envDb
+          .selectFrom("environments")
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "tenantId",
+            "customDomain",
+            "status",
+            "createdBy",
+          ]);
+
+        const rows = wantAll && isAdmin
+          ? await query.execute()
+          : await query.where("createdBy", "=", userAddress).execute();
+
+        return rows;
+      },
+
+      viewer: (_parent: unknown, _args: unknown, ctx: AuthAwareContext) => {
+        const address = ctx.user?.address?.toLowerCase() ?? null;
+        const isAdmin = address ? (ctx.isAdmin?.(address) ?? false) : false;
+        return { address, isAdmin };
+      },
     },
   };
 }
