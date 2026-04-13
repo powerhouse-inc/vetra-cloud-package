@@ -12,74 +12,46 @@
   ],
   "exports": {
     ".": {
-      "browser": {
-        "types": "./dist/browser/index.d.ts",
-        "default": "./dist/browser/index.js"
-      },
-      "node": {
-        "types": "./dist/node/index.d.mts",
-        "default": "./dist/node/index.mjs"
-      }
+      "types": "./dist/browser/index.d.ts",
+      "browser": "./dist/browser/index.js",
+      "node": "./dist/node/index.mjs",
+      "default": "./dist/browser/index.js"
     },
     "./document-models": {
-      "browser": {
-        "types": "./dist/browser/document-models/index.d.ts",
-        "default": "./dist/browser/document-models/index.js"
-      },
-      "node": {
-        "types": "./dist/node/document-models/index.d.mts",
-        "default": "./dist/node/document-models/index.mjs"
-      }
+      "types": "./dist/browser/document-models/index.d.ts",
+      "browser": "./dist/browser/document-models/index.js",
+      "node": "./dist/node/document-models/index.mjs",
+      "default": "./dist/browser/document-models/index.js"
     },
     "./document-models/*": {
-      "browser": {
-        "types": "./dist/browser/document-models/*/index.d.ts",
-        "default": "./dist/browser/document-models/*/index.js"
-      },
-      "node": {
-        "types": "./dist/node/document-models/*/index.d.mts",
-        "default": "./dist/node/document-models/*/index.mjs"
-      }
+      "types": "./dist/browser/document-models/*/index.d.ts",
+      "browser": "./dist/browser/document-models/*/index.js",
+      "node": "./dist/node/document-models/*/index.mjs",
+      "default": "./dist/browser/document-models/*/index.js"
     },
     "./editors": {
-      "browser": {
-        "types": "./dist/browser/editors/index.d.ts",
-        "default": "./dist/browser/editors/index.js"
-      },
-      "node": {
-        "types": "./dist/node/editors/index.d.mts",
-        "default": "./dist/node/editors/index.mjs"
-      }
+      "types": "./dist/browser/editors/index.d.ts",
+      "browser": "./dist/browser/editors/index.js",
+      "node": "./dist/node/editors/index.mjs",
+      "default": "./dist/browser/editors/index.js"
     },
     "./editors/*": {
-      "browser": {
-        "types": "./dist/browser/editors/*/index.d.ts",
-        "default": "./dist/browser/editors/*/index.js"
-      },
-      "node": {
-        "types": "./dist/node/editors/*/index.d.mts",
-        "default": "./dist/node/editors/*/index.mjs"
-      }
+      "types": "./dist/browser/editors/*/index.d.ts",
+      "browser": "./dist/browser/editors/*/index.js",
+      "node": "./dist/node/editors/*/index.mjs",
+      "default": "./dist/browser/editors/*/index.js"
     },
     "./subgraphs": {
-      "browser": {
-        "types": "./dist/browser/subgraphs/index.d.ts",
-        "default": "./dist/browser/subgraphs/index.js"
-      },
-      "node": {
-        "types": "./dist/node/subgraphs/index.d.mts",
-        "default": "./dist/node/subgraphs/index.mjs"
-      }
+      "types": "./dist/browser/subgraphs/index.d.ts",
+      "browser": "./dist/browser/subgraphs/index.js",
+      "node": "./dist/node/subgraphs/index.mjs",
+      "default": "./dist/browser/subgraphs/index.js"
     },
     "./processors": {
-      "browser": {
-        "types": "./dist/browser/processors/index.d.ts",
-        "default": "./dist/browser/processors/index.js"
-      },
-      "node": {
-        "types": "./dist/node/processors/index.d.mts",
-        "default": "./dist/node/processors/index.mjs"
-      }
+      "types": "./dist/browser/processors/index.d.ts",
+      "browser": "./dist/browser/processors/index.js",
+      "node": "./dist/node/processors/index.mjs",
+      "default": "./dist/browser/processors/index.js"
     },
     "./manifest": "./dist/powerhouse.manifest.json",
     "./style.css": "./dist/style.css"
