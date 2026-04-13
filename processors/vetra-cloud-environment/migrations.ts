@@ -12,6 +12,7 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("services", "text")
     .addColumn("status", "varchar(50)")
     .addColumn("deployingSince", "varchar(255)")
+    .addColumn("createdBy", "varchar(255)")
     .addPrimaryKeyConstraint("environments_pkey", ["id"])
     .ifNotExists()
     .execute();
@@ -43,6 +44,18 @@ export async function up(db: Kysely<any>): Promise<void> {
     await db.schema
       .alterTable("environments")
       .addColumn("deployingSince", "varchar(255)")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
+  }
+
+  // Add createdBy column for per-user environment scoping
+  // Stores the lowercased EthereumAddress of the user who first signed
+  // an action on this document (captured by the processor on first insert).
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("createdBy", "varchar(255)")
       .execute();
   } catch {
     // Column already exists — expected for fresh installs

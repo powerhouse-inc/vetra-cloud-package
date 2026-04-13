@@ -8,6 +8,8 @@ export interface Environments {
   services: string | null;
   status: string | null;
   deployingSince: string | null;
+  /** EthereumAddress (lowercased) of the user who first signed an action on this document. */
+  createdBy: string | null;
 }
 
 export interface DB {
