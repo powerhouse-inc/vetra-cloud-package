@@ -18,6 +18,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private watcherHandle: WatcherHandle | null = null;
   private renewalTimer: ReturnType<typeof setTimeout> | null = null;
   private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
+  private ownerBackfill: ReturnType<typeof setInterval> | null = null;
   private leaseId: string | null = null;
   private openbao: OpenBaoClient | null = null;
   private leaseDuration: number = 3600;
@@ -78,6 +79,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     // Start deployment reconciler: bridges ArgoCD status → document status
     this.startDeploymentReconciler(db);
+
+    // Start owner backfill: assigns state.owner on historical envs from createdBy.
+    // Idempotent — skips rows that already have owner set or no createdBy.
+    this.startOwnerBackfill();
   }
 
   async onDisconnect() {
@@ -86,6 +91,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.deploymentReconciler) {
       clearInterval(this.deploymentReconciler);
       this.deploymentReconciler = null;
+    }
+    if (this.ownerBackfill) {
+      clearInterval(this.ownerBackfill);
+      this.ownerBackfill = null;
     }
     if (this.renewalTimer) {
       clearTimeout(this.renewalTimer);
@@ -254,20 +263,77 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     void reconcile();
   }
 
+  /**
+   * Seeds state.owner on historical environments by dispatching a system-signed
+   * SET_OWNER action with the address from the processor's createdBy column.
+   *
+   * Why this works without forging signatures:
+   *   The SET_OWNER reducer allows system-signed actions (no user in the signer)
+   *   to set any address when state.owner is null. User-signed claims are still
+   *   restricted to the signer's own address.
+   *
+   * Idempotent — skips rows where owner is already set or createdBy is null.
+   * Runs on startup and every 5 minutes as a safety net in case a dispatch
+   * failed (e.g., document was locked).
+   */
+  private startOwnerBackfill() {
+    const backfill = async () => {
+      try {
+        const envDb = (await this.relationalDb.createNamespace(
+          "vetra-cloud-environments",
+        )) as unknown as Kysely<any>;
+
+        const pending = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "createdBy"])
+          .where("owner", "is", null)
+          .where("createdBy", "is not", null)
+          .execute()) as Array<{
+          id: string;
+          name: string | null;
+          createdBy: string;
+        }>;
+
+        if (pending.length === 0) return;
+
+        console.info(
+          `[owner-backfill] Seeding owner for ${pending.length} env(s)`,
+        );
+
+        for (const env of pending) {
+          // dispatchAction swallows errors; individual failures log but don't
+          // abort the batch. Next tick will re-attempt anything still missing.
+          await this.dispatchAction(
+            env.id,
+            "SET_OWNER",
+            { address: env.createdBy },
+            "owner-backfill",
+          );
+        }
+      } catch (err) {
+        if (String(err).includes("does not exist")) return;
+        console.warn("[owner-backfill] error:", err);
+      }
+    };
+
+    // Run every 5 minutes as a safety net, plus once on startup.
+    this.ownerBackfill = setInterval(() => void backfill(), 5 * 60 * 1000);
+    void backfill();
+  }
+
   private async dispatchAction(
     documentId: string,
     type: string,
     input: Record<string, unknown>,
+    logTag: string = "deployment-reconciler",
   ) {
     try {
       const action = createAction(type, input);
       await this.reactorClient.execute(documentId, "main", [action]);
-      console.info(
-        `[deployment-reconciler] Dispatched ${type} for ${documentId}`,
-      );
+      console.info(`[${logTag}] Dispatched ${type} for ${documentId}`);
     } catch (err) {
       console.error(
-        `[deployment-reconciler] Failed to dispatch ${type}: ${String(err)}`,
+        `[${logTag}] Failed to dispatch ${type}: ${String(err)}`,
       );
     }
   }

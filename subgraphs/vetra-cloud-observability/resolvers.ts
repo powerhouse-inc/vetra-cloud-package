@@ -146,7 +146,7 @@ export function createResolvers(
         const wantAll = scope === "ALL";
 
         // Build the query — admins requesting ALL get everything; everyone else
-        // (including admins requesting MINE) gets only rows they created.
+        // (including admins requesting MINE) gets only rows they own.
         const query = envDb
           .selectFrom("environments")
           .select([
@@ -156,12 +156,13 @@ export function createResolvers(
             "tenantId",
             "customDomain",
             "status",
+            "owner",
             "createdBy",
           ]);
 
         const rows = wantAll && isAdmin
           ? await query.execute()
-          : await query.where("createdBy", "=", userAddress).execute();
+          : await query.where("owner", "=", userAddress).execute();
 
         return rows;
       },

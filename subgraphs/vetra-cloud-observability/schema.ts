@@ -17,7 +17,7 @@ export const schema: DocumentNode = gql`
     """
     Returns environments scoped to the calling user.
     - Without a verified Renown bearer token: returns an empty list.
-    - With scope=MINE (default): returns environments where createdBy matches the caller.
+    - With scope=MINE (default): returns environments where owner matches the caller.
     - With scope=ALL: requires admin status; returns all environments.
     """
     myEnvironments(scope: ListScope = MINE): [VetraCloudEnvironmentSummary!]!
@@ -45,7 +45,9 @@ export const schema: DocumentNode = gql`
     tenantId: String
     customDomain: String
     status: String
-    """Lowercased EthereumAddress of the user who first signed an action on this document."""
+    """Lowercased EthereumAddress of the current owner (from document state)."""
+    owner: String
+    """Lowercased EthereumAddress of the user who first signed an action on this document (legacy; prefer the owner field)."""
     createdBy: String
   }
 
