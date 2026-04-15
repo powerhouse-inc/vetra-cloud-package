@@ -1,7 +1,14 @@
-export type ErrorCode = "ServiceNotFoundError";
+export type ErrorCode = "NotOwnerError" | "ServiceNotFoundError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
+}
+
+export class NotOwnerError extends Error implements ReducerError {
+  errorCode = "NotOwnerError" as ErrorCode;
+  constructor(message = "NotOwnerError") {
+    super(message);
+  }
 }
 
 export class ServiceNotFoundError extends Error implements ReducerError {
@@ -12,8 +19,10 @@ export class ServiceNotFoundError extends Error implements ReducerError {
 }
 
 export const errors = {
-  ToggleService: { ServiceNotFoundError },
-  UpdateServicePrefix: { ServiceNotFoundError },
-  SetServiceStatus: { ServiceNotFoundError },
-  SetServiceVersion: { ServiceNotFoundError },
+  EnableService: { NotOwnerError },
+  DisableService: { NotOwnerError },
+  ToggleService: { ServiceNotFoundError, NotOwnerError },
+  UpdateServicePrefix: { ServiceNotFoundError, NotOwnerError },
+  SetServiceStatus: { ServiceNotFoundError, NotOwnerError },
+  SetServiceVersion: { ServiceNotFoundError, NotOwnerError },
 };

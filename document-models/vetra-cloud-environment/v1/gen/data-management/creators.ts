@@ -1,5 +1,6 @@
 import { createAction } from "document-model";
 import {
+  SetOwnerInputSchema,
   SetLabelInputSchema,
   SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
@@ -7,6 +8,7 @@ import {
   SetDnsRecordsInputSchema,
 } from "../schema/zod.js";
 import type {
+  SetOwnerInput,
   SetLabelInput,
   SetGenericSubdomainInput,
   SetCustomDomainInput,
@@ -14,12 +16,22 @@ import type {
   SetDnsRecordsInput,
 } from "../types.js";
 import type {
+  SetOwnerAction,
   SetLabelAction,
   SetGenericSubdomainAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
 } from "./actions.js";
+
+export const setOwner = (input: SetOwnerInput) =>
+  createAction<SetOwnerAction>(
+    "SET_OWNER",
+    { ...input },
+    undefined,
+    SetOwnerInputSchema,
+    "global",
+  );
 
 export const setLabel = (input: SetLabelInput) =>
   createAction<SetLabelAction>(

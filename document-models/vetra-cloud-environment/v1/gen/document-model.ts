@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
-            '{\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT"\n}',
+            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT"\n}',
         },
       },
       modules: [
@@ -32,6 +32,36 @@ export const documentModel: DocumentModelGlobalState = {
           description: "",
           operations: [
             {
+              id: "op-set-owner",
+              name: "SET_OWNER",
+              description:
+                "Claim or transfer ownership. If owner is null, signer (user-signed actions) can only set their own address; system-signed actions may set any address (used for backfill). If owner is already set, current owner must sign and may pass any new address.",
+              schema: "input SetOwnerInput {\n  address: EthereumAddress!\n}",
+              template: "",
+              reducer:
+                'const signerUser = action.context?.signer?.user;\nconst userAddr = signerUser?.address ? signerUser.address.toLowerCase() : null;\nconst inputAddr = action.input.address.toLowerCase();\nif (state.owner) {\n  if (!userAddr || userAddr !== state.owner) {\n    throw new NotOwnerError("Only the current owner can transfer ownership");\n  }\n} else if (userAddr && userAddr !== inputAddr) {\n  throw new SelfClaimRequiredError("A user-signed claim must set the signer\'s own address as owner");\n}\nstate.owner = inputAddr;',
+              errors: [
+                {
+                  id: "err-not-owner-0",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the current owner of this environment",
+                  template: "",
+                },
+                {
+                  id: "err-self-claim-required",
+                  name: "SelfClaimRequiredError",
+                  code: "SELF_CLAIM_REQUIRED",
+                  description:
+                    "A user-signed claim of an unowned environment must set the signer's own address as owner",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
               id: "op-set-env-name",
               name: "SET_LABEL",
               description: "",
@@ -39,7 +69,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'if (action.input.label) {\n  state.label = action.input.label;\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-100",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -52,7 +91,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'if (action.input.genericSubdomain) {\n  state.genericSubdomain = action.input.genericSubdomain;\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-101",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -65,7 +113,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'state.customDomain = {\n  enabled: action.input.enabled,\n  domain: action.input.domain || null,\n  dnsRecords: state.customDomain.dnsRecords || [],\n};\nstate.status = "CHANGES_PENDING";',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-102",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -79,7 +136,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 "state.defaultPackageRegistry = action.input.defaultPackageRegistry;",
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-103",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -92,7 +158,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 "state.customDomain.dnsRecords = action.input.records.map((r) => ({\n  type: r.type,\n  host: r.host,\n  value: r.value,\n}));",
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-104",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -112,7 +187,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'const { type, prefix } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst existing = state.services.find((s) => s.type === type);\nif (existing) {\n  existing.enabled = true;\n  existing.prefix = prefix;\n} else {\n  state.services.push({ type, prefix, enabled: true, url: null, status: "PROVISIONING", version: null });\n}\nstate.status = "CHANGES_PENDING";',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-105",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -125,7 +209,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'const { type } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst service = state.services.find((s) => s.type === type);\nif (service) {\n  service.enabled = false;\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-106",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -145,6 +238,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "SERVICE_NOT_FOUND",
                   description:
                     "The specified service type was not found in the environment",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-107",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],
@@ -169,6 +270,14 @@ export const documentModel: DocumentModelGlobalState = {
                     "The specified service type was not found in the environment",
                   template: "",
                 },
+                {
+                  id: "err-not-owner-108",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
               ],
               examples: [],
               scope: "global",
@@ -189,6 +298,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "SERVICE_NOT_FOUND",
                   description:
                     "The specified service type was not found in the environment",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-109",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],
@@ -213,6 +330,14 @@ export const documentModel: DocumentModelGlobalState = {
                     "The specified service type was not found in the environment",
                   template: "",
                 },
+                {
+                  id: "err-not-owner-110",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
               ],
               examples: [],
               scope: "global",
@@ -233,7 +358,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'const { packageName, version, registry } = action.input;\nif (!state.packages) {\n  state.packages = [];\n}\nconst resolvedVersion = version ?? "latest";\nconst resolvedRegistry = registry || state.defaultPackageRegistry || "";\nconst existing = state.packages.find((p) => p.name === packageName);\nif (existing) {\n  existing.version = resolvedVersion;\n  if (registry) existing.registry = resolvedRegistry;\n} else {\n  state.packages.push({ registry: resolvedRegistry, name: packageName, version: resolvedVersion });\n}\nstate.status = "CHANGES_PENDING";',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-111",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -245,7 +379,16 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               reducer:
                 'const { packageName } = action.input;\nif (!state.packages) {\n  state.packages = [];\n}\nif (packageName) {\n  state.packages = state.packages.filter((p) => p.name !== packageName);\n  state.status = "CHANGES_PENDING";\n}',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-112",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -265,6 +408,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "PACKAGE_NOT_FOUND",
                   description:
                     "The specified package was not found in the environment",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-113",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],
@@ -295,6 +446,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "INVALID_STATUS_TRANSITION",
                   description:
                     "The operation cannot be performed from the current environment status",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-114",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],
@@ -406,6 +565,14 @@ export const documentModel: DocumentModelGlobalState = {
                     "The operation cannot be performed from the current environment status",
                   template: "",
                 },
+                {
+                  id: "err-not-owner-115",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
               ],
               examples: [],
               scope: "global",
@@ -418,7 +585,16 @@ export const documentModel: DocumentModelGlobalState = {
                 "input TerminateEnvironmentInput {\n  _placeholder: String\n}",
               template: "",
               reducer: 'state.status = "TERMINATING";',
-              errors: [],
+              errors: [
+                {
+                  id: "err-not-owner-116",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
               examples: [],
               scope: "global",
             },
@@ -437,6 +613,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "INVALID_STATUS_TRANSITION",
                   description:
                     "The operation cannot be performed from the current environment status",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-117",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],
@@ -460,6 +644,14 @@ export const documentModel: DocumentModelGlobalState = {
                     "The operation cannot be performed from the current environment status",
                   template: "",
                 },
+                {
+                  id: "err-not-owner-118",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
               ],
               examples: [],
               scope: "global",
@@ -479,6 +671,14 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "INVALID_STATUS_TRANSITION",
                   description:
                     "The operation cannot be performed from the current environment status",
+                  template: "",
+                },
+                {
+                  id: "err-not-owner-119",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],

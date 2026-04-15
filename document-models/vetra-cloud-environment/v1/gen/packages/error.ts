@@ -1,7 +1,14 @@
-export type ErrorCode = "PackageNotFoundError";
+export type ErrorCode = "NotOwnerError" | "PackageNotFoundError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
+}
+
+export class NotOwnerError extends Error implements ReducerError {
+  errorCode = "NotOwnerError" as ErrorCode;
+  constructor(message = "NotOwnerError") {
+    super(message);
+  }
 }
 
 export class PackageNotFoundError extends Error implements ReducerError {
@@ -12,5 +19,7 @@ export class PackageNotFoundError extends Error implements ReducerError {
 }
 
 export const errors = {
-  SetPackageVersion: { PackageNotFoundError },
+  AddPackage: { NotOwnerError },
+  RemovePackage: { NotOwnerError },
+  SetPackageVersion: { PackageNotFoundError, NotOwnerError },
 };

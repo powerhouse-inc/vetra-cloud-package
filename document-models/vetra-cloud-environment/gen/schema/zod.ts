@@ -21,6 +21,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetOwnerInput,
   SetPackageVersionInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
@@ -234,6 +235,16 @@ export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   });
 }
 
+export function SetOwnerInputSchema(): z.ZodObject<Properties<SetOwnerInput>> {
+  return z.object({
+    address: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/, {
+        message: "Invalid Ethereum address format",
+      }),
+  });
+}
+
 export function SetPackageVersionInputSchema(): z.ZodObject<
   Properties<SetPackageVersionInput>
 > {
@@ -319,6 +330,12 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),
     label: z.string().nullish(),
+    owner: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/, {
+        message: "Invalid Ethereum address format",
+      })
+      .nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,

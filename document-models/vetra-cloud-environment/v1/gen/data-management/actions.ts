@@ -1,5 +1,6 @@
 import type { Action } from "document-model";
 import type {
+  SetOwnerInput,
   SetLabelInput,
   SetGenericSubdomainInput,
   SetCustomDomainInput,
@@ -7,6 +8,10 @@ import type {
   SetDnsRecordsInput,
 } from "../types.js";
 
+export type SetOwnerAction = Action & {
+  type: "SET_OWNER";
+  input: SetOwnerInput;
+};
 export type SetLabelAction = Action & {
   type: "SET_LABEL";
   input: SetLabelInput;
@@ -29,6 +34,7 @@ export type SetDnsRecordsAction = Action & {
 };
 
 export type VetraCloudEnvironmentDataManagementAction =
+  | SetOwnerAction
   | SetLabelAction
   | SetGenericSubdomainAction
   | SetCustomDomainAction

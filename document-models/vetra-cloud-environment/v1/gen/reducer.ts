@@ -10,6 +10,7 @@ import { vetraCloudEnvironmentPackagesOperations } from "../src/reducers/package
 import { vetraCloudEnvironmentStatusTransitionsOperations } from "../src/reducers/status-transitions.js";
 
 import {
+  SetOwnerInputSchema,
   SetLabelInputSchema,
   SetGenericSubdomainInputSchema,
   SetCustomDomainInputSchema,
@@ -45,6 +46,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
     return state;
   }
   switch (action.type) {
+    case "SET_OWNER": {
+      SetOwnerInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setOwnerOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
     case "SET_LABEL": {
       SetLabelInputSchema().parse(action.input);
 

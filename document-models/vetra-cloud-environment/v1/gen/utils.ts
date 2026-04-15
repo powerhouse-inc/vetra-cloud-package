@@ -21,6 +21,7 @@ import type {
 } from "./types.js";
 
 export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
+  owner: null,
   label: null,
   genericSubdomain: null,
   genericBaseDomain: null,

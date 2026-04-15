@@ -1,5 +1,6 @@
 import { type SignalDispatch } from "document-model";
 import type {
+  SetOwnerAction,
   SetLabelAction,
   SetGenericSubdomainAction,
   SetCustomDomainAction,
@@ -9,6 +10,11 @@ import type {
 import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
+  setOwnerOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetOwnerAction,
+    dispatch?: SignalDispatch,
+  ) => void;
   setLabelOperation: (
     state: VetraCloudEnvironmentState,
     action: SetLabelAction,

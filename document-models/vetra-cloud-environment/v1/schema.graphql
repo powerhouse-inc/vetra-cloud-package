@@ -20,6 +20,7 @@ scalar Amount
 scalar Upload
 
 type VetraCloudEnvironmentState {
+  owner: EthereumAddress
   label: String
   genericSubdomain: String
   genericBaseDomain: String
@@ -85,6 +86,10 @@ type VetraCloudPackage {
 }
 
 # data_management
+
+input SetOwnerInput {
+  address: EthereumAddress!
+}
 
 input SetLabelInput {
   label: String!

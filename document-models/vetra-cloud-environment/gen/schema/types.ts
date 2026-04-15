@@ -152,6 +152,10 @@ export type SetLabelInput = {
   label: Scalars["String"]["input"];
 };
 
+export type SetOwnerInput = {
+  address: Scalars["EthereumAddress"]["input"];
+};
+
 export type SetPackageVersionInput = {
   packageName: Scalars["String"]["input"];
   version: Scalars["String"]["input"];
@@ -205,6 +209,7 @@ export type VetraCloudEnvironmentState = {
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
   label: Maybe<Scalars["String"]["output"]>;
+  owner: Maybe<Scalars["EthereumAddress"]["output"]>;
   packages: Array<VetraCloudPackage>;
   services: Array<VetraCloudEnvironmentService>;
   status: VetraCloudEnvironmentStatus;
