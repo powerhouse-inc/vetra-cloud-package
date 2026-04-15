@@ -19,6 +19,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private renewalTimer: ReturnType<typeof setTimeout> | null = null;
   private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
+  private protectionReconciler: ReturnType<typeof setInterval> | null = null;
   private leaseId: string | null = null;
   private openbao: OpenBaoClient | null = null;
   private leaseDuration: number = 3600;
@@ -83,6 +84,12 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // Start owner backfill: assigns state.owner on historical envs from createdBy.
     // Idempotent — skips rows that already have owner set or no createdBy.
     this.startOwnerBackfill();
+
+    // Start protection reconciler: for each owned env, ensure the document is
+    // marked "protected" at the reactor-api layer and the owner has an ADMIN
+    // permission grant. This is what locks down direct getDocument(id) reads
+    // for non-owner, non-admin users.
+    this.startProtectionReconciler();
   }
 
   async onDisconnect() {
@@ -95,6 +102,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.ownerBackfill) {
       clearInterval(this.ownerBackfill);
       this.ownerBackfill = null;
+    }
+    if (this.protectionReconciler) {
+      clearInterval(this.protectionReconciler);
+      this.protectionReconciler = null;
     }
     if (this.renewalTimer) {
       clearTimeout(this.renewalTimer);
@@ -319,6 +330,92 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // Run every 5 minutes as a safety net, plus once on startup.
     this.ownerBackfill = setInterval(() => void backfill(), 5 * 60 * 1000);
     void backfill();
+  }
+
+  /**
+   * Enforces document-level read protection at the reactor-api layer for every
+   * env that has an owner. Idempotent:
+   *   - Queries envs with owner set.
+   *   - For each, reads the document's protection record.
+   *   - If it isn't already { protected: true, ownerAddress: owner }, calls
+   *     initializeDocumentProtection(docId, owner, true) — which sets
+   *     protection + owner + grants the owner ADMIN in one shot.
+   *
+   * AuthorizationService behaviour after this:
+   *   - supreme admins (ADMINS env) → can read/write (unchanged)
+   *   - owner → can read/write (implicit ADMIN)
+   *   - anyone else → 403 on getDocument / findDocuments / mutations
+   *
+   * Unowned envs are left alone — they stay "public" per the reducer contract.
+   *
+   * Runs every 60 seconds: short enough that the window between a new env
+   * being claimed and being protected is acceptable, long enough to not
+   * hammer the DB. The alternative (hooking the reactor's operation stream)
+   * would be tighter but requires more plumbing.
+   */
+  private startProtectionReconciler() {
+    const reconcile = async () => {
+      const perm = this.documentPermissionService;
+      if (!perm) return;
+
+      try {
+        const envDb = (await this.relationalDb.createNamespace(
+          "vetra-cloud-environments",
+        )) as unknown as Kysely<any>;
+
+        const owned = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "owner"])
+          .where("owner", "is not", null)
+          .execute()) as Array<{
+          id: string;
+          name: string | null;
+          owner: string;
+        }>;
+
+        if (owned.length === 0) return;
+
+        let initialized = 0;
+        for (const env of owned) {
+          try {
+            const current = await perm.getDocumentProtection(env.id);
+            if (
+              current.protected &&
+              current.ownerAddress?.toLowerCase() === env.owner.toLowerCase()
+            ) {
+              continue; // already in the correct state
+            }
+
+            await perm.initializeDocumentProtection(env.id, env.owner, true);
+            initialized++;
+            const label = env.name ?? env.id;
+            console.info(
+              `[protection-reconciler] ${label}: protected + owner=${env.owner}`,
+            );
+          } catch (err) {
+            console.warn(
+              `[protection-reconciler] ${env.id}: init failed: ${String(err)}`,
+            );
+          }
+        }
+
+        if (initialized > 0) {
+          console.info(
+            `[protection-reconciler] initialized protection for ${initialized}/${owned.length} env(s)`,
+          );
+        }
+      } catch (err) {
+        if (String(err).includes("does not exist")) return;
+        console.warn("[protection-reconciler] error:", err);
+      }
+    };
+
+    // Every 60s + once on startup.
+    this.protectionReconciler = setInterval(
+      () => void reconcile(),
+      60 * 1000,
+    );
+    void reconcile();
   }
 
   private async dispatchAction(
