@@ -1,10 +1,15 @@
 import { ServiceNotFoundError } from "../../gen/services/error.js";
-import { markPendingIfDeployed, regenerateDnsRecords } from "./utils.js";
+import {
+  assertOwner,
+  markPendingIfDeployed,
+  regenerateDnsRecords,
+} from "./utils.js";
 import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServicesOperations =
   {
     enableServiceOperation(state, action) {
+      assertOwner(state, action);
       const { type, prefix } = action.input;
       if (!state.services) {
         state.services = [];
@@ -27,6 +32,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       markPendingIfDeployed(state);
     },
     disableServiceOperation(state, action) {
+      assertOwner(state, action);
       const { type } = action.input;
       if (!state.services) {
         state.services = [];
@@ -39,6 +45,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       }
     },
     toggleServiceOperation(state, action) {
+      assertOwner(state, action);
       const service = state.services.find((s) => s.type === action.input.type);
       if (!service) {
         throw new ServiceNotFoundError(
@@ -50,6 +57,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       markPendingIfDeployed(state);
     },
     updateServicePrefixOperation(state, action) {
+      assertOwner(state, action);
       const service = state.services.find((s) => s.type === action.input.type);
       if (!service) {
         throw new ServiceNotFoundError(
@@ -60,6 +68,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       markPendingIfDeployed(state);
     },
     setServiceStatusOperation(state, action) {
+      assertOwner(state, action);
       const service = state.services.find((s) => s.type === action.input.type);
       if (!service) {
         throw new ServiceNotFoundError(
@@ -72,6 +81,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       }
     },
     setServiceVersionOperation(state, action) {
+      assertOwner(state, action);
       const service = state.services.find((s) => s.type === action.input.type);
       if (!service) {
         throw new ServiceNotFoundError(

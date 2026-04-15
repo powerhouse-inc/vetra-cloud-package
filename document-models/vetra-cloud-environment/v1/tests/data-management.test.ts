@@ -9,7 +9,34 @@ import {
   isVetraCloudEnvironmentDocument,
   setDnsRecords,
   setDefaultPackageRegistry,
+  setOwner,
 } from "document-models/vetra-cloud-environment/v1";
+
+const ALICE = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const ALICE_LOWER = ALICE.toLowerCase();
+const BOB = "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const BOB_LOWER = BOB.toLowerCase();
+
+/** Build a signer context representing a user-signed action. */
+const userSigner = (address: string) => ({
+  context: {
+    signer: {
+      user: { address, networkId: "eip155:1", chainId: 1 },
+      app: { name: "test", key: "test" },
+      signatures: [],
+    },
+  },
+});
+
+/** Build a signer context representing a system (app-only) signed action. */
+const systemSigner = () => ({
+  context: {
+    signer: {
+      app: { name: "switchboard", key: "system" },
+      signatures: [],
+    },
+  },
+});
 
 describe("DataManagementOperations", () => {
   describe("SET_LABEL", () => {
@@ -263,5 +290,119 @@ describe("DataManagementOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_OWNER", () => {
+    it("claims ownership when unowned (user-signed, self-address)", () => {
+      const document = utils.createDocument();
+      const claim = {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      };
+
+      const updated = reducer(document, claim);
+
+      expect(updated.state.global.owner).toBe(ALICE_LOWER);
+      expect(isVetraCloudEnvironmentDocument(updated)).toBe(true);
+      expect(updated.operations.global).toHaveLength(1);
+      expect(updated.operations.global[0].action.type).toBe("SET_OWNER");
+    });
+
+    it("rejects user-signed claim to a different address than signer", () => {
+      const document = utils.createDocument();
+      const claim = {
+        ...setOwner({ address: BOB }),
+        ...userSigner(ALICE),
+      };
+
+      const updated = reducer(document, claim);
+
+      // The reducer throws SelfClaimRequiredError; the document-model
+      // captures the error on the op and leaves state unchanged.
+      expect(updated.state.global.owner).toBeNull();
+      expect(updated.operations.global[0].error).toMatch(
+        /signer's own address/i,
+      );
+    });
+
+    it("allows system-signed claim to an arbitrary address when unowned (backfill)", () => {
+      const document = utils.createDocument();
+      const claim = {
+        ...setOwner({ address: ALICE }),
+        ...systemSigner(),
+      };
+
+      const updated = reducer(document, claim);
+
+      expect(updated.state.global.owner).toBe(ALICE_LOWER);
+    });
+
+    it("transfers ownership when signed by the current owner", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+      document = reducer(document, {
+        ...setOwner({ address: BOB }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.owner).toBe(BOB_LOWER);
+    });
+
+    it("rejects transfer attempt from a non-owner signer", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+      document = reducer(document, {
+        ...setOwner({ address: BOB }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.owner).toBe(ALICE_LOWER);
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /current owner can transfer/i,
+      );
+    });
+
+    it("gates subsequent mutations by the owner", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+      // Non-owner label update — rejected.
+      document = reducer(document, {
+        ...setLabel({ label: "by-bob" }),
+        ...userSigner(BOB),
+      });
+      expect(document.state.global.label).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /is not the owner/i,
+      );
+
+      // Owner label update — allowed.
+      document = reducer(document, {
+        ...setLabel({ label: "by-alice" }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.label).toBe("by-alice");
+    });
+
+    it("allows mutations before owner is set (back-compat for pre-owner envs)", () => {
+      let document = utils.createDocument();
+      // No SET_OWNER yet; anyone can mutate.
+      document = reducer(document, {
+        ...setLabel({ label: "legacy" }),
+        ...userSigner(BOB),
+      });
+      expect(document.state.global.label).toBe("legacy");
+    });
   });
 });

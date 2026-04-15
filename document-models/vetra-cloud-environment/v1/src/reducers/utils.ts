@@ -1,3 +1,39 @@
+import { NotOwnerError } from "../../gen/data-management/error.js";
+
+type MaybeSigner = {
+  context?: {
+    signer?: {
+      user?: { address?: string | null } | null;
+    } | null;
+  };
+};
+
+/**
+ * Owner gate for user-facing mutations.
+ *
+ * - Unowned envs (state.owner == null): pass (backward compat for pre-owner docs).
+ * - System-signed actions (no signer.user.address): pass. Required because the
+ *   processor / observability subgraph dispatches status transitions on behalf
+ *   of environments they don't "own".
+ * - User-signed actions: signer.user.address.toLowerCase() must equal state.owner.
+ *
+ * Throws NotOwnerError if a user-signed action is from a non-owner.
+ */
+export function assertOwner(
+  state: { owner: string | null | undefined },
+  action: MaybeSigner,
+) {
+  if (!state.owner) return;
+  const userAddr = action.context?.signer?.user?.address;
+  // System-signed actions (app-only signer, no user) bypass.
+  if (!userAddr) return;
+  if (userAddr.toLowerCase() !== state.owner) {
+    throw new NotOwnerError(
+      `Signer ${userAddr} is not the owner of this environment`,
+    );
+  }
+}
+
 const NO_PENDING_STATUSES = new Set([
   "DRAFT",
   "CHANGES_PENDING",
