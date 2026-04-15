@@ -395,14 +395,36 @@ describe("DataManagementOperations", () => {
       expect(document.state.global.label).toBe("by-alice");
     });
 
-    it("allows mutations before owner is set (back-compat for pre-owner envs)", () => {
+    it("auto-claims ownership on the first user-signed mutation of an unowned env", () => {
       let document = utils.createDocument();
-      // No SET_OWNER yet; anyone can mutate.
+      // No SET_OWNER yet; assertOwner should set owner to the signer.
       document = reducer(document, {
-        ...setLabel({ label: "legacy" }),
+        ...setLabel({ label: "auto-claimed" }),
         ...userSigner(BOB),
       });
-      expect(document.state.global.label).toBe("legacy");
+      expect(document.state.global.label).toBe("auto-claimed");
+      expect(document.state.global.owner).toBe(BOB_LOWER);
+
+      // Subsequent mutation from a non-owner is now rejected.
+      document = reducer(document, {
+        ...setLabel({ label: "by-alice" }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.label).toBe("auto-claimed");
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /is not the owner/i,
+      );
+    });
+
+    it("does not auto-claim on system-signed actions against unowned envs", () => {
+      let document = utils.createDocument();
+      // System-signed (no user) — common for the deployment reconciler.
+      document = reducer(document, {
+        ...setLabel({ label: "system-touch" }),
+        ...systemSigner(),
+      });
+      expect(document.state.global.label).toBe("system-touch");
+      expect(document.state.global.owner).toBeNull();
     });
   });
 });

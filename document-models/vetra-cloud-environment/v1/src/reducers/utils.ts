@@ -11,23 +11,35 @@ type MaybeSigner = {
 /**
  * Owner gate for user-facing mutations.
  *
- * - Unowned envs (state.owner == null): pass (backward compat for pre-owner docs).
- * - System-signed actions (no signer.user.address): pass. Required because the
- *   processor / observability subgraph dispatches status transitions on behalf
- *   of environments they don't "own".
- * - User-signed actions: signer.user.address.toLowerCase() must equal state.owner.
+ * Semantics:
+ *  - Unowned env + user-signed action: **auto-claim** — set state.owner to the
+ *    signer's address. Matches the "unowned = open to the first toucher" rule
+ *    and saves users from needing a separate SET_OWNER click.
+ *  - Unowned env + system-signed action (no signer.user): pass, do not claim.
+ *    Lets the deployment-reconciler / processor dispatch status transitions
+ *    on orphan envs without accidentally claiming them on behalf of nobody.
+ *  - Owned env + system-signed action: pass (bypass).
+ *  - Owned env + user-signed action: signer.user.address.toLowerCase() must
+ *    equal state.owner, else NotOwnerError.
  *
- * Throws NotOwnerError if a user-signed action is from a non-owner.
+ * Mutates state.owner when auto-claiming (the reducers that call this run
+ * inside mutative's Draft wrapper, so direct assignment is correct).
  */
 export function assertOwner(
   state: { owner: string | null | undefined },
   action: MaybeSigner,
 ) {
-  if (!state.owner) return;
-  const userAddr = action.context?.signer?.user?.address;
-  // System-signed actions (app-only signer, no user) bypass.
+  const userAddr = action.context?.signer?.user?.address?.toLowerCase();
+
+  if (!state.owner) {
+    // Auto-claim only for user-signed actions; system actions pass through.
+    if (userAddr) state.owner = userAddr;
+    return;
+  }
+
+  // Owned env. System-signed actions (app-only signer, no user) bypass.
   if (!userAddr) return;
-  if (userAddr.toLowerCase() !== state.owner) {
+  if (userAddr !== state.owner) {
     throw new NotOwnerError(
       `Signer ${userAddr} is not the owner of this environment`,
     );
