@@ -60,6 +60,18 @@ export async function up(db: Kysely<any>): Promise<void> {
   } catch {
     // Column already exists — expected for fresh installs
   }
+
+  // Add owner column — mirrors document state's `owner` field.
+  // Populated by the processor from state.owner on each upsert.
+  // Used by the `myEnvironments` subgraph resolver for per-user scoping.
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("owner", "varchar(255)")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {

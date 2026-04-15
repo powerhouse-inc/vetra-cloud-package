@@ -46,9 +46,9 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     // Deduplicate environment operations: only process the last operation per document.
     // Skip documents that were deleted in this same batch to avoid resurrecting them.
     const lastByDocument = new Map<string, OperationWithContext>();
-    // Capture the FIRST user-signed signer per document for the createdBy field.
-    // We iterate in order so the earliest user op wins. System actions (e.g. signed by
-    // the switchboard service identity) are skipped because we want the human creator.
+    // Capture the FIRST user-signed signer per document for the legacy createdBy column.
+    // We still populate createdBy for historical reference and to seed the owner-backfill
+    // in the observability subgraph, but ownership itself is now sourced from state.owner.
     const firstUserSignerByDocument = new Map<string, string>();
     for (const entry of operations) {
       if (entry.context.documentType === "powerhouse/vetra-cloud-environment"
@@ -95,7 +95,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       }
 
       const state = phState.global;
-      const { label: envLabel, genericSubdomain, customDomain, packages, services, status } = state;
+      const { owner, label: envLabel, genericSubdomain, customDomain, packages, services, status } = state;
       const label = envLabel ?? documentId;
       const tenantId = genericSubdomain
         ? getTenantId(genericSubdomain, documentId)
@@ -105,9 +105,15 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         `Processing document ${label} (op ${operation.index}): ` +
         `label=${envLabel ?? "unset"}, status=${status ?? "unset"}, ` +
         `subdomain=${genericSubdomain ?? "unset"}, tenantId=${tenantId ?? "unset"}, ` +
+        `owner=${owner ?? "unset"}, ` +
         `services=[${services?.map((s) => `${s.type}:${s.enabled}`).join(", ") ?? ""}], ` +
         `packages=[${(packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}]`,
       );
+
+      // owner mirrors state.owner, refreshed on every upsert (it can change via
+      // a SET_OWNER transfer). Normalize to lowercase for consistent matching
+      // against the auth context's user address.
+      const ownerNormalized = owner ? owner.toLowerCase() : null;
 
       const row = {
         name: envLabel ?? null,
@@ -117,13 +123,19 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         packages: JSON.stringify(packages ?? []),
         services: JSON.stringify(services ?? []),
         status: status ?? null,
+        owner: ownerNormalized,
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
       // Pulled from the first user-signed op in this batch for this document.
+      // Kept for historical reference and to seed the owner-backfill.
       const createdBy = firstUserSignerByDocument.get(documentId) ?? null;
 
-      logger.info(`Upserting environment record for "${label}"${createdBy ? ` (createdBy=${createdBy})` : ""}`);
+      logger.info(
+        `Upserting environment record for "${label}"` +
+          `${createdBy ? ` (createdBy=${createdBy})` : ""}` +
+          `${ownerNormalized ? ` (owner=${ownerNormalized})` : ""}`,
+      );
       await this.relationalDb
         .insertInto("environments")
         .values({ id: documentId, ...row, createdBy })
