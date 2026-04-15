@@ -379,14 +379,25 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         for (const env of owned) {
           try {
             const current = await perm.getDocumentProtection(env.id);
-            if (
-              current.protected &&
-              current.ownerAddress?.toLowerCase() === env.owner.toLowerCase()
-            ) {
+            const ownerMatches =
+              current.ownerAddress?.toLowerCase() === env.owner.toLowerCase();
+            if (current.protected && ownerMatches) {
               continue; // already in the correct state
             }
 
+            // initializeDocumentProtection seeds `protected` only on first
+            // insert — subsequent calls leave the flag alone. Reactor itself
+            // often pre-creates a row with protected=false when the document
+            // is first persisted, so we have to flip it explicitly.
             await perm.initializeDocumentProtection(env.id, env.owner, true);
+            if (!current.protected) {
+              await perm.setDocumentProtection(env.id, true);
+            }
+            if (!ownerMatches) {
+              await perm.setDocumentOwner(env.id, env.owner);
+              // grantPermission is idempotent per (documentId, userAddress)
+              await perm.grantPermission(env.id, env.owner, "ADMIN", env.owner);
+            }
             initialized++;
             const label = env.name ?? env.id;
             console.info(
