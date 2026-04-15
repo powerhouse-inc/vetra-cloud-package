@@ -1,4 +1,5 @@
 import { resolve4 } from "node:dns/promises";
+import { X509Certificate } from "node:crypto";
 import type { KubeConfig } from "@kubernetes/client-node";
 import type { Kysely } from "kysely";
 import type {
@@ -309,8 +310,6 @@ async function checkCustomDomain(
 /** Extract the notAfter date from a PEM certificate. */
 function extractCertExpiry(pem: string): Date | null {
   try {
-    // Use Node's built-in X509Certificate (available since Node 15)
-    const { X509Certificate } = require("node:crypto") as typeof import("node:crypto");
     const cert = new X509Certificate(pem);
     return new Date(cert.validTo);
   } catch {
