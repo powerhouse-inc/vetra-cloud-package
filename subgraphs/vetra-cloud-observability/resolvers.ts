@@ -146,7 +146,9 @@ export function createResolvers(
         const wantAll = scope === "ALL";
 
         // Build the query — admins requesting ALL get everything; everyone else
-        // (including admins requesting MINE) gets only rows they own.
+        // (including admins requesting MINE) gets only rows they own **plus**
+        // unclaimed environments (owner IS NULL) so they can discover and
+        // auto-claim them on first interaction.
         const query = envDb
           .selectFrom("environments")
           .select([
@@ -162,7 +164,14 @@ export function createResolvers(
 
         const rows = wantAll && isAdmin
           ? await query.execute()
-          : await query.where("owner", "=", userAddress).execute();
+          : await query
+              .where((eb) =>
+                eb.or([
+                  eb("owner", "=", userAddress),
+                  eb("owner", "is", null),
+                ]),
+              )
+              .execute();
 
         return rows;
       },
