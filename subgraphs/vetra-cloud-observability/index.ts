@@ -5,7 +5,6 @@ import { createAction } from "document-model";
 import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
-import { OpenBaoClient } from "./openbao.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 
@@ -16,13 +15,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   additionalContextFields = {};
 
   private watcherHandle: WatcherHandle | null = null;
-  private renewalTimer: ReturnType<typeof setTimeout> | null = null;
   private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
-  private leaseId: string | null = null;
-  private openbao: OpenBaoClient | null = null;
-  private leaseDuration: number = 3600;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -44,36 +39,27 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl, envDb });
 
-    // Acquire K8s credentials and start watchers
-    const openbaoAddr = process.env.OPENBAO_ADDR;
-    let k8sToken: string | null = null;
-
-    if (openbaoAddr) {
-      try {
-        this.openbao = new OpenBaoClient(openbaoAddr);
-        await this.openbao.authenticate();
-        const creds = await this.openbao.getK8sToken();
-        k8sToken = creds.token;
-        this.leaseId = creds.leaseId;
-        this.leaseDuration = creds.leaseDuration;
-        this.scheduleRenewal(creds.leaseDuration);
-        console.info("[observability] Acquired K8s token via OpenBao");
-      } catch (err) {
-        console.warn(
-          "[observability] OpenBao failed, falling back to in-cluster SA:",
-          err,
-        );
-      }
-    }
-
+    // Start watchers using the pod's in-cluster ServiceAccount.
+    //
+    // We used to acquire a short-lived K8s token via OpenBao's Kubernetes
+    // secrets engine, but that path is broken for cluster-scoped resources:
+    // OpenBao creates a namespaced RoleBinding (even when the role is set to
+    // `kubernetes_role_type: ClusterRole`) referencing the ClusterRole, which
+    // is equivalent to a Role and does NOT grant cluster-wide list permission
+    // on `applications.argoproj.io`. The pod's default SA already has the
+    // correct ClusterRoleBinding (`staging-observability` / `vetra-observability`
+    // in infrastructure/vetra-observability-rbac/rbac.yaml), so loading from
+    // the pod environment is both simpler and strictly more permissive.
+    //
+    // Passing an empty token triggers `kc.loadFromCluster()` inside the
+    // watchers (see watchers.ts). Leaving OPENBAO_ADDR configured is fine —
+    // the secrets subgraph still uses it for KV v2 access.
     try {
       this.watcherHandle = startWatchers({
         db,
-        k8sToken: k8sToken ?? "",
+        k8sToken: "",
       });
-      console.info(
-        `[observability] Watchers started (${k8sToken ? "OpenBao token" : "in-cluster SA"})`,
-      );
+      console.info("[observability] Watchers started (in-cluster SA)");
     } catch (err) {
       console.warn("[observability] Failed to start watchers:", err);
     }
@@ -106,17 +92,6 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.protectionReconciler) {
       clearInterval(this.protectionReconciler);
       this.protectionReconciler = null;
-    }
-    if (this.renewalTimer) {
-      clearTimeout(this.renewalTimer);
-      this.renewalTimer = null;
-    }
-    if (this.openbao && this.leaseId) {
-      try {
-        await this.openbao.revokeLease(this.leaseId);
-      } catch {
-        /* best effort */
-      }
     }
   }
 
@@ -446,16 +421,4 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     }
   }
 
-  private scheduleRenewal(leaseDuration: number) {
-    const renewAt = Math.floor(leaseDuration * 0.8) * 1000;
-    this.renewalTimer = setTimeout(async () => {
-      if (!this.openbao || !this.leaseId) return;
-      try {
-        await this.openbao.renewLease(this.leaseId);
-        this.scheduleRenewal(leaseDuration);
-      } catch (err) {
-        console.error("[observability] token renewal failed:", err);
-      }
-    }, renewAt);
-  }
 }
