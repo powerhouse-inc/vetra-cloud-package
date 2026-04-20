@@ -57,11 +57,16 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers(db, transit);
 
-    // Reconciliation runs only in-cluster (needs K8s API + DATABASE_URL for
-    // LISTEN). Switchboard always meets both conditions in prod; local
-    // development without KUBERNETES_SERVICE_HOST silently skips.
-    if (process.env.KUBERNETES_SERVICE_HOST && process.env.DATABASE_URL) {
-      await this.startReconcileLoop(db, transit);
+    // Reconciliation runs only in-cluster (needs K8s API + a Postgres URL
+    // that supports LISTEN). Switchboard always meets both conditions in
+    // prod; local development without KUBERNETES_SERVICE_HOST silently skips.
+    // LISTEN is not supported by PgBouncer transaction-mode poolers, so if
+    // the regular DATABASE_URL goes through one, set LISTEN_DATABASE_URL to
+    // a direct-primary connection string.
+    const listenUrl =
+      process.env.LISTEN_DATABASE_URL ?? process.env.DATABASE_URL;
+    if (process.env.KUBERNETES_SERVICE_HOST && listenUrl) {
+      await this.startReconcileLoop(db, transit, listenUrl);
     } else {
       console.info(
         "[secrets] KUBERNETES_SERVICE_HOST or DATABASE_URL unset — skipping background reconcile loop",
@@ -83,6 +88,7 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
   private async startReconcileLoop(
     db: Kysely<SecretsDB>,
     transit: OpenBaoTransitClient,
+    listenUrl: string,
   ): Promise<void> {
     const repo = createRepository(db);
     const k8s = createK8sClient();
@@ -99,7 +105,7 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
     );
 
     this.listener = new PostgresListener({
-      databaseUrl: process.env.DATABASE_URL!,
+      databaseUrl: listenUrl,
       channel: NOTIFY_CHANNEL,
       onNotify: (tenantId) => {
         if (!tenantId) {
