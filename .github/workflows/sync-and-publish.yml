@@ -207,7 +207,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        target: [connect, switchboard, secrets-controller]
+        target: [connect, switchboard]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

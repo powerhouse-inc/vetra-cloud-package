@@ -27,6 +27,11 @@
             "id": "vetra-cloud-observability",
             "name": "Vetra Cloud Observability",
             "documentTypes": ["powerhouse/vetra-cloud-environment"]
+        },
+        {
+            "id": "vetra-cloud-secrets",
+            "name": "Vetra Cloud Secrets",
+            "documentTypes": ["powerhouse/vetra-cloud-environment"]
         }
     ],
     "processors": [
