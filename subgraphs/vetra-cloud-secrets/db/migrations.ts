@@ -1,4 +1,4 @@
-import { sql, type Kysely } from "kysely";
+import { type Kysely } from "kysely";
 
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
@@ -20,9 +20,19 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists()
     .execute();
 
-  await sql`ALTER TABLE tenant_secrets ADD COLUMN IF NOT EXISTS ciphertext TEXT`.execute(
-    db,
-  );
+  // Schema-aware idempotent ADD COLUMN: Kysely's alterTable honours the
+  // Kysely instance's schema binding (withSchema()), which raw `ALTER TABLE`
+  // SQL does not — so this works whether or not the subgraph's hashed schema
+  // is in search_path.
+  try {
+    await db.schema
+      .alterTable("tenant_secrets")
+      .addColumn("ciphertext", "text")
+      .execute();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/already exists/i.test(msg)) throw err;
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
