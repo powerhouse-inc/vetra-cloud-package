@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { Kysely, PostgresDialect } from "kysely";
+import { hashNamespace } from "@powerhousedao/shared/processors";
 import type { SecretsDB } from "../subgraphs/vetra-cloud-secrets/db/schema.js";
 
 export interface SecretsRepository {
@@ -13,17 +14,27 @@ export interface SecretsRepository {
   close(): Promise<void>;
 }
 
+export interface CreateRepositoryOptions {
+  databaseUrl: string;
+  namespace: string;
+}
+
+export function resolveSchema(namespace: string): string {
+  return hashNamespace(namespace);
+}
+
 export function createRepository(
-  databaseUrl: string,
-  dbSchema: string | null,
-): SecretsRepository {
-  const pool = new Pool({ connectionString: databaseUrl });
+  opts: CreateRepositoryOptions,
+): SecretsRepository & { schema: string } {
+  const schema = resolveSchema(opts.namespace);
+  const pool = new Pool({ connectionString: opts.databaseUrl });
   const baseDb = new Kysely<SecretsDB>({
     dialect: new PostgresDialect({ pool }),
   });
-  const db = dbSchema ? baseDb.withSchema(dbSchema) : baseDb;
+  const db = baseDb.withSchema(schema);
 
   return {
+    schema,
     async envVarsForTenant(tenantId) {
       return db
         .selectFrom("tenant_env_vars")

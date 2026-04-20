@@ -8,16 +8,20 @@ import { OpenBaoTransitClient } from "../subgraphs/vetra-cloud-secrets/openbao-t
 
 async function main(): Promise<void> {
   const config = loadConfig();
+
+  const repo = createRepository({
+    databaseUrl: config.databaseUrl,
+    namespace: config.dbNamespace,
+  });
   console.info(
-    `[main] starting vetra-secrets-controller (channel=${config.notifyChannel}, reconcileIntervalMs=${config.fullReconcileIntervalMs})`,
+    `[main] starting vetra-secrets-controller (channel=${config.notifyChannel}, reconcileIntervalMs=${config.fullReconcileIntervalMs}, namespace=${config.dbNamespace}, schema=${repo.schema}, keyPrefix=${config.transitKeyPrefix})`,
   );
 
-  const repo = createRepository(config.databaseUrl, config.dbSchema);
   const k8s = createK8sClient();
   const transit = new OpenBaoTransitClient({
     addr: config.openbaoAddr,
     role: config.transitRole,
-    keyName: config.transitKey,
+    keyNamePrefix: config.transitKeyPrefix,
   });
 
   const reconciler = createReconciler({

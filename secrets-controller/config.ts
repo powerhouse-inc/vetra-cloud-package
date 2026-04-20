@@ -1,9 +1,9 @@
 export interface ControllerConfig {
   databaseUrl: string;
-  dbSchema: string | null;
+  dbNamespace: string;
   openbaoAddr: string;
   transitRole: string;
-  transitKey: string;
+  transitKeyPrefix: string;
   fullReconcileIntervalMs: number;
   healthPort: number;
   notifyChannel: string;
@@ -28,10 +28,10 @@ export function loadConfig(): ControllerConfig {
 
   return {
     databaseUrl: required("DATABASE_URL"),
-    dbSchema: process.env.DB_SCHEMA || null,
+    dbNamespace: process.env.DB_NAMESPACE ?? "vetra-cloud-secrets",
     openbaoAddr: required("OPENBAO_ADDR"),
     transitRole: process.env.OPENBAO_TRANSIT_ROLE ?? "vetra-secrets-controller",
-    transitKey: process.env.OPENBAO_TRANSIT_KEY ?? "vetra-secrets",
+    transitKeyPrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX ?? "vetra-tenant-",
     fullReconcileIntervalMs: parseInt10(
       process.env.FULL_RECONCILE_INTERVAL_MS,
       5 * 60 * 1000,

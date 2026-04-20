@@ -31,10 +31,14 @@ function mockTransit(
 ): OpenBaoTransitClient {
   return {
     authenticate: vi.fn(),
+    ensureTenantKey: vi.fn().mockResolvedValue(undefined),
+    keyFor: vi
+      .fn()
+      .mockImplementation((tenantId: string) => `vetra-tenant-${tenantId}`),
     encrypt: vi.fn(),
     decrypt: vi
       .fn()
-      .mockImplementation(async (ciphertext: string) =>
+      .mockImplementation(async (_tenantId: string, ciphertext: string) =>
         ciphertext.replace(/^vault:v\d+:/, ""),
       ),
     ...overrides,
@@ -83,10 +87,12 @@ describe("reconcileTenant", () => {
     });
     const k8s = mockK8s();
     const transit = mockTransit({
-      decrypt: vi.fn().mockImplementation(async (ct: string) => {
-        if (ct === "vault:v1:broken") throw new Error("decrypt error");
-        return ct.replace(/^vault:v\d+:/, "");
-      }),
+      decrypt: vi
+        .fn()
+        .mockImplementation(async (_tenantId: string, ct: string) => {
+          if (ct === "vault:v1:broken") throw new Error("decrypt error");
+          return ct.replace(/^vault:v\d+:/, "");
+        }),
     });
     const r = createReconciler({
       repo,

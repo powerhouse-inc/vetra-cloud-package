@@ -18,11 +18,12 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
   const { repo, k8s, transit, managedLabelValue } = deps;
 
   async function decryptSecrets(
+    tenantId: string,
     rows: Array<{ key: string; ciphertext: string | null }>,
   ): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
-    // Decrypt in parallel; isolate per-key failures so one bad ciphertext
-    // doesn't break the whole secret.
+    // Decrypt in parallel with the tenant's own transit key; isolate per-key
+    // failures so one bad ciphertext doesn't break the whole Secret.
     const results = await Promise.all(
       rows.map(async (r) => {
         if (r.ciphertext == null) {
@@ -30,7 +31,7 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
           return { key: r.key, value: null as string | null, error: null };
         }
         try {
-          const value = await transit.decrypt(r.ciphertext);
+          const value = await transit.decrypt(tenantId, r.ciphertext);
           return { key: r.key, value, error: null };
         } catch (err) {
           return {
@@ -62,7 +63,7 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
     const envData: Record<string, string> = {};
     for (const row of envRows) envData[row.key] = row.value;
 
-    const secretData = await decryptSecrets(secretRows);
+    const secretData = await decryptSecrets(tenantId, secretRows);
 
     const cmResult = await k8s.upsertConfigMap(
       {
