@@ -1,6 +1,6 @@
-import type { SecretsRepository } from "./db.js";
+import type { SecretsRepository } from "./repository.js";
 import type { K8sClient } from "./k8s-client.js";
-import type { OpenBaoTransitClient } from "../subgraphs/vetra-cloud-secrets/openbao-transit.js";
+import type { OpenBaoTransitClient } from "./openbao-transit.js";
 
 export interface ReconcilerDeps {
   repo: SecretsRepository;
@@ -27,7 +27,6 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
     const results = await Promise.all(
       rows.map(async (r) => {
         if (r.ciphertext == null) {
-          // Legacy row, no ciphertext yet — skip (will be repopulated on next setSecret).
           return { key: r.key, value: null as string | null, error: null };
         }
         try {
