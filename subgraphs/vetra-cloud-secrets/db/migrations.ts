@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
@@ -19,6 +19,10 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("tenant_secrets_pkey", ["tenantId", "key"])
     .ifNotExists()
     .execute();
+
+  await sql`ALTER TABLE tenant_secrets ADD COLUMN IF NOT EXISTS ciphertext TEXT`.execute(
+    db,
+  );
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
