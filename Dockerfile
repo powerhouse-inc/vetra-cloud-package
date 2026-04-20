@@ -137,3 +137,77 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+# -----------------------------------------------------------------------------
+# Secrets controller build stage - compiles the controller + shared transit client
+# -----------------------------------------------------------------------------
+FROM node:24-alpine AS secrets-controller-builder
+
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ git bash \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN pnpm config set @jsr:registry https://npm.jsr.io
+
+COPY package.json pnpm-lock.yaml tsconfig.json ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY secrets-controller ./secrets-controller
+COPY subgraphs/vetra-cloud-secrets ./subgraphs/vetra-cloud-secrets
+
+# Minimal tsconfig that scopes compilation to the controller sources.
+RUN cat > tsconfig.controller.json <<'EOF'
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-controller",
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": false
+  },
+  "include": [
+    "secrets-controller/**/*",
+    "subgraphs/vetra-cloud-secrets/openbao-transit.ts",
+    "subgraphs/vetra-cloud-secrets/db/schema.ts"
+  ],
+  "exclude": [
+    "**/__tests__/**",
+    "**/*.test.ts"
+  ]
+}
+EOF
+RUN pnpm exec tsc -p tsconfig.controller.json
+
+# -----------------------------------------------------------------------------
+# Secrets controller final stage
+# -----------------------------------------------------------------------------
+FROM node:24-alpine AS secrets-controller
+
+WORKDIR /app
+
+RUN apk add --no-cache curl
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Install only the runtime deps the controller actually uses.
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+
+COPY --from=secrets-controller-builder /app/dist-controller ./dist-controller
+
+ENV NODE_ENV=production
+ENV HEALTH_PORT=8080
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:${HEALTH_PORT}/healthz || exit 1
+
+ENTRYPOINT ["node", "dist-controller/secrets-controller/index.js"]
