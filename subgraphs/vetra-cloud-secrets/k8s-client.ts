@@ -23,34 +23,32 @@ export interface K8sClient {
   ): Promise<"created" | "updated" | "unchanged" | "skipped">;
 }
 
-function is404(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
+function statusCode(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) return null;
   const e = err as { code?: unknown; response?: { statusCode?: unknown } };
-  if (e.code === 404) return true;
+  if (typeof e.code === "number") return e.code;
   if (
     typeof e.response === "object" &&
     e.response !== null &&
-    e.response.statusCode === 404
+    typeof e.response.statusCode === "number"
   ) {
-    return true;
+    return e.response.statusCode;
   }
-  return false;
+  return null;
+}
+
+function isNotFound(err: unknown): boolean {
+  return statusCode(err) === 404;
+}
+
+function isForbidden(err: unknown): boolean {
+  return statusCode(err) === 403;
 }
 
 export function createK8sClient(): K8sClient {
   const kc = new KubeConfig();
   kc.loadFromDefault();
   const api = kc.makeApiClient(CoreV1Api);
-
-  async function namespaceExists(namespace: string): Promise<boolean> {
-    try {
-      await api.readNamespace({ name: namespace });
-      return true;
-    } catch (err: unknown) {
-      if (is404(err)) return false;
-      throw err;
-    }
-  }
 
   function managedMetadata(
     spec: K8sResourceSpec,
@@ -78,15 +76,16 @@ export function createK8sClient(): K8sClient {
     return true;
   }
 
+  // Missing tenant namespace OR missing RBAC — both observable as a 404 or
+  // 403 from the K8s API. Logged once, treated as a no-op. The tenant's
+  // Helm chart RoleBinding landing (or the namespace appearing) flips this
+  // on automatically at the next reconcile tick.
+  function skippable(err: unknown): boolean {
+    return isNotFound(err) || isForbidden(err);
+  }
+
   return {
     async upsertConfigMap(spec, data) {
-      if (!(await namespaceExists(spec.namespace))) {
-        console.warn(
-          `[k8s] namespace '${spec.namespace}' does not exist; skipping ConfigMap '${spec.name}'`,
-        );
-        return "skipped";
-      }
-
       try {
         const existing = await api.readNamespacedConfigMap({
           name: spec.name,
@@ -106,29 +105,38 @@ export function createK8sClient(): K8sClient {
         });
         return "updated";
       } catch (err: unknown) {
-        if (is404(err)) {
-          const body: V1ConfigMap = {
-            metadata: managedMetadata(spec),
-            data,
-          };
-          await api.createNamespacedConfigMap({
-            namespace: spec.namespace,
-            body,
-          });
-          return "created";
+        if (isNotFound(err)) {
+          try {
+            const body: V1ConfigMap = {
+              metadata: managedMetadata(spec),
+              data,
+            };
+            await api.createNamespacedConfigMap({
+              namespace: spec.namespace,
+              body,
+            });
+            return "created";
+          } catch (createErr: unknown) {
+            if (skippable(createErr)) {
+              console.warn(
+                `[k8s] cannot create ConfigMap ${spec.namespace}/${spec.name} (namespace missing or RBAC not applied); skipping`,
+              );
+              return "skipped";
+            }
+            throw createErr;
+          }
+        }
+        if (isForbidden(err)) {
+          console.warn(
+            `[k8s] cannot read ConfigMap ${spec.namespace}/${spec.name} (RBAC not applied); skipping`,
+          );
+          return "skipped";
         }
         throw err;
       }
     },
 
     async upsertSecret(spec, data) {
-      if (!(await namespaceExists(spec.namespace))) {
-        console.warn(
-          `[k8s] namespace '${spec.namespace}' does not exist; skipping Secret '${spec.name}'`,
-        );
-        return "skipped";
-      }
-
       // K8s Secret.data is base64-encoded; we use stringData for writes and compare via decoded form.
       const encoded: Record<string, string> = {};
       for (const [k, v] of Object.entries(data)) {
@@ -155,17 +163,33 @@ export function createK8sClient(): K8sClient {
         });
         return "updated";
       } catch (err: unknown) {
-        if (is404(err)) {
-          const body: V1Secret = {
-            metadata: managedMetadata(spec),
-            type: "Opaque",
-            data: encoded,
-          };
-          await api.createNamespacedSecret({
-            namespace: spec.namespace,
-            body,
-          });
-          return "created";
+        if (isNotFound(err)) {
+          try {
+            const body: V1Secret = {
+              metadata: managedMetadata(spec),
+              type: "Opaque",
+              data: encoded,
+            };
+            await api.createNamespacedSecret({
+              namespace: spec.namespace,
+              body,
+            });
+            return "created";
+          } catch (createErr: unknown) {
+            if (skippable(createErr)) {
+              console.warn(
+                `[k8s] cannot create Secret ${spec.namespace}/${spec.name} (namespace missing or RBAC not applied); skipping`,
+              );
+              return "skipped";
+            }
+            throw createErr;
+          }
+        }
+        if (isForbidden(err)) {
+          console.warn(
+            `[k8s] cannot read Secret ${spec.namespace}/${spec.name} (RBAC not applied); skipping`,
+          );
+          return "skipped";
         }
         throw err;
       }
