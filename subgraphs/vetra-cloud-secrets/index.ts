@@ -32,7 +32,7 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
     const transit = new OpenBaoTransitClient({
       addr: openbaoAddr,
       role: process.env.OPENBAO_TRANSIT_ROLE ?? DEFAULT_ROLE,
-      keyName: process.env.OPENBAO_TRANSIT_KEY,
+      keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
     });
 
     this.resolvers = createResolvers(db, transit);

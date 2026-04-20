@@ -11,13 +11,18 @@ let db: Kysely<SecretsDB>;
 
 const mockTransit: OpenBaoTransitClient = {
   authenticate: vi.fn(),
+  ensureTenantKey: vi.fn().mockResolvedValue(undefined),
+  keyFor: vi.fn().mockImplementation((tenantId: string) => `vetra-tenant-${tenantId}`),
   encrypt: vi
     .fn()
-    .mockImplementation(async (plaintext: string) => `vault:v1:${plaintext}`),
+    .mockImplementation(
+      async (tenantId: string, plaintext: string) =>
+        `vault:v1:${tenantId}:${plaintext}`,
+    ),
   decrypt: vi
     .fn()
-    .mockImplementation(async (ciphertext: string) =>
-      ciphertext.replace(/^vault:v\d+:/, ""),
+    .mockImplementation(async (_tenantId: string, ciphertext: string) =>
+      ciphertext.replace(/^vault:v\d+:[^:]+:/, ""),
     ),
 } as any;
 
@@ -183,7 +188,7 @@ describe("Mutation", () => {
   });
 
   describe("setSecret", () => {
-    it("encrypts via transit and stores ciphertext in Postgres", async () => {
+    it("ensures the tenant key, encrypts via transit, and stores ciphertext", async () => {
       const result = await mutation().setSecret(undefined, {
         tenantId: "t1",
         key: "API_KEY",
@@ -191,7 +196,8 @@ describe("Mutation", () => {
       });
       expect(result).toEqual({ key: "API_KEY" });
 
-      expect(mockTransit.encrypt).toHaveBeenCalledWith("secret-val");
+      expect(mockTransit.ensureTenantKey).toHaveBeenCalledWith("t1");
+      expect(mockTransit.encrypt).toHaveBeenCalledWith("t1", "secret-val");
 
       const rows = await db
         .selectFrom("tenant_secrets")
@@ -199,7 +205,7 @@ describe("Mutation", () => {
         .where("tenantId", "=", "t1")
         .execute();
       expect(rows).toHaveLength(1);
-      expect(rows[0].ciphertext).toBe("vault:v1:secret-val");
+      expect(rows[0].ciphertext).toBe("vault:v1:t1:secret-val");
     });
 
     it("re-encrypts on update", async () => {
@@ -221,7 +227,25 @@ describe("Mutation", () => {
         .where("tenantId", "=", "t1")
         .execute();
       expect(rows).toHaveLength(1);
-      expect(rows[0].ciphertext).toBe("vault:v1:v2");
+      expect(rows[0].ciphertext).toBe("vault:v1:t1:v2");
+    });
+
+    it("isolates tenants: different tenantIds use different keys", async () => {
+      await mutation().setSecret(undefined, {
+        tenantId: "tenant-a",
+        key: "X",
+        value: "alpha",
+      });
+      await mutation().setSecret(undefined, {
+        tenantId: "tenant-b",
+        key: "X",
+        value: "beta",
+      });
+
+      expect(mockTransit.ensureTenantKey).toHaveBeenCalledWith("tenant-a");
+      expect(mockTransit.ensureTenantKey).toHaveBeenCalledWith("tenant-b");
+      expect(mockTransit.encrypt).toHaveBeenCalledWith("tenant-a", "alpha");
+      expect(mockTransit.encrypt).toHaveBeenCalledWith("tenant-b", "beta");
     });
 
     it("rejects invalid key names", async () => {

@@ -90,7 +90,8 @@ export function createResolvers(
         { tenantId, key, value }: { tenantId: string; key: string; value: string },
       ) => {
         validateKey(key);
-        const ciphertext = await transit.encrypt(value);
+        await transit.ensureTenantKey(tenantId);
+        const ciphertext = await transit.encrypt(tenantId, value);
         const now = new Date().toISOString();
 
         await db.transaction().execute(async (trx) => {
