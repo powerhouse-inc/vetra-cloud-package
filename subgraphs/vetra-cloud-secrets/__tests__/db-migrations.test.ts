@@ -55,13 +55,14 @@ describe("db migrations", () => {
     expect(rows[0].value).toBe("production");
   });
 
-  it("inserts and selects tenant_secrets", async () => {
+  it("inserts and selects tenant_secrets with ciphertext", async () => {
     await db
       .insertInto("tenant_secrets")
       .values({
         tenantId: "tenant-1",
         key: "STRIPE_KEY",
         updatedAt: "2026-04-07T00:00:00Z",
+        ciphertext: "vault:v1:AbCd==",
       })
       .execute();
 
@@ -73,6 +74,26 @@ describe("db migrations", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0].key).toBe("STRIPE_KEY");
+    expect(rows[0].ciphertext).toBe("vault:v1:AbCd==");
+  });
+
+  it("allows NULL ciphertext for legacy rows", async () => {
+    await db
+      .insertInto("tenant_secrets")
+      .values({
+        tenantId: "tenant-1",
+        key: "LEGACY_KEY",
+        updatedAt: "2026-04-07T00:00:00Z",
+        ciphertext: null,
+      })
+      .execute();
+
+    const rows = await db
+      .selectFrom("tenant_secrets")
+      .selectAll()
+      .where("key", "=", "LEGACY_KEY")
+      .execute();
+    expect(rows[0].ciphertext).toBeNull();
   });
 
   it("enforces composite primary key on tenant_env_vars", async () => {

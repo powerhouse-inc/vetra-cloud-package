@@ -9,6 +9,7 @@ export interface TenantSecrets {
   tenantId: string;
   key: string;
   updatedAt: string;
+  ciphertext: string | null;
 }
 
 export interface SecretsDB {
