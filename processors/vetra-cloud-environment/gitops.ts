@@ -267,6 +267,11 @@ export function generateValuesYaml(
   const connectTag = connectService?.version ?? DEFAULT_IMAGE_TAG;
   const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
   const disabled = DISABLED_STATUSES.has(state.status);
+  // Postgres is only needed when Switchboard is enabled — Connect-only envs
+  // (e.g. admin-style apex deployments) can skip the ~60-90s CNPG bootstrap
+  // and the associated 50Gi Hetzner volume. Toggling Switchboard on later
+  // flips this back to true and CNPG comes up then.
+  const databaseEnabled = switchboardEnabled;
 
   const phPackages =
     state.packages
@@ -323,7 +328,7 @@ export function generateValuesYaml(
     useExisting: true
 database:
   cnpg:
-    enabled: true
+    enabled: ${databaseEnabled}
     name: ${tenantId}-pg
     instances: 1
     storageClass: hcloud-volumes
@@ -420,10 +425,10 @@ switchboard:
         - -c
         - |
           wget --post-data='{"query":"{__typename}"}' --header='Content-Type: application/json' -qO- http://localhost:3000/graphql
-    initialDelaySeconds: 60
-    periodSeconds: 10
+    initialDelaySeconds: 15
+    periodSeconds: 5
     timeoutSeconds: 5
-    failureThreshold: 6
+    failureThreshold: 12
   securityContext:
     runAsNonRoot: false
     runAsUser: 0
@@ -479,10 +484,10 @@ connect:
     httpGet:
       path: /health
       port: 3001
-    initialDelaySeconds: 60
-    periodSeconds: 10
+    initialDelaySeconds: 15
+    periodSeconds: 5
     timeoutSeconds: 5
-    failureThreshold: 6
+    failureThreshold: 12
   securityContext:
     runAsNonRoot: false
     runAsUser: 0

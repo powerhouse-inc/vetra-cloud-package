@@ -66,6 +66,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     try {
       this.watcherHandle = startWatchers({
         db,
+        envDb,
         k8sToken: "",
       });
       console.info("[observability] Watchers started (in-cluster SA)");
@@ -259,8 +260,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       }
     };
 
-    // Run every 30 seconds
-    this.deploymentReconciler = setInterval(() => void reconcile(), 30_000);
+    // Run every 10 seconds — UI reflects status transitions within 10s of
+    // the argo-side change (argo itself reacts to git pushes in ~1s via the
+    // github webhook, so this is the dominant user-facing delay).
+    this.deploymentReconciler = setInterval(() => void reconcile(), 10_000);
     // Run once immediately
     void reconcile();
   }

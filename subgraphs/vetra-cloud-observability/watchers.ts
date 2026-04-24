@@ -124,6 +124,10 @@ export interface ReactorClient {
 
 export interface WatcherDeps {
   db: Kysely<ObservabilityDB>;
+  /** Kysely handle for the processor's `vetra-cloud-environments` namespace —
+   *  used to resolve each tenant's configured `customDomain` so the domain
+   *  check targets the right ingress instead of guessing by name. */
+  envDb: Kysely<any>;
   k8sToken: string;
   k8sApiUrl?: string;
   reactorClient?: ReactorClient;
@@ -230,16 +234,29 @@ interface DomainCheck {
   tlsCertExpiresAt: string | null;
 }
 
+/**
+ * Report aggregate DNS + TLS status for the env's configured custom domain.
+ *
+ * Matches every Ingress in the tenant namespace whose host is either exactly
+ * `customDomain` (apex mode — e.g. `admin.vetra.io` itself) or ends with
+ * `.<customDomain>` (non-apex mode — e.g. `switchboard.admin.vetra.io`). Runs
+ * a DNS resolution and TLS secret inspection per matched ingress and
+ * aggregates: `tlsCertValid` / `domainResolves` come back green only if every
+ * matched ingress is green, red if any fail, null if nothing matches.
+ */
 async function checkCustomDomain(
   kc: Pick<KubeConfig, "makeApiClient">,
   coreApi: { readNamespacedSecret(params: { name: string; namespace: string }): Promise<unknown> },
   tenantId: string,
+  customDomain: string | null,
 ): Promise<DomainCheck> {
   const result: DomainCheck = {
     domainResolves: null,
     tlsCertValid: null,
     tlsCertExpiresAt: null,
   };
+
+  if (!customDomain) return result;
 
   try {
     const { NetworkingV1Api } = await import("@kubernetes/client-node");
@@ -256,50 +273,63 @@ async function checkCustomDomain(
       }>;
     };
 
-    const customIngress = ingresses.items?.find((ing) =>
-      ing.metadata?.name?.includes("-custom-"),
-    );
-    if (!customIngress) return result;
+    const suffix = `.${customDomain}`;
+    const matching = (ingresses.items ?? []).filter((ing) => {
+      const host = ing.spec?.rules?.[0]?.host;
+      return !!host && (host === customDomain || host.endsWith(suffix));
+    });
+    if (matching.length === 0) return result;
 
-    const customHost = customIngress.spec?.rules?.[0]?.host;
-    if (!customHost) return result;
+    let resolvesAll = true;
+    let certsAllValid = true;
+    let sawAnyCert = false;
+    let earliestExpiry: Date | null = null;
 
-    // DNS check
-    try {
-      const addresses = await resolve4(customHost);
-      result.domainResolves = addresses.length > 0 ? 1 : 0;
-    } catch {
-      result.domainResolves = 0;
-    }
+    for (const ing of matching) {
+      const host = ing.spec!.rules![0].host!;
 
-    // TLS check — read the secret created by cert-manager
-    const tlsSecretName = customIngress.spec?.tls?.[0]?.secretName;
-    if (tlsSecretName) {
+      // DNS check
+      try {
+        const addresses = await resolve4(host);
+        if (addresses.length === 0) resolvesAll = false;
+      } catch {
+        resolvesAll = false;
+      }
+
+      // TLS check — read cert-manager-created Secret
+      const tlsSecretName = ing.spec?.tls?.[0]?.secretName;
+      if (!tlsSecretName) {
+        // Ingress without TLS declared — can't judge cert.
+        continue;
+      }
       try {
         const secret = (await coreApi.readNamespacedSecret({
           name: tlsSecretName,
           namespace: tenantId,
-        })) as {
-          data?: { "tls.crt"?: string };
-        };
+        })) as { data?: { "tls.crt"?: string } };
 
         const certB64 = secret.data?.["tls.crt"];
-        if (certB64) {
-          const pem = Buffer.from(certB64, "base64").toString("utf-8");
-          const expiresAt = extractCertExpiry(pem);
-          if (expiresAt) {
-            result.tlsCertExpiresAt = expiresAt.toISOString();
-            result.tlsCertValid = expiresAt > new Date() ? 1 : 0;
-          } else {
-            result.tlsCertValid = 1;
-          }
-        } else {
-          result.tlsCertValid = 0;
+        if (!certB64) {
+          certsAllValid = false;
+          continue;
+        }
+        sawAnyCert = true;
+        const pem = Buffer.from(certB64, "base64").toString("utf-8");
+        const expiresAt = extractCertExpiry(pem);
+        if (!expiresAt) continue; // couldn't parse, don't penalise
+        if (expiresAt <= new Date()) certsAllValid = false;
+        if (earliestExpiry === null || expiresAt < earliestExpiry) {
+          earliestExpiry = expiresAt;
         }
       } catch {
-        result.tlsCertValid = 0;
+        // Secret not found yet (cert-manager still issuing, or was deleted)
+        certsAllValid = false;
       }
     }
+
+    result.domainResolves = resolvesAll ? 1 : 0;
+    result.tlsCertValid = sawAnyCert ? (certsAllValid ? 1 : 0) : 0;
+    result.tlsCertExpiresAt = earliestExpiry ? earliestExpiry.toISOString() : null;
   } catch (err) {
     console.warn(`[domain-check] error checking custom domain for ${tenantId}:`, err);
   }
@@ -323,6 +353,7 @@ function extractCertExpiry(pem: string): Date | null {
 
 async function reconcile(
   db: Kysely<ObservabilityDB>,
+  envDb: Kysely<any>,
   k8sToken: string,
   k8sApiUrl: string,
 ): Promise<void> {
@@ -386,7 +417,18 @@ async function reconcile(
         ? 1
         : 0;
 
-      const domainCheck = await checkCustomDomain(kc, coreApi, tenantId);
+      // Fetch the env's configured custom domain so the check targets the
+      // exact host the user configured (apex mode) or its <svc>.<domain>
+      // additional ingresses (non-apex) — not whichever ingress happens to
+      // have "-custom-" in its name.
+      const envRow = (await envDb
+        .selectFrom("environments")
+        .select(["customDomain"])
+        .where("tenantId", "=", tenantId)
+        .executeTakeFirst()) as { customDomain: string | null } | undefined;
+      const customDomain = envRow?.customDomain ?? null;
+
+      const domainCheck = await checkCustomDomain(kc, coreApi, tenantId, customDomain);
 
       await upsertEnvironmentStatus(db, {
         tenantId,
@@ -451,17 +493,17 @@ async function reconcile(
 // ---------------------------------------------------------------------------
 
 export function startWatchers(deps: WatcherDeps): WatcherHandle {
-  const { db, k8sToken, k8sApiUrl = "" } = deps;
+  const { db, envDb, k8sToken, k8sApiUrl = "" } = deps;
 
   const watcherAborts: Array<{ abort(): void }> = [];
 
   // Reconciliation interval (60 seconds)
   const intervalId = setInterval(() => {
-    void reconcile(db, k8sToken, k8sApiUrl);
+    void reconcile(db, envDb, k8sToken, k8sApiUrl);
   }, 60_000);
 
   // Run an initial reconcile
-  void reconcile(db, k8sToken, k8sApiUrl);
+  void reconcile(db, envDb, k8sToken, k8sApiUrl);
 
   // Start K8s watches via dynamic import so tests don't require a live cluster
   (async () => {
