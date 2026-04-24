@@ -20,6 +20,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
+  private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -94,6 +95,13 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // classic "cert-manager raced external-dns on first provision") by
     // deleting the Certificate once DNS now resolves to us.
     this.startChallengeReconciler();
+
+    // Start release-index backfill: keeps the release_index table
+    // populated from npm dist-tags so the UI's "latest on channel"
+    // display and the update-now mutation have data even when the
+    // subgraph hasn't received a notifyNewImageRelease webhook for that
+    // channel yet.
+    this.startReleaseIndexBackfill(db);
   }
 
   async onDisconnect() {
@@ -114,6 +122,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.challengeReconciler) {
       clearInterval(this.challengeReconciler);
       this.challengeReconciler = null;
+    }
+    if (this.releaseIndexBackfill) {
+      clearInterval(this.releaseIndexBackfill);
+      this.releaseIndexBackfill = null;
     }
   }
 
@@ -657,6 +669,111 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       2 * 60 * 1000,
     );
     void reconcile();
+  }
+
+  /**
+   * Periodically populate `release_index` from npm dist-tags on
+   * `@powerhousedao/connect` and `@powerhousedao/switchboard`. The
+   * monorepo publishes every release to npm with dist-tags `dev`,
+   * `staging`, and `latest`, each pointing at the current channel head.
+   *
+   * Without this, `release_index` only has rows for channels whose
+   * webhook has fired since the subgraph started — so a new staging
+   * env subscriber sees "no release seen" in the UI even though a tag
+   * exists on npm. With this, the UI's "latest on channel" and the
+   * updateEnvironmentToLatest mutation work immediately, and the
+   * notifyNewImageRelease webhook still keeps things fresh on new
+   * releases (first writer wins, later writers no-op).
+   */
+  private static RELEASE_INDEX_PACKAGES: Array<{
+    image: string;
+    npmPackage: string;
+  }> = [
+    { image: "CONNECT", npmPackage: "@powerhousedao/connect" },
+    { image: "SWITCHBOARD", npmPackage: "@powerhousedao/switchboard" },
+  ];
+  private static RELEASE_INDEX_CHANNELS: Record<string, string> = {
+    DEV: "dev",
+    STAGING: "staging",
+    LATEST: "latest",
+  };
+
+  private startReleaseIndexBackfill(db: Kysely<ObservabilityDB>) {
+    const refresh = async () => {
+      for (const {
+        image,
+        npmPackage,
+      } of VetraCloudObservabilitySubgraph.RELEASE_INDEX_PACKAGES) {
+        let metadata: unknown;
+        try {
+          const res = await fetch(`https://registry.npmjs.org/${npmPackage}`);
+          if (!res.ok) {
+            console.warn(
+              `[release-index-backfill] ${npmPackage}: HTTP ${res.status}`,
+            );
+            continue;
+          }
+          metadata = await res.json();
+        } catch (err) {
+          console.warn(
+            `[release-index-backfill] ${npmPackage}: fetch failed: ${String(err)}`,
+          );
+          continue;
+        }
+
+        const distTags =
+          (metadata as { "dist-tags"?: Record<string, string> })[
+            "dist-tags"
+          ] ?? {};
+
+        for (const [channel, distTag] of Object.entries(
+          VetraCloudObservabilitySubgraph.RELEASE_INDEX_CHANNELS,
+        )) {
+          const version = distTags[distTag];
+          if (!version) continue;
+          const vTag = version.startsWith("v") ? version : `v${version}`;
+          const id = `${channel}/${image}`;
+
+          // Skip if the row is already pointed at this tag — avoids
+          // moving publishedAt every 5min for a stable release.
+          const existing = await db
+            .selectFrom("release_index")
+            .select(["tag"])
+            .where("id", "=", id)
+            .executeTakeFirst();
+          if (existing && existing.tag === vTag) continue;
+
+          await db
+            .insertInto("release_index")
+            .values({
+              id,
+              channel,
+              image,
+              tag: vTag,
+              publishedAt: new Date().toISOString(),
+              releaseUrl: `https://github.com/powerhouse-inc/powerhouse/releases/tag/${vTag}`,
+            })
+            .onConflict((oc) =>
+              oc.column("id").doUpdateSet({
+                tag: vTag,
+                publishedAt: new Date().toISOString(),
+                releaseUrl: `https://github.com/powerhouse-inc/powerhouse/releases/tag/${vTag}`,
+              }),
+            )
+            .execute();
+          console.info(
+            `[release-index-backfill] ${id}: ${existing?.tag ?? "(new)"} → ${vTag}`,
+          );
+        }
+      }
+    };
+
+    // Every 5 minutes + once on startup.
+    this.releaseIndexBackfill = setInterval(
+      () => void refresh(),
+      5 * 60 * 1000,
+    );
+    void refresh();
   }
 
 }
