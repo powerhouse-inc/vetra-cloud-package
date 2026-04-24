@@ -145,44 +145,51 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           // Check ArgoCD status for this tenant
           const argoStatus = await observabilityDb
             .selectFrom("environment_status")
-            .select(["argoSyncStatus", "argoHealthStatus"])
+            .select(["argoSyncStatus", "argoHealthStatus", "argoLastSyncedAt"])
             .where("tenantId", "=", env.tenantId)
             .executeTakeFirst();
 
           if (!argoStatus) continue;
 
           const label = env.name ?? env.id;
-          const { argoSyncStatus, argoHealthStatus } = argoStatus;
+          const { argoSyncStatus, argoHealthStatus, argoLastSyncedAt } = argoStatus;
 
           if (env.status === "CHANGES_PUSHED") {
-            if (argoHealthStatus === "HEALTHY") {
-              // Fast path: already healthy — go straight through DEPLOYING → READY
-              console.info(
-                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING → READY (healthy)`,
-              );
-              await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
-              await this.dispatchAction(
-                env.id,
-                "REPORT_DEPLOYMENT_SUCCEEDED",
-                {},
-              );
-            } else if (
-              argoHealthStatus === "PROGRESSING" ||
-              argoHealthStatus === "DEGRADED" ||
-              argoSyncStatus === "OUT_OF_SYNC"
-            ) {
-              console.info(
-                `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING (health: ${argoHealthStatus}, sync: ${argoSyncStatus})`,
-              );
-              const now = new Date().toISOString();
-              await envDb
-                .updateTable("environments")
-                .set({ deployingSince: now })
-                .where("id", "=", env.id)
-                .execute();
-              await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
-            }
+            // Always transition to DEPLOYING on first sighting — do NOT
+            // fast-path to READY based on argo health, because the cached
+            // argo status at this point is almost always stale from *before*
+            // our gitops push. Requiring argo to reconcile the new revision
+            // before marking READY is the whole point of the DEPLOYING state.
+            console.info(
+              `[deployment-reconciler] ${label}: CHANGES_PUSHED → DEPLOYING (health: ${argoHealthStatus}, sync: ${argoSyncStatus})`,
+            );
+            const now = new Date().toISOString();
+            await envDb
+              .updateTable("environments")
+              .set({ deployingSince: now })
+              .where("id", "=", env.id)
+              .execute();
+            await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
           } else if (env.status === "DEPLOYING") {
+            // Only trust argo's verdict once it has reconciled *after* we
+            // entered DEPLOYING — otherwise we're reading a status from
+            // before our push landed and would flip to READY prematurely.
+            const deployingSinceMs = env.deployingSince
+              ? new Date(env.deployingSince).getTime()
+              : 0;
+            const argoSyncedMs = argoLastSyncedAt
+              ? new Date(argoLastSyncedAt).getTime()
+              : 0;
+            const argoSawChange = argoSyncedMs > deployingSinceMs;
+
+            if (!argoSawChange) {
+              console.info(
+                `[deployment-reconciler] ${label}: DEPLOYING, waiting for ArgoCD to reconcile ` +
+                  `(argoLastSyncedAt=${argoLastSyncedAt ?? "null"}, deployingSince=${env.deployingSince ?? "null"})`,
+              );
+              continue;
+            }
+
             if (argoHealthStatus === "HEALTHY") {
               console.info(
                 `[deployment-reconciler] ${label}: DEPLOYING → READY (healthy)`,
