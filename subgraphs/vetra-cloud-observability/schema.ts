@@ -29,6 +29,26 @@ export const schema: DocumentNode = gql`
     viewer: Viewer!
   }
 
+  type Mutation {
+    """
+    Set (or clear) the custom domain on an environment. Enforces global
+    uniqueness across live environments and optionally pins one service to
+    the apex of the custom domain (Connect served at admin.vetra.io rather
+    than connect.admin.vetra.io).
+
+    Caller must be the environment's owner or an admin. Uniqueness is
+    checked against environments whose status is not in
+    {TERMINATING, DESTROYED, ARCHIVED}. Raises DOMAIN_TAKEN if another
+    live environment already claims the same host.
+    """
+    setCustomDomain(
+      documentId: String!
+      enabled: Boolean!
+      domain: String
+      apexService: TenantService
+    ): VetraCloudEnvironmentSummary!
+  }
+
   enum ListScope { MINE, ALL }
 
   type Viewer {

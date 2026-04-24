@@ -12,6 +12,11 @@ export interface ResolverConfig {
    * authenticated user (from reactor-api's AuthService).
    */
   envDb: Kysely<any>;
+  /**
+   * Dispatches an action on a document. Provided by the subgraph host — the
+   * resolver is not aware of the underlying reactor client implementation.
+   */
+  dispatch: (documentId: string, type: string, input: Record<string, unknown>) => Promise<void>;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -20,6 +25,12 @@ type AuthAwareContext = {
   isAdmin?: (address: string) => boolean;
 };
 
+/** Environments in these statuses have released their custom-domain claim. */
+const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
+
+/** Service types recognised by the doc-model enum. */
+const TENANT_SERVICES = new Set(["CONNECT", "SWITCHBOARD"]);
+
 export function createResolvers(
   db: Kysely<ObservabilityDB>,
   config: ResolverConfig,
@@ -27,6 +38,7 @@ export function createResolvers(
   const prometheus = new PrometheusClient(config.prometheusUrl);
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
+  const dispatch = config.dispatch;
 
   return {
     Query: {
@@ -182,5 +194,108 @@ export function createResolvers(
         return { address, isAdmin };
       },
     },
+
+    Mutation: {
+      setCustomDomain: async (
+        _parent: unknown,
+        args: {
+          documentId: string;
+          enabled: boolean;
+          domain?: string | null;
+          apexService?: string | null;
+        },
+        ctx: AuthAwareContext,
+      ) => {
+        const callerAddress = ctx.user?.address?.toLowerCase();
+        if (!callerAddress) {
+          throw new Error("UNAUTHENTICATED");
+        }
+        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+
+        const domain = args.domain?.trim() ? args.domain.trim().toLowerCase() : null;
+        if (args.enabled && !domain) {
+          throw new Error("DOMAIN_REQUIRED");
+        }
+        if (args.apexService && !TENANT_SERVICES.has(args.apexService)) {
+          throw new Error("INVALID_APEX_SERVICE");
+        }
+
+        const envRow = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .where("id", "=", args.documentId)
+          .executeTakeFirst()) as EnvSummaryRow | undefined;
+        if (!envRow) {
+          throw new Error("ENV_NOT_FOUND");
+        }
+
+        const isOwner = !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
+        if (!isOwner && !isAdmin) {
+          // Unclaimed envs stay open for now — the protection reconciler
+          // only locks down envs that already have an owner. Allow admins
+          // through regardless.
+          throw new Error("FORBIDDEN");
+        }
+
+        // Uniqueness — only enforced when a domain is being claimed.
+        if (args.enabled && domain) {
+          const conflict = await envDb
+            .selectFrom("environments")
+            .select(["id", "status"])
+            .where("customDomain", "=", domain)
+            .where("id", "!=", args.documentId)
+            .execute();
+          const live = (conflict as Array<{ id: string; status: string | null }>).filter(
+            (row) => !row.status || !RELEASED_STATUSES.has(row.status),
+          );
+          if (live.length > 0) {
+            throw new Error("DOMAIN_TAKEN");
+          }
+        }
+
+        await dispatch(args.documentId, "SET_CUSTOM_DOMAIN", {
+          enabled: args.enabled,
+          domain: args.enabled ? domain : null,
+        });
+
+        // SET_APEX_SERVICE is only meaningful when apex routing is requested
+        // and a domain is set; clearing is expressed by explicitly passing
+        // apexService: null (the reducer will be added in a follow-up commit
+        // once the doc model catches up — dispatch is tolerant of unknown
+        // ops to keep the mutation forward-compatible).
+        if (args.apexService !== undefined) {
+          try {
+            await dispatch(args.documentId, "SET_APEX_SERVICE", {
+              type: args.enabled ? (args.apexService ?? null) : null,
+            });
+          } catch (err) {
+            // Before the doc-model rollout, this op will be unknown. Log and
+            // continue — the custom-domain write already succeeded, and the
+            // apex routing takes effect once the package is republished.
+            console.warn(
+              `[setCustomDomain] SET_APEX_SERVICE dispatch ignored: ${String(err)}`,
+            );
+          }
+        }
+
+        const refreshed = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .where("id", "=", args.documentId)
+          .executeTakeFirst()) as EnvSummaryRow | undefined;
+        return refreshed ?? envRow;
+      },
+    },
   };
 }
+
+type EnvSummaryRow = {
+  id: string;
+  name: string | null;
+  subdomain: string | null;
+  tenantId: string | null;
+  customDomain: string | null;
+  status: string | null;
+  owner: string | null;
+  createdBy: string | null;
+};

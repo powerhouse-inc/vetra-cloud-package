@@ -37,7 +37,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       "vetra-cloud-environments",
     )) as unknown as Kysely<any>;
 
-    this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl, envDb });
+    const dispatch = async (
+      documentId: string,
+      type: string,
+      input: Record<string, unknown>,
+    ) => {
+      const action = createAction(type, input);
+      await this.reactorClient.execute(documentId, "main", [action]);
+    };
+
+    this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl, envDb, dispatch });
 
     // Start watchers using the pod's in-cluster ServiceAccount.
     //
