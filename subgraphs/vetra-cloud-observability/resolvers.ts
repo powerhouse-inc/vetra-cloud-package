@@ -212,10 +212,11 @@ export function createResolvers(
         }
         const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
 
+        // `enabled` without a `domain` is a valid intermediate state — the
+        // UI toggles the checkbox to reveal the input, then the user types a
+        // domain and clicks Save. We only enforce uniqueness once a domain
+        // is actually supplied.
         const domain = args.domain?.trim() ? args.domain.trim().toLowerCase() : null;
-        if (args.enabled && !domain) {
-          throw new Error("DOMAIN_REQUIRED");
-        }
         if (args.apexService && !TENANT_SERVICES.has(args.apexService)) {
           throw new Error("INVALID_APEX_SERVICE");
         }
