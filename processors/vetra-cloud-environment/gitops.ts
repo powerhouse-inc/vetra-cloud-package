@@ -210,15 +210,14 @@ function generateCustomDomainIngress(
 }
 
 /**
- * Read the optional `apexService` pointer off state without requiring the
- * generated type to have caught up. Returns the service type that claims the
- * apex of the custom domain (Connect served at `admin.vetra.io` itself,
- * not `connect.admin.vetra.io`), or null if apex routing is not requested.
+ * Narrow `state.apexService` to the service types the processor actually
+ * renders apex routing for. Returns null when no apex is requested or when
+ * the pinned type is one we don't emit (e.g. FUSION — no chart ingress).
  */
 function readApexService(
   state: VetraCloudEnvironmentState,
 ): "CONNECT" | "SWITCHBOARD" | null {
-  const v = (state as unknown as { apexService?: string | null }).apexService;
+  const v = state.apexService;
   if (v === "CONNECT" || v === "SWITCHBOARD") return v;
   return null;
 }
