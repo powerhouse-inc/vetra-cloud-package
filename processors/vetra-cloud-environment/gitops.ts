@@ -619,9 +619,13 @@ async function syncEnvironmentEphemeral(
       return;
     }
 
-    // Commit
+    // Commit. Label the action by the effect on the chart's `global.disabled`
+    // flag — envs in terminal-ish statuses render disabled=true, everything
+    // else is a live update (initial provision, approval, service toggle,
+    // version bump, custom-domain change, etc.).
     logger.info(`Changes detected: ${hasChanges}`);
-    const statusLabel = state.status === "READY" ? "enable" : "disable";
+    const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
+    const statusLabel = DISABLED_STATUSES.has(state.status) ? "disable" : "update";
     const commitMsg = `chore(${tenantId}): ${statusLabel} tenant — synced from vetra-cloud-environment`;
     logger.info(`Committing: ${commitMsg}`);
     await git(["commit", "-m", commitMsg], cloneDir);
