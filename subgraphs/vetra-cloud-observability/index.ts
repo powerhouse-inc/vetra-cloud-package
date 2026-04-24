@@ -184,9 +184,14 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
               .execute();
             await this.dispatchAction(env.id, "MARK_DEPLOYMENT_STARTED", {});
           } else if (env.status === "DEPLOYING") {
-            // Only trust argo's verdict once it has reconciled *after* we
-            // entered DEPLOYING — otherwise we're reading a status from
-            // before our push landed and would flip to READY prematurely.
+            // Trust argo's verdict once we have evidence it has observed our
+            // gitops push. Signals are:
+            //   • argoLastSyncedAt (reconciledAt) > deployingSince — the
+            //     strong case, argo explicitly saw the new revision.
+            //   • 30s have elapsed since deployingSince — belt-and-suspenders
+            //     for cases where argo's timestamps don't obviously advance
+            //     (e.g. a push that renders identical manifests), which
+            //     otherwise keeps the env pinned in DEPLOYING forever.
             const deployingSinceMs = env.deployingSince
               ? new Date(env.deployingSince).getTime()
               : 0;
@@ -194,11 +199,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
               ? new Date(argoLastSyncedAt).getTime()
               : 0;
             const argoSawChange = argoSyncedMs > deployingSinceMs;
+            const elapsedMs = deployingSinceMs
+              ? Date.now() - deployingSinceMs
+              : Infinity;
+            const GRACE_FALLBACK_MS = 30_000;
+            const trustworthy = argoSawChange || elapsedMs > GRACE_FALLBACK_MS;
 
-            if (!argoSawChange) {
+            if (!trustworthy) {
               console.info(
                 `[deployment-reconciler] ${label}: DEPLOYING, waiting for ArgoCD to reconcile ` +
-                  `(argoLastSyncedAt=${argoLastSyncedAt ?? "null"}, deployingSince=${env.deployingSince ?? "null"})`,
+                  `(argoLastSyncedAt=${argoLastSyncedAt ?? "null"}, ` +
+                  `deployingSince=${env.deployingSince ?? "null"}, elapsed=${Math.round(elapsedMs / 1000)}s)`,
               );
               continue;
             }

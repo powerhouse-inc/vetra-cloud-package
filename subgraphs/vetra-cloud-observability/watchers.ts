@@ -395,6 +395,7 @@ async function reconcile(
           sync?: { status?: string; revision?: string };
           health?: { status?: string; message?: string };
           operationState?: { finishedAt?: string; message?: string };
+          reconciledAt?: string;
           conditions?: Array<{ type?: string }>;
         };
       }>;
@@ -406,7 +407,18 @@ async function reconcile(
 
       const syncStatus = app.status?.sync?.status ?? "Unknown";
       const healthStatus = app.status?.health?.status ?? "Unknown";
-      const lastSyncedAt = app.status?.operationState?.finishedAt ?? null;
+      // Prefer `reconciledAt` over `operationState.finishedAt`: the latter
+      // only advances when argo performs an actual sync operation, so if
+      // argo reconciles a new commit and finds the manifests already match
+      // the cluster, finishedAt stays stale. reconciledAt updates on every
+      // reconcile (polling or webhook-triggered), which is what the
+      // deployment reconciler really wants to check "has argo seen our
+      // push?". Fall back to finishedAt for apps that haven't reported
+      // reconciledAt yet.
+      const lastSyncedAt =
+        app.status?.reconciledAt ??
+        app.status?.operationState?.finishedAt ??
+        null;
       const message =
         app.status?.health?.message ??
         app.status?.operationState?.message ??
