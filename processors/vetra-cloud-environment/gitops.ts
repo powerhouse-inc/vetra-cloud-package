@@ -209,6 +209,36 @@ function generateCustomDomainIngress(
         cert-manager.io/cluster-issuer: letsencrypt-prod`;
 }
 
+/**
+ * Read the optional `apexService` pointer off state without requiring the
+ * generated type to have caught up. Returns the service type that claims the
+ * apex of the custom domain (Connect served at `admin.vetra.io` itself,
+ * not `connect.admin.vetra.io`), or null if apex routing is not requested.
+ */
+function readApexService(
+  state: VetraCloudEnvironmentState,
+): "CONNECT" | "SWITCHBOARD" | null {
+  const v = (state as unknown as { apexService?: string | null }).apexService;
+  if (v === "CONNECT" || v === "SWITCHBOARD") return v;
+  return null;
+}
+
+/**
+ * Per-service TLS secret name. When a service is routed at the apex of a
+ * custom domain, the cert covers that host; otherwise it covers the
+ * generic `<service>.<subdomain>.vetra.io` host.
+ */
+function tlsSecretName(
+  service: "switchboard" | "connect",
+  subdomain: string,
+  apexDomain: string | null,
+): string {
+  if (apexDomain) {
+    return `${service}-${apexDomain.replace(/\./g, "-")}-tls`;
+  }
+  return `${service}-${subdomain}-vetra-io-tls`;
+}
+
 // ---------------------------------------------------------------------------
 // Values YAML generation
 // ---------------------------------------------------------------------------
@@ -245,12 +275,42 @@ export function generateValuesYaml(
       .join(",") ?? "";
 
   const customDomain = state.customDomain?.enabled ? state.customDomain.domain ?? null : null;
-  const switchboardCustomIngress = customDomain && switchboardEnabled
-    ? generateCustomDomainIngress("switchboard", customDomain)
+  const apexService = readApexService(state);
+  // When a service claims the apex, its primary ingress uses the custom
+  // domain directly (no prefix) and the additionalIngresses block is
+  // skipped for that service — the apex is the only custom host.
+  const switchboardApexDomain =
+    customDomain && apexService === "SWITCHBOARD" && switchboardEnabled
+      ? customDomain
+      : null;
+  const connectApexDomain =
+    customDomain && apexService === "CONNECT" && connectEnabled
+      ? customDomain
+      : null;
+  const switchboardCustomIngress =
+    customDomain && switchboardEnabled && !switchboardApexDomain
+      ? generateCustomDomainIngress("switchboard", customDomain)
+      : "";
+  const connectCustomIngress =
+    customDomain && connectEnabled && !connectApexDomain
+      ? generateCustomDomainIngress("connect", customDomain)
+      : "";
+  const switchboardHostLine = switchboardApexDomain
+    ? `\n    host: ${yamlQuote(switchboardApexDomain)}`
     : "";
-  const connectCustomIngress = customDomain && connectEnabled
-    ? generateCustomDomainIngress("connect", customDomain)
+  const connectHostLine = connectApexDomain
+    ? `\n    host: ${yamlQuote(connectApexDomain)}`
     : "";
+  const switchboardTlsSecret = tlsSecretName(
+    "switchboard",
+    subdomain,
+    switchboardApexDomain,
+  );
+  const connectTlsSecret = tlsSecretName(
+    "connect",
+    subdomain,
+    connectApexDomain,
+  );
 
   const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
@@ -317,10 +377,10 @@ switchboard:
     targetPort: 3000
   ingress:
     enabled: true
-    className: traefik
+    className: traefik${switchboardHostLine}
     tls:
       enabled: true
-      secretName: switchboard-${subdomain}-vetra-io-tls
+      secretName: ${switchboardTlsSecret}
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-prod${switchboardCustomIngress}
   env:
@@ -385,10 +445,10 @@ connect:
     targetPort: 3001
   ingress:
     enabled: true
-    className: traefik
+    className: traefik${connectHostLine}
     tls:
       enabled: true
-      secretName: connect-${subdomain}-vetra-io-tls
+      secretName: ${connectTlsSecret}
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-prod${connectCustomIngress}
   env:
