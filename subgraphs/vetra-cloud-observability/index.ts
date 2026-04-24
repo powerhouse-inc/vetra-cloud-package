@@ -1,3 +1,4 @@
+import { resolve4 } from "node:dns/promises";
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
@@ -18,6 +19,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
+  private challengeReconciler: ReturnType<typeof setInterval> | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -86,6 +88,12 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // permission grant. This is what locks down direct getDocument(id) reads
     // for non-owner, non-admin users.
     this.startProtectionReconciler();
+
+    // Start stuck-challenge reconciler: rescues cert-manager Certificates
+    // whose latest HTTP-01 Challenge went invalid due to NXDOMAIN (the
+    // classic "cert-manager raced external-dns on first provision") by
+    // deleting the Certificate once DNS now resolves to us.
+    this.startChallengeReconciler();
   }
 
   async onDisconnect() {
@@ -102,6 +110,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.protectionReconciler) {
       clearInterval(this.protectionReconciler);
       this.protectionReconciler = null;
+    }
+    if (this.challengeReconciler) {
+      clearInterval(this.challengeReconciler);
+      this.challengeReconciler = null;
     }
   }
 
@@ -438,6 +450,202 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         `[${logTag}] Failed to dispatch ${type}: ${String(err)}`,
       );
     }
+  }
+
+  /**
+   * Rescues cert-manager certs whose HTTP-01 Challenge lost the first-provision
+   * race against external-dns. The flow is:
+   *
+   *   1. list every Challenge cluster-wide whose `status.state == "invalid"`
+   *      AND whose reason mentions NXDOMAIN (the specific race we solve here,
+   *      not e.g. webhook failures or network errors)
+   *   2. for each, resolve4 the challenge's dnsName; if it now returns one of
+   *      the cluster's LB IPs, DNS has caught up
+   *   3. throttle via the `vetra.io/last-retry` annotation on the owning
+   *      Certificate — skip if we already retried within LAST_RETRY_COOLDOWN
+   *   4. delete the Certificate; cert-manager's Ingress-shim re-creates it
+   *      on the next reconcile with a fresh Order, which now passes the
+   *      HTTP-01 challenge
+   *
+   * With DNS-01 enabled for *.vetra.io this path shouldn't fire for our own
+   * tenants; it exists for external customer domains that stay on HTTP-01.
+   */
+  private static CLUSTER_LB_IPS = new Set<string>([
+    "138.199.129.93",
+    // IPv6 equivalent lives on the same LB; resolve4 won't return it, but
+    // leave it here for future documentation.
+    "2a01:4f8:c01e:796::1",
+  ]);
+  private static LAST_RETRY_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+  private static LAST_RETRY_ANNOTATION = "vetra.io/last-retry";
+
+  private startChallengeReconciler() {
+    const reconcile = async () => {
+      try {
+        const { KubeConfig, CustomObjectsApi } = await import(
+          "@kubernetes/client-node"
+        );
+        const kc = new KubeConfig();
+        kc.loadFromCluster();
+        const customApi = kc.makeApiClient(CustomObjectsApi);
+
+        // List all invalid Challenges cluster-wide.
+        const res = (await customApi.listClusterCustomObject({
+          group: "acme.cert-manager.io",
+          version: "v1",
+          plural: "challenges",
+        })) as {
+          items?: Array<{
+            metadata?: {
+              name?: string;
+              namespace?: string;
+              ownerReferences?: Array<{ kind?: string; name?: string }>;
+            };
+            spec?: { dnsName?: string };
+            status?: { state?: string; reason?: string };
+          }>;
+        };
+
+        const stuck = (res.items ?? []).filter(
+          (c) =>
+            c.status?.state === "invalid" &&
+            (c.status?.reason ?? "").includes("NXDOMAIN"),
+        );
+        if (stuck.length === 0) return;
+
+        for (const ch of stuck) {
+          const ns = ch.metadata?.namespace;
+          const dnsName = ch.spec?.dnsName;
+          const orderOwner = ch.metadata?.ownerReferences?.find(
+            (o) => o.kind === "Order",
+          )?.name;
+          if (!ns || !dnsName) continue;
+
+          // Probe current DNS.
+          const addresses = await resolve4(dnsName).catch(() => [] as string[]);
+          const pointsAtUs = addresses.some((ip) =>
+            VetraCloudObservabilitySubgraph.CLUSTER_LB_IPS.has(ip),
+          );
+          if (!pointsAtUs) {
+            console.info(
+              `[challenge-reconciler] ${ns}/${dnsName}: DNS does not resolve to cluster LB (got ${addresses.join(",") || "none"}), skipping`,
+            );
+            continue;
+          }
+
+          // Walk Order → Certificate owner references (Order's owner is the
+          // Certificate).
+          if (!orderOwner) {
+            console.info(
+              `[challenge-reconciler] ${ns}/${dnsName}: challenge has no Order owner, skipping`,
+            );
+            continue;
+          }
+          const order = (await customApi
+            .getNamespacedCustomObject({
+              group: "acme.cert-manager.io",
+              version: "v1",
+              plural: "orders",
+              namespace: ns,
+              name: orderOwner,
+            })
+            .catch(() => null)) as {
+            metadata?: {
+              ownerReferences?: Array<{ kind?: string; name?: string }>;
+            };
+          } | null;
+          const certName = order?.metadata?.ownerReferences?.find(
+            (o) => o.kind === "Certificate",
+          )?.name;
+          if (!certName) {
+            console.info(
+              `[challenge-reconciler] ${ns}/${dnsName}: Order has no Certificate owner, skipping`,
+            );
+            continue;
+          }
+
+          // Cooldown check — don't hammer the same Certificate.
+          const cert = (await customApi
+            .getNamespacedCustomObject({
+              group: "cert-manager.io",
+              version: "v1",
+              plural: "certificates",
+              namespace: ns,
+              name: certName,
+            })
+            .catch(() => null)) as {
+            metadata?: { annotations?: Record<string, string> };
+          } | null;
+          const lastRetry =
+            cert?.metadata?.annotations?.[
+              VetraCloudObservabilitySubgraph.LAST_RETRY_ANNOTATION
+            ];
+          if (lastRetry) {
+            const elapsed = Date.now() - new Date(lastRetry).getTime();
+            if (
+              elapsed <
+              VetraCloudObservabilitySubgraph.LAST_RETRY_COOLDOWN_MS
+            ) {
+              console.info(
+                `[challenge-reconciler] ${ns}/${certName}: last retry was ${Math.round(elapsed / 1000)}s ago, within cooldown`,
+              );
+              continue;
+            }
+          }
+
+          // Stamp the annotation, then delete. Stamping first ensures the
+          // recreated Certificate (via Ingress-shim) inherits it and the
+          // next run respects the cooldown.
+          console.info(
+            `[challenge-reconciler] ${ns}/${certName}: DNS now resolves (${addresses.join(",")}) for ${dnsName}, deleting Certificate to retry`,
+          );
+          try {
+            await customApi.patchNamespacedCustomObject({
+              group: "cert-manager.io",
+              version: "v1",
+              plural: "certificates",
+              namespace: ns,
+              name: certName,
+              body: {
+                metadata: {
+                  annotations: {
+                    [VetraCloudObservabilitySubgraph.LAST_RETRY_ANNOTATION]:
+                      new Date().toISOString(),
+                  },
+                },
+              },
+            });
+          } catch (err) {
+            console.warn(
+              `[challenge-reconciler] ${ns}/${certName}: annotation patch failed: ${String(err)}`,
+            );
+            // fall through — deletion is still worth attempting
+          }
+          try {
+            await customApi.deleteNamespacedCustomObject({
+              group: "cert-manager.io",
+              version: "v1",
+              plural: "certificates",
+              namespace: ns,
+              name: certName,
+            });
+          } catch (err) {
+            console.warn(
+              `[challenge-reconciler] ${ns}/${certName}: delete failed: ${String(err)}`,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("[challenge-reconciler] error:", err);
+      }
+    };
+
+    // Every 2 minutes + once on startup.
+    this.challengeReconciler = setInterval(
+      () => void reconcile(),
+      2 * 60 * 1000,
+    );
+    void reconcile();
   }
 
 }
