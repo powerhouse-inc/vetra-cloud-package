@@ -286,8 +286,120 @@ export function createResolvers(
           .executeTakeFirst()) as EnvSummaryRow | undefined;
         return refreshed ?? envRow;
       },
+
+      notifyNewImageRelease: async (
+        _parent: unknown,
+        { input }: {
+          input: {
+            tag: string;
+            channel: string;
+            images: string[];
+            secret: string;
+          };
+        },
+      ) => {
+        const expected = process.env.CLOUD_AUTO_UPDATE_SECRET;
+        if (!expected || input.secret !== expected) {
+          throw new Error("UNAUTHORIZED");
+        }
+
+        const tag = input.tag.startsWith("v") ? input.tag : `v${input.tag}`;
+        const targetDomain = resolveChannelDomain(input.channel);
+        if (!targetDomain) {
+          console.info(
+            `[notifyNewImageRelease] no env mapped for channel "${input.channel}", skipping`,
+          );
+          return { updatedEnvironments: [] };
+        }
+
+        // Find live environments matching the target domain. Skip anything
+        // already being torn down — bumping a terminating env is pointless.
+        const rows = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "status", "services"])
+          .where("customDomain", "=", targetDomain)
+          .execute()) as Array<{
+          id: string;
+          name: string | null;
+          status: string | null;
+          services: string | null;
+        }>;
+
+        const IMAGES_TO_SERVICE: Record<string, string> = {
+          connect: "CONNECT",
+          switchboard: "SWITCHBOARD",
+        };
+        const serviceTypes = new Set(
+          input.images
+            .map((img) => IMAGES_TO_SERVICE[img.toLowerCase()])
+            .filter((s): s is string => !!s),
+        );
+        if (serviceTypes.size === 0) {
+          console.info(
+            `[notifyNewImageRelease] no recognised images in [${input.images.join(",")}], skipping`,
+          );
+          return { updatedEnvironments: [] };
+        }
+
+        const updated: string[] = [];
+        for (const env of rows) {
+          if (env.status && RELEASED_STATUSES.has(env.status)) continue;
+
+          let services: Array<{ type: string; enabled: boolean }> = [];
+          try {
+            services = JSON.parse(env.services ?? "[]") as typeof services;
+          } catch {
+            // corrupt row, skip
+            continue;
+          }
+          const enabledMatching = services.filter(
+            (s) => s.enabled && serviceTypes.has(s.type),
+          );
+          if (enabledMatching.length === 0) continue;
+
+          // Bump version on every enabled matching service, then approve.
+          // Processor picks up CHANGES_APPROVED and syncs the new tag to
+          // gitops; argo rolls the deployment on the next tick.
+          try {
+            for (const svc of enabledMatching) {
+              await dispatch(env.id, "SET_SERVICE_VERSION", {
+                type: svc.type,
+                version: tag,
+              });
+            }
+            await dispatch(env.id, "APPROVE_CHANGES", {});
+            updated.push(env.id);
+            console.info(
+              `[notifyNewImageRelease] ${env.name ?? env.id}: bumped [${enabledMatching.map((s) => s.type).join(",")}] → ${tag}`,
+            );
+          } catch (err) {
+            console.warn(
+              `[notifyNewImageRelease] ${env.name ?? env.id}: dispatch failed: ${String(err)}`,
+            );
+          }
+        }
+
+        return { updatedEnvironments: updated };
+      },
     },
   };
+}
+
+/**
+ * Resolve a release channel to the custom domain that identifies the env to
+ * auto-bump. Reads CLOUD_AUTO_UPDATE_CHANNELS (comma-separated pairs like
+ * `dev:admin-dev.vetra.io,staging:admin.vetra.io`) with a sensible default
+ * so the feature works out of the box without additional config.
+ */
+function resolveChannelDomain(channel: string): string | null {
+  const raw =
+    process.env.CLOUD_AUTO_UPDATE_CHANNELS ??
+    "dev:admin-dev.vetra.io,staging:admin.vetra.io";
+  for (const pair of raw.split(",")) {
+    const [ch, domain] = pair.split(":").map((s) => s.trim());
+    if (ch && domain && ch === channel) return domain;
+  }
+  return null;
 }
 
 type EnvSummaryRow = {

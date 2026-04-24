@@ -47,6 +47,36 @@ export const schema: DocumentNode = gql`
       domain: String
       apexService: TenantService
     ): VetraCloudEnvironmentSummary!
+
+    """
+    Receiver for the powerhouse monorepo's docker-publish workflow.
+    When a new connect/switchboard image is published on a release channel
+    (dev, staging, latest), the workflow calls this mutation with the tag
+    and channel; the subgraph maps channel → custom domain and, for each
+    matching live environment, dispatches SET_SERVICE_VERSION on every
+    enabled service named in images, then APPROVE_CHANGES so the
+    processor syncs the new tag to gitops.
+
+    Channel→domain mapping is driven by the CLOUD_AUTO_UPDATE_CHANNELS
+    env var on switchboard (comma-separated channel:domain pairs).
+    Default: dev:admin-dev.vetra.io,staging:admin.vetra.io
+
+    The provided secret is compared against CLOUD_AUTO_UPDATE_SECRET;
+    mismatch returns UNAUTHORIZED.
+    """
+    notifyNewImageRelease(input: NotifyNewImageReleaseInput!): NotifyNewImageReleaseResult!
+  }
+
+  input NotifyNewImageReleaseInput {
+    tag: String!
+    channel: String!
+    images: [String!]!
+    secret: String!
+  }
+
+  type NotifyNewImageReleaseResult {
+    """Lowercased document IDs whose service versions were just bumped."""
+    updatedEnvironments: [String!]!
   }
 
   enum ListScope { MINE, ALL }
