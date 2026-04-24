@@ -1,6 +1,7 @@
 import {
   NotOwnerError,
   SelfClaimRequiredError,
+  ServiceNotEnabledError,
 } from "../../gen/data-management/error.js";
 import {
   assertOwner,
@@ -70,5 +71,19 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
     setDefaultPackageRegistryOperation(state, action) {
       assertOwner(state, action);
       state.defaultPackageRegistry = action.input.defaultPackageRegistry;
+    },
+    setApexServiceOperation(state, action) {
+      assertOwner(state, action);
+      const type = action.input.type ?? null;
+      if (type) {
+        const svc = state.services.find((s) => s.type === type);
+        if (!svc || !svc.enabled) {
+          throw new ServiceNotEnabledError(
+            `${type} is not enabled — enable it before pinning to apex`,
+          );
+        }
+      }
+      state.apexService = type;
+      markPendingIfDeployed(state);
     },
   };

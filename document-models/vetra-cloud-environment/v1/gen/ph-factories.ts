@@ -26,6 +26,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     services: [],
     packages: [],
     status: "DRAFT",
+    apexService: null,
   };
 }
 

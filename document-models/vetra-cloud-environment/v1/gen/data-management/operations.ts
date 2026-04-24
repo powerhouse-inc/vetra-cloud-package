@@ -6,6 +6,7 @@ import type {
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
+  SetApexServiceAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
@@ -38,6 +39,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setDnsRecordsOperation: (
     state: VetraCloudEnvironmentState,
     action: SetDnsRecordsAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setApexServiceOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetApexServiceAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

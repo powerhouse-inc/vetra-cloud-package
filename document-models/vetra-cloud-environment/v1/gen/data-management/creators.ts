@@ -6,6 +6,7 @@ import {
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
+  SetApexServiceInputSchema,
 } from "../schema/zod.js";
 import type {
   SetOwnerInput,
@@ -14,6 +15,7 @@ import type {
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
+  SetApexServiceInput,
 } from "../types.js";
 import type {
   SetOwnerAction,
@@ -22,6 +24,7 @@ import type {
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
+  SetApexServiceAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -77,5 +80,14 @@ export const setDnsRecords = (input: SetDnsRecordsInput) =>
     { ...input },
     undefined,
     SetDnsRecordsInputSchema,
+    "global",
+  );
+
+export const setApexService = (input: SetApexServiceInput) =>
+  createAction<SetApexServiceAction>(
+    "SET_APEX_SERVICE",
+    { ...input },
+    undefined,
+    SetApexServiceInputSchema,
     "global",
   );

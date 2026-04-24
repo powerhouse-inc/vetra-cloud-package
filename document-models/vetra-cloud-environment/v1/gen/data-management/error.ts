@@ -1,4 +1,7 @@
-export type ErrorCode = "NotOwnerError" | "SelfClaimRequiredError";
+export type ErrorCode =
+  | "NotOwnerError"
+  | "SelfClaimRequiredError"
+  | "ServiceNotEnabledError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -18,6 +21,13 @@ export class SelfClaimRequiredError extends Error implements ReducerError {
   }
 }
 
+export class ServiceNotEnabledError extends Error implements ReducerError {
+  errorCode = "ServiceNotEnabledError" as ErrorCode;
+  constructor(message = "ServiceNotEnabledError") {
+    super(message);
+  }
+}
+
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
   SetLabel: { NotOwnerError },
@@ -25,4 +35,5 @@ export const errors = {
   SetCustomDomain: { NotOwnerError },
   SetDefaultPackageRegistry: { NotOwnerError },
   SetDnsRecords: { NotOwnerError },
+  SetApexService: { NotOwnerError, ServiceNotEnabledError },
 };

@@ -6,6 +6,7 @@ import type {
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
+  SetApexServiceInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {
@@ -32,6 +33,10 @@ export type SetDnsRecordsAction = Action & {
   type: "SET_DNS_RECORDS";
   input: SetDnsRecordsInput;
 };
+export type SetApexServiceAction = Action & {
+  type: "SET_APEX_SERVICE";
+  input: SetApexServiceInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -39,4 +44,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetGenericSubdomainAction
   | SetCustomDomainAction
   | SetDefaultPackageRegistryAction
-  | SetDnsRecordsAction;
+  | SetDnsRecordsAction
+  | SetApexServiceAction;

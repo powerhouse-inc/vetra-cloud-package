@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
-            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT"\n}',
+            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null\n}',
         },
       },
       modules: [
@@ -165,6 +165,37 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "NOT_OWNER",
                   description:
                     "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-apex-service",
+              name: "SET_APEX_SERVICE",
+              description:
+                "Pin one enabled service to the apex of the customDomain \u2014 the service is served at customDomain.domain instead of <prefix>.<customDomain>. Pass a null type to clear apex routing.",
+              schema:
+                "input SetApexServiceInput {\n  type: VetraCloudEnvironmentServiceType\n}",
+              template: "",
+              reducer:
+                'const type = action.input.type ?? null;\nif (type) {\n  const svc = state.services.find((s) => s.type === type);\n  if (!svc || !svc.enabled) {\n    throw new ServiceNotEnabledError(type + " is not enabled \u2014 enable it before pinning to apex");\n  }\n}\nstate.apexService = type;\nif (state.status === "READY" || state.status === "DEPLOYING") {\n  state.status = "CHANGES_PENDING";\n} else if (state.status !== "DRAFT") {\n  state.status = "CHANGES_PENDING";\n}',
+              errors: [
+                {
+                  id: "err-not-owner-115",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
+                  template: "",
+                },
+                {
+                  id: "err-service-not-enabled",
+                  name: "ServiceNotEnabledError",
+                  code: "SERVICE_NOT_ENABLED",
+                  description:
+                    "Cannot pin a disabled service to the apex \u2014 enable the service first",
                   template: "",
                 },
               ],

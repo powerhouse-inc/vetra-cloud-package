@@ -16,6 +16,7 @@ import type {
   ReportDeploymentFailedInput,
   ReportDeploymentSucceededInput,
   ServiceStatus,
+  SetApexServiceInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -196,6 +197,14 @@ export function ReportDeploymentSucceededInputSchema(): z.ZodObject<
   });
 }
 
+export function SetApexServiceInputSchema(): z.ZodObject<
+  Properties<SetApexServiceInput>
+> {
+  return z.object({
+    type: VetraCloudEnvironmentServiceTypeSchema.nullish(),
+  });
+}
+
 export function SetCustomDomainInputSchema(): z.ZodObject<
   Properties<SetCustomDomainInput>
 > {
@@ -325,6 +334,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
+    apexService: VetraCloudEnvironmentServiceTypeSchema.nullish(),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     genericBaseDomain: z.string().nullish(),

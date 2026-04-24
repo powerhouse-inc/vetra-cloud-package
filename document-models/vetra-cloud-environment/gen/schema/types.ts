@@ -131,6 +131,10 @@ export type ServiceStatus =
   | "PROVISIONING"
   | "SUSPENDED";
 
+export type SetApexServiceInput = {
+  type?: InputMaybe<VetraCloudEnvironmentServiceType>;
+};
+
 export type SetCustomDomainInput = {
   domain?: InputMaybe<Scalars["String"]["input"]>;
   enabled: Scalars["Boolean"]["input"];
@@ -204,6 +208,7 @@ export type VetraCloudEnvironmentServiceType =
   | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
+  apexService: Maybe<VetraCloudEnvironmentServiceType>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;

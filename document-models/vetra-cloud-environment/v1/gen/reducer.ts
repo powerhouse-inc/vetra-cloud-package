@@ -16,6 +16,7 @@ import {
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
+  SetApexServiceInputSchema,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
   ToggleServiceInputSchema,
@@ -110,6 +111,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetDnsRecordsInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setDnsRecordsOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_APEX_SERVICE": {
+      SetApexServiceInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setApexServiceOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

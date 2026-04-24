@@ -10,6 +10,8 @@ import {
   setDnsRecords,
   setDefaultPackageRegistry,
   setOwner,
+  setApexService,
+  enableService,
 } from "document-models/vetra-cloud-environment/v1";
 
 const ALICE = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -425,6 +427,53 @@ describe("DataManagementOperations", () => {
       });
       expect(document.state.global.label).toBe("system-touch");
       expect(document.state.global.owner).toBeNull();
+    });
+  });
+
+  describe("setApexService", () => {
+    /** Build a doc that has Alice as owner and CONNECT enabled. */
+    const initedWithConnect = () => {
+      let doc = utils.createDocument();
+      doc = reducer(doc, { ...setOwner({ address: ALICE }), ...userSigner(ALICE) });
+      doc = reducer(doc, {
+        ...enableService({ type: "CONNECT", prefix: "connect" }),
+        ...userSigner(ALICE),
+      });
+      return doc;
+    };
+
+    it("sets apexService when the targeted service is enabled", () => {
+      let doc = initedWithConnect();
+      doc = reducer(doc, {
+        ...setApexService({ type: "CONNECT" }),
+        ...userSigner(ALICE),
+      });
+      expect(doc.state.global.apexService).toBe("CONNECT");
+    });
+
+    it("clears apexService when type is null", () => {
+      let doc = initedWithConnect();
+      doc = reducer(doc, {
+        ...setApexService({ type: "CONNECT" }),
+        ...userSigner(ALICE),
+      });
+      doc = reducer(doc, {
+        ...setApexService({ type: null }),
+        ...userSigner(ALICE),
+      });
+      expect(doc.state.global.apexService).toBeNull();
+    });
+
+    it("rejects pinning a service that is not enabled", () => {
+      let doc = utils.createDocument();
+      doc = reducer(doc, { ...setOwner({ address: ALICE }), ...userSigner(ALICE) });
+      doc = reducer(doc, {
+        ...setApexService({ type: "SWITCHBOARD" }),
+        ...userSigner(ALICE),
+      });
+      const op = doc.operations.global[doc.operations.global.length - 1];
+      expect(op.error).toBeDefined();
+      expect(doc.state.global.apexService).toBeNull();
     });
   });
 });
