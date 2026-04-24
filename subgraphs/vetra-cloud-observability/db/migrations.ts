@@ -43,9 +43,42 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("environment_events_pkey", ["id"])
     .ifNotExists()
     .execute();
+
+  // Latest release per (channel, image). Upserted by notifyNewImageRelease.
+  await db.schema
+    .createTable("release_index")
+    .addColumn("id", "varchar(128)")
+    .addColumn("channel", "varchar(32)")
+    .addColumn("image", "varchar(64)")
+    .addColumn("tag", "varchar(128)")
+    .addColumn("publishedAt", "varchar(64)")
+    .addColumn("releaseUrl", "text")
+    .addPrimaryKeyConstraint("release_index_pkey", ["id"])
+    .ifNotExists()
+    .execute();
+
+  // Append-only history: one row per SET_SERVICE_VERSION dispatch that this
+  // subgraph triggers (auto, manual update-now, rollback).
+  await db.schema
+    .createTable("release_history")
+    .addColumn("id", "varchar(255)")
+    .addColumn("documentId", "varchar(255)")
+    .addColumn("tenantId", "varchar(255)")
+    .addColumn("service", "varchar(32)")
+    .addColumn("fromTag", "varchar(128)")
+    .addColumn("toTag", "varchar(128)")
+    .addColumn("trigger", "varchar(32)")
+    .addColumn("channel", "varchar(32)")
+    .addColumn("at", "varchar(64)")
+    .addColumn("releaseUrl", "text")
+    .addPrimaryKeyConstraint("release_history_pkey", ["id"])
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("release_history").execute();
+  await db.schema.dropTable("release_index").execute();
   await db.schema.dropTable("environment_events").execute();
   await db.schema.dropTable("environment_pods").execute();
   await db.schema.dropTable("environment_status").execute();

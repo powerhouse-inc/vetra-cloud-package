@@ -7,6 +7,7 @@ import {
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
   SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
 } from "../schema/zod.js";
 import type {
   SetOwnerInput,
@@ -16,6 +17,7 @@ import type {
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
   SetApexServiceInput,
+  SetAutoUpdateChannelInput,
 } from "../types.js";
 import type {
   SetOwnerAction,
@@ -25,6 +27,7 @@ import type {
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
   SetApexServiceAction,
+  SetAutoUpdateChannelAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -89,5 +92,14 @@ export const setApexService = (input: SetApexServiceInput) =>
     { ...input },
     undefined,
     SetApexServiceInputSchema,
+    "global",
+  );
+
+export const setAutoUpdateChannel = (input: SetAutoUpdateChannelInput) =>
+  createAction<SetAutoUpdateChannelAction>(
+    "SET_AUTO_UPDATE_CHANNEL",
+    { ...input },
+    undefined,
+    SetAutoUpdateChannelInputSchema,
     "global",
   );

@@ -30,6 +30,13 @@ type VetraCloudEnvironmentState {
   packages: [VetraCloudPackage!]!
   status: VetraCloudEnvironmentStatus!
   apexService: VetraCloudEnvironmentServiceType
+  autoUpdateChannel: AutoUpdateChannel
+}
+
+enum AutoUpdateChannel {
+  DEV
+  STAGING
+  LATEST
 }
 
 type VetraCustomDomain {
@@ -121,6 +128,10 @@ input DnsRecordInput {
 
 input SetApexServiceInput {
   type: VetraCloudEnvironmentServiceType
+}
+
+input SetAutoUpdateChannelInput {
+  channel: AutoUpdateChannel
 }
 
 # services

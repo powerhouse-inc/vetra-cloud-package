@@ -31,6 +31,24 @@ const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 /** Service types recognised by the doc-model enum. */
 const TENANT_SERVICES = new Set(["CONNECT", "SWITCHBOARD"]);
 
+/** image name ↔ doc-model service type. */
+const IMAGES_TO_SERVICE: Record<string, string> = {
+  connect: "CONNECT",
+  switchboard: "SWITCHBOARD",
+};
+const SERVICE_TO_IMAGE: Record<string, string> = {
+  CONNECT: "connect",
+  SWITCHBOARD: "switchboard",
+};
+
+/** GitHub repo where releases live — used to construct release URLs. */
+const RELEASES_REPO =
+  process.env.CLOUD_AUTO_UPDATE_RELEASES_REPO ?? "powerhouse-inc/powerhouse";
+
+function releaseUrlFor(tag: string): string {
+  return `https://github.com/${RELEASES_REPO}/releases/tag/${tag}`;
+}
+
 export function createResolvers(
   db: Kysely<ObservabilityDB>,
   config: ResolverConfig,
@@ -193,6 +211,44 @@ export function createResolvers(
         const isAdmin = address ? (ctx.isAdmin?.(address) ?? false) : false;
         return { address, isAdmin };
       },
+
+      latestRelease: async (
+        _parent: unknown,
+        { channel, image }: { channel: string; image: string },
+      ) => {
+        const row = await db
+          .selectFrom("release_index")
+          .select(["channel", "image", "tag", "publishedAt", "releaseUrl"])
+          .where("channel", "=", channel)
+          .where("image", "=", image)
+          .executeTakeFirst();
+        return row ?? null;
+      },
+
+      environmentReleaseHistory: async (
+        _parent: unknown,
+        { documentId, limit }: { documentId: string; limit?: number | null },
+      ) => {
+        const capped = Math.min(limit ?? 20, 100);
+        const rows = await db
+          .selectFrom("release_history")
+          .select([
+            "documentId",
+            "tenantId",
+            "service",
+            "fromTag",
+            "toTag",
+            "trigger",
+            "channel",
+            "at",
+            "releaseUrl",
+          ])
+          .where("documentId", "=", documentId)
+          .orderBy("at", "desc")
+          .limit(capped)
+          .execute();
+        return rows;
+      },
     },
 
     Mutation: {
@@ -304,31 +360,32 @@ export function createResolvers(
         }
 
         const tag = input.tag.startsWith("v") ? input.tag : `v${input.tag}`;
-        const targetDomain = resolveChannelDomain(input.channel);
-        if (!targetDomain) {
-          console.info(
-            `[notifyNewImageRelease] no env mapped for channel "${input.channel}", skipping`,
-          );
-          return { updatedEnvironments: [] };
+        const channel = input.channel.toUpperCase();
+        const releaseUrl = releaseUrlFor(tag);
+
+        // Upsert release_index for every image we were told about, so the
+        // UI can show "latest on channel X" even before any env subscribes.
+        const publishedAt = new Date().toISOString();
+        for (const img of input.images) {
+          const service = IMAGES_TO_SERVICE[img.toLowerCase()];
+          if (!service) continue;
+          const id = `${channel}/${service}`;
+          await db
+            .insertInto("release_index")
+            .values({
+              id,
+              channel,
+              image: service,
+              tag,
+              publishedAt,
+              releaseUrl,
+            })
+            .onConflict((oc) =>
+              oc.column("id").doUpdateSet({ tag, publishedAt, releaseUrl }),
+            )
+            .execute();
         }
 
-        // Find live environments matching the target domain. Skip anything
-        // already being torn down — bumping a terminating env is pointless.
-        const rows = (await envDb
-          .selectFrom("environments")
-          .select(["id", "name", "status", "services"])
-          .where("customDomain", "=", targetDomain)
-          .execute()) as Array<{
-          id: string;
-          name: string | null;
-          status: string | null;
-          services: string | null;
-        }>;
-
-        const IMAGES_TO_SERVICE: Record<string, string> = {
-          connect: "CONNECT",
-          switchboard: "SWITCHBOARD",
-        };
         const serviceTypes = new Set(
           input.images
             .map((img) => IMAGES_TO_SERVICE[img.toLowerCase()])
@@ -336,53 +393,306 @@ export function createResolvers(
         );
         if (serviceTypes.size === 0) {
           console.info(
-            `[notifyNewImageRelease] no recognised images in [${input.images.join(",")}], skipping`,
+            `[notifyNewImageRelease] no recognised images in [${input.images.join(",")}], skipping dispatch`,
           );
           return { updatedEnvironments: [] };
         }
 
+        // Find live environments matching this channel. Two matching rules:
+        //   (a) opt-in via state.autoUpdateChannel = channel
+        //   (b) legacy env-var mapping channel → customDomain
+        // Union the results so admin-dev keeps working while users can also
+        // subscribe their own envs through the UI.
+        const targetDomain = resolveChannelDomain(channel);
+        const matched = new Map<string, EnvForBump>();
+        const byChannel = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "tenantId", "status", "services"])
+          .where("autoUpdateChannel", "=", channel)
+          .execute()) as EnvForBump[];
+        for (const r of byChannel) matched.set(r.id, r);
+        if (targetDomain) {
+          const byDomain = (await envDb
+            .selectFrom("environments")
+            .select(["id", "name", "tenantId", "status", "services"])
+            .where("customDomain", "=", targetDomain)
+            .execute()) as EnvForBump[];
+          for (const r of byDomain) if (!matched.has(r.id)) matched.set(r.id, r);
+        }
+
         const updated: string[] = [];
-        for (const env of rows) {
-          if (env.status && RELEASED_STATUSES.has(env.status)) continue;
-
-          let services: Array<{ type: string; enabled: boolean }> = [];
-          try {
-            services = JSON.parse(env.services ?? "[]") as typeof services;
-          } catch {
-            // corrupt row, skip
-            continue;
-          }
-          const enabledMatching = services.filter(
-            (s) => s.enabled && serviceTypes.has(s.type),
+        for (const env of matched.values()) {
+          const bumped = await bumpEnvToTag(
+            { db, envDb, dispatch },
+            env,
+            serviceTypes,
+            tag,
+            "AUTO",
+            channel,
+            releaseUrl,
           );
-          if (enabledMatching.length === 0) continue;
+          if (bumped) updated.push(env.id);
+        }
+        return { updatedEnvironments: updated };
+      },
 
-          // Bump version on every enabled matching service, then approve.
-          // Processor picks up CHANGES_APPROVED and syncs the new tag to
-          // gitops; argo rolls the deployment on the next tick.
+      updateEnvironmentToLatest: async (
+        _parent: unknown,
+        { documentId }: { documentId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const callerAddress = ctx.user?.address?.toLowerCase();
+        if (!callerAddress) throw new Error("UNAUTHENTICATED");
+        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+
+        const envRow = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "tenantId", "status", "services", "owner", "autoUpdateChannel"])
+          .where("id", "=", documentId)
+          .executeTakeFirst()) as
+          | (EnvForBump & { owner: string | null; autoUpdateChannel: string | null })
+          | undefined;
+        if (!envRow) throw new Error("ENV_NOT_FOUND");
+
+        const isOwner =
+          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
+        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+
+        const channel = envRow.autoUpdateChannel;
+        if (!channel) throw new Error("NO_CHANNEL");
+
+        // Look up the latest known tag per enabled service on this channel.
+        const services = parseEnvServices(envRow.services);
+        const enabledServices = new Set(
+          services.filter((s) => s.enabled).map((s) => s.type),
+        );
+        if (enabledServices.size === 0) {
+          return { updatedEnvironments: [] };
+        }
+
+        const latestRows = await db
+          .selectFrom("release_index")
+          .select(["image", "tag", "releaseUrl"])
+          .where("channel", "=", channel)
+          .where("image", "in", Array.from(enabledServices))
+          .execute();
+        if (latestRows.length === 0) throw new Error("NO_RELEASE_KNOWN");
+
+        // Group by tag: all services on the same channel usually share the
+        // same tag (they're released together from the monorepo), but
+        // handle the case where they diverge by dispatching per-service.
+        const bumpedAny: string[] = [];
+        for (const row of latestRows) {
+          const dispatched = await bumpEnvToTag(
+            { db, envDb, dispatch },
+            envRow,
+            new Set([row.image]),
+            row.tag,
+            "MANUAL",
+            channel,
+            row.releaseUrl ?? releaseUrlFor(row.tag),
+          );
+          if (dispatched && !bumpedAny.includes(envRow.id)) bumpedAny.push(envRow.id);
+        }
+
+        if (bumpedAny.length > 0) {
           try {
-            for (const svc of enabledMatching) {
-              await dispatch(env.id, "SET_SERVICE_VERSION", {
-                type: svc.type,
-                version: tag,
-              });
-            }
-            await dispatch(env.id, "APPROVE_CHANGES", {});
-            updated.push(env.id);
-            console.info(
-              `[notifyNewImageRelease] ${env.name ?? env.id}: bumped [${enabledMatching.map((s) => s.type).join(",")}] → ${tag}`,
-            );
+            await dispatch(documentId, "APPROVE_CHANGES", {});
           } catch (err) {
             console.warn(
-              `[notifyNewImageRelease] ${env.name ?? env.id}: dispatch failed: ${String(err)}`,
+              `[updateEnvironmentToLatest] approve failed for ${documentId}: ${String(err)}`,
             );
           }
         }
+        return { updatedEnvironments: bumpedAny };
+      },
 
-        return { updatedEnvironments: updated };
+      rollbackEnvironmentRelease: async (
+        _parent: unknown,
+        { documentId }: { documentId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const callerAddress = ctx.user?.address?.toLowerCase();
+        if (!callerAddress) throw new Error("UNAUTHENTICATED");
+        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+
+        const envRow = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "tenantId", "status", "services", "owner"])
+          .where("id", "=", documentId)
+          .executeTakeFirst()) as
+          | (EnvForBump & { owner: string | null })
+          | undefined;
+        if (!envRow) throw new Error("ENV_NOT_FOUND");
+        const isOwner =
+          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
+        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+
+        const services = parseEnvServices(envRow.services);
+        const enabledServices = services.filter((s) => s.enabled);
+        if (enabledServices.length === 0) return { updatedEnvironments: [] };
+
+        // For each enabled service, find the most recent history entry with
+        // a non-null fromTag — that fromTag is the previous version.
+        const rolled: string[] = [];
+        let anyService = false;
+        for (const svc of enabledServices) {
+          const prev = await db
+            .selectFrom("release_history")
+            .select(["fromTag", "releaseUrl"])
+            .where("documentId", "=", documentId)
+            .where("service", "=", svc.type)
+            .where("fromTag", "is not", null)
+            .orderBy("at", "desc")
+            .limit(1)
+            .executeTakeFirst();
+          if (!prev?.fromTag) continue;
+          anyService = true;
+          const dispatched = await bumpEnvToTag(
+            { db, envDb, dispatch },
+            envRow,
+            new Set([svc.type]),
+            prev.fromTag,
+            "ROLLBACK",
+            null,
+            prev.releaseUrl ?? releaseUrlFor(prev.fromTag),
+          );
+          if (dispatched && !rolled.includes(envRow.id)) rolled.push(envRow.id);
+        }
+        if (!anyService) throw new Error("NO_PRIOR_RELEASE");
+
+        if (rolled.length > 0) {
+          try {
+            await dispatch(documentId, "APPROVE_CHANGES", {});
+          } catch (err) {
+            console.warn(
+              `[rollbackEnvironmentRelease] approve failed for ${documentId}: ${String(err)}`,
+            );
+          }
+        }
+        return { updatedEnvironments: rolled };
       },
     },
+
+    ReleaseHistoryEntry: {},
+    ReleaseIndexEntry: {},
   };
+}
+
+/** Shape of environments-table row the bump helpers read. */
+type EnvForBump = {
+  id: string;
+  name: string | null;
+  tenantId: string | null;
+  status: string | null;
+  services: string | null;
+};
+
+function parseEnvServices(
+  raw: string | null,
+): Array<{ type: string; enabled: boolean; version: string | null }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{
+      type?: string;
+      enabled?: boolean;
+      version?: string | null;
+    }>;
+    return parsed.map((s) => ({
+      type: String(s.type ?? ""),
+      enabled: !!s.enabled,
+      version: s.version ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Dispatch SET_SERVICE_VERSION for each enabled service in serviceTypes, then
+ * record one release_history row per dispatch. Does NOT call APPROVE_CHANGES
+ * — the caller decides when to approve (the bulk `notifyNewImageRelease`
+ * approves after all services; update-now/rollback approve once too).
+ *
+ * Returns true iff at least one dispatch was issued.
+ */
+async function bumpEnvToTag(
+  ctx: {
+    db: Kysely<ObservabilityDB>;
+    envDb: Kysely<any>;
+    dispatch: (
+      documentId: string,
+      type: string,
+      input: Record<string, unknown>,
+    ) => Promise<void>;
+  },
+  env: EnvForBump,
+  serviceTypes: Set<string>,
+  tag: string,
+  trigger: "AUTO" | "MANUAL" | "ROLLBACK",
+  channel: string | null,
+  releaseUrl: string,
+): Promise<boolean> {
+  if (env.status && RELEASED_STATUSES.has(env.status)) return false;
+
+  const services = parseEnvServices(env.services);
+  const enabledMatching = services.filter(
+    (s) => s.enabled && serviceTypes.has(s.type),
+  );
+  if (enabledMatching.length === 0) return false;
+
+  // Skip services already on the target tag — no-op dispatch wastes
+  // processor cycles and pollutes release_history.
+  const needsBump = enabledMatching.filter((s) => s.version !== tag);
+  if (needsBump.length === 0) return false;
+
+  let dispatched = false;
+  for (const svc of needsBump) {
+    try {
+      await ctx.dispatch(env.id, "SET_SERVICE_VERSION", {
+        type: svc.type,
+        version: tag,
+      });
+      dispatched = true;
+      const at = new Date().toISOString();
+      const id = `${env.id}/${svc.type}/${at}`;
+      await ctx.db
+        .insertInto("release_history")
+        .values({
+          id,
+          documentId: env.id,
+          tenantId: env.tenantId,
+          service: svc.type,
+          fromTag: svc.version,
+          toTag: tag,
+          trigger,
+          channel,
+          at,
+          releaseUrl,
+        })
+        .execute();
+    } catch (err) {
+      console.warn(
+        `[bumpEnvToTag] ${env.name ?? env.id}: ${svc.type} → ${tag} failed: ${String(err)}`,
+      );
+    }
+  }
+
+  // `notifyNewImageRelease` approves after the whole batch for efficiency;
+  // the two explicit mutations approve once in their own handler.
+  if (dispatched && trigger === "AUTO") {
+    try {
+      await ctx.dispatch(env.id, "APPROVE_CHANGES", {});
+      console.info(
+        `[bumpEnvToTag] ${env.name ?? env.id}: bumped [${needsBump.map((s) => s.type).join(",")}] → ${tag}`,
+      );
+    } catch (err) {
+      console.warn(
+        `[bumpEnvToTag] ${env.name ?? env.id}: approve failed: ${String(err)}`,
+      );
+    }
+  }
+
+  return dispatched;
 }
 
 /**

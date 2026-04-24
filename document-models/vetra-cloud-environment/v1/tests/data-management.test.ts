@@ -12,7 +12,12 @@ import {
   setOwner,
   setApexService,
   enableService,
+  setAutoUpdateChannel,
+  SetOwnerInputSchema,
+  SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
+import { generateMock } from "@powerhousedao/codegen";
 
 const ALICE = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ALICE_LOWER = ALICE.toLowerCase();
@@ -434,7 +439,10 @@ describe("DataManagementOperations", () => {
     /** Build a doc that has Alice as owner and CONNECT enabled. */
     const initedWithConnect = () => {
       let doc = utils.createDocument();
-      doc = reducer(doc, { ...setOwner({ address: ALICE }), ...userSigner(ALICE) });
+      doc = reducer(doc, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
       doc = reducer(doc, {
         ...enableService({ type: "CONNECT", prefix: "connect" }),
         ...userSigner(ALICE),
@@ -466,7 +474,10 @@ describe("DataManagementOperations", () => {
 
     it("rejects pinning a service that is not enabled", () => {
       let doc = utils.createDocument();
-      doc = reducer(doc, { ...setOwner({ address: ALICE }), ...userSigner(ALICE) });
+      doc = reducer(doc, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
       doc = reducer(doc, {
         ...setApexService({ type: "SWITCHBOARD" }),
         ...userSigner(ALICE),
@@ -475,5 +486,54 @@ describe("DataManagementOperations", () => {
       expect(op.error).toBeDefined();
       expect(doc.state.global.apexService).toBeNull();
     });
+  });
+
+  it("should handle setOwner operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetOwnerInputSchema());
+
+    const updatedDocument = reducer(document, setOwner(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe("SET_OWNER");
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setApexService operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetApexServiceInputSchema());
+
+    const updatedDocument = reducer(document, setApexService(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_APEX_SERVICE",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setAutoUpdateChannel operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetAutoUpdateChannelInputSchema());
+
+    const updatedDocument = reducer(document, setAutoUpdateChannel(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_AUTO_UPDATE_CHANNEL",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
   });
 });

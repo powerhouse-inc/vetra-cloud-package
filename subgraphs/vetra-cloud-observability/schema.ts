@@ -27,6 +27,43 @@ export const schema: DocumentNode = gql`
     show the admin-only "All" toggle.
     """
     viewer: Viewer!
+
+    """
+    Latest known release tag for an (channel, image) pair. Returns null
+    if nothing has been recorded yet for that combination (no releases
+    since the subgraph started listening).
+    """
+    latestRelease(channel: AutoUpdateChannel!, image: TenantService!): ReleaseIndexEntry
+
+    """
+    Append-only release history for one environment: every
+    SET_SERVICE_VERSION dispatched by the subgraph itself (automatic,
+    manual, or rollback). Newest first, capped by limit (default 20).
+    """
+    environmentReleaseHistory(documentId: String!, limit: Int): [ReleaseHistoryEntry!]!
+  }
+
+  enum AutoUpdateChannel { DEV, STAGING, LATEST }
+  enum ReleaseTrigger { AUTO, MANUAL, ROLLBACK }
+
+  type ReleaseIndexEntry {
+    channel: AutoUpdateChannel!
+    image: TenantService!
+    tag: String!
+    publishedAt: String!
+    releaseUrl: String
+  }
+
+  type ReleaseHistoryEntry {
+    documentId: String!
+    tenantId: String
+    service: TenantService!
+    fromTag: String
+    toTag: String!
+    trigger: ReleaseTrigger!
+    channel: AutoUpdateChannel
+    at: String!
+    releaseUrl: String
   }
 
   type Mutation {
@@ -65,6 +102,23 @@ export const schema: DocumentNode = gql`
     mismatch returns UNAUTHORIZED.
     """
     notifyNewImageRelease(input: NotifyNewImageReleaseInput!): NotifyNewImageReleaseResult!
+
+    """
+    Immediately bump one environment's enabled services to the latest
+    known tag on its subscribed channel. Owner-only. Raises
+    NO_CHANNEL if the env has no autoUpdateChannel set, and
+    NO_RELEASE_KNOWN if the subgraph has never seen a release on that
+    channel for any of the enabled services. Returns the same shape as
+    notifyNewImageRelease for a single env.
+    """
+    updateEnvironmentToLatest(documentId: String!): NotifyNewImageReleaseResult!
+
+    """
+    Revert an environment's enabled services to the previous tag
+    recorded in release_history. Owner-only. Raises NO_PRIOR_RELEASE if
+    there's no history to roll back to for any enabled service.
+    """
+    rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
   }
 
   input NotifyNewImageReleaseInput {

@@ -16,6 +16,14 @@ export interface Environments {
    * Used by `myEnvironments` resolver to scope listings per-user.
    */
   owner: string | null;
+  /**
+   * Release channel the environment is subscribed to for auto-updates
+   * (DEV, STAGING, LATEST, or null for off). Mirrors doc state's
+   * `autoUpdateChannel`. The observability subgraph's
+   * `notifyNewImageRelease` mutation reads this column to find the envs
+   * that should receive a new image tag when a release lands.
+   */
+  autoUpdateChannel: string | null;
 }
 
 export interface DB {

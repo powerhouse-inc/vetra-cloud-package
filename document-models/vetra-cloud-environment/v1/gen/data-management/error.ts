@@ -36,4 +36,5 @@ export const errors = {
   SetDefaultPackageRegistry: { NotOwnerError },
   SetDnsRecords: { NotOwnerError },
   SetApexService: { NotOwnerError, ServiceNotEnabledError },
+  SetAutoUpdateChannel: { NotOwnerError },
 };

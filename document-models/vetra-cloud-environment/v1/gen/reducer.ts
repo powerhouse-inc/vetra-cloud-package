@@ -17,6 +17,7 @@ import {
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
   SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
   EnableServiceInputSchema,
   DisableServiceInputSchema,
   ToggleServiceInputSchema,
@@ -123,6 +124,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetApexServiceInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setApexServiceOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_AUTO_UPDATE_CHANNEL": {
+      SetAutoUpdateChannelInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setAutoUpdateChannelOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

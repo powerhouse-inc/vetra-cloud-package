@@ -7,6 +7,7 @@ import type {
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
   SetApexServiceAction,
+  SetAutoUpdateChannelAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
@@ -44,6 +45,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setApexServiceOperation: (
     state: VetraCloudEnvironmentState,
     action: SetApexServiceAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setAutoUpdateChannelOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetAutoUpdateChannelAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

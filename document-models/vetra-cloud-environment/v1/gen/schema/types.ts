@@ -73,6 +73,8 @@ export type ArchiveInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
 
+export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
+
 export type DisableServiceInput = {
   type: VetraCloudEnvironmentServiceType;
 };
@@ -133,6 +135,10 @@ export type ServiceStatus =
 
 export type SetApexServiceInput = {
   type?: InputMaybe<VetraCloudEnvironmentServiceType>;
+};
+
+export type SetAutoUpdateChannelInput = {
+  channel?: InputMaybe<AutoUpdateChannel>;
 };
 
 export type SetCustomDomainInput = {
@@ -209,6 +215,7 @@ export type VetraCloudEnvironmentServiceType =
 
 export type VetraCloudEnvironmentState = {
   apexService: Maybe<VetraCloudEnvironmentServiceType>;
+  autoUpdateChannel: Maybe<AutoUpdateChannel>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;

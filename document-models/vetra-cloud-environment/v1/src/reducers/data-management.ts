@@ -86,4 +86,10 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       state.apexService = type;
       markPendingIfDeployed(state);
     },
+    setAutoUpdateChannelOperation(state, action) {
+      assertOwner(state, action);
+      state.autoUpdateChannel = action.input.channel ?? null;
+      // Channel change doesn't affect rendered chart values, so no
+      // markPendingIfDeployed — no gitops sync is required.
+    },
   };

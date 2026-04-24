@@ -4,6 +4,7 @@ import type {
   AddPackageInput,
   ApproveChangesInput,
   ArchiveInput,
+  AutoUpdateChannel,
   DisableServiceInput,
   DnsRecord,
   DnsRecordInput,
@@ -17,6 +18,7 @@ import type {
   ReportDeploymentSucceededInput,
   ServiceStatus,
   SetApexServiceInput,
+  SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -50,6 +52,8 @@ export const isDefinedNonNullAny = (v: any): v is definedNonNullAny =>
 export const definedNonNullAnySchema = z
   .any()
   .refine((v) => isDefinedNonNullAny(v));
+
+export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
 
 export const ServiceStatusSchema = z.enum([
   "ACTIVE",
@@ -205,6 +209,14 @@ export function SetApexServiceInputSchema(): z.ZodObject<
   });
 }
 
+export function SetAutoUpdateChannelInputSchema(): z.ZodObject<
+  Properties<SetAutoUpdateChannelInput>
+> {
+  return z.object({
+    channel: AutoUpdateChannelSchema.nullish(),
+  });
+}
+
 export function SetCustomDomainInputSchema(): z.ZodObject<
   Properties<SetCustomDomainInput>
 > {
@@ -335,6 +347,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
     apexService: VetraCloudEnvironmentServiceTypeSchema.nullish(),
+    autoUpdateChannel: AutoUpdateChannelSchema.nullish(),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     genericBaseDomain: z.string().nullish(),

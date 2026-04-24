@@ -72,6 +72,18 @@ export async function up(db: Kysely<any>): Promise<void> {
   } catch {
     // Column already exists — expected for fresh installs
   }
+
+  // Add autoUpdateChannel column — mirrors state's `autoUpdateChannel`.
+  // Read by the observability subgraph's notifyNewImageRelease mutation
+  // to find envs subscribed to a given release channel.
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("autoUpdateChannel", "varchar(32)")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
