@@ -499,6 +499,9 @@ serviceMonitor:
 glitchtip:
   enabled: false
   environment: ${tenantId}
+sentry:
+  enabled: true
+  environment: ${tenantId}
 networkPolicy:
   enabled: false
 `;
