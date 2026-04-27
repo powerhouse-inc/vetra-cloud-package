@@ -216,9 +216,9 @@ function generateCustomDomainIngress(
  */
 function readApexService(
   state: VetraCloudEnvironmentState,
-): "CONNECT" | "SWITCHBOARD" | null {
+): "CONNECT" | "SWITCHBOARD" | "FUSION" | null {
   const v = state.apexService;
-  if (v === "CONNECT" || v === "SWITCHBOARD") return v;
+  if (v === "CONNECT" || v === "SWITCHBOARD" || v === "FUSION") return v;
   return null;
 }
 

@@ -28,8 +28,10 @@ type AuthAwareContext = {
 /** Environments in these statuses have released their custom-domain claim. */
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 
-/** Service types recognised by the doc-model enum. */
-const TENANT_SERVICES = new Set(["CONNECT", "SWITCHBOARD"]);
+/** Service types recognised by the doc-model enum. FUSION is the
+ *  generic-frontend kind — runs an arbitrary container image and can be
+ *  pinned to the apex of a custom domain. */
+const TENANT_SERVICES = new Set(["CONNECT", "SWITCHBOARD", "FUSION"]);
 
 /** image name ↔ doc-model service type. */
 const IMAGES_TO_SERVICE: Record<string, string> = {
