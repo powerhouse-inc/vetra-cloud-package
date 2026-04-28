@@ -335,6 +335,7 @@ async function ensureClintAnnounceTokens(
 
 function generateClintBlock(
   state: VetraCloudEnvironmentState,
+  documentId: string,
   subdomain: string,
   baseDomain: string,
   tokens: Record<string, string>,
@@ -393,6 +394,11 @@ function generateClintBlock(
     lines.push(`      announce:`);
     lines.push(`        enabled: true`);
     lines.push(`        url: ${yamlQuote(CLINT_ANNOUNCE_URL)}`);
+    // The agent posts to `url` with this token in the Authorization
+    // header. documentId + prefix are passed through to the pod env so
+    // the agent can include them in the mutation input (the receiver
+    // looks up the token by (documentId, prefix)).
+    lines.push(`        documentId: ${yamlQuote(documentId)}`);
     // TODO: token should be referenced from a k8s Secret rather than
     // emitted inline. Frank's chart can switch to secretKeyRef once
     // the secret-provisioning path lands.
@@ -491,6 +497,7 @@ export async function generateValuesYaml(
   const clintTokens = await ensureClintAnnounceTokens(db, state, documentId);
   const clintBlock = generateClintBlock(
     state,
+    documentId,
     subdomain,
     state.genericBaseDomain ?? "vetra.io",
     clintTokens,
