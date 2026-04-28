@@ -66,7 +66,6 @@ type VetraCloudServiceClint {
   env: [VetraCloudServiceEnv!]!
   serviceCommand: String
   selectedRessource: VetraCloudRessourceSize
-  enabledEndpoints: [String!]!
 }
 
 type VetraCloudServiceEnv {
@@ -170,7 +169,6 @@ input VetraCloudServiceClintInput {
   env: [VetraCloudServiceEnvInput!]!
   serviceCommand: String
   selectedRessource: VetraCloudRessourceSize
-  enabledEndpoints: [String!]!
 }
 
 input VetraCloudPackageInput {
@@ -194,7 +192,6 @@ input VetraCloudServiceClintConfigInput {
   env: [VetraCloudServiceEnvConfigInput!]!
   serviceCommand: String
   selectedRessource: VetraCloudRessourceSize
-  enabledEndpoints: [String!]!
 }
 
 input VetraCloudPackageConfigInput {

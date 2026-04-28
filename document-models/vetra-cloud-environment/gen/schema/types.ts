@@ -274,7 +274,6 @@ export type VetraCloudRessourceSize =
   | "VETRA_AGENT_XXL";
 
 export type VetraCloudServiceClint = {
-  enabledEndpoints: Array<Scalars["String"]["output"]>;
   env: Array<VetraCloudServiceEnv>;
   package: VetraCloudPackage;
   selectedRessource: Maybe<VetraCloudRessourceSize>;
@@ -282,7 +281,6 @@ export type VetraCloudServiceClint = {
 };
 
 export type VetraCloudServiceClintConfigInput = {
-  enabledEndpoints: Array<Scalars["String"]["input"]>;
   env: Array<VetraCloudServiceEnvConfigInput>;
   package: VetraCloudPackageConfigInput;
   selectedRessource?: InputMaybe<VetraCloudRessourceSize>;
@@ -290,7 +288,6 @@ export type VetraCloudServiceClintConfigInput = {
 };
 
 export type VetraCloudServiceClintInput = {
-  enabledEndpoints: Array<Scalars["String"]["input"]>;
   env: Array<VetraCloudServiceEnvInput>;
   package: VetraCloudPackageInput;
   selectedRessource?: InputMaybe<VetraCloudRessourceSize>;

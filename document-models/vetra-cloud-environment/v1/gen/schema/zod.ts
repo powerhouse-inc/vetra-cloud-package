@@ -431,7 +431,6 @@ export function VetraCloudServiceClintSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudServiceClint").optional(),
-    enabledEndpoints: z.array(z.string()),
     env: z.array(z.lazy(() => VetraCloudServiceEnvSchema())),
     package: z.lazy(() => VetraCloudPackageSchema()),
     selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
@@ -443,7 +442,6 @@ export function VetraCloudServiceClintConfigInputSchema(): z.ZodObject<
   Properties<VetraCloudServiceClintConfigInput>
 > {
   return z.object({
-    enabledEndpoints: z.array(z.string()),
     env: z.array(z.lazy(() => VetraCloudServiceEnvConfigInputSchema())),
     package: z.lazy(() => VetraCloudPackageConfigInputSchema()),
     selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
@@ -455,7 +453,6 @@ export function VetraCloudServiceClintInputSchema(): z.ZodObject<
   Properties<VetraCloudServiceClintInput>
 > {
   return z.object({
-    enabledEndpoints: z.array(z.string()),
     env: z.array(z.lazy(() => VetraCloudServiceEnvInputSchema())),
     package: z.lazy(() => VetraCloudPackageInputSchema()),
     selectedRessource: VetraCloudRessourceSizeSchema.nullish(),

@@ -43,7 +43,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
               env: clintConfig.env ?? [],
               serviceCommand: clintConfig.serviceCommand ?? null,
               selectedRessource: clintConfig.selectedRessource ?? null,
-              enabledEndpoints: clintConfig.enabledEndpoints ?? [],
             }
           : null;
       // CLINT supports multiple entries per env, distinguished by prefix.
@@ -154,7 +153,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         env: config.env ?? [],
         serviceCommand: config.serviceCommand ?? null,
         selectedRessource: config.selectedRessource ?? null,
-        enabledEndpoints: config.enabledEndpoints ?? [],
       };
       state.status = "CHANGES_PENDING";
     },
