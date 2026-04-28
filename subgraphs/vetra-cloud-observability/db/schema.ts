@@ -66,10 +66,43 @@ export interface ReleaseHistory {
   releaseUrl: string | null;
 }
 
+/**
+ * Runtime-announced endpoint, reported by a clint agent via its
+ * SERVICE_ANNOUNCE_URL callback. The agent is the source of truth — we
+ * upsert on each announcement and prune entries the agent stops
+ * reporting (or trust last_seen as a freshness signal).
+ *
+ * The doc model intentionally does NOT mirror this state; runtime data
+ * lives in this subgraph's DB, like pods/events/status.
+ */
+export interface ClintRuntimeEndpoint {
+  /** `${documentId}|${prefix}|${endpointId}` — composite key. */
+  id: string;
+  documentId: string;
+  /** Service prefix, e.g. "rupert". Identifies the agent within the env. */
+  prefix: string;
+  /** Endpoint ID as reported by the agent, e.g. "agent-graphql". */
+  endpointId: string;
+  /** "api-graphql" | "api-mcp" | "website" — see ClintEndpointType. */
+  type: string;
+  /** Port the agent exposes the endpoint on (string for forward-compat). */
+  port: string;
+  /** "enabled" | "disabled" — agent can mark endpoints down without removing. */
+  status: string;
+  /** ISO timestamp of the last announcement that included this endpoint. */
+  lastSeen: string;
+}
+
+// Note: clint_announce_tokens lives in the processor's
+// vetra-cloud-environments namespace, not here. The resolver reads it
+// via the cross-namespace `envDb` reference (same pattern as the
+// `environments` table for the myEnvironments resolver).
+
 export interface ObservabilityDB {
   environment_status: EnvironmentStatus;
   environment_pods: EnvironmentPods;
   environment_events: EnvironmentEvents;
   release_index: ReleaseIndex;
   release_history: ReleaseHistory;
+  clint_runtime_endpoints: ClintRuntimeEndpoint;
 }

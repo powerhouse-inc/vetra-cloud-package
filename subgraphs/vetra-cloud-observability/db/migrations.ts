@@ -74,9 +74,32 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("release_history_pkey", ["id"])
     .ifNotExists()
     .execute();
+
+  // Runtime-announced endpoints from clint agents. Upserted on each
+  // announcement; rows are keyed by (documentId, prefix, endpointId) so a
+  // single env can host N agents (distinguished by prefix), each
+  // exposing M endpoints.
+  await db.schema
+    .createTable("clint_runtime_endpoints")
+    .addColumn("id", "varchar(512)")
+    .addColumn("documentId", "varchar(255)")
+    .addColumn("prefix", "varchar(64)")
+    .addColumn("endpointId", "varchar(128)")
+    .addColumn("type", "varchar(32)")
+    .addColumn("port", "varchar(16)")
+    .addColumn("status", "varchar(32)")
+    .addColumn("lastSeen", "varchar(64)")
+    .addPrimaryKeyConstraint("clint_runtime_endpoints_pkey", ["id"])
+    .ifNotExists()
+    .execute();
+
+  // NOTE: clint_announce_tokens lives in the processor's
+  // vetra-cloud-environments namespace (this subgraph reads it
+  // cross-namespace via envDb, just like it reads `environments`).
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("clint_runtime_endpoints").execute();
   await db.schema.dropTable("release_history").execute();
   await db.schema.dropTable("release_index").execute();
   await db.schema.dropTable("environment_events").execute();

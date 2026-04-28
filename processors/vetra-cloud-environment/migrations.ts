@@ -84,8 +84,25 @@ export async function up(db: Kysely<any>): Promise<void> {
   } catch {
     // Column already exists — expected for fresh installs
   }
+
+  // Bearer tokens for clint agent announcement URLs. Keyed by
+  // (documentId, prefix) so a single env can host N agents, each with
+  // its own token. The observability subgraph reads this table cross-
+  // namespace (the same way it reads `environments` for the
+  // myEnvironments resolver) to validate incoming announcements.
+  await db.schema
+    .createTable("clint_announce_tokens")
+    .addColumn("id", "varchar(320)")
+    .addColumn("documentId", "varchar(255)")
+    .addColumn("prefix", "varchar(64)")
+    .addColumn("token", "varchar(128)")
+    .addColumn("createdAt", "varchar(64)")
+    .addPrimaryKeyConstraint("clint_announce_tokens_pkey", ["id"])
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("clint_announce_tokens").execute();
   await db.schema.dropTable("environments").execute();
 }

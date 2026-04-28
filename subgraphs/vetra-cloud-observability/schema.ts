@@ -41,6 +41,23 @@ export const schema: DocumentNode = gql`
     manual, or rollback). Newest first, capped by limit (default 20).
     """
     environmentReleaseHistory(documentId: String!, limit: Int): [ReleaseHistoryEntry!]!
+
+    """
+    Endpoints currently announced by clint agents in this environment.
+    Sourced from the most recent announcement per (documentId, prefix).
+    Returns an empty list if no agent has announced yet (e.g. CLINT
+    services still PROVISIONING, or the package's manifest has
+    serviceAnnouncement: false).
+    """
+    clintRuntimeEndpointsByEnv(
+      documentId: String!
+    ): [ClintRuntimeEndpointsForPrefix!]!
+  }
+
+  """Grouping of runtime-announced endpoints under a single agent (= service prefix)."""
+  type ClintRuntimeEndpointsForPrefix {
+    prefix: String!
+    endpoints: [ClintRuntimeEndpoint!]!
   }
 
   enum AutoUpdateChannel { DEV, STAGING, LATEST }
@@ -119,6 +136,56 @@ export const schema: DocumentNode = gql`
     there's no history to roll back to for any enabled service.
     """
     rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
+
+    """
+    Receiver for clint agent endpoint announcements. Called by the
+    agent (running in the clint-runtime image) once it knows which
+    endpoints it is exposing — typically right after startup, then
+    again whenever endpoints come up or down.
+
+    Auth: the request must carry an Authorization: Bearer <token>
+    header. The token is per-(documentId, prefix), minted by the
+    processor when emitting the pod spec and stored in the
+    clint_announce_tokens table. Mismatched or missing tokens return
+    UNAUTHORIZED.
+
+    Semantics: the announcement is a full replacement — endpoints not
+    in the list are deleted from clint_runtime_endpoints for this
+    (documentId, prefix). lastSeen is set to now for every entry in
+    the input.
+    """
+    announceClintEndpoints(input: ClintAnnouncementInput!): ClintAnnouncementResult!
+  }
+
+  input ClintAnnouncementInput {
+    documentId: String!
+    prefix: String!
+    endpoints: [ClintAnnouncedEndpointInput!]!
+  }
+
+  input ClintAnnouncedEndpointInput {
+    """ID as declared by the agent (e.g. "agent-graphql")."""
+    id: String!
+    """ClintEndpointType — api-graphql, api-mcp, or website."""
+    type: String!
+    port: String!
+    """enabled or disabled. Defaults to enabled if omitted."""
+    status: String
+  }
+
+  type ClintAnnouncementResult {
+    ok: Boolean!
+    """Number of endpoints persisted (== input.endpoints.length on success)."""
+    count: Int!
+  }
+
+  type ClintRuntimeEndpoint {
+    id: String!
+    type: String!
+    port: String!
+    status: String!
+    """ISO timestamp of the most recent announcement that included this endpoint."""
+    lastSeen: String!
   }
 
   input NotifyNewImageReleaseInput {

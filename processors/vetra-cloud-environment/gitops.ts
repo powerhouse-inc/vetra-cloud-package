@@ -4,10 +4,15 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
 import { childLogger } from "document-model";
+import type { Kysely } from "kysely";
 import type {
+  VetraCloudEnvironmentService,
   VetraCloudEnvironmentState,
+  VetraCloudRessourceSize,
 } from "../../document-models/vetra-cloud-environment/index.js";
+import type { DB } from "./schema.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -239,15 +244,176 @@ function tlsSecretName(
 }
 
 // ---------------------------------------------------------------------------
+// CLINT services — image, resource mapping, announce-token provisioning
+// ---------------------------------------------------------------------------
+
+const CLINT_RUNTIME_IMAGE =
+  process.env.CLINT_RUNTIME_IMAGE_REPOSITORY ??
+  "cr.vetra.io/powerhouse-inc-powerhouse/clint-runtime";
+const CLINT_RUNTIME_TAG = process.env.CLINT_RUNTIME_IMAGE_TAG ?? "dev";
+
+/**
+ * URL the agent posts its announcements to. The agent does a GraphQL
+ * `announceClintEndpoints` mutation against the observability subgraph.
+ *
+ * Defaults to admin-dev so dev envs work out of the box; production
+ * deployments must override via CLINT_ANNOUNCE_URL.
+ */
+const CLINT_ANNOUNCE_URL =
+  process.env.CLINT_ANNOUNCE_URL ?? "https://admin-dev.vetra.io/graphql";
+
+/** k8s resource requests/limits per t-shirt size from the doc model. */
+const CLINT_RESOURCE_MAP: Record<
+  VetraCloudRessourceSize,
+  {
+    requests: { cpu: string; memory: string };
+    limits: { cpu: string; memory: string };
+  }
+> = {
+  VETRA_AGENT_S: {
+    requests: { cpu: "100m", memory: "256Mi" },
+    limits: { cpu: "500m", memory: "512Mi" },
+  },
+  VETRA_AGENT_M: {
+    requests: { cpu: "250m", memory: "512Mi" },
+    limits: { cpu: "1", memory: "1Gi" },
+  },
+  VETRA_AGENT_L: {
+    requests: { cpu: "500m", memory: "1Gi" },
+    limits: { cpu: "2", memory: "2Gi" },
+  },
+  VETRA_AGENT_XL: {
+    requests: { cpu: "1", memory: "2Gi" },
+    limits: { cpu: "4", memory: "4Gi" },
+  },
+  VETRA_AGENT_XXL: {
+    requests: { cpu: "2", memory: "4Gi" },
+    limits: { cpu: "8", memory: "8Gi" },
+  },
+};
+
+/**
+ * Mint announce tokens for every CLINT service in the state, idempotent.
+ * Returns a `prefix → token` map. Existing tokens are reused so the agent
+ * doesn't reset on every reconciliation.
+ */
+async function ensureClintAnnounceTokens(
+  db: Kysely<DB>,
+  state: VetraCloudEnvironmentState,
+  documentId: string,
+): Promise<Record<string, string>> {
+  const clintServices = (state.services ?? []).filter(
+    (s) => s.type === "CLINT" && s.enabled,
+  );
+  const tokens: Record<string, string> = {};
+  for (const svc of clintServices) {
+    const id = `${documentId}|${svc.prefix}`;
+    const existing = await db
+      .selectFrom("clint_announce_tokens")
+      .select(["token"])
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (existing) {
+      tokens[svc.prefix] = existing.token;
+      continue;
+    }
+    const token = randomBytes(32).toString("base64url");
+    await db
+      .insertInto("clint_announce_tokens")
+      .values({
+        id,
+        documentId,
+        prefix: svc.prefix,
+        token,
+        createdAt: new Date().toISOString(),
+      })
+      .execute();
+    tokens[svc.prefix] = token;
+  }
+  return tokens;
+}
+
+function generateClintBlock(
+  state: VetraCloudEnvironmentState,
+  subdomain: string,
+  baseDomain: string,
+  tokens: Record<string, string>,
+): string {
+  const clintServices = (state.services ?? []).filter(
+    (s) => s.type === "CLINT" && s.enabled,
+  );
+  if (clintServices.length === 0) {
+    return `clint:\n  enabled: false\n  agents: []`;
+  }
+
+  const lines: string[] = [`clint:`, `  enabled: true`, `  agents:`];
+  for (const svc of clintServices) {
+    const cfg = svc.config;
+    const pkg = cfg?.package;
+    if (!pkg) {
+      logger.warn(
+        `CLINT service "${svc.prefix}" has no config.package — skipping in YAML emit`,
+      );
+      continue;
+    }
+    const size = cfg?.selectedRessource ?? "VETRA_AGENT_S";
+    const resources = CLINT_RESOURCE_MAP[size] ?? CLINT_RESOURCE_MAP.VETRA_AGENT_S;
+    const command = cfg?.serviceCommand ?? pkg.name;
+    const token = tokens[svc.prefix] ?? "";
+    const envVars = cfg?.env ?? [];
+
+    lines.push(`    - name: ${yamlQuote(svc.prefix)}`);
+    lines.push(`      image:`);
+    lines.push(`        repository: ${yamlQuote(CLINT_RUNTIME_IMAGE)}`);
+    lines.push(`        tag: ${yamlQuote(CLINT_RUNTIME_TAG)}`);
+    lines.push(`        pullPolicy: IfNotPresent`);
+    lines.push(`      package: ${yamlQuote(pkg.name)}`);
+    lines.push(`      version: ${yamlQuote(pkg.version ?? "latest")}`);
+    lines.push(
+      `      registry: ${yamlQuote(pkg.registry || state.defaultPackageRegistry || "https://registry.dev.vetra.io/")}`,
+    );
+    lines.push(`      command: ${yamlQuote(command)}`);
+    lines.push(`      resources:`);
+    lines.push(
+      `        requests: { cpu: ${yamlQuote(resources.requests.cpu)}, memory: ${yamlQuote(resources.requests.memory)} }`,
+    );
+    lines.push(
+      `        limits: { cpu: ${yamlQuote(resources.limits.cpu)}, memory: ${yamlQuote(resources.limits.memory)} }`,
+    );
+    if (envVars.length > 0) {
+      lines.push(`      env:`);
+      for (const e of envVars) {
+        lines.push(
+          `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+        );
+      }
+    } else {
+      lines.push(`      env: []`);
+    }
+    lines.push(`      announce:`);
+    lines.push(`        enabled: true`);
+    lines.push(`        url: ${yamlQuote(CLINT_ANNOUNCE_URL)}`);
+    // TODO: token should be referenced from a k8s Secret rather than
+    // emitted inline. Frank's chart can switch to secretKeyRef once
+    // the secret-provisioning path lands.
+    lines.push(`        token: ${yamlQuote(token)}`);
+    lines.push(`      ingress:`);
+    lines.push(`        host: ${yamlQuote(`${svc.prefix}.${subdomain}.${baseDomain}`)}`);
+  }
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Values YAML generation
 // ---------------------------------------------------------------------------
 
 const DEFAULT_IMAGE_TAG = "v6.0.0-dev.152";
 
-export function generateValuesYaml(
+export async function generateValuesYaml(
+  db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
-): string {
+): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
   const name = toKebabCase(state.label ?? "unnamed");
@@ -318,6 +484,17 @@ export function generateValuesYaml(
 
   const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
+
+  // CLINT services: provision/look up announce tokens, then emit a
+  // dedicated `clint:` block. Frank's chart consumes it to render the
+  // agent Deployments/Services/Ingresses.
+  const clintTokens = await ensureClintAnnounceTokens(db, state, documentId);
+  const clintBlock = generateClintBlock(
+    state,
+    subdomain,
+    state.genericBaseDomain ?? "vetra.io",
+    clintTokens,
+  );
 
   return `global:
   disabled: ${disabled}
@@ -509,6 +686,7 @@ sentry:
   environment: ${tenantId}
 networkPolicy:
   enabled: false
+${clintBlock}
 `;
 }
 
@@ -527,6 +705,7 @@ networkPolicy:
  * Cross-process / cross-pod push races are handled by pull-rebase-retry.
  */
 export async function syncEnvironment(
+  db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): Promise<void> {
@@ -543,7 +722,7 @@ export async function syncEnvironment(
 
   await gitMutex.acquire();
   try {
-    await syncEnvironmentEphemeral(state, documentId);
+    await syncEnvironmentEphemeral(db, state, documentId);
   } finally {
     gitMutex.release();
   }
@@ -583,6 +762,7 @@ export async function deleteEnvironmentFromGitops(
 }
 
 async function syncEnvironmentEphemeral(
+  db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
 ): Promise<void> {
@@ -606,7 +786,7 @@ async function syncEnvironmentEphemeral(
 
     // Write values file
     const valuesPath = join(tenantDir, "powerhouse-values.yaml");
-    const yaml = generateValuesYaml(state, documentId);
+    const yaml = await generateValuesYaml(db, state, documentId);
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
 

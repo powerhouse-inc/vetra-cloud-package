@@ -147,7 +147,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       if (status === "CHANGES_APPROVED") {
         logger.info(`Triggering gitops sync for "${label}"`);
         try {
-          await syncEnvironment(state, documentId);
+          await syncEnvironment(this.relationalDb, state, documentId);
           logger.info(`Gitops sync completed for "${label}"`);
 
           // Re-check status before dispatching to avoid duplicate transitions

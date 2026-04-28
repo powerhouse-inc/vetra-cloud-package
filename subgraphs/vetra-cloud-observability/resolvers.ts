@@ -251,6 +251,48 @@ export function createResolvers(
           .execute();
         return rows;
       },
+
+      clintRuntimeEndpointsByEnv: async (
+        _parent: unknown,
+        { documentId }: { documentId: string },
+      ) => {
+        const rows = await db
+          .selectFrom("clint_runtime_endpoints")
+          .select(["prefix", "endpointId", "type", "port", "status", "lastSeen"])
+          .where("documentId", "=", documentId)
+          .orderBy("prefix", "asc")
+          .orderBy("endpointId", "asc")
+          .execute();
+        // Group by prefix.
+        const byPrefix = new Map<
+          string,
+          {
+            prefix: string;
+            endpoints: {
+              id: string;
+              type: string;
+              port: string;
+              status: string;
+              lastSeen: string;
+            }[];
+          }
+        >();
+        for (const r of rows) {
+          let group = byPrefix.get(r.prefix);
+          if (!group) {
+            group = { prefix: r.prefix, endpoints: [] };
+            byPrefix.set(r.prefix, group);
+          }
+          group.endpoints.push({
+            id: r.endpointId,
+            type: r.type,
+            port: r.port,
+            status: r.status,
+            lastSeen: r.lastSeen,
+          });
+        }
+        return Array.from(byPrefix.values());
+      },
     },
 
     Mutation: {
@@ -574,10 +616,106 @@ export function createResolvers(
         }
         return { updatedEnvironments: rolled };
       },
+
+      announceClintEndpoints: async (
+        _parent: unknown,
+        {
+          input,
+        }: {
+          input: {
+            documentId: string;
+            prefix: string;
+            endpoints: {
+              id: string;
+              type: string;
+              port: string;
+              status?: string | null;
+            }[];
+          };
+        },
+        context: AuthAwareContext & { headers?: Record<string, string | string[] | undefined> },
+      ) => {
+        const { documentId, prefix, endpoints } = input;
+
+        // Auth: Authorization: Bearer <token>. Compare against the
+        // (documentId, prefix) row in clint_announce_tokens.
+        const authHeader = (() => {
+          const h = context.headers ?? {};
+          const v = h.authorization ?? h.Authorization;
+          return Array.isArray(v) ? v[0] : v;
+        })();
+        const presented = (authHeader ?? "").startsWith("Bearer ")
+          ? (authHeader as string).slice("Bearer ".length).trim()
+          : "";
+        if (!presented) throw new Error("UNAUTHORIZED");
+
+        const tokenId = `${documentId}|${prefix}`;
+        // clint_announce_tokens lives in the processor's namespace.
+        const tokenRow = await envDb
+          .selectFrom("clint_announce_tokens")
+          .select(["token"])
+          .where("id", "=", tokenId)
+          .executeTakeFirst();
+        if (!tokenRow || tokenRow.token !== presented) {
+          throw new Error("UNAUTHORIZED");
+        }
+
+        const now = new Date().toISOString();
+
+        // Replace semantics: delete entries for this (doc, prefix) that
+        // aren't in the new set, then upsert the rest.
+        const presentIds = new Set(endpoints.map((e) => e.id));
+        const existing = await db
+          .selectFrom("clint_runtime_endpoints")
+          .select(["id", "endpointId"])
+          .where("documentId", "=", documentId)
+          .where("prefix", "=", prefix)
+          .execute();
+        const toDelete = existing
+          .filter((r) => !presentIds.has(r.endpointId))
+          .map((r) => r.id);
+        if (toDelete.length > 0) {
+          await db
+            .deleteFrom("clint_runtime_endpoints")
+            .where("id", "in", toDelete)
+            .execute();
+        }
+
+        for (const ep of endpoints) {
+          const id = `${documentId}|${prefix}|${ep.id}`;
+          const status = ep.status ?? "enabled";
+          await db
+            .insertInto("clint_runtime_endpoints")
+            .values({
+              id,
+              documentId,
+              prefix,
+              endpointId: ep.id,
+              type: ep.type,
+              port: ep.port,
+              status,
+              lastSeen: now,
+            })
+            .onConflict((oc) =>
+              oc.column("id").doUpdateSet({
+                type: ep.type,
+                port: ep.port,
+                status,
+                lastSeen: now,
+              }),
+            )
+            .execute();
+        }
+
+        return { ok: true, count: endpoints.length };
+      },
     },
 
     ReleaseHistoryEntry: {},
     ReleaseIndexEntry: {},
+    ClintRuntimeEndpointsForPrefix: {},
+    ClintRuntimeEndpoint: {},
+    ClintAnnouncementResult: {},
   };
 }
 
