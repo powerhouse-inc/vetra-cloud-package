@@ -1,6 +1,7 @@
 import type { Action } from "document-model";
 import type {
   EnableServiceInput,
+  SetServiceConfigInput,
   DisableServiceInput,
   ToggleServiceInput,
   UpdateServicePrefixInput,
@@ -11,6 +12,10 @@ import type {
 export type EnableServiceAction = Action & {
   type: "ENABLE_SERVICE";
   input: EnableServiceInput;
+};
+export type SetServiceConfigAction = Action & {
+  type: "SET_SERVICE_CONFIG";
+  input: SetServiceConfigInput;
 };
 export type DisableServiceAction = Action & {
   type: "DISABLE_SERVICE";
@@ -35,6 +40,7 @@ export type SetServiceVersionAction = Action & {
 
 export type VetraCloudEnvironmentServicesAction =
   | EnableServiceAction
+  | SetServiceConfigAction
   | DisableServiceAction
   | ToggleServiceAction
   | UpdateServicePrefixAction

@@ -19,7 +19,7 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n  enabledEndpoints: [String!]!\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String!\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
             '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null\n}',
@@ -235,12 +235,13 @@ export const documentModel: DocumentModelGlobalState = {
             {
               id: "op-enable-svc",
               name: "ENABLE_SERVICE",
-              description: "",
+              description:
+                "Enable a service. For type=CLINT, clintConfig is required and is stored on the service's config field; for other types, clintConfig is ignored if provided.",
               schema:
-                "input EnableServiceInput {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n}",
+                "input EnableServiceInput {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  clintConfig: VetraCloudServiceClintInput\n}\n\ninput VetraCloudServiceClintInput {\n  package: VetraCloudPackageInput!\n  env: [VetraCloudServiceEnvInput!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n  enabledEndpoints: [String!]!\n}\n\ninput VetraCloudPackageInput {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ninput VetraCloudServiceEnvInput {\n  name: String!\n  value: String!\n}",
               template: "",
               reducer:
-                'const { type, prefix } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst existing = state.services.find((s) => s.type === type);\nif (existing) {\n  existing.enabled = true;\n  existing.prefix = prefix;\n} else {\n  state.services.push({ type, prefix, enabled: true, url: null, status: "PROVISIONING", version: null });\n}\nstate.status = "CHANGES_PENDING";',
+                'const { type, prefix, clintConfig } = action.input;\nif (type === "CLINT" && !clintConfig) {\n  throw new ClintConfigRequiredError("clintConfig is required when enabling a CLINT service");\n}\nif (!state.services) {\n  state.services = [];\n}\nconst other = state.services.find((s) => s.prefix === prefix && s.type !== type);\nif (other) {\n  throw new PrefixInUseError(`prefix \'${prefix}\' is already in use by service ${other.type}`);\n}\nconst config = type === "CLINT" && clintConfig ? {\n  package: clintConfig.package,\n  env: clintConfig.env ?? [],\n  serviceCommand: clintConfig.serviceCommand ?? null,\n  selectedRessource: clintConfig.selectedRessource ?? null,\n  enabledEndpoints: clintConfig.enabledEndpoints ?? [],\n} : null;\nconst existing = state.services.find((s) => s.type === type && s.prefix === prefix);\nif (existing) {\n  existing.enabled = true;\n  existing.prefix = prefix;\n  if (config) existing.config = config;\n} else {\n  state.services.push({ type, prefix, enabled: true, url: null, status: "PROVISIONING", version: null, config });\n}\nstate.status = "CHANGES_PENDING";',
               errors: [
                 {
                   id: "err-not-owner-105",
@@ -248,6 +249,52 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "NOT_OWNER",
                   description:
                     "The action signer is not the owner of this environment",
+                  template: "",
+                },
+                {
+                  id: "err-clint-config-required",
+                  name: "ClintConfigRequiredError",
+                  code: "CLINT_CONFIG_REQUIRED",
+                  description:
+                    "Enabling a CLINT service requires clintConfig to be provided",
+                  template: "",
+                },
+                {
+                  id: "err-prefix-in-use-105",
+                  name: "PrefixInUseError",
+                  code: "PREFIX_IN_USE",
+                  description:
+                    "The given prefix is already used by a different service in this environment",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-service-config",
+              name: "SET_SERVICE_CONFIG",
+              description:
+                "Update the CLINT config (package, env vars, serviceCommand, resource size, enabled endpoints) for an existing CLINT service identified by prefix.",
+              schema:
+                "input SetServiceConfigInput {\n  prefix: String!\n  config: VetraCloudServiceClintConfigInput!\n}\n\ninput VetraCloudServiceClintConfigInput {\n  package: VetraCloudPackageConfigInput!\n  env: [VetraCloudServiceEnvConfigInput!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n  enabledEndpoints: [String!]!\n}\n\ninput VetraCloudPackageConfigInput {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ninput VetraCloudServiceEnvConfigInput {\n  name: String!\n  value: String!\n}",
+              template: "",
+              reducer:
+                "const { prefix, config } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst service = state.services.find((s) => s.prefix === prefix);\nif (!service) {\n  throw new ServiceNotFoundError(`No service with prefix '${prefix}'`);\n}\nif (service.type !== \"CLINT\") {\n  throw new NotClintServiceError(`Service '${prefix}' is type ${service.type}; only CLINT services accept config`);\n}\nservice.config = {\n  package: config.package,\n  env: config.env ?? [],\n  serviceCommand: config.serviceCommand ?? null,\n  selectedRessource: config.selectedRessource ?? null,\n  enabledEndpoints: config.enabledEndpoints ?? [],\n};\nstate.status = \"CHANGES_PENDING\";",
+              errors: [
+                {
+                  id: "err-svc-not-found-config",
+                  name: "ServiceNotFoundError",
+                  code: "SERVICE_NOT_FOUND",
+                  description: "No service exists with the given prefix",
+                  template: "",
+                },
+                {
+                  id: "err-not-clint-service",
+                  name: "NotClintServiceError",
+                  code: "NOT_CLINT_SERVICE",
+                  description:
+                    "SET_SERVICE_CONFIG only applies to CLINT services",
                   template: "",
                 },
               ],

@@ -1,6 +1,7 @@
 import { createAction } from "document-model";
 import {
   EnableServiceInputSchema,
+  SetServiceConfigInputSchema,
   DisableServiceInputSchema,
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
@@ -9,6 +10,7 @@ import {
 } from "../schema/zod.js";
 import type {
   EnableServiceInput,
+  SetServiceConfigInput,
   DisableServiceInput,
   ToggleServiceInput,
   UpdateServicePrefixInput,
@@ -17,6 +19,7 @@ import type {
 } from "../types.js";
 import type {
   EnableServiceAction,
+  SetServiceConfigAction,
   DisableServiceAction,
   ToggleServiceAction,
   UpdateServicePrefixAction,
@@ -30,6 +33,15 @@ export const enableService = (input: EnableServiceInput) =>
     { ...input },
     undefined,
     EnableServiceInputSchema,
+    "global",
+  );
+
+export const setServiceConfig = (input: SetServiceConfigInput) =>
+  createAction<SetServiceConfigAction>(
+    "SET_SERVICE_CONFIG",
+    { ...input },
+    undefined,
+    SetServiceConfigInputSchema,
     "global",
   );
 

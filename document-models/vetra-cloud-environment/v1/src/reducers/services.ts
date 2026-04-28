@@ -1,4 +1,9 @@
-import { ServiceNotFoundError } from "../../gen/services/error.js";
+import {
+  ServiceNotFoundError,
+  NotClintServiceError,
+  ClintConfigRequiredError,
+  PrefixInUseError,
+} from "../../gen/services/error.js";
 import {
   assertOwner,
   markPendingIfDeployed,
@@ -10,14 +15,48 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
   {
     enableServiceOperation(state, action) {
       assertOwner(state, action);
-      const { type, prefix } = action.input;
+      const { type, prefix, clintConfig } = action.input;
+      if (type === "CLINT" && !clintConfig) {
+        throw new ClintConfigRequiredError(
+          "clintConfig is required when enabling a CLINT service",
+        );
+      }
       if (!state.services) {
         state.services = [];
       }
-      const existing = state.services.find((s) => s.type === type);
+      const collision = state.services.find(
+        (s) => s.prefix === prefix && s.type !== type,
+      );
+      if (collision) {
+        throw new PrefixInUseError(
+          `prefix '${prefix}' is already used by service ${collision.type}`,
+        );
+      }
+      const config =
+        type === "CLINT" && clintConfig
+          ? {
+              package: {
+                registry: clintConfig.package.registry,
+                name: clintConfig.package.name,
+                version: clintConfig.package.version ?? null,
+              },
+              env: clintConfig.env ?? [],
+              serviceCommand: clintConfig.serviceCommand ?? null,
+              selectedRessource: clintConfig.selectedRessource ?? null,
+              enabledEndpoints: clintConfig.enabledEndpoints ?? [],
+            }
+          : null;
+      // CLINT supports multiple entries per env, distinguished by prefix.
+      // Other service types are singletons keyed by type alone — a re-enable
+      // with a different prefix updates the existing entry.
+      const existing =
+        type === "CLINT"
+          ? state.services.find((s) => s.type === type && s.prefix === prefix)
+          : state.services.find((s) => s.type === type);
       if (existing) {
         existing.enabled = true;
         existing.prefix = prefix;
+        if (config) existing.config = config;
       } else {
         state.services.push({
           type,
@@ -26,6 +65,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           url: null,
           status: "PROVISIONING",
           version: null,
+          config,
         });
       }
       regenerateDnsRecords(state);
@@ -90,5 +130,32 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       }
       service.version = action.input.version;
       markPendingIfDeployed(state);
+    },
+    setServiceConfigOperation(state, action) {
+      const { prefix, config } = action.input;
+      if (!state.services) {
+        state.services = [];
+      }
+      const service = state.services.find((s) => s.prefix === prefix);
+      if (!service) {
+        throw new ServiceNotFoundError(`No service with prefix '${prefix}'`);
+      }
+      if (service.type !== "CLINT") {
+        throw new NotClintServiceError(
+          `Service '${prefix}' is type ${service.type}; only CLINT services accept config`,
+        );
+      }
+      service.config = {
+        package: {
+          registry: config.package.registry,
+          name: config.package.name,
+          version: config.package.version ?? null,
+        },
+        env: config.env ?? [],
+        serviceCommand: config.serviceCommand ?? null,
+        selectedRessource: config.selectedRessource ?? null,
+        enabledEndpoints: config.enabledEndpoints ?? [],
+      };
+      state.status = "CHANGES_PENDING";
     },
   };

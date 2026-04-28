@@ -26,6 +26,7 @@ import type {
   SetLabelInput,
   SetOwnerInput,
   SetPackageVersionInput,
+  SetServiceConfigInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
   TerminateEnvironmentInput,
@@ -37,6 +38,15 @@ import type {
   VetraCloudEnvironmentState,
   VetraCloudEnvironmentStatus,
   VetraCloudPackage,
+  VetraCloudPackageConfigInput,
+  VetraCloudPackageInput,
+  VetraCloudRessourceSize,
+  VetraCloudServiceClint,
+  VetraCloudServiceClintConfigInput,
+  VetraCloudServiceClintInput,
+  VetraCloudServiceEnv,
+  VetraCloudServiceEnvConfigInput,
+  VetraCloudServiceEnvInput,
   VetraCustomDomain,
 } from "./types.js";
 
@@ -63,6 +73,7 @@ export const ServiceStatusSchema = z.enum([
 ]);
 
 export const VetraCloudEnvironmentServiceTypeSchema = z.enum([
+  "CLINT",
   "CONNECT",
   "FUSION",
   "SWITCHBOARD",
@@ -80,6 +91,14 @@ export const VetraCloudEnvironmentStatusSchema = z.enum([
   "READY",
   "STOPPED",
   "TERMINATING",
+]);
+
+export const VetraCloudRessourceSizeSchema = z.enum([
+  "VETRA_AGENT_L",
+  "VETRA_AGENT_M",
+  "VETRA_AGENT_S",
+  "VETRA_AGENT_XL",
+  "VETRA_AGENT_XXL",
 ]);
 
 export function AddPackageInputSchema(): z.ZodObject<
@@ -137,6 +156,7 @@ export function EnableServiceInputSchema(): z.ZodObject<
   Properties<EnableServiceInput>
 > {
   return z.object({
+    clintConfig: z.lazy(() => VetraCloudServiceClintInputSchema().nullish()),
     prefix: z.string(),
     type: VetraCloudEnvironmentServiceTypeSchema,
   });
@@ -275,6 +295,15 @@ export function SetPackageVersionInputSchema(): z.ZodObject<
   });
 }
 
+export function SetServiceConfigInputSchema(): z.ZodObject<
+  Properties<SetServiceConfigInput>
+> {
+  return z.object({
+    config: z.lazy(() => VetraCloudServiceClintConfigInputSchema()),
+    prefix: z.string(),
+  });
+}
+
 export function SetServiceStatusInputSchema(): z.ZodObject<
   Properties<SetServiceStatusInput>
 > {
@@ -332,6 +361,7 @@ export function VetraCloudEnvironmentServiceSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentService").optional(),
+    config: z.lazy(() => VetraCloudServiceClintSchema().nullish()),
     enabled: z.boolean(),
     prefix: z.string(),
     status: ServiceStatusSchema,
@@ -373,6 +403,91 @@ export function VetraCloudPackageSchema(): z.ZodObject<
     name: z.string(),
     registry: z.url(),
     version: z.string().nullish(),
+  });
+}
+
+export function VetraCloudPackageConfigInputSchema(): z.ZodObject<
+  Properties<VetraCloudPackageConfigInput>
+> {
+  return z.object({
+    name: z.string(),
+    registry: z.url(),
+    version: z.string().nullish(),
+  });
+}
+
+export function VetraCloudPackageInputSchema(): z.ZodObject<
+  Properties<VetraCloudPackageInput>
+> {
+  return z.object({
+    name: z.string(),
+    registry: z.url(),
+    version: z.string().nullish(),
+  });
+}
+
+export function VetraCloudServiceClintSchema(): z.ZodObject<
+  Properties<VetraCloudServiceClint>
+> {
+  return z.object({
+    __typename: z.literal("VetraCloudServiceClint").optional(),
+    enabledEndpoints: z.array(z.string()),
+    env: z.array(z.lazy(() => VetraCloudServiceEnvSchema())),
+    package: z.lazy(() => VetraCloudPackageSchema()),
+    selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
+    serviceCommand: z.string().nullish(),
+  });
+}
+
+export function VetraCloudServiceClintConfigInputSchema(): z.ZodObject<
+  Properties<VetraCloudServiceClintConfigInput>
+> {
+  return z.object({
+    enabledEndpoints: z.array(z.string()),
+    env: z.array(z.lazy(() => VetraCloudServiceEnvConfigInputSchema())),
+    package: z.lazy(() => VetraCloudPackageConfigInputSchema()),
+    selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
+    serviceCommand: z.string().nullish(),
+  });
+}
+
+export function VetraCloudServiceClintInputSchema(): z.ZodObject<
+  Properties<VetraCloudServiceClintInput>
+> {
+  return z.object({
+    enabledEndpoints: z.array(z.string()),
+    env: z.array(z.lazy(() => VetraCloudServiceEnvInputSchema())),
+    package: z.lazy(() => VetraCloudPackageInputSchema()),
+    selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
+    serviceCommand: z.string().nullish(),
+  });
+}
+
+export function VetraCloudServiceEnvSchema(): z.ZodObject<
+  Properties<VetraCloudServiceEnv>
+> {
+  return z.object({
+    __typename: z.literal("VetraCloudServiceEnv").optional(),
+    name: z.string(),
+    value: z.string(),
+  });
+}
+
+export function VetraCloudServiceEnvConfigInputSchema(): z.ZodObject<
+  Properties<VetraCloudServiceEnvConfigInput>
+> {
+  return z.object({
+    name: z.string(),
+    value: z.string(),
+  });
+}
+
+export function VetraCloudServiceEnvInputSchema(): z.ZodObject<
+  Properties<VetraCloudServiceEnvInput>
+> {
+  return z.object({
+    name: z.string(),
+    value: z.string(),
   });
 }
 

@@ -19,6 +19,7 @@ import {
   SetApexServiceInputSchema,
   SetAutoUpdateChannelInputSchema,
   EnableServiceInputSchema,
+  SetServiceConfigInputSchema,
   DisableServiceInputSchema,
   ToggleServiceInputSchema,
   UpdateServicePrefixInputSchema,
@@ -148,6 +149,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       EnableServiceInputSchema().parse(action.input);
 
       vetraCloudEnvironmentServicesOperations.enableServiceOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_SERVICE_CONFIG": {
+      SetServiceConfigInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.setServiceConfigOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

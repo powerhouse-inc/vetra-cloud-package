@@ -10,7 +10,10 @@ import {
   updateServicePrefix,
   setServiceStatus,
   setServiceVersion,
+  setServiceConfig,
+  SetServiceConfigInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
+import { generateMock } from "@powerhousedao/codegen";
 
 describe("ServicesOperations", () => {
   describe("ENABLE_SERVICE", () => {
@@ -29,6 +32,7 @@ describe("ServicesOperations", () => {
           url: null,
           status: "PROVISIONING",
           version: null,
+          config: null,
         },
       ]);
     });
@@ -57,6 +61,7 @@ describe("ServicesOperations", () => {
           url: null,
           status: "PROVISIONING",
           version: null,
+          config: null,
         },
         {
           type: "SWITCHBOARD",
@@ -65,6 +70,7 @@ describe("ServicesOperations", () => {
           url: null,
           status: "PROVISIONING",
           version: null,
+          config: null,
         },
         {
           type: "FUSION",
@@ -73,6 +79,7 @@ describe("ServicesOperations", () => {
           url: null,
           status: "PROVISIONING",
           version: null,
+          config: null,
         },
       ]);
     });
@@ -96,6 +103,7 @@ describe("ServicesOperations", () => {
         url: null,
         status: "PROVISIONING",
         version: null,
+        config: null,
       });
     });
 
@@ -140,6 +148,7 @@ describe("ServicesOperations", () => {
         url: null,
         status: "PROVISIONING",
         version: null,
+        config: null,
       });
       expect(document.state.global.services[1]).toStrictEqual({
         type: "SWITCHBOARD",
@@ -148,6 +157,7 @@ describe("ServicesOperations", () => {
         url: null,
         status: "PROVISIONING",
         version: null,
+        config: null,
       });
     });
 
@@ -200,6 +210,7 @@ describe("ServicesOperations", () => {
         url: null,
         status: "PROVISIONING",
         version: null,
+        config: null,
       });
     });
   });
@@ -361,5 +372,22 @@ describe("ServicesOperations", () => {
     expect(updatedDocument.operations.global[1].action.input).toStrictEqual(
       input,
     );
+  });
+
+  it("should handle setServiceConfig operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetServiceConfigInputSchema());
+
+    const updatedDocument = reducer(document, setServiceConfig(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_SERVICE_CONFIG",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
   });
 });

@@ -58,12 +58,35 @@ type VetraCloudEnvironmentService {
   url: String
   status: ServiceStatus!
   version: String
+  config: VetraCloudServiceClint
+}
+
+type VetraCloudServiceClint {
+  package: VetraCloudPackage!
+  env: [VetraCloudServiceEnv!]!
+  serviceCommand: String
+  selectedRessource: VetraCloudRessourceSize
+  enabledEndpoints: [String!]!
+}
+
+type VetraCloudServiceEnv {
+  name: String!
+  value: String!
+}
+
+enum VetraCloudRessourceSize {
+  VETRA_AGENT_S
+  VETRA_AGENT_M
+  VETRA_AGENT_L
+  VETRA_AGENT_XL
+  VETRA_AGENT_XXL
 }
 
 enum VetraCloudEnvironmentServiceType {
   CONNECT
   SWITCHBOARD
   FUSION
+  CLINT
 }
 
 enum ServiceStatus {
@@ -139,6 +162,50 @@ input SetAutoUpdateChannelInput {
 input EnableServiceInput {
   type: VetraCloudEnvironmentServiceType!
   prefix: String!
+  clintConfig: VetraCloudServiceClintInput
+}
+
+input VetraCloudServiceClintInput {
+  package: VetraCloudPackageInput!
+  env: [VetraCloudServiceEnvInput!]!
+  serviceCommand: String
+  selectedRessource: VetraCloudRessourceSize
+  enabledEndpoints: [String!]!
+}
+
+input VetraCloudPackageInput {
+  registry: URL!
+  name: String!
+  version: String
+}
+
+input VetraCloudServiceEnvInput {
+  name: String!
+  value: String!
+}
+
+input SetServiceConfigInput {
+  prefix: String!
+  config: VetraCloudServiceClintConfigInput!
+}
+
+input VetraCloudServiceClintConfigInput {
+  package: VetraCloudPackageConfigInput!
+  env: [VetraCloudServiceEnvConfigInput!]!
+  serviceCommand: String
+  selectedRessource: VetraCloudRessourceSize
+  enabledEndpoints: [String!]!
+}
+
+input VetraCloudPackageConfigInput {
+  registry: URL!
+  name: String!
+  version: String
+}
+
+input VetraCloudServiceEnvConfigInput {
+  name: String!
+  value: String!
 }
 
 input DisableServiceInput {

@@ -12,18 +12,21 @@ const SERVICE_TYPES: VetraCloudEnvironmentServiceType[] = [
   "CONNECT",
   "SWITCHBOARD",
   "FUSION",
+  "CLINT",
 ];
 
 const SERVICE_LABELS: Record<VetraCloudEnvironmentServiceType, string> = {
   CONNECT: "Powerhouse Connect",
   SWITCHBOARD: "Powerhouse Switchboard",
   FUSION: "Fusion",
+  CLINT: "Agent",
 };
 
 const DEFAULT_PREFIXES: Record<VetraCloudEnvironmentServiceType, string> = {
   CONNECT: "connect",
   SWITCHBOARD: "switchboard",
   FUSION: "fusion",
+  CLINT: "agent",
 };
 
 const SERVICE_STATUS_COLORS: Record<ServiceStatus, { dot: string; label: string }> = {

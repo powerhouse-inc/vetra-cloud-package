@@ -92,6 +92,7 @@ export type DnsRecordInput = {
 };
 
 export type EnableServiceInput = {
+  clintConfig?: InputMaybe<VetraCloudServiceClintInput>;
   prefix: Scalars["String"]["input"];
   type: VetraCloudEnvironmentServiceType;
 };
@@ -171,6 +172,11 @@ export type SetPackageVersionInput = {
   version: Scalars["String"]["input"];
 };
 
+export type SetServiceConfigInput = {
+  config: VetraCloudServiceClintConfigInput;
+  prefix: Scalars["String"]["input"];
+};
+
 export type SetServiceStatusInput = {
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
@@ -200,6 +206,7 @@ export type UpdateServicePrefixInput = {
 };
 
 export type VetraCloudEnvironmentService = {
+  config: Maybe<VetraCloudServiceClint>;
   enabled: Scalars["Boolean"]["output"];
   prefix: Scalars["String"]["output"];
   status: ServiceStatus;
@@ -209,6 +216,7 @@ export type VetraCloudEnvironmentService = {
 };
 
 export type VetraCloudEnvironmentServiceType =
+  | "CLINT"
   | "CONNECT"
   | "FUSION"
   | "SWITCHBOARD";
@@ -244,6 +252,64 @@ export type VetraCloudPackage = {
   name: Scalars["String"]["output"];
   registry: Scalars["URL"]["output"];
   version: Maybe<Scalars["String"]["output"]>;
+};
+
+export type VetraCloudPackageConfigInput = {
+  name: Scalars["String"]["input"];
+  registry: Scalars["URL"]["input"];
+  version?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type VetraCloudPackageInput = {
+  name: Scalars["String"]["input"];
+  registry: Scalars["URL"]["input"];
+  version?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type VetraCloudRessourceSize =
+  | "VETRA_AGENT_L"
+  | "VETRA_AGENT_M"
+  | "VETRA_AGENT_S"
+  | "VETRA_AGENT_XL"
+  | "VETRA_AGENT_XXL";
+
+export type VetraCloudServiceClint = {
+  enabledEndpoints: Array<Scalars["String"]["output"]>;
+  env: Array<VetraCloudServiceEnv>;
+  package: VetraCloudPackage;
+  selectedRessource: Maybe<VetraCloudRessourceSize>;
+  serviceCommand: Maybe<Scalars["String"]["output"]>;
+};
+
+export type VetraCloudServiceClintConfigInput = {
+  enabledEndpoints: Array<Scalars["String"]["input"]>;
+  env: Array<VetraCloudServiceEnvConfigInput>;
+  package: VetraCloudPackageConfigInput;
+  selectedRessource?: InputMaybe<VetraCloudRessourceSize>;
+  serviceCommand?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type VetraCloudServiceClintInput = {
+  enabledEndpoints: Array<Scalars["String"]["input"]>;
+  env: Array<VetraCloudServiceEnvInput>;
+  package: VetraCloudPackageInput;
+  selectedRessource?: InputMaybe<VetraCloudRessourceSize>;
+  serviceCommand?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type VetraCloudServiceEnv = {
+  name: Scalars["String"]["output"];
+  value: Scalars["String"]["output"];
+};
+
+export type VetraCloudServiceEnvConfigInput = {
+  name: Scalars["String"]["input"];
+  value: Scalars["String"]["input"];
+};
+
+export type VetraCloudServiceEnvInput = {
+  name: Scalars["String"]["input"];
+  value: Scalars["String"]["input"];
 };
 
 export type VetraCustomDomain = {

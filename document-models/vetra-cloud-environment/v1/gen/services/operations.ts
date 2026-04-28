@@ -1,6 +1,7 @@
 import { type SignalDispatch } from "document-model";
 import type {
   EnableServiceAction,
+  SetServiceConfigAction,
   DisableServiceAction,
   ToggleServiceAction,
   UpdateServicePrefixAction,
@@ -13,6 +14,11 @@ export interface VetraCloudEnvironmentServicesOperations {
   enableServiceOperation: (
     state: VetraCloudEnvironmentState,
     action: EnableServiceAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setServiceConfigOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetServiceConfigAction,
     dispatch?: SignalDispatch,
   ) => void;
   disableServiceOperation: (
