@@ -262,14 +262,41 @@ const CLINT_RUNTIME_TAG = process.env.CLINT_RUNTIME_IMAGE_TAG ?? "dev";
 const CLINT_ANNOUNCE_URL =
   process.env.CLINT_ANNOUNCE_URL ?? "https://admin-dev.vetra.io/graphql";
 
-/** k8s resource requests/limits per t-shirt size from the doc model. */
-const CLINT_RESOURCE_MAP: Record<
-  VetraCloudRessourceSize,
-  {
-    requests: { cpu: string; memory: string };
-    limits: { cpu: string; memory: string };
-  }
-> = {
+type ResourceSpec = {
+  requests: { cpu: string; memory: string };
+  limits: { cpu: string; memory: string };
+};
+
+/**
+ * App-services map (Switchboard/Connect/Fusion). Calibrated so S equals
+ * today's powerhouse-chart default — preventing regression on next sync for
+ * any environment that hasn't yet picked a size.
+ */
+const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
+  VETRA_AGENT_S: {
+    requests: { cpu: "250m", memory: "512Mi" },
+    limits: { cpu: "1", memory: "1Gi" },
+  },
+  VETRA_AGENT_M: {
+    requests: { cpu: "500m", memory: "1Gi" },
+    limits: { cpu: "2", memory: "2Gi" },
+  },
+  VETRA_AGENT_L: {
+    requests: { cpu: "1", memory: "2Gi" },
+    limits: { cpu: "4", memory: "4Gi" },
+  },
+  VETRA_AGENT_XL: {
+    requests: { cpu: "2", memory: "4Gi" },
+    limits: { cpu: "6", memory: "8Gi" },
+  },
+  VETRA_AGENT_XXL: {
+    requests: { cpu: "4", memory: "8Gi" },
+    limits: { cpu: "8", memory: "16Gi" },
+  },
+};
+
+/** CLINT agents — small-footprint runtime, unchanged from the original map. */
+const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "100m", memory: "256Mi" },
     limits: { cpu: "500m", memory: "512Mi" },
@@ -291,6 +318,22 @@ const CLINT_RESOURCE_MAP: Record<
     limits: { cpu: "8", memory: "8Gi" },
   },
 };
+
+/**
+ * Resolve the effective t-shirt size for a service. Reads the top-level
+ * `selectedRessource` first, falls back to the legacy CLINT
+ * `config.selectedRessource` (one-release transition), then to S.
+ */
+function readServiceSize(
+  svc: VetraCloudEnvironmentService | undefined,
+): VetraCloudRessourceSize {
+  if (!svc) return "VETRA_AGENT_S";
+  return (
+    svc.selectedRessource ??
+    svc.config?.selectedRessource ??
+    "VETRA_AGENT_S"
+  );
+}
 
 /**
  * Mint announce tokens for every CLINT service in the state, idempotent.
@@ -357,8 +400,8 @@ function generateClintBlock(
       );
       continue;
     }
-    const size = cfg?.selectedRessource ?? "VETRA_AGENT_S";
-    const resources = CLINT_RESOURCE_MAP[size] ?? CLINT_RESOURCE_MAP.VETRA_AGENT_S;
+    const size = readServiceSize(svc);
+    const resources = CLINT_RESOURCE_MAP[size];
     const command = cfg?.serviceCommand ?? pkg.name;
     const token = tokens[svc.prefix] ?? "";
     const envVars = cfg?.env ?? [];
@@ -437,6 +480,9 @@ export async function generateValuesYaml(
   );
   const switchboardTag = switchboardService?.version ?? DEFAULT_IMAGE_TAG;
   const connectTag = connectService?.version ?? DEFAULT_IMAGE_TAG;
+  const switchboardResources =
+    APP_RESOURCE_MAP[readServiceSize(switchboardService)];
+  const connectResources = APP_RESOURCE_MAP[readServiceSize(connectService)];
   const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
   const disabled = DISABLED_STATUSES.has(state.status);
   // Postgres is only needed when Switchboard is enabled — Connect-only envs
@@ -617,6 +663,13 @@ switchboard:
     runAsNonRoot: false
     runAsUser: 0
     fsGroup: 0
+  resources:
+    requests:
+      cpu: ${yamlQuote(switchboardResources.requests.cpu)}
+      memory: ${yamlQuote(switchboardResources.requests.memory)}
+    limits:
+      cpu: ${yamlQuote(switchboardResources.limits.cpu)}
+      memory: ${yamlQuote(switchboardResources.limits.memory)}
   autoscaling:
     enabled: false
 connect:
@@ -676,6 +729,13 @@ connect:
     runAsNonRoot: false
     runAsUser: 0
     fsGroup: 0
+  resources:
+    requests:
+      cpu: ${yamlQuote(connectResources.requests.cpu)}
+      memory: ${yamlQuote(connectResources.requests.memory)}
+    limits:
+      cpu: ${yamlQuote(connectResources.limits.cpu)}
+      memory: ${yamlQuote(connectResources.limits.memory)}
   autoscaling:
     enabled: false
 podDisruptionBudget:
