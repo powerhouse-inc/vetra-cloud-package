@@ -110,6 +110,81 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  it("emits NODE_OPTIONS sized to ~75% of the pod limit on switchboard", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: "VETRA_AGENT_M",
+          },
+        ],
+      }),
+      "doc-node-m",
+    );
+    // M = 2Gi limit → max-old-space-size 1536MB
+    expect(yaml).toMatch(
+      /switchboard:[\s\S]*?env:[\s\S]*?NODE_OPTIONS:\s*"--max-old-space-size=1536"/,
+    );
+  });
+
+  it("scales NODE_OPTIONS up at XL", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: "VETRA_AGENT_XL",
+          },
+        ],
+      }),
+      "doc-node-xl",
+    );
+    // XL = 8Gi limit → 6144MB
+    expect(yaml).toMatch(
+      /switchboard:[\s\S]*?env:[\s\S]*?NODE_OPTIONS:\s*"--max-old-space-size=6144"/,
+    );
+  });
+
+  it("emits NODE_OPTIONS on connect too", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "CONNECT",
+            prefix: "connect",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: "VETRA_AGENT_L",
+          },
+        ],
+      }),
+      "doc-node-connect",
+    );
+    // L = 4Gi limit → 3072MB
+    expect(yaml).toMatch(
+      /connect:[\s\S]*?env:[\s\S]*?NODE_OPTIONS:\s*"--max-old-space-size=3072"/,
+    );
+  });
+
   it("falls back to legacy CLINT config.selectedRessource when top-level absent", async () => {
     const yaml = await generateValuesYaml(
       dbStub,

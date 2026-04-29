@@ -265,6 +265,13 @@ const CLINT_ANNOUNCE_URL =
 type ResourceSpec = {
   requests: { cpu: string; memory: string };
   limits: { cpu: string; memory: string };
+  /**
+   * V8 max old-space size in MB, used to derive `NODE_OPTIONS`. Without this
+   * Node caps the heap at ~1.7Gi regardless of the cgroup limit, so a 4Gi pod
+   * still OOMs the JS process. Sized to ~75% of the cgroup limit, leaving
+   * room for stack, V8 metaspace, code, and native bindings.
+   */
+  nodeMaxOldSpaceMb: number;
 };
 
 /**
@@ -276,46 +283,58 @@ const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "1", memory: "1Gi" },
+    nodeMaxOldSpaceMb: 768,
   },
   VETRA_AGENT_M: {
     requests: { cpu: "500m", memory: "1Gi" },
     limits: { cpu: "2", memory: "2Gi" },
+    nodeMaxOldSpaceMb: 1536,
   },
   VETRA_AGENT_L: {
     requests: { cpu: "1", memory: "2Gi" },
     limits: { cpu: "4", memory: "4Gi" },
+    nodeMaxOldSpaceMb: 3072,
   },
   VETRA_AGENT_XL: {
     requests: { cpu: "2", memory: "4Gi" },
     limits: { cpu: "6", memory: "8Gi" },
+    nodeMaxOldSpaceMb: 6144,
   },
   VETRA_AGENT_XXL: {
     requests: { cpu: "4", memory: "8Gi" },
     limits: { cpu: "8", memory: "16Gi" },
+    nodeMaxOldSpaceMb: 12288,
   },
 };
 
-/** CLINT agents — small-footprint runtime, unchanged from the original map. */
+/** CLINT agents — small-footprint runtime. nodeMaxOldSpaceMb is unused for
+ *  CLINT (the runtime image isn't necessarily Node) but kept for type
+ *  symmetry with APP_RESOURCE_MAP. */
 const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "100m", memory: "256Mi" },
     limits: { cpu: "500m", memory: "512Mi" },
+    nodeMaxOldSpaceMb: 384,
   },
   VETRA_AGENT_M: {
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "1", memory: "1Gi" },
+    nodeMaxOldSpaceMb: 768,
   },
   VETRA_AGENT_L: {
     requests: { cpu: "500m", memory: "1Gi" },
     limits: { cpu: "2", memory: "2Gi" },
+    nodeMaxOldSpaceMb: 1536,
   },
   VETRA_AGENT_XL: {
     requests: { cpu: "1", memory: "2Gi" },
     limits: { cpu: "4", memory: "4Gi" },
+    nodeMaxOldSpaceMb: 3072,
   },
   VETRA_AGENT_XXL: {
     requests: { cpu: "2", memory: "4Gi" },
     limits: { cpu: "8", memory: "8Gi" },
+    nodeMaxOldSpaceMb: 6144,
   },
 };
 
@@ -620,6 +639,7 @@ switchboard:
   env:
     PORT: "3000"
     NODE_ENV: production
+    NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${switchboardResources.nodeMaxOldSpaceMb}`)}
     PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || "https://registry.dev.vetra.io")}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     OPENBAO_ADDR: https://openbao.vetra.io
@@ -695,6 +715,7 @@ connect:
   env:
     PORT: "3001"
     NODE_ENV: production
+    NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${connectResources.nodeMaxOldSpaceMb}`)}
     PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || "https://registry.dev.vetra.io")}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
   envConfigMap:
