@@ -12,6 +12,8 @@ import {
   setServiceVersion,
   setServiceConfig,
   SetServiceConfigInputSchema,
+  setServiceSize,
+  SetServiceSizeInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
@@ -33,6 +35,7 @@ describe("ServicesOperations", () => {
           status: "PROVISIONING",
           version: null,
           config: null,
+          selectedRessource: "VETRA_AGENT_S",
         },
       ]);
     });
@@ -62,6 +65,7 @@ describe("ServicesOperations", () => {
           status: "PROVISIONING",
           version: null,
           config: null,
+          selectedRessource: "VETRA_AGENT_S",
         },
         {
           type: "SWITCHBOARD",
@@ -71,6 +75,7 @@ describe("ServicesOperations", () => {
           status: "PROVISIONING",
           version: null,
           config: null,
+          selectedRessource: "VETRA_AGENT_S",
         },
         {
           type: "FUSION",
@@ -80,6 +85,7 @@ describe("ServicesOperations", () => {
           status: "PROVISIONING",
           version: null,
           config: null,
+          selectedRessource: "VETRA_AGENT_S",
         },
       ]);
     });
@@ -104,6 +110,7 @@ describe("ServicesOperations", () => {
         status: "PROVISIONING",
         version: null,
         config: null,
+        selectedRessource: "VETRA_AGENT_S",
       });
     });
 
@@ -149,6 +156,7 @@ describe("ServicesOperations", () => {
         status: "PROVISIONING",
         version: null,
         config: null,
+        selectedRessource: "VETRA_AGENT_S",
       });
       expect(document.state.global.services[1]).toStrictEqual({
         type: "SWITCHBOARD",
@@ -158,6 +166,7 @@ describe("ServicesOperations", () => {
         status: "PROVISIONING",
         version: null,
         config: null,
+        selectedRessource: "VETRA_AGENT_S",
       });
     });
 
@@ -211,6 +220,7 @@ describe("ServicesOperations", () => {
         status: "PROVISIONING",
         version: null,
         config: null,
+        selectedRessource: "VETRA_AGENT_S",
       });
     });
   });
@@ -389,5 +399,87 @@ describe("ServicesOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_SERVICE_SIZE", () => {
+    it("sets selectedRessource on a non-CLINT service by prefix", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
+      );
+      document = reducer(
+        document,
+        setServiceSize({ prefix: "switchboard", size: "VETRA_AGENT_L" }),
+      );
+      const svc = document.state.global.services.find(
+        (s) => s.prefix === "switchboard",
+      );
+      expect(svc?.selectedRessource).toBe("VETRA_AGENT_L");
+    });
+
+    it("defaults a freshly-enabled service to VETRA_AGENT_S", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        enableService({ type: "CONNECT", prefix: "connect" }),
+      );
+      const svc = document.state.global.services.find(
+        (s) => s.prefix === "connect",
+      );
+      expect(svc?.selectedRessource).toBe("VETRA_AGENT_S");
+    });
+
+    it("honors selectedRessource passed into enableService", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        enableService({
+          type: "SWITCHBOARD",
+          prefix: "switchboard",
+          selectedRessource: "VETRA_AGENT_XL",
+        }),
+      );
+      const svc = document.state.global.services.find(
+        (s) => s.prefix === "switchboard",
+      );
+      expect(svc?.selectedRessource).toBe("VETRA_AGENT_XL");
+    });
+
+    it("mirrors the size into config.selectedRessource for CLINT services", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        enableService({
+          type: "CLINT",
+          prefix: "agent",
+          clintConfig: {
+            package: { registry: "https://r", name: "p", version: null },
+            env: [],
+            serviceCommand: null,
+            selectedRessource: "VETRA_AGENT_S",
+          },
+        }),
+      );
+      document = reducer(
+        document,
+        setServiceSize({ prefix: "agent", size: "VETRA_AGENT_M" }),
+      );
+      const svc = document.state.global.services.find(
+        (s) => s.prefix === "agent",
+      );
+      expect(svc?.selectedRessource).toBe("VETRA_AGENT_M");
+      expect(svc?.config?.selectedRessource).toBe("VETRA_AGENT_M");
+    });
+
+    it("records ServiceNotFoundError when prefix does not exist", () => {
+      const document = utils.createDocument();
+      const updated = reducer(
+        document,
+        setServiceSize({ prefix: "nope", size: "VETRA_AGENT_M" }),
+      );
+      const op = updated.operations.global[0];
+      expect(op.error).toMatch(/No service with prefix/);
+    });
   });
 });

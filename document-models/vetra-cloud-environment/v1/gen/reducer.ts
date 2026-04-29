@@ -25,6 +25,7 @@ import {
   UpdateServicePrefixInputSchema,
   SetServiceStatusInputSchema,
   SetServiceVersionInputSchema,
+  SetServiceSizeInputSchema,
   AddPackageInputSchema,
   RemovePackageInputSchema,
   SetPackageVersionInputSchema,
@@ -221,6 +222,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetServiceVersionInputSchema().parse(action.input);
 
       vetraCloudEnvironmentServicesOperations.setServiceVersionOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_SERVICE_SIZE": {
+      SetServiceSizeInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.setServiceSizeOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

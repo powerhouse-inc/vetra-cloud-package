@@ -59,6 +59,7 @@ type VetraCloudEnvironmentService {
   status: ServiceStatus!
   version: String
   config: VetraCloudServiceClint
+  selectedRessource: VetraCloudRessourceSize
 }
 
 type VetraCloudServiceClint {
@@ -162,6 +163,7 @@ input EnableServiceInput {
   type: VetraCloudEnvironmentServiceType!
   prefix: String!
   clintConfig: VetraCloudServiceClintInput
+  selectedRessource: VetraCloudRessourceSize
 }
 
 input VetraCloudServiceClintInput {
@@ -227,6 +229,11 @@ input SetServiceStatusInput {
 input SetServiceVersionInput {
   type: VetraCloudEnvironmentServiceType!
   version: String!
+}
+
+input SetServiceSizeInput {
+  prefix: String!
+  size: VetraCloudRessourceSize!
 }
 
 # packages

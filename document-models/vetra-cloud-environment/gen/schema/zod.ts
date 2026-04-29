@@ -27,6 +27,7 @@ import type {
   SetOwnerInput,
   SetPackageVersionInput,
   SetServiceConfigInput,
+  SetServiceSizeInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
   TerminateEnvironmentInput,
@@ -158,6 +159,7 @@ export function EnableServiceInputSchema(): z.ZodObject<
   return z.object({
     clintConfig: z.lazy(() => VetraCloudServiceClintInputSchema().nullish()),
     prefix: z.string(),
+    selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
     type: VetraCloudEnvironmentServiceTypeSchema,
   });
 }
@@ -304,6 +306,15 @@ export function SetServiceConfigInputSchema(): z.ZodObject<
   });
 }
 
+export function SetServiceSizeInputSchema(): z.ZodObject<
+  Properties<SetServiceSizeInput>
+> {
+  return z.object({
+    prefix: z.string(),
+    size: VetraCloudRessourceSizeSchema,
+  });
+}
+
 export function SetServiceStatusInputSchema(): z.ZodObject<
   Properties<SetServiceStatusInput>
 > {
@@ -364,6 +375,7 @@ export function VetraCloudEnvironmentServiceSchema(): z.ZodObject<
     config: z.lazy(() => VetraCloudServiceClintSchema().nullish()),
     enabled: z.boolean(),
     prefix: z.string(),
+    selectedRessource: VetraCloudRessourceSizeSchema.nullish(),
     status: ServiceStatusSchema,
     type: VetraCloudEnvironmentServiceTypeSchema,
     url: z.string().nullish(),

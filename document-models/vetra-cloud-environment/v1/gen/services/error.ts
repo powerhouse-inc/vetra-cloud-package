@@ -52,4 +52,5 @@ export const errors = {
   UpdateServicePrefix: { ServiceNotFoundError, NotOwnerError },
   SetServiceStatus: { ServiceNotFoundError, NotOwnerError },
   SetServiceVersion: { ServiceNotFoundError, NotOwnerError },
+  SetServiceSize: { ServiceNotFoundError, NotOwnerError },
 };

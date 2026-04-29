@@ -94,6 +94,7 @@ export type DnsRecordInput = {
 export type EnableServiceInput = {
   clintConfig?: InputMaybe<VetraCloudServiceClintInput>;
   prefix: Scalars["String"]["input"];
+  selectedRessource?: InputMaybe<VetraCloudRessourceSize>;
   type: VetraCloudEnvironmentServiceType;
 };
 
@@ -177,6 +178,11 @@ export type SetServiceConfigInput = {
   prefix: Scalars["String"]["input"];
 };
 
+export type SetServiceSizeInput = {
+  prefix: Scalars["String"]["input"];
+  size: VetraCloudRessourceSize;
+};
+
 export type SetServiceStatusInput = {
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
@@ -209,6 +215,7 @@ export type VetraCloudEnvironmentService = {
   config: Maybe<VetraCloudServiceClint>;
   enabled: Scalars["Boolean"]["output"];
   prefix: Scalars["String"]["output"];
+  selectedRessource: Maybe<VetraCloudRessourceSize>;
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
   url: Maybe<Scalars["String"]["output"]>;

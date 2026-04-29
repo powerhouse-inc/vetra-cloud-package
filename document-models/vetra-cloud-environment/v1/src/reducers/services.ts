@@ -56,6 +56,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         existing.enabled = true;
         existing.prefix = prefix;
         if (config) existing.config = config;
+        if (action.input.selectedRessource) {
+          existing.selectedRessource = action.input.selectedRessource;
+        }
       } else {
         state.services.push({
           type,
@@ -65,6 +68,8 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           status: "PROVISIONING",
           version: null,
           config,
+          selectedRessource:
+            action.input.selectedRessource ?? "VETRA_AGENT_S",
         });
       }
       regenerateDnsRecords(state);
@@ -154,6 +159,28 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         serviceCommand: config.serviceCommand ?? null,
         selectedRessource: config.selectedRessource ?? null,
       };
+      if (config.selectedRessource) {
+        service.selectedRessource = config.selectedRessource;
+      }
       state.status = "CHANGES_PENDING";
+    },
+    setServiceSizeOperation(state, action) {
+      assertOwner(state, action);
+      if (!state.services) {
+        state.services = [];
+      }
+      const service = state.services.find(
+        (s) => s.prefix === action.input.prefix,
+      );
+      if (!service) {
+        throw new ServiceNotFoundError(
+          `No service with prefix '${action.input.prefix}'`,
+        );
+      }
+      service.selectedRessource = action.input.size;
+      if (service.type === "CLINT" && service.config) {
+        service.config.selectedRessource = action.input.size;
+      }
+      markPendingIfDeployed(state);
     },
   };

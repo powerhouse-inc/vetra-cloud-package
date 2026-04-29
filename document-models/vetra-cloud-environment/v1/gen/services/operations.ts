@@ -7,6 +7,7 @@ import type {
   UpdateServicePrefixAction,
   SetServiceStatusAction,
   SetServiceVersionAction,
+  SetServiceSizeAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
@@ -44,6 +45,11 @@ export interface VetraCloudEnvironmentServicesOperations {
   setServiceVersionOperation: (
     state: VetraCloudEnvironmentState,
     action: SetServiceVersionAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setServiceSizeOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetServiceSizeAction,
     dispatch?: SignalDispatch,
   ) => void;
 }
