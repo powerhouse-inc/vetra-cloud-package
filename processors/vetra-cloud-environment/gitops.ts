@@ -443,15 +443,19 @@ function generateClintBlock(
     lines.push(
       `        limits: { cpu: ${yamlQuote(resources.limits.cpu)}, memory: ${yamlQuote(resources.limits.memory)} }`,
     );
-    if (envVars.length > 0) {
-      lines.push(`      env:`);
-      for (const e of envVars) {
-        lines.push(
-          `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
-        );
-      }
-    } else {
-      lines.push(`      env: []`);
+    // Always emit NODE_OPTIONS so V8's heap cap matches the cgroup limit.
+    // The clint-runtime image is Node-based and runs `pnpm install` at boot;
+    // without this, V8 caps the heap at its default (~75% of detected memory)
+    // which on small sizes is well under what large agent installs need.
+    // User-provided envVars come last so they can override if desired.
+    lines.push(`      env:`);
+    lines.push(
+      `        - { name: "NODE_OPTIONS", value: "--max-old-space-size=${resources.nodeMaxOldSpaceMb}" }`,
+    );
+    for (const e of envVars) {
+      lines.push(
+        `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+      );
     }
     lines.push(`      announce:`);
     lines.push(`        enabled: true`);

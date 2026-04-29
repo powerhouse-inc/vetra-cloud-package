@@ -185,6 +185,64 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  it("emits NODE_OPTIONS for CLINT pods sized to the t-shirt", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "CLINT",
+            prefix: "agent",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            selectedRessource: "VETRA_AGENT_M",
+            config: {
+              package: { registry: "https://r", name: "p", version: "1.0.0" },
+              env: [],
+              serviceCommand: null,
+              selectedRessource: null,
+            },
+          },
+        ],
+      }),
+      "doc-clint-node",
+    );
+    // CLINT_M has nodeMaxOldSpaceMb = 768
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?env:[\s\S]*?NODE_OPTIONS[\s\S]*?--max-old-space-size=768/,
+    );
+  });
+
+  it("preserves user-provided env vars alongside NODE_OPTIONS for CLINT", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "CLINT",
+            prefix: "agent",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            selectedRessource: "VETRA_AGENT_S",
+            config: {
+              package: { registry: "https://r", name: "p", version: "1.0.0" },
+              env: [{ name: "FOO", value: "bar" }],
+              serviceCommand: null,
+              selectedRessource: null,
+            },
+          },
+        ],
+      }),
+      "doc-clint-userenv",
+    );
+    expect(yaml).toMatch(/NODE_OPTIONS[\s\S]*?--max-old-space-size=384/);
+    expect(yaml).toMatch(/name: "FOO", value: "bar"/);
+  });
+
   it("falls back to legacy CLINT config.selectedRessource when top-level absent", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
