@@ -2,6 +2,10 @@ import type { Kysely } from "kysely";
 import type { ObservabilityDB } from "./db/schema.js";
 import { PrometheusClient } from "./prometheus.js";
 import { LokiClient } from "./loki.js";
+import {
+  loadClintAnnounceSecret,
+  verifyClintAnnounceToken,
+} from "../../shared/clint-announce-token.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -59,6 +63,7 @@ export function createResolvers(
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
   const dispatch = config.dispatch;
+  const announceSecret = loadClintAnnounceSecret();
 
   return {
     Query: {
@@ -637,8 +642,7 @@ export function createResolvers(
       ) => {
         const { documentId, prefix, endpoints } = input;
 
-        // Auth: Authorization: Bearer <token>. Compare against the
-        // (documentId, prefix) row in clint_announce_tokens.
+        // Auth: Authorization: Bearer <token>. Verified via HMAC signature.
         const authHeader = (() => {
           const h = context.headers ?? {};
           const v = h.authorization ?? h.Authorization;
@@ -649,14 +653,7 @@ export function createResolvers(
           : "";
         if (!presented) throw new Error("UNAUTHORIZED");
 
-        const tokenId = `${documentId}|${prefix}`;
-        // clint_announce_tokens lives in the processor's namespace.
-        const tokenRow = await envDb
-          .selectFrom("clint_announce_tokens")
-          .select(["token"])
-          .where("id", "=", tokenId)
-          .executeTakeFirst();
-        if (!tokenRow || tokenRow.token !== presented) {
+        if (!verifyClintAnnounceToken(presented, { documentId, prefix }, announceSecret)) {
           throw new Error("UNAUTHORIZED");
         }
 
