@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { randomBytes } from "node:crypto";
 import { childLogger } from "document-model";
 import type { Kysely } from "kysely";
+import {
+  loadClintAnnounceSecret,
+  signClintAnnounceToken,
+} from "../../shared/clint-announce-token.js";
 import type {
   VetraCloudEnvironmentService,
   VetraCloudEnvironmentState,
@@ -357,42 +360,26 @@ function readServiceSize(
 }
 
 /**
- * Mint announce tokens for every CLINT service in the state, idempotent.
- * Returns a `prefix → token` map. Existing tokens are reused so the agent
- * doesn't reset on every reconciliation.
+ * Mint announce tokens for every CLINT service in the state. Tokens are
+ * stateless HMAC-SHA256 signatures over `${documentId}|${prefix}` using
+ * the shared CLINT_ANNOUNCE_SECRET. Same inputs → same token; no DB
+ * write or read. Returns a `prefix → token` map matching the previous
+ * (DB-backed) shape so callers don't need to change.
  */
-async function ensureClintAnnounceTokens(
-  db: Kysely<DB>,
+function mintClintAnnounceTokens(
   state: VetraCloudEnvironmentState,
   documentId: string,
-): Promise<Record<string, string>> {
+): Record<string, string> {
+  const secret = loadClintAnnounceSecret();
   const clintServices = (state.services ?? []).filter(
     (s) => s.type === "CLINT" && s.enabled,
   );
   const tokens: Record<string, string> = {};
   for (const svc of clintServices) {
-    const id = `${documentId}|${svc.prefix}`;
-    const existing = await db
-      .selectFrom("clint_announce_tokens")
-      .select(["token"])
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (existing) {
-      tokens[svc.prefix] = existing.token;
-      continue;
-    }
-    const token = randomBytes(32).toString("base64url");
-    await db
-      .insertInto("clint_announce_tokens")
-      .values({
-        id,
-        documentId,
-        prefix: svc.prefix,
-        token,
-        createdAt: new Date().toISOString(),
-      })
-      .execute();
-    tokens[svc.prefix] = token;
+    tokens[svc.prefix] = signClintAnnounceToken(
+      { documentId, prefix: svc.prefix },
+      secret,
+    );
   }
   return tokens;
 }
@@ -565,7 +552,7 @@ export async function generateValuesYaml(
   // CLINT services: provision/look up announce tokens, then emit a
   // dedicated `clint:` block. Frank's chart consumes it to render the
   // agent Deployments/Services/Ingresses.
-  const clintTokens = await ensureClintAnnounceTokens(db, state, documentId);
+  const clintTokens = mintClintAnnounceTokens(state, documentId);
   const clintBlock = generateClintBlock(
     state,
     documentId,
