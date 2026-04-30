@@ -145,9 +145,9 @@ export const schema: DocumentNode = gql`
 
     Auth: the request must carry an Authorization: Bearer <token>
     header. The token is per-(documentId, prefix), minted by the
-    processor when emitting the pod spec and stored in the
-    clint_announce_tokens table. Mismatched or missing tokens return
-    UNAUTHORIZED.
+    processor as an HMAC-SHA256 signature over the documentId+prefix
+    pair using a shared secret (CLINT_ANNOUNCE_SECRET). Mismatched or
+    missing tokens return UNAUTHORIZED.
 
     Semantics: the announcement is a full replacement — endpoints not
     in the list are deleted from clint_runtime_endpoints for this

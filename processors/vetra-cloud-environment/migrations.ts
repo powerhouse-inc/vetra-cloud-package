@@ -85,24 +85,21 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Column already exists — expected for fresh installs
   }
 
-  // Bearer tokens for clint agent announcement URLs. Keyed by
-  // (documentId, prefix) so a single env can host N agents, each with
-  // its own token. The observability subgraph reads this table cross-
-  // namespace (the same way it reads `environments` for the
-  // myEnvironments resolver) to validate incoming announcements.
-  await db.schema
-    .createTable("clint_announce_tokens")
-    .addColumn("id", "varchar(320)")
-    .addColumn("documentId", "varchar(255)")
-    .addColumn("prefix", "varchar(64)")
-    .addColumn("token", "varchar(128)")
-    .addColumn("createdAt", "varchar(64)")
-    .addPrimaryKeyConstraint("clint_announce_tokens_pkey", ["id"])
-    .ifNotExists()
-    .execute();
+  // Drop legacy clint_announce_tokens table if present — replaced by
+  // stateless HMAC-signed tokens (see shared/clint-announce-token.ts).
+  // Wrapped in try/catch because not all Kysely dialects expose
+  // ifExists() the same way, and a fresh install never had the table.
+  try {
+    await db.schema.dropTable("clint_announce_tokens").execute();
+  } catch {
+    // Table doesn't exist — expected on fresh installs and on the
+    // second run after the drop.
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
-  await db.schema.dropTable("clint_announce_tokens").execute();
+  // clint_announce_tokens is removed by `up()` and isn't recreated by
+  // this version of the package; leave the dropTable out so we don't
+  // race a successful no-op against a not-found error here.
   await db.schema.dropTable("environments").execute();
 }

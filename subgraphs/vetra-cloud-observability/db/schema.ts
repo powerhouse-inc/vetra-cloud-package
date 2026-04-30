@@ -93,10 +93,10 @@ export interface ClintRuntimeEndpoint {
   lastSeen: string;
 }
 
-// Note: clint_announce_tokens lives in the processor's
-// vetra-cloud-environments namespace, not here. The resolver reads it
-// via the cross-namespace `envDb` reference (same pattern as the
-// `environments` table for the myEnvironments resolver).
+// Note: CLINT announce tokens are stateless HMAC-SHA256 signatures
+// (see shared/clint-announce-token.ts). No DB table needed; the
+// resolver verifies in constant time using a shared secret loaded
+// from CLINT_ANNOUNCE_SECRET at module init.
 
 export interface ObservabilityDB {
   environment_status: EnvironmentStatus;

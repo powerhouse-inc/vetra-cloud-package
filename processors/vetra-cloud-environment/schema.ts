@@ -26,27 +26,6 @@ export interface Environments {
   autoUpdateChannel: string | null;
 }
 
-/**
- * Per-(environment, prefix) bearer token for the clint announcement
- * URL. The processor mints one when it first emits the pod spec for a
- * CLINT service; the agent reads it from its env (mounted by the chart
- * from a k8s Secret) and includes it in announcement requests. The
- * observability subgraph validates incoming announcements against this
- * row.
- *
- * Token rotation: delete the row to force regeneration on next sync.
- */
-export interface ClintAnnounceTokens {
-  /** `${documentId}|${prefix}` — composite key. */
-  id: string;
-  documentId: string;
-  prefix: string;
-  /** Random 32-byte token, base64url-encoded. */
-  token: string;
-  createdAt: string;
-}
-
 export interface DB {
   environments: Environments;
-  clint_announce_tokens: ClintAnnounceTokens;
 }
