@@ -254,13 +254,15 @@ const CLINT_RUNTIME_TAG = process.env.CLINT_RUNTIME_IMAGE_TAG ?? "dev";
 
 /**
  * URL the agent posts its announcements to. The agent does a GraphQL
- * `announceClintEndpoints` mutation against the observability subgraph.
+ * `announceClintEndpoints` mutation against the observability subgraph,
+ * which is mounted on the central vetra cloud switchboard. This is the
+ * SAME endpoint vetra.to queries via NEXT_PUBLIC_CLOUD_SWITCHBOARD_URL.
  *
- * Defaults to admin-dev so dev envs work out of the box; production
- * deployments must override via CLINT_ANNOUNCE_URL.
+ * Production deployments must override via CLINT_ANNOUNCE_URL when
+ * pointing at a different cloud switchboard.
  */
 const CLINT_ANNOUNCE_URL =
-  process.env.CLINT_ANNOUNCE_URL ?? "https://admin-dev.vetra.io/graphql";
+  process.env.CLINT_ANNOUNCE_URL ?? "https://switchboard.staging.vetra.io/graphql";
 
 type ResourceSpec = {
   requests: { cpu: string; memory: string };
