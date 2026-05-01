@@ -92,10 +92,6 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("clint_runtime_endpoints_pkey", ["id"])
     .ifNotExists()
     .execute();
-
-  // NOTE: clint_announce_tokens lives in the processor's
-  // vetra-cloud-environments namespace (this subgraph reads it
-  // cross-namespace via envDb, just like it reads `environments`).
 }
 
 export async function down(db: Kysely<any>): Promise<void> {

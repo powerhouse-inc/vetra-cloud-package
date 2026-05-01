@@ -89,14 +89,9 @@ export interface ClintRuntimeEndpoint {
   port: string;
   /** "enabled" | "disabled" — agent can mark endpoints down without removing. */
   status: string;
-  /** ISO timestamp of the last announcement that included this endpoint. */
+  /** ISO timestamp of the last pull-worker tick that observed this endpoint. */
   lastSeen: string;
 }
-
-// Note: clint_announce_tokens lives in the processor's
-// vetra-cloud-environments namespace, not here. The resolver reads it
-// via the cross-namespace `envDb` reference (same pattern as the
-// `environments` table for the myEnvironments resolver).
 
 export interface ObservabilityDB {
   environment_status: EnvironmentStatus;
