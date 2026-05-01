@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { randomBytes } from "node:crypto";
 import { childLogger } from "document-model";
 import type { Kysely } from "kysely";
 import type {
@@ -252,18 +251,6 @@ const CLINT_RUNTIME_IMAGE =
   "cr.vetra.io/powerhouse-inc-powerhouse/clint-runtime";
 const CLINT_RUNTIME_TAG = process.env.CLINT_RUNTIME_IMAGE_TAG ?? "dev";
 
-/**
- * URL the agent posts its announcements to. The agent does a GraphQL
- * `announceClintEndpoints` mutation against the observability subgraph,
- * which is mounted on the central vetra cloud switchboard. This is the
- * SAME endpoint vetra.to queries via NEXT_PUBLIC_CLOUD_SWITCHBOARD_URL.
- *
- * Production deployments must override via CLINT_ANNOUNCE_URL when
- * pointing at a different cloud switchboard.
- */
-const CLINT_ANNOUNCE_URL =
-  process.env.CLINT_ANNOUNCE_URL ?? "https://switchboard.staging.vetra.io/graphql";
-
 type ResourceSpec = {
   requests: { cpu: string; memory: string };
   limits: { cpu: string; memory: string };
@@ -356,53 +343,11 @@ function readServiceSize(
   );
 }
 
-/**
- * Mint announce tokens for every CLINT service in the state, idempotent.
- * Returns a `prefix → token` map. Existing tokens are reused so the agent
- * doesn't reset on every reconciliation.
- */
-async function ensureClintAnnounceTokens(
-  db: Kysely<DB>,
-  state: VetraCloudEnvironmentState,
-  documentId: string,
-): Promise<Record<string, string>> {
-  const clintServices = (state.services ?? []).filter(
-    (s) => s.type === "CLINT" && s.enabled,
-  );
-  const tokens: Record<string, string> = {};
-  for (const svc of clintServices) {
-    const id = `${documentId}|${svc.prefix}`;
-    const existing = await db
-      .selectFrom("clint_announce_tokens")
-      .select(["token"])
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (existing) {
-      tokens[svc.prefix] = existing.token;
-      continue;
-    }
-    const token = randomBytes(32).toString("base64url");
-    await db
-      .insertInto("clint_announce_tokens")
-      .values({
-        id,
-        documentId,
-        prefix: svc.prefix,
-        token,
-        createdAt: new Date().toISOString(),
-      })
-      .execute();
-    tokens[svc.prefix] = token;
-  }
-  return tokens;
-}
-
 function generateClintBlock(
   state: VetraCloudEnvironmentState,
   documentId: string,
   subdomain: string,
   baseDomain: string,
-  tokens: Record<string, string>,
 ): string {
   const clintServices = (state.services ?? []).filter(
     (s) => s.type === "CLINT" && s.enabled,
@@ -424,7 +369,6 @@ function generateClintBlock(
     const size = readServiceSize(svc);
     const resources = CLINT_RESOURCE_MAP[size];
     const command = cfg?.serviceCommand ?? pkg.name;
-    const token = tokens[svc.prefix] ?? "";
     const envVars = cfg?.env ?? [];
 
     lines.push(`    - name: ${yamlQuote(svc.prefix)}`);
@@ -459,18 +403,6 @@ function generateClintBlock(
         `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
       );
     }
-    lines.push(`      announce:`);
-    lines.push(`        enabled: true`);
-    lines.push(`        url: ${yamlQuote(CLINT_ANNOUNCE_URL)}`);
-    // The agent posts to `url` with this token in the Authorization
-    // header. documentId + prefix are passed through to the pod env so
-    // the agent can include them in the mutation input (the receiver
-    // looks up the token by (documentId, prefix)).
-    lines.push(`        documentId: ${yamlQuote(documentId)}`);
-    // TODO: token should be referenced from a k8s Secret rather than
-    // emitted inline. Frank's chart can switch to secretKeyRef once
-    // the secret-provisioning path lands.
-    lines.push(`        token: ${yamlQuote(token)}`);
     lines.push(`      ingress:`);
     lines.push(`        host: ${yamlQuote(`${svc.prefix}.${subdomain}.${baseDomain}`)}`);
   }
@@ -562,16 +494,15 @@ export async function generateValuesYaml(
   const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
 
-  // CLINT services: provision/look up announce tokens, then emit a
-  // dedicated `clint:` block. Frank's chart consumes it to render the
-  // agent Deployments/Services/Ingresses.
-  const clintTokens = await ensureClintAnnounceTokens(db, state, documentId);
+  // CLINT services: emit the dedicated `clint:` block. Frank's chart
+  // consumes it to render the agent Deployments/Services/Ingresses.
+  // Endpoint discovery is now pull-based (see clint-pull-worker); the
+  // chart no longer receives announce env vars.
   const clintBlock = generateClintBlock(
     state,
     documentId,
     subdomain,
     state.genericBaseDomain ?? "vetra.io",
-    clintTokens,
   );
 
   return `global:

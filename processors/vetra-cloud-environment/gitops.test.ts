@@ -4,9 +4,8 @@ import { generateValuesYaml } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
 
-// Stub Kysely interactions used by ensureClintAnnounceTokens. CLINT-only paths
-// look up an existing token (returning undefined) and would insert a fresh one;
-// we make the insert a no-op so we can exercise YAML emission deterministically.
+// Stub Kysely passed to generateValuesYaml; the CLINT path no longer
+// touches the DB after the move to pull-based endpoint discovery.
 const dbStub = {
   selectFrom: () => ({
     select: () => ({
