@@ -315,7 +315,7 @@ Create `subgraphs/vetra-cloud-observability/clint-pull-worker.ts`:
 
 ```ts
 import type { Kysely } from "kysely";
-import type { ILogger } from "@powerhousedao/reactor-api";
+import type { ILogger } from "document-model";
 
 export type ClintServiceTuple = {
   documentId: string;
