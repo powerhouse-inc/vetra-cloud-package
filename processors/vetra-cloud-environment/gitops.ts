@@ -403,7 +403,11 @@ function generateClintBlock(
         `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
       );
     }
+    // Public HTTPS ingress — required so the observability subgraph's pull
+    // worker can reach the agent's `/_proxy/routes` endpoint. cert-manager
+    // provisions TLS via the Let's Encrypt cluster issuer.
     lines.push(`      ingress:`);
+    lines.push(`        enabled: true`);
     lines.push(`        host: ${yamlQuote(`${svc.prefix}.${subdomain}.${baseDomain}`)}`);
   }
   return lines.join("\n");
