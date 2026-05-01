@@ -239,4 +239,65 @@ describe('ClintPullWorker.tickOnce', () => {
     await worker.tickOnce();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it('preserves worker-written rows when a subsequent tick fails', async () => {
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-1',
+      subdomain: 'sure-fawn-71',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'ph-pirate-wouter' },
+      ]),
+    });
+
+    // First tick: success — worker writes 2 rows.
+    const mockA = await startMockAgent({
+      endpoints: [
+        { id: 'agent-graphql', type: 'api-graphql', port: '8080', status: 'enabled' },
+        { id: 'agent-mcp', type: 'api-mcp', port: '8080', status: 'enabled' },
+      ],
+    });
+    server = mockA.server;
+    const worker1 = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: noopLogger,
+      buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/clint/endpoints`,
+    });
+    await worker1.tickOnce();
+    const initialRows = await obsDb
+      .selectFrom('clint_runtime_endpoints')
+      .selectAll()
+      .where('documentId', '=', 'doc-1')
+      .execute();
+    expect(initialRows).toHaveLength(2);
+    const initialLastSeen = (initialRows[0] as any).lastSeen as string;
+    server.close();
+    server = null;
+
+    // Second tick: 503 — rows must survive untouched.
+    const mockB = await startMockAgent({ status: 503 });
+    server = mockB.server;
+    const worker2 = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: noopLogger,
+      buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/clint/endpoints`,
+    });
+    await worker2.tickOnce();
+
+    const rowsAfterFailure = await obsDb
+      .selectFrom('clint_runtime_endpoints')
+      .selectAll()
+      .where('documentId', '=', 'doc-1')
+      .execute();
+    expect(rowsAfterFailure).toHaveLength(2);
+    expect(rowsAfterFailure.map((r: any) => r.endpointId).sort()).toEqual([
+      'agent-graphql',
+      'agent-mcp',
+    ]);
+    rowsAfterFailure.forEach((r: any) => {
+      expect(r.lastSeen).toBe(initialLastSeen);
+    });
+  });
 });

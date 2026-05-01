@@ -50,44 +50,61 @@ function parseClintServices(servicesJson: string | null): ParsedService[] {
   }
 }
 
+type ValidEndpoint = {
+  id: string;
+  type?: string;
+  port?: string;
+  status?: string;
+};
+
+function isValidEndpoint(v: unknown): v is ValidEndpoint {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.id !== "string" || o.id.length === 0) return false;
+  if (o.type !== undefined && typeof o.type !== "string") return false;
+  if (o.port !== undefined && typeof o.port !== "string") return false;
+  if (o.status !== undefined && typeof o.status !== "string") return false;
+  return true;
+}
+
 export class ClintPullWorker {
-  #config: ClintPullWorkerConfig;
-  #timer: NodeJS.Timeout | null = null;
-  readonly #buildAgentUrl: (svc: ClintServiceTuple) => string;
-  readonly #fetchTimeoutMs: number;
+  private readonly config: ClintPullWorkerConfig;
+  private timer: NodeJS.Timeout | null = null;
+  private readonly buildAgentUrl: (svc: ClintServiceTuple) => string;
+  private readonly fetchTimeoutMs: number;
 
   constructor(config: ClintPullWorkerConfig) {
-    this.#config = config;
-    this.#buildAgentUrl = config.buildAgentUrl ?? defaultBuildAgentUrl;
-    this.#fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    this.config = config;
+    this.buildAgentUrl = config.buildAgentUrl ?? defaultBuildAgentUrl;
+    this.fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   }
 
   start(): void {
-    if (this.#timer) return;
-    const interval = this.#config.intervalMs ?? DEFAULT_INTERVAL_MS;
+    if (this.timer) return;
+    const interval = this.config.intervalMs ?? DEFAULT_INTERVAL_MS;
     const tick = () => {
       this.tickOnce().catch((err) => {
-        this.#config.logger.warn(
+        this.config.logger.warn(
           `[clint-pull-worker] tick failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
     };
     tick();
-    this.#timer = setInterval(tick, interval);
+    this.timer = setInterval(tick, interval);
   }
 
   stop(): void {
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = null;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
   }
 
   async tickOnce(): Promise<void> {
-    const tuples = await this.#listClintServices();
-    await Promise.all(tuples.map((t) => this.#pullOne(t)));
+    const tuples = await this.listClintServices();
+    await Promise.all(tuples.map((t) => this.pullOne(t)));
   }
 
-  async #listClintServices(): Promise<ClintServiceTuple[]> {
-    const rows = await this.#config.envDb
+  private async listClintServices(): Promise<ClintServiceTuple[]> {
+    const rows = await this.config.envDb
       .selectFrom("environments")
       .select(["id", "subdomain", "services"])
       .execute();
@@ -103,24 +120,25 @@ export class ClintPullWorker {
     return out;
   }
 
-  async #pullOne(svc: ClintServiceTuple): Promise<void> {
-    const url = this.#buildAgentUrl(svc);
+  private async pullOne(svc: ClintServiceTuple): Promise<void> {
+    const url = this.buildAgentUrl(svc);
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), this.#fetchTimeoutMs);
+    const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
     try {
       const res = await fetch(url, { signal: ac.signal });
       if (!res.ok) {
-        this.#config.logger.warn(
+        this.config.logger.warn(
           `[clint-pull-worker] ${svc.documentId} ${svc.prefix} ${res.status} from ${url}`,
         );
         return;
       }
       const body = (await res.json()) as { endpoints?: unknown };
-      const endpoints = Array.isArray(body.endpoints) ? body.endpoints : [];
-      await this.#upsert(svc, endpoints as Array<Record<string, string>>);
+      const raw = Array.isArray(body.endpoints) ? body.endpoints : [];
+      const endpoints = raw.filter(isValidEndpoint);
+      await this.upsert(svc, endpoints);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      this.#config.logger.warn(
+      this.config.logger.warn(
         `[clint-pull-worker] ${svc.documentId} ${svc.prefix} fetch failed: ${reason}`,
       );
     } finally {
@@ -128,15 +146,15 @@ export class ClintPullWorker {
     }
   }
 
-  async #upsert(
+  private async upsert(
     svc: ClintServiceTuple,
-    endpoints: Array<Record<string, string>>,
+    endpoints: ValidEndpoint[],
   ): Promise<void> {
     const now = new Date().toISOString();
     const presented = new Set(endpoints.map((e) => e.id).filter(Boolean));
 
     // Delete entries no longer present.
-    const existing = await this.#config.obsDb
+    const existing = await this.config.obsDb
       .selectFrom("clint_runtime_endpoints")
       .select(["id", "endpointId"])
       .where("documentId", "=", svc.documentId)
@@ -146,7 +164,7 @@ export class ClintPullWorker {
       .filter((r: any) => !presented.has(r.endpointId))
       .map((r: any) => r.id);
     if (toDelete.length > 0) {
-      await this.#config.obsDb
+      await this.config.obsDb
         .deleteFrom("clint_runtime_endpoints")
         .where("id", "in", toDelete)
         .execute();
@@ -167,7 +185,7 @@ export class ClintPullWorker {
         lastSeen: now,
       };
       // Use ON CONFLICT for upsert. SQLite + Postgres both support this.
-      await this.#config.obsDb
+      await this.config.obsDb
         .insertInto("clint_runtime_endpoints")
         .values(values)
         .onConflict((oc: any) =>
