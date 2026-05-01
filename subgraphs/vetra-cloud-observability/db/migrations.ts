@@ -93,8 +93,9 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists()
     .execute();
 
-  // NOTE: CLINT announce tokens are stateless HMAC-SHA256 signatures
-  // (see shared/clint-announce-token.ts). No DB table needed.
+  // NOTE: clint_announce_tokens lives in the processor's
+  // vetra-cloud-environments namespace (this subgraph reads it
+  // cross-namespace via envDb, just like it reads `environments`).
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
