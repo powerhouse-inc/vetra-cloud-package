@@ -5,8 +5,6 @@ import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
 import { createResolvers } from "../resolvers.js";
 
-process.env.CLINT_ANNOUNCE_SECRET = Buffer.from("test-secret-padding-32bytes-ok!!").toString("base64");
-
 let db: Kysely<ObservabilityDB>;
 let resolvers: ReturnType<typeof createResolvers>;
 
