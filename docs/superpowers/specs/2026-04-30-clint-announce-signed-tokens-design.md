@@ -1,6 +1,7 @@
 # CLINT Announce — Stateless Signed Tokens (Design)
 
-**Status:** Draft
+**Status:** Superseded (2026-05-01)
+**Superseded by:** Pull-based design — agent exposes a static endpoint via nginx proxy in ph-clint, vetra-cloud reads it. No more announce mutation, no token, no shared secret. Spec to be written by the author of the new ph-clint nginx-proxy work. See post-mortem note in §11 below.
 **Date:** 2026-04-30
 **Owner:** Frank (vetra-cloud-package)
 **Cross-repo dependency:** `powerhouse-k8s-hosting` (chart adds `CLINT_ANNOUNCE_SECRET` to switchboard env via existing `external-secret-gitops` pattern); OpenBao (new shared secret at `powerhouse/shared/clint-announce`).
@@ -284,3 +285,28 @@ This becomes the writing-plans input. Sketched here to validate scope:
 7. **OpenBao**: write the shared secret.
 8. **Sequenced rollout** per §7 (chart change → secret materializes → publish package → bump staging → reconcile → agents cycle → announces flow).
 9. **Validation**: after rollout, query `clintRuntimeEndpointsByEnv` for ph-pirate-wouter on `60eb44ad-…` — expect non-empty endpoints list with `prefix: "ph-pirate-wouter"`.
+
+## 11. Post-mortem (2026-05-01)
+
+The HMAC token machinery was implemented and deployed (vetra-cloud-package@0.0.3-dev.57) but **never reached the resolver**. The reactor-api auth middleware sits ABOVE every GraphQL request: when an Authorization header is present but isn't a valid Renown JWT, the middleware returns `{"error": "Verification failed"}` with HTTP 401 before any resolver code runs.
+
+This wasn't caught at design time because the spec assumed the only auth boundary was at the resolver level. Empirically:
+
+- Token math was correct end-to-end (sign + verify in pod env, YAML emit, and standalone-computed token all matched).
+- Resolver never executed — the request was rejected at the middleware.
+
+Two distinct fixes were considered:
+
+1. Make the agent's bearer token a real Renown JWT via `@renown/sdk`'s `getBearerToken`. Requires distributing a JWK keypair to agents + (optionally) registering an agent identity with the Renown server.
+2. Pivot to pull-based: agent exposes its endpoints via an nginx proxy on a static path; vetra-cloud queries it instead of receiving announces. Eliminates the agent-side auth question entirely.
+
+Path #2 was chosen on 2026-05-01 (in chat with Frank + Prometheus): a fresh ph-clint with nginx proxy will expose endpoints at one static path, and the chart will add an ingress for it. Auth at that endpoint can use ordinary cluster network policy + ingress auth instead of bearer tokens.
+
+Cleanup performed today:
+- Reverted the four HMAC commits in vetra-cloud-package (resolver, processor, shared module, migration). The package returns to its pre-HMAC state on dev.58.
+- Reverted the chart's `external-secret-gitops.yaml` block that pulled `CLINT_ANNOUNCE_SECRET`.
+- Reverted staging's `clintAnnounce.enabled` + `CLINT_ANNOUNCE_SECRET` envSecret.
+- Bumped staging's PH_REGISTRY_PACKAGES to dev.58.
+- Deleted the OpenBao secret at `kv/data/powerhouse/shared/clint-announce`.
+
+The 2026-04-30 chart-side env-var contract update (`<CLI_NAME>_SERVICE_ANNOUNCE_URL` + hostname pin in `clint-deployment.yaml`) was kept — it correctly aligns the chart with ph-clint dev.32's contract regardless of which auth scheme runs. When the pull-based design lands, the announce env vars in clint-deployment.yaml can be removed cleanly.
