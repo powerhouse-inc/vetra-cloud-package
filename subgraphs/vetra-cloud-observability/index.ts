@@ -2,11 +2,12 @@ import { resolve4 } from "node:dns/promises";
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
-import { createAction } from "document-model";
+import { childLogger, createAction } from "document-model";
 import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
+import { ClintPullWorker } from "./clint-pull-worker.js";
 import type { ObservabilityDB } from "./db/schema.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
@@ -21,6 +22,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
   private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
+  private clintPullWorker: ClintPullWorker | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -102,6 +104,24 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // subgraph hasn't received a notifyNewImageRelease webhook for that
     // channel yet.
     this.startReleaseIndexBackfill(db);
+
+    // Pull-based CLINT endpoint discovery. Replaces the legacy push-announce
+    // path — agents serve their endpoints at `/clint/endpoints`; we GET on a
+    // 15s tick and upsert into clint_runtime_endpoints. Gated behind a flag
+    // until the ph-clint nginx version is rolled out everywhere.
+    if (process.env.CLINT_PULL_WORKER_ENABLED === "true") {
+      try {
+        this.clintPullWorker = new ClintPullWorker({
+          envDb,
+          obsDb: db,
+          logger: childLogger(["observability", "clint-pull-worker"]),
+        });
+        this.clintPullWorker.start();
+        console.info("[observability] ClintPullWorker started");
+      } catch (err) {
+        console.warn("[observability] Failed to start ClintPullWorker:", err);
+      }
+    }
   }
 
   async onDisconnect() {
@@ -127,6 +147,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       clearInterval(this.releaseIndexBackfill);
       this.releaseIndexBackfill = null;
     }
+    this.clintPullWorker?.stop();
+    this.clintPullWorker = null;
   }
 
   /** Grace period (ms) before marking a DEPLOYING environment as failed.
