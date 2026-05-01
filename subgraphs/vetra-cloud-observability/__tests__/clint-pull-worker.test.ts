@@ -1,20 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, Server } from 'node:http';
 import { Kysely, SqliteDialect } from 'kysely';
 import Database from 'better-sqlite3';
 import { ClintPullWorker } from '../clint-pull-worker.js';
 
-type ClintEndpointsResponse = {
-  endpoints: Array<{ id: string; type: string; port: string; status: string }>;
+/** Shape of `GET /_proxy/routes` from ph-clint dev.41+. */
+type ProxyRoute = {
+  prefix: string;
+  upstream: string;
+  ws?: boolean;
+  source?: string;
 };
 
-function startMockAgent(response: ClintEndpointsResponse | { status: number }): Promise<{
+function startMockAgent(response: ProxyRoute[] | { status: number }): Promise<{
   server: Server;
   port: number;
 }> {
   return new Promise((resolve) => {
-    const server = createServer((req, res) => {
-      if ('status' in response) {
+    const server = createServer((_req, res) => {
+      if (!Array.isArray(response) && 'status' in response) {
         res.statusCode = response.status;
         res.end();
         return;
@@ -76,13 +80,21 @@ describe('ClintPullWorker.tickOnce', () => {
     server = null;
   });
 
-  it('upserts endpoints fetched from a CLINT agent into clint_runtime_endpoints', async () => {
-    const mock = await startMockAgent({
-      endpoints: [
-        { id: 'agent-graphql', type: 'api-graphql', port: '8080', status: 'enabled' },
-        { id: 'agent-mcp', type: 'api-mcp', port: '8080', status: 'enabled' },
-      ],
-    });
+  it('upserts /_proxy/routes from a CLINT agent into clint_runtime_endpoints', async () => {
+    const mock = await startMockAgent([
+      {
+        prefix: '/switchboard/graphql',
+        upstream: 'http://localhost:35940/graphql',
+        ws: false,
+        source: 'switchboard',
+      },
+      {
+        prefix: '/switchboard/mcp',
+        upstream: 'http://localhost:35940/mcp',
+        ws: true,
+        source: 'switchboard',
+      },
+    ]);
     server = mock.server;
 
     const { envDb, obsDb, insertEnv } = await setupDbs();
@@ -98,7 +110,7 @@ describe('ClintPullWorker.tickOnce', () => {
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: (svc) => `http://127.0.0.1:${mock.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
     });
 
     await worker.tickOnce();
@@ -109,14 +121,23 @@ describe('ClintPullWorker.tickOnce', () => {
       .where('documentId', '=', 'doc-1')
       .execute();
     expect(rows).toHaveLength(2);
-    expect(rows.map((r: any) => r.endpointId).sort()).toEqual(['agent-graphql', 'agent-mcp']);
+    const byEndpointId: Record<string, any> = {};
+    for (const r of rows as any[]) byEndpointId[r.endpointId] = r;
+    expect(Object.keys(byEndpointId).sort()).toEqual([
+      '/switchboard/graphql',
+      '/switchboard/mcp',
+    ]);
+    expect(byEndpointId['/switchboard/graphql'].type).toBe('api-graphql');
+    expect(byEndpointId['/switchboard/graphql'].port).toBe('35940');
+    expect(byEndpointId['/switchboard/graphql'].status).toBe('enabled');
+    expect(byEndpointId['/switchboard/mcp'].type).toBe('api-mcp');
     rows.forEach((r: any) => {
       expect(r.prefix).toBe('ph-pirate-wouter');
       expect(r.lastSeen).toBeTruthy();
     });
   });
 
-  it('removes endpoints that disappear from the agent response (replace semantics)', async () => {
+  it('removes routes that disappear from the agent response (replace semantics)', async () => {
     const { envDb, obsDb, insertEnv } = await setupDbs();
     await insertEnv({
       id: 'doc-1',
@@ -126,36 +147,32 @@ describe('ClintPullWorker.tickOnce', () => {
       ]),
     });
 
-    // First tick: 2 endpoints
-    const mockA = await startMockAgent({
-      endpoints: [
-        { id: 'agent-graphql', type: 'api-graphql', port: '8080', status: 'enabled' },
-        { id: 'agent-mcp', type: 'api-mcp', port: '8080', status: 'enabled' },
-      ],
-    });
+    // First tick: 2 routes
+    const mockA = await startMockAgent([
+      { prefix: '/switchboard/graphql', upstream: 'http://localhost:35940/graphql', source: 'switchboard' },
+      { prefix: '/switchboard/mcp', upstream: 'http://localhost:35940/mcp', ws: true, source: 'switchboard' },
+    ]);
     server = mockA.server;
     const worker1 = new ClintPullWorker({
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/_proxy/routes`,
     });
     await worker1.tickOnce();
     server.close();
     server = null;
 
-    // Second tick: only 1 endpoint
-    const mockB = await startMockAgent({
-      endpoints: [
-        { id: 'agent-graphql', type: 'api-graphql', port: '8080', status: 'enabled' },
-      ],
-    });
+    // Second tick: only 1 route
+    const mockB = await startMockAgent([
+      { prefix: '/switchboard/graphql', upstream: 'http://localhost:35940/graphql', source: 'switchboard' },
+    ]);
     server = mockB.server;
     const worker2 = new ClintPullWorker({
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/_proxy/routes`,
     });
     await worker2.tickOnce();
 
@@ -164,7 +181,7 @@ describe('ClintPullWorker.tickOnce', () => {
       .selectAll()
       .where('documentId', '=', 'doc-1')
       .execute();
-    expect(rows.map((r: any) => r.endpointId)).toEqual(['agent-graphql']);
+    expect(rows.map((r: any) => r.endpointId)).toEqual(['/switchboard/graphql']);
   });
 
   it('keeps existing rows untouched when the agent fetch fails (timeout/non-200)', async () => {
@@ -179,14 +196,14 @@ describe('ClintPullWorker.tickOnce', () => {
         { type: 'CLINT', enabled: true, prefix: 'ph-pirate-wouter' },
       ]),
     });
-    // Pre-populate stale rows to confirm we don't clobber
+    // Pre-populate stale rows to confirm we don't clobber.
     await obsDb
       .insertInto('clint_runtime_endpoints')
       .values({
-        id: 'doc-1|ph-pirate-wouter|stale-id',
+        id: 'doc-1|ph-pirate-wouter|/stale',
         documentId: 'doc-1',
         prefix: 'ph-pirate-wouter',
-        endpointId: 'stale-id',
+        endpointId: '/stale',
         type: 'api-graphql',
         port: '8080',
         status: 'enabled',
@@ -198,7 +215,7 @@ describe('ClintPullWorker.tickOnce', () => {
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
     });
     await worker.tickOnce();
 
@@ -207,7 +224,7 @@ describe('ClintPullWorker.tickOnce', () => {
       .selectAll()
       .where('documentId', '=', 'doc-1')
       .execute();
-    expect(rows.map((r: any) => r.endpointId)).toEqual(['stale-id']);
+    expect(rows.map((r: any) => r.endpointId)).toEqual(['/stale']);
     expect(noopLogger.warn).toHaveBeenCalledWith(
       expect.stringMatching(/clint-pull-worker.*doc-1.*ph-pirate-wouter.*503/),
     );
@@ -233,7 +250,7 @@ describe('ClintPullWorker.tickOnce', () => {
       logger: noopLogger,
       buildAgentUrl: (svc) => {
         fetchSpy(svc);
-        return 'http://example.invalid/clint/endpoints';
+        return 'http://example.invalid/_proxy/routes';
       },
     });
     await worker.tickOnce();
@@ -251,18 +268,16 @@ describe('ClintPullWorker.tickOnce', () => {
     });
 
     // First tick: success — worker writes 2 rows.
-    const mockA = await startMockAgent({
-      endpoints: [
-        { id: 'agent-graphql', type: 'api-graphql', port: '8080', status: 'enabled' },
-        { id: 'agent-mcp', type: 'api-mcp', port: '8080', status: 'enabled' },
-      ],
-    });
+    const mockA = await startMockAgent([
+      { prefix: '/switchboard/graphql', upstream: 'http://localhost:35940/graphql', source: 'switchboard' },
+      { prefix: '/switchboard/mcp', upstream: 'http://localhost:35940/mcp', ws: true, source: 'switchboard' },
+    ]);
     server = mockA.server;
     const worker1 = new ClintPullWorker({
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/_proxy/routes`,
     });
     await worker1.tickOnce();
     const initialRows = await obsDb
@@ -282,7 +297,7 @@ describe('ClintPullWorker.tickOnce', () => {
       envDb,
       obsDb,
       logger: noopLogger,
-      buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/clint/endpoints`,
+      buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/_proxy/routes`,
     });
     await worker2.tickOnce();
 
@@ -293,8 +308,8 @@ describe('ClintPullWorker.tickOnce', () => {
       .execute();
     expect(rowsAfterFailure).toHaveLength(2);
     expect(rowsAfterFailure.map((r: any) => r.endpointId).sort()).toEqual([
-      'agent-graphql',
-      'agent-mcp',
+      '/switchboard/graphql',
+      '/switchboard/mcp',
     ]);
     rowsAfterFailure.forEach((r: any) => {
       expect(r.lastSeen).toBe(initialLastSeen);

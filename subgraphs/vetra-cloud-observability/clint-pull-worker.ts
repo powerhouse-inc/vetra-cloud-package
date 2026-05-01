@@ -16,8 +16,8 @@ export type ClintPullWorkerConfig = {
   /** Defaults to 15000ms. */
   intervalMs?: number;
   /**
-   * Maps a CLINT service tuple to its public `/clint/endpoints` URL.
-   * Defaults to `https://${prefix}.${subdomain}.vetra.io/clint/endpoints`.
+   * Maps a CLINT service tuple to its `/_proxy/routes` URL.
+   * Defaults to `https://${prefix}.${subdomain}.vetra.io/_proxy/routes`.
    * Overridable for tests.
    */
   buildAgentUrl?: (service: ClintServiceTuple) => string;
@@ -30,7 +30,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
 
 function defaultBuildAgentUrl(svc: ClintServiceTuple): string {
-  return `https://${svc.prefix}.${svc.subdomain}.${DEFAULT_BASE_DOMAIN}/clint/endpoints`;
+  return `https://${svc.prefix}.${svc.subdomain}.${DEFAULT_BASE_DOMAIN}/_proxy/routes`;
 }
 
 type ParsedService = {
@@ -50,21 +50,41 @@ function parseClintServices(servicesJson: string | null): ParsedService[] {
   }
 }
 
-type ValidEndpoint = {
-  id: string;
-  type?: string;
-  port?: string;
-  status?: string;
+/**
+ * Shape of one entry returned by ph-clint's `GET /_proxy/routes`.
+ * `upstream` is a serialized URL like `http://localhost:35940/graphql`.
+ */
+type ProxyRoute = {
+  prefix: string;
+  upstream: string;
+  ws?: boolean;
+  source?: string;
 };
 
-function isValidEndpoint(v: unknown): v is ValidEndpoint {
+function isProxyRoute(v: unknown): v is ProxyRoute {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
-  if (typeof o.id !== "string" || o.id.length === 0) return false;
-  if (o.type !== undefined && typeof o.type !== "string") return false;
-  if (o.port !== undefined && typeof o.port !== "string") return false;
-  if (o.status !== undefined && typeof o.status !== "string") return false;
+  if (typeof o.prefix !== "string" || o.prefix.length === 0) return false;
+  if (typeof o.upstream !== "string" || o.upstream.length === 0) return false;
   return true;
+}
+
+/** Map a route prefix to one of {api-graphql, api-mcp, website}. */
+function endpointTypeFromPrefix(prefix: string): string {
+  if (prefix.includes("/graphql")) return "api-graphql";
+  if (prefix.includes("/mcp")) return "api-mcp";
+  return "website";
+}
+
+/** Pull `port` out of an upstream URL, falling back to scheme defaults. */
+function portFromUpstream(upstream: string): string {
+  try {
+    const u = new URL(upstream);
+    if (u.port) return u.port;
+    return u.protocol === "https:" ? "443" : "80";
+  } catch {
+    return "0";
+  }
 }
 
 export class ClintPullWorker {
@@ -132,10 +152,10 @@ export class ClintPullWorker {
         );
         return;
       }
-      const body = (await res.json()) as { endpoints?: unknown };
-      const raw = Array.isArray(body.endpoints) ? body.endpoints : [];
-      const endpoints = raw.filter(isValidEndpoint);
-      await this.upsert(svc, endpoints);
+      const body = (await res.json()) as unknown;
+      const raw = Array.isArray(body) ? body : [];
+      const routes = raw.filter(isProxyRoute);
+      await this.upsert(svc, routes);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.config.logger.warn(
@@ -146,12 +166,11 @@ export class ClintPullWorker {
     }
   }
 
-  private async upsert(
-    svc: ClintServiceTuple,
-    endpoints: ValidEndpoint[],
-  ): Promise<void> {
+  private async upsert(svc: ClintServiceTuple, routes: ProxyRoute[]): Promise<void> {
     const now = new Date().toISOString();
-    const presented = new Set(endpoints.map((e) => e.id).filter(Boolean));
+    // The route's prefix is the path under the proxy (e.g. "/switchboard/graphql").
+    // We use it as the endpointId — stable, unique within a (documentId, prefix).
+    const presented = new Set(routes.map((r) => r.prefix));
 
     // Delete entries no longer present.
     const existing = await this.config.obsDb
@@ -171,20 +190,20 @@ export class ClintPullWorker {
     }
 
     // Upsert the rest. Replace `lastSeen` on every tick.
-    for (const ep of endpoints) {
-      if (!ep.id) continue;
-      const id = `${svc.documentId}|${svc.prefix}|${ep.id}`;
+    for (const route of routes) {
+      const endpointId = route.prefix;
+      const id = `${svc.documentId}|${svc.prefix}|${endpointId}`;
       const values = {
         id,
         documentId: svc.documentId,
         prefix: svc.prefix,
-        endpointId: ep.id,
-        type: ep.type ?? "",
-        port: ep.port ?? "",
-        status: ep.status ?? "enabled",
+        endpointId,
+        type: endpointTypeFromPrefix(route.prefix),
+        port: portFromUpstream(route.upstream),
+        status: "enabled",
         lastSeen: now,
       };
-      // Use ON CONFLICT for upsert. SQLite + Postgres both support this.
+      // ON CONFLICT for upsert. SQLite + Postgres both support this.
       await this.config.obsDb
         .insertInto("clint_runtime_endpoints")
         .values(values)
