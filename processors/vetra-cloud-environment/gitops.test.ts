@@ -4,15 +4,9 @@ import { generateValuesYaml } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
 
-// loadClintAnnounceSecret() throws when this is unset — set a deterministic
-// test value so YAML rendering for CLINT services works. The actual token
-// values asserted in tests are matched against a pattern, not a fixed string.
-process.env.CLINT_ANNOUNCE_SECRET = Buffer.from(
-  "test-secret-padding-32bytes-ok!!",
-).toString("base64");
-
-// DB stub — CLINT tokens no longer touch the DB, but other paths (switchboard,
-// connect) may still pass db through; keep a minimal stub so those calls compile.
+// Stub Kysely interactions used by ensureClintAnnounceTokens. CLINT-only paths
+// look up an existing token (returning undefined) and would insert a fresh one;
+// we make the insert a no-op so we can exercise YAML emission deterministically.
 const dbStub = {
   selectFrom: () => ({
     select: () => ({
