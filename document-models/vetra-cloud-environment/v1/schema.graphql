@@ -209,6 +209,7 @@ input VetraCloudServiceEnvConfigInput {
 
 input DisableServiceInput {
   type: VetraCloudEnvironmentServiceType!
+  prefix: String
 }
 
 input ToggleServiceInput {

@@ -306,7 +306,7 @@ export const documentModel: DocumentModelGlobalState = {
               name: "DISABLE_SERVICE",
               description: "",
               schema:
-                "input DisableServiceInput {\n  type: VetraCloudEnvironmentServiceType!\n}",
+                "input DisableServiceInput {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String\n}",
               template: "",
               reducer:
                 'const { type } = action.input;\nif (!state.services) {\n  state.services = [];\n}\nconst service = state.services.find((s) => s.type === type);\nif (service) {\n  service.enabled = false;\n  state.status = "CHANGES_PENDING";\n}',

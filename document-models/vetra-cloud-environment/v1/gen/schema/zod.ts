@@ -130,6 +130,7 @@ export function DisableServiceInputSchema(): z.ZodObject<
   Properties<DisableServiceInput>
 > {
   return z.object({
+    prefix: z.string().nullish(),
     type: VetraCloudEnvironmentServiceTypeSchema,
   });
 }
