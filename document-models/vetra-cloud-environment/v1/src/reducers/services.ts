@@ -68,8 +68,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           status: "PROVISIONING",
           version: null,
           config,
-          selectedRessource:
-            action.input.selectedRessource ?? "VETRA_AGENT_S",
+          selectedRessource: action.input.selectedRessource ?? "VETRA_AGENT_S",
         });
       }
       regenerateDnsRecords(state);
@@ -77,11 +76,19 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     disableServiceOperation(state, action) {
       assertOwner(state, action);
-      const { type } = action.input;
+      const { type, prefix } = action.input;
       if (!state.services) {
         state.services = [];
       }
-      const service = state.services.find((s) => s.type === type);
+      // CLINT supports multiple services per env keyed by prefix; without
+      // a prefix the lookup would silently disable whichever clint
+      // happens to come first (a real bug for multi-agent envs). When a
+      // prefix is provided we filter by both. For singleton service types
+      // (CONNECT/SWITCHBOARD/FUSION) prefix is optional and ignored.
+      const service =
+        type === "CLINT" && prefix
+          ? state.services.find((s) => s.type === type && s.prefix === prefix)
+          : state.services.find((s) => s.type === type);
       if (service) {
         service.enabled = false;
         regenerateDnsRecords(state);

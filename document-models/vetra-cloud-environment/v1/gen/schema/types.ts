@@ -76,6 +76,7 @@ export type ArchiveInput = {
 export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
 
 export type DisableServiceInput = {
+  prefix?: InputMaybe<Scalars["String"]["input"]>;
   type: VetraCloudEnvironmentServiceType;
 };
 
