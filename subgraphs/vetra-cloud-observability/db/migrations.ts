@@ -23,6 +23,8 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("tenantId", "varchar(255)")
     .addColumn("name", "varchar(255)")
     .addColumn("service", "varchar(50)")
+    .addColumn("component", "varchar(64)")
+    .addColumn("agent", "varchar(64)")
     .addColumn("phase", "varchar(50)")
     .addColumn("ready", "integer")
     .addColumn("restartCount", "integer")
@@ -74,6 +76,25 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("release_history_pkey", ["id"])
     .ifNotExists()
     .execute();
+
+  // Add `component` and `agent` columns to environment_pods if they
+  // don't exist yet — in-place upgrade for envs running the older
+  // schema. We attempt ADD COLUMN and swallow the duplicate-column
+  // error so this stays idempotent across Postgres (production) and
+  // SQLite (tests).
+  for (const col of ["component", "agent"] as const) {
+    try {
+      await db.schema
+        .alterTable("environment_pods")
+        .addColumn(col, "varchar(64)")
+        .execute();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Postgres: 'column "component" of relation "environment_pods" already exists'
+      // SQLite:   'duplicate column name: component'
+      if (!/already exists|duplicate column/i.test(msg)) throw err;
+    }
+  }
 
   // Runtime-announced endpoints from clint agents. Upserted on each
   // announcement; rows are keyed by (documentId, prefix, endpointId) so a

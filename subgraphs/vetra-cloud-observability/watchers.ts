@@ -13,9 +13,15 @@ import type {
 // Utility
 // ---------------------------------------------------------------------------
 
-export function classifyPodService(podName: string): string {
-  if (podName.includes("connect")) return "CONNECT";
-  if (podName.includes("switchboard")) return "SWITCHBOARD";
+/**
+ * Map the chart's `app.kubernetes.io/component` label to the
+ * TenantService enum used by the GraphQL schema. Unrecognised
+ * components (clint agents, registry, helper pods, pre-chart legacy
+ * pods without the label) collapse to OTHER.
+ */
+export function classifyPodService(component: string | null | undefined): string {
+  if (component === "connect") return "CONNECT";
+  if (component === "switchboard") return "SWITCHBOARD";
   return "OTHER";
 }
 
@@ -68,6 +74,8 @@ export async function upsertPod(
         ready: row.ready,
         restartCount: row.restartCount,
         service: row.service,
+        component: row.component,
+        agent: row.agent,
         updatedAt: row.updatedAt,
       }),
     )
@@ -461,7 +469,12 @@ async function reconcile(
 
     const podsBody = podsResponse as {
       items?: Array<{
-        metadata?: { name?: string; namespace?: string; uid?: string };
+        metadata?: {
+          name?: string;
+          namespace?: string;
+          uid?: string;
+          labels?: Record<string, string>;
+        };
         status?: {
           phase?: string;
           containerStatuses?: Array<{
@@ -483,12 +496,17 @@ async function reconcile(
         (sum, cs) => sum + (cs.restartCount ?? 0),
         0,
       );
+      const labels = pod.metadata?.labels ?? {};
+      const component = labels["app.kubernetes.io/component"] ?? null;
+      const agent = labels["clint.vetra.io/agent"] ?? null;
 
       await upsertPod(db, {
         id: `${tenantId}/${name}`,
         tenantId,
         name,
-        service: classifyPodService(name),
+        service: classifyPodService(component),
+        component,
+        agent,
         phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
         ready,
         restartCount,
@@ -619,7 +637,11 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
         {},
         async (_phase: string, obj: unknown) => {
           const pod = obj as {
-            metadata?: { name?: string; namespace?: string };
+            metadata?: {
+              name?: string;
+              namespace?: string;
+              labels?: Record<string, string>;
+            };
             status?: {
               phase?: string;
               containerStatuses?: Array<{
@@ -639,12 +661,17 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
             (sum, cs) => sum + (cs.restartCount ?? 0),
             0,
           );
+          const labels = pod.metadata?.labels ?? {};
+          const component = labels["app.kubernetes.io/component"] ?? null;
+          const agent = labels["clint.vetra.io/agent"] ?? null;
 
           await upsertPod(db, {
             id: `${tenantId}/${name}`,
             tenantId,
             name,
-            service: classifyPodService(name),
+            service: classifyPodService(component),
+            component,
+            agent,
             phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
             ready,
             restartCount,

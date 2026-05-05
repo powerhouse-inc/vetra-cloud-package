@@ -197,6 +197,18 @@ export const schema: DocumentNode = gql`
   type Pod {
     name: String!
     service: TenantService
+    """
+    Value of the chart's app.kubernetes.io/component label. Examples:
+    "connect", "switchboard", "clint", "fusion", "registry". Null for
+    pods that don't carry the label.
+    """
+    component: String
+    """
+    Value of the clint.vetra.io/agent label set by the chart on every
+    clint pod. Matches CloudEnvironmentService.prefix on the doc-model
+    side. Null for non-clint pods.
+    """
+    agent: String
     phase: PodPhase!
     ready: Boolean!
     restartCount: Int!
