@@ -30,19 +30,20 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("classifyPodService", () => {
-  it('returns CONNECT for names starting with "connect"', () => {
-    expect(classifyPodService("connect-xyz-abc")).toBe("CONNECT");
+  it('returns CONNECT for component "connect"', () => {
     expect(classifyPodService("connect")).toBe("CONNECT");
   });
 
-  it('returns SWITCHBOARD for names starting with "switchboard"', () => {
-    expect(classifyPodService("switchboard-xyz")).toBe("SWITCHBOARD");
+  it('returns SWITCHBOARD for component "switchboard"', () => {
     expect(classifyPodService("switchboard")).toBe("SWITCHBOARD");
   });
 
-  it("returns OTHER for unrecognized names", () => {
-    expect(classifyPodService("postgres-xyz")).toBe("OTHER");
-    expect(classifyPodService("redis-pod")).toBe("OTHER");
+  it("returns OTHER for any other component value or null", () => {
+    expect(classifyPodService("clint")).toBe("OTHER");
+    expect(classifyPodService("fusion")).toBe("OTHER");
+    expect(classifyPodService("registry")).toBe("OTHER");
+    expect(classifyPodService(null)).toBe("OTHER");
+    expect(classifyPodService(undefined)).toBe("OTHER");
     expect(classifyPodService("")).toBe("OTHER");
   });
 });
@@ -115,6 +116,8 @@ describe("upsertPod", () => {
     tenantId: "tenant-1",
     name: "connect-pod-abc",
     service: "CONNECT",
+    component: "connect",
+    agent: null,
     phase: "Running",
     ready: 1,
     restartCount: 0,
@@ -161,6 +164,60 @@ describe("upsertPod", () => {
     expect(rows[0].ready).toBe(0);
     expect(rows[0].restartCount).toBe(5);
     expect(rows[0].updatedAt).toBe("2024-06-01T00:00:00Z");
+  });
+
+  it("persists component and agent labels for clint pods", async () => {
+    // Pod name is exactly 63 chars and k8s dropped the dash before the hash
+    // — the original regex-based matcher fails on this case. The label is
+    // the source of truth.
+    const clintPod = {
+      id: "tenant-1/powerhouse-keen-lark-10-07b51285-clint-ph-pirate-cli-agent6ff6x",
+      tenantId: "tenant-1",
+      name: "powerhouse-keen-lark-10-07b51285-clint-ph-pirate-cli-agent6ff6x",
+      service: "OTHER",
+      component: "clint",
+      agent: "ph-pirate-cli-agent",
+      phase: "Running",
+      ready: 1,
+      restartCount: 0,
+      updatedAt: "2026-05-05T00:00:00Z",
+    };
+
+    await upsertPod(db, clintPod);
+
+    const rows = await db
+      .selectFrom("environment_pods")
+      .selectAll()
+      .where("id", "=", clintPod.id)
+      .execute();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].component).toBe("clint");
+    expect(rows[0].agent).toBe("ph-pirate-cli-agent");
+  });
+
+  it("nulls component and agent when subsequent upsert lacks them", async () => {
+    await upsertPod(db, {
+      ...basePod,
+      component: "clint",
+      agent: "rupert",
+    });
+
+    await upsertPod(db, {
+      ...basePod,
+      component: null,
+      agent: null,
+    });
+
+    const rows = await db
+      .selectFrom("environment_pods")
+      .selectAll()
+      .where("id", "=", basePod.id)
+      .execute();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].component).toBeNull();
+    expect(rows[0].agent).toBeNull();
   });
 });
 

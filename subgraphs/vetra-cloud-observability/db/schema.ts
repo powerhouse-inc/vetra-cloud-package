@@ -15,7 +15,20 @@ export interface EnvironmentPods {
   id: string; // {tenantId}/{podName}
   tenantId: string;
   name: string;
-  service: string; // CONNECT, SWITCHBOARD, OTHER
+  service: string; // CONNECT, SWITCHBOARD, OTHER (derived from `component` label)
+  /**
+   * Value of the `app.kubernetes.io/component` label set by the chart.
+   * One of: connect, switchboard, clint, fusion, registry, etc. Null
+   * for pods that don't carry the label (e.g. pre-chart legacy pods,
+   * one-off helper pods).
+   */
+  component: string | null;
+  /**
+   * Value of the `clint.vetra.io/agent` label set by the chart on every
+   * clint pod. Non-null only for clint pods. The vetra.to UI uses this
+   * to attribute a pod to a specific agent without parsing pod names.
+   */
+  agent: string | null;
   phase: string;
   ready: number; // 0/1
   restartCount: number;

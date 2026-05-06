@@ -11,7 +11,24 @@ export const schema: DocumentNode = gql`
     podRestartRate(tenantId: String!, range: MetricRange): [MetricSeries!]!
     httpRequestRate(tenantId: String!, range: MetricRange): [MetricSeries!]!
     httpLatency(tenantId: String!, range: MetricRange): [MetricSeries!]!
-    logs(tenantId: String!, service: TenantService, since: MetricRange, limit: Int): [LogEntry!]!
+    """
+    Tail recent logs for an environment. Either filter by a managed
+    \`service\` (CONNECT/SWITCHBOARD) or by an \`agent\` prefix; the two are
+    mutually exclusive — passing both raises a validation error. Without
+    either, returns env-wide logs.
+
+    For \`agent\`, the resolver looks up pods labelled
+    \`clint.vetra.io/agent=<prefix>\` from the \`environment_pods\` cache and
+    builds a Loki \`pod=~\` matcher from their names. Returns an empty list
+    if no matching pods are known yet.
+    """
+    logs(
+      tenantId: String!
+      service: TenantService
+      agent: String
+      since: MetricRange
+      limit: Int
+    ): [LogEntry!]!
     errorLogs(tenantId: String!, since: MetricRange, limit: Int): [LogEntry!]!
 
     """
@@ -197,6 +214,18 @@ export const schema: DocumentNode = gql`
   type Pod {
     name: String!
     service: TenantService
+    """
+    Value of the chart's app.kubernetes.io/component label. Examples:
+    "connect", "switchboard", "clint", "fusion", "registry". Null for
+    pods that don't carry the label.
+    """
+    component: String
+    """
+    Value of the clint.vetra.io/agent label set by the chart on every
+    clint pod. Matches CloudEnvironmentService.prefix on the doc-model
+    side. Null for non-clint pods.
+    """
+    agent: String
     phase: PodPhase!
     ready: Boolean!
     restartCount: Int!

@@ -140,15 +140,47 @@ export function createResolvers(
         {
           tenantId,
           service,
+          agent,
           since,
           limit,
         }: {
           tenantId: string;
           service?: string | null;
+          agent?: string | null;
           since?: string | null;
           limit?: number | null;
         },
-      ) => loki.logs(tenantId, service ?? null, since ?? "FIVE_MIN", limit ?? 100),
+      ) => {
+        if (service && agent) {
+          throw new Error(
+            "logs: pass either `service` or `agent`, not both — they target different streams",
+          );
+        }
+        // Agent-scoped path: translate the prefix into a list of pod
+        // names via the env_pods cache (populated by the watcher from
+        // the chart's `clint.vetra.io/agent` label). If we don't know
+        // any pods yet — e.g. the agent was just created and the
+        // watcher hasn't seen it — return an empty list rather than
+        // falling through to env-wide; the alternative would mislead
+        // the UI into showing other agents' logs under this agent.
+        if (agent) {
+          const podRows = await db
+            .selectFrom("environment_pods")
+            .select(["name"])
+            .where("tenantId", "=", tenantId)
+            .where("agent", "=", agent)
+            .execute();
+          if (podRows.length === 0) return [];
+          return loki.logs(
+            tenantId,
+            null,
+            since ?? "FIVE_MIN",
+            limit ?? 100,
+            podRows.map((r) => r.name),
+          );
+        }
+        return loki.logs(tenantId, service ?? null, since ?? "FIVE_MIN", limit ?? 100);
+      },
 
       errorLogs: async (
         _parent: unknown,
