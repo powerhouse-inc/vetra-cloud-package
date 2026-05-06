@@ -11,7 +11,24 @@ export const schema: DocumentNode = gql`
     podRestartRate(tenantId: String!, range: MetricRange): [MetricSeries!]!
     httpRequestRate(tenantId: String!, range: MetricRange): [MetricSeries!]!
     httpLatency(tenantId: String!, range: MetricRange): [MetricSeries!]!
-    logs(tenantId: String!, service: TenantService, since: MetricRange, limit: Int): [LogEntry!]!
+    """
+    Tail recent logs for an environment. Either filter by a managed
+    \`service\` (CONNECT/SWITCHBOARD) or by an \`agent\` prefix; the two are
+    mutually exclusive — passing both raises a validation error. Without
+    either, returns env-wide logs.
+
+    For \`agent\`, the resolver looks up pods labelled
+    \`clint.vetra.io/agent=<prefix>\` from the \`environment_pods\` cache and
+    builds a Loki \`pod=~\` matcher from their names. Returns an empty list
+    if no matching pods are known yet.
+    """
+    logs(
+      tenantId: String!
+      service: TenantService
+      agent: String
+      since: MetricRange
+      limit: Int
+    ): [LogEntry!]!
     errorLogs(tenantId: String!, since: MetricRange, limit: Int): [LogEntry!]!
 
     """
