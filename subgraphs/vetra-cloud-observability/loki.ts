@@ -80,10 +80,26 @@ export class LokiClient {
     service: string | null | undefined,
     since = "ONE_HOUR",
     limit = 100,
+    /**
+     * When provided, restrict the stream to these pod names via Loki's
+     * `pod=~` regex matcher. Used by the agent-scoped query path: the
+     * resolver looks up pod names labelled `clint.vetra.io/agent=<prefix>`
+     * and passes them in. Mutually exclusive with `service` at the
+     * resolver layer; this method just trusts the caller.
+     */
+    podNames?: readonly string[] | null,
   ): Promise<LogEntry[]> {
     let query = `{namespace="${tenantId}"}`;
     if (service) {
       query = `{namespace="${tenantId}", container="${service.toLowerCase()}"}`;
+    } else if (podNames && podNames.length > 0) {
+      // Loki regex requires escaping any regex metachars present in pod
+      // names (k8s names are alphanumeric + `-`, so `-` is the only one
+      // that needs escaping but it's harmless — guard anyway).
+      const alternation = podNames
+        .map((n) => n.replace(/[.+*?^$()[\]{}|\\]/g, "\\$&"))
+        .join("|");
+      query = `{namespace="${tenantId}", pod=~"${alternation}"}`;
     }
     return this.queryRange(query, since, limit);
   }
