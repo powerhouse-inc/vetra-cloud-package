@@ -133,4 +133,33 @@ describe("db migrations", () => {
       db.selectFrom("environment_status").selectAll().execute(),
     ).rejects.toThrow();
   });
+
+  it("creates database_dumps with correct columns", async () => {
+    await db
+      .insertInto("database_dumps")
+      .values({
+        id: "dump-1",
+        documentId: "doc-1",
+        tenantId: "tenant-1",
+        requestedBy: "0xabc",
+        status: "PENDING",
+        jobName: null,
+        s3Key: null,
+        sizeBytes: null,
+        errorMessage: null,
+        requestedAt: "2026-05-07T10:00:00Z",
+        startedAt: null,
+        completedAt: null,
+        expiresAt: "2026-05-08T10:00:00Z",
+      })
+      .execute();
+
+    const rows = await db
+      .selectFrom("database_dumps")
+      .selectAll()
+      .execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("PENDING");
+    expect(rows[0].tenantId).toBe("tenant-1");
+  });
 });

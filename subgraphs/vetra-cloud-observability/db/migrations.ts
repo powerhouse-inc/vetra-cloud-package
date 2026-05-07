@@ -113,9 +113,38 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("clint_runtime_endpoints_pkey", ["id"])
     .ifNotExists()
     .execute();
+
+  // On-demand pg_dump exports. One row per dump request. Status flows
+  // PENDING -> RUNNING -> READY/FAILED. See vetra.to spec
+  // `2026-05-07-environment-database-dump-design.md`.
+  await db.schema
+    .createTable("database_dumps")
+    .addColumn("id", "varchar(64)", (col) => col.primaryKey())
+    .addColumn("documentId", "varchar(255)", (col) => col.notNull())
+    .addColumn("tenantId", "varchar(255)", (col) => col.notNull())
+    .addColumn("requestedBy", "varchar(255)", (col) => col.notNull())
+    .addColumn("status", "varchar(32)", (col) => col.notNull())
+    .addColumn("jobName", "varchar(255)")
+    .addColumn("s3Key", "varchar(512)")
+    .addColumn("sizeBytes", "bigint")
+    .addColumn("errorMessage", "text")
+    .addColumn("requestedAt", "varchar(64)", (col) => col.notNull())
+    .addColumn("startedAt", "varchar(64)")
+    .addColumn("completedAt", "varchar(64)")
+    .addColumn("expiresAt", "varchar(64)", (col) => col.notNull())
+    .ifNotExists()
+    .execute();
+
+  await db.schema
+    .createIndex("database_dumps_tenant_idx")
+    .ifNotExists()
+    .on("database_dumps")
+    .columns(["tenantId", "requestedAt"])
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("database_dumps").ifExists().execute();
   await db.schema.dropTable("clint_runtime_endpoints").execute();
   await db.schema.dropTable("release_history").execute();
   await db.schema.dropTable("release_index").execute();

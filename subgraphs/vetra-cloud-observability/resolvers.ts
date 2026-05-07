@@ -2,6 +2,10 @@ import type { Kysely } from "kysely";
 import type { ObservabilityDB } from "./db/schema.js";
 import { PrometheusClient } from "./prometheus.js";
 import { LokiClient } from "./loki.js";
+import {
+  createDumpResolvers,
+  type DumpResolverDeps,
+} from "./dumps/resolvers.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -17,6 +21,14 @@ export interface ResolverConfig {
    * resolver is not aware of the underlying reactor client implementation.
    */
   dispatch: (documentId: string, type: string, input: Record<string, unknown>) => Promise<void>;
+  /**
+   * Optional dependencies for the on-demand database dump feature. When
+   * absent the dump query/mutation are not registered on the resolver
+   * map (the GraphQL types are still in the schema; calls would
+   * resolve to undefined). The subgraph host omits this when S3
+   * credentials aren't configured — see `index.ts` startup gating.
+   */
+  dumpDeps?: DumpResolverDeps;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -59,6 +71,9 @@ export function createResolvers(
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
   const dispatch = config.dispatch;
+  const dumpResolvers = config.dumpDeps
+    ? createDumpResolvers(config.dumpDeps)
+    : null;
 
   return {
     Query: {
@@ -325,6 +340,7 @@ export function createResolvers(
         }
         return Array.from(byPrefix.values());
       },
+      ...(dumpResolvers ? { environmentDumps: dumpResolvers.Query.environmentDumps } : {}),
     },
 
     Mutation: {
@@ -648,6 +664,9 @@ export function createResolvers(
         }
         return { updatedEnvironments: rolled };
       },
+      ...(dumpResolvers
+        ? { requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump }
+        : {}),
     },
 
     ReleaseHistoryEntry: {},

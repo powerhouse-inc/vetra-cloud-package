@@ -106,6 +106,28 @@ export interface ClintRuntimeEndpoint {
   lastSeen: string;
 }
 
+/**
+ * On-demand pg_dump exports of a tenant env's Postgres. Files have a
+ * 24h TTL on S3 (bucket lifecycle); rows are pruned after 7 days. See
+ * `docs/superpowers/specs/2026-05-07-environment-database-dump-design.md`
+ * in vetra.to for the full design.
+ */
+export interface DatabaseDumps {
+  id: string;
+  documentId: string;
+  tenantId: string;
+  requestedBy: string;
+  status: string; // PENDING | RUNNING | READY | FAILED
+  jobName: string | null;
+  s3Key: string | null;
+  sizeBytes: number | null;
+  errorMessage: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  expiresAt: string;
+}
+
 export interface ObservabilityDB {
   environment_status: EnvironmentStatus;
   environment_pods: EnvironmentPods;
@@ -113,4 +135,5 @@ export interface ObservabilityDB {
   release_index: ReleaseIndex;
   release_history: ReleaseHistory;
   clint_runtime_endpoints: ClintRuntimeEndpoint;
+  database_dumps: DatabaseDumps;
 }

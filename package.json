@@ -81,6 +81,8 @@
     "migrate": "ph-cli migrate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1044.0",
+    "@aws-sdk/s3-request-presigner": "^3.1044.0",
     "@kubernetes/client-node": "^1.4.0",
     "@powerhousedao/builder-tools": "6.0.0-dev.159",
     "@powerhousedao/common": "6.0.0-dev.159",

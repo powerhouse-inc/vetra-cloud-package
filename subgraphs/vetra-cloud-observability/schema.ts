@@ -69,6 +69,14 @@ export const schema: DocumentNode = gql`
     clintRuntimeEndpointsByEnv(
       documentId: String!
     ): [ClintRuntimeEndpointsForPrefix!]!
+
+    """
+    On-demand pg_dump exports of the env's Postgres, newest first
+    (capped at 20). Owner-only. Each entry has a 24h-TTL file on S3;
+    \`downloadUrl\` is a 15-min presigned URL minted on every read,
+    only present when status=READY and the file hasn't expired.
+    """
+    environmentDumps(tenantId: String!): [DatabaseDump!]!
   }
 
   """Grouping of runtime-announced endpoints under a single agent (= service prefix)."""
@@ -153,6 +161,31 @@ export const schema: DocumentNode = gql`
     there's no history to roll back to for any enabled service.
     """
     rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
+
+    """
+    Owner-gated. Creates a new on-demand pg_dump export. Returns the
+    new dump in PENDING. Caller polls environmentDumps to observe
+    state transitions. Raises DUMP_IN_PROGRESS if a previous dump is
+    still PENDING or RUNNING.
+    """
+    requestEnvironmentDump(tenantId: String!): DatabaseDump!
+  }
+
+  enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }
+
+  type DatabaseDump {
+    id: ID!
+    status: DatabaseDumpStatus!
+    requestedAt: String!
+    startedAt: String
+    completedAt: String
+    expiresAt: String!
+    """Final size in bytes, populated when status=READY."""
+    sizeBytes: Float
+    """Last log line from the failed pod, populated when status=FAILED."""
+    errorMessage: String
+    """Presigned 15-min download URL. Null unless status=READY and not expired."""
+    downloadUrl: String
   }
 
   type ClintRuntimeEndpoint {
