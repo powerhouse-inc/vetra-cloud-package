@@ -156,7 +156,7 @@ RUN apk add --no-cache python3 make g++ git bash \
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 RUN pnpm config set @jsr:registry https://npm.jsr.io
 
 COPY package.json pnpm-lock.yaml tsconfig.json ./
@@ -200,7 +200,9 @@ RUN apk add --no-cache curl
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin pnpm to the version the lockfile was generated with — newer pnpm
+# is stricter about overrides hashing and rejects --frozen-lockfile.
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
 # Install only the runtime deps the controller actually uses (pg, kysely,
 # @kubernetes/client-node, @powerhousedao/shared, etc.). --ignore-scripts
