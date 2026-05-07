@@ -45,6 +45,17 @@ function isForbidden(err: unknown): boolean {
   return statusCode(err) === 403;
 }
 
+/**
+ * 409 Conflict from k8s — the resource was created concurrently between
+ * our read (which returned 404) and our create. Common when two
+ * reconcileTenant calls race (e.g. a NOTIFY-triggered reconcile lands
+ * during the startup full sweep). Recoverable: retry the read+update
+ * path against the now-existing resource.
+ */
+function isConflict(err: unknown): boolean {
+  return statusCode(err) === 409;
+}
+
 export function createK8sClient(): K8sClient {
   const kc = new KubeConfig();
   kc.loadFromDefault();
@@ -84,6 +95,26 @@ export function createK8sClient(): K8sClient {
     return isNotFound(err) || isForbidden(err);
   }
 
+  /**
+   * Update an existing ConfigMap to the desired data, returning
+   * "unchanged" if it already matches. Used both as the primary path
+   * (after a successful read) and as the recovery path when create
+   * loses a 409 race against a concurrent reconcileTenant.
+   */
+  async function replaceConfigMap(
+    spec: K8sResourceSpec,
+    data: Record<string, string>,
+    existing: V1ConfigMap,
+  ): Promise<"updated" | "unchanged"> {
+    if (mapsEqual(existing.data ?? {}, data)) return "unchanged";
+    await api.replaceNamespacedConfigMap({
+      name: spec.name,
+      namespace: spec.namespace,
+      body: { metadata: managedMetadata(spec, existing.metadata), data },
+    });
+    return "updated";
+  }
+
   return {
     async upsertConfigMap(spec, data) {
       try {
@@ -91,19 +122,7 @@ export function createK8sClient(): K8sClient {
           name: spec.name,
           namespace: spec.namespace,
         });
-        const current = existing.data ?? {};
-        if (mapsEqual(current, data)) return "unchanged";
-
-        const body: V1ConfigMap = {
-          metadata: managedMetadata(spec, existing.metadata),
-          data,
-        };
-        await api.replaceNamespacedConfigMap({
-          name: spec.name,
-          namespace: spec.namespace,
-          body,
-        });
-        return "updated";
+        return replaceConfigMap(spec, data, existing);
       } catch (err: unknown) {
         if (isNotFound(err)) {
           try {
@@ -122,6 +141,15 @@ export function createK8sClient(): K8sClient {
                 `[k8s] cannot create ConfigMap ${spec.namespace}/${spec.name} (namespace missing or RBAC not applied); skipping`,
               );
               return "skipped";
+            }
+            // 409 here means a concurrent reconcileTenant created it
+            // between our read (404) and our create. Re-read + replace.
+            if (isConflict(createErr)) {
+              const existing = await api.readNamespacedConfigMap({
+                name: spec.name,
+                namespace: spec.namespace,
+              });
+              return replaceConfigMap(spec, data, existing);
             }
             throw createErr;
           }
@@ -143,25 +171,28 @@ export function createK8sClient(): K8sClient {
         encoded[k] = Buffer.from(v, "utf8").toString("base64");
       }
 
+      const replace = async (
+        existing: V1Secret,
+      ): Promise<"updated" | "unchanged"> => {
+        if (mapsEqual(existing.data ?? {}, encoded)) return "unchanged";
+        await api.replaceNamespacedSecret({
+          name: spec.name,
+          namespace: spec.namespace,
+          body: {
+            metadata: managedMetadata(spec, existing.metadata),
+            type: "Opaque",
+            data: encoded,
+          },
+        });
+        return "updated";
+      };
+
       try {
         const existing = await api.readNamespacedSecret({
           name: spec.name,
           namespace: spec.namespace,
         });
-        const currentEncoded = existing.data ?? {};
-        if (mapsEqual(currentEncoded, encoded)) return "unchanged";
-
-        const body: V1Secret = {
-          metadata: managedMetadata(spec, existing.metadata),
-          type: "Opaque",
-          data: encoded,
-        };
-        await api.replaceNamespacedSecret({
-          name: spec.name,
-          namespace: spec.namespace,
-          body,
-        });
-        return "updated";
+        return replace(existing);
       } catch (err: unknown) {
         if (isNotFound(err)) {
           try {
@@ -181,6 +212,15 @@ export function createK8sClient(): K8sClient {
                 `[k8s] cannot create Secret ${spec.namespace}/${spec.name} (namespace missing or RBAC not applied); skipping`,
               );
               return "skipped";
+            }
+            // 409 here means a concurrent reconcileTenant created it
+            // between our read (404) and our create. Re-read + replace.
+            if (isConflict(createErr)) {
+              const existing = await api.readNamespacedSecret({
+                name: spec.name,
+                namespace: spec.namespace,
+              });
+              return replace(existing);
             }
             throw createErr;
           }
