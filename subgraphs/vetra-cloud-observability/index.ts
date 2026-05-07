@@ -8,6 +8,14 @@ import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
+import { DumpsRepo } from "./dumps/repo.js";
+import { S3Helper } from "./dumps/s3.js";
+import {
+  createDefaultDumpsK8sClient,
+  type DumpsK8sClient,
+} from "./dumps/k8s-client.js";
+import { reconcileJob } from "./dumps/watcher.js";
+import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
@@ -23,6 +31,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
   private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
   private clintPullWorker: ClintPullWorker | null = null;
+  private dumpJobWatcher: ReturnType<typeof setInterval> | null = null;
+  private dumpRowPruner: ReturnType<typeof setInterval> | null = null;
+  private dumpsK8s: DumpsK8sClient | null = null;
+  private dumpsRepo: DumpsRepo | null = null;
+  private dumpsS3: S3Helper | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -51,7 +64,20 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       await this.reactorClient.execute(documentId, "main", [action]);
     };
 
-    this.resolvers = createResolvers(db, { prometheusUrl, lokiUrl, envDb, dispatch });
+    const dumpDeps = await this.buildDumpDeps(db, envDb);
+
+    this.resolvers = createResolvers(db, {
+      prometheusUrl,
+      lokiUrl,
+      envDb,
+      dispatch,
+      dumpDeps: dumpDeps ?? undefined,
+    });
+
+    if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
+      this.startDumpJobWatcher();
+      this.startDumpRowPruner();
+    }
 
     // Start watchers using the pod's in-cluster ServiceAccount.
     //
@@ -147,8 +173,146 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       clearInterval(this.releaseIndexBackfill);
       this.releaseIndexBackfill = null;
     }
+    if (this.dumpJobWatcher) {
+      clearInterval(this.dumpJobWatcher);
+      this.dumpJobWatcher = null;
+    }
+    if (this.dumpRowPruner) {
+      clearInterval(this.dumpRowPruner);
+      this.dumpRowPruner = null;
+    }
     this.clintPullWorker?.stop();
     this.clintPullWorker = null;
+  }
+
+  /**
+   * Build the dump-feature dependencies. Returns null when S3
+   * credentials aren't configured so the rest of the subgraph still
+   * boots — the dump query/mutation simply aren't registered.
+   */
+  private async buildDumpDeps(
+    db: Kysely<ObservabilityDB>,
+    envDb: Kysely<any>,
+  ): Promise<DumpResolverDeps | null> {
+    const accessKey = process.env.VETRA_DUMPS_S3_ACCESS_KEY;
+    const secretKey = process.env.VETRA_DUMPS_S3_SECRET_KEY;
+    if (!accessKey || !secretKey) {
+      console.warn(
+        "[observability] dumps: S3 credentials missing — dump feature disabled",
+      );
+      return null;
+    }
+
+    const repo = new DumpsRepo(db);
+    let k8s: DumpsK8sClient;
+    try {
+      k8s = await createDefaultDumpsK8sClient();
+    } catch (err) {
+      console.warn(
+        "[observability] dumps: kubernetes client init failed — dump feature disabled:",
+        err,
+      );
+      return null;
+    }
+    const s3 = new S3Helper({
+      endpoint:
+        process.env.VETRA_DUMPS_S3_ENDPOINT ??
+        "https://fsn1.your-objectstorage.com",
+      region: process.env.VETRA_DUMPS_S3_REGION ?? "fsn1",
+      accessKeyId: accessKey,
+      secretAccessKey: secretKey,
+      bucket: process.env.VETRA_DUMPS_BUCKET ?? "powerhouse-env-dumps",
+    });
+
+    this.dumpsRepo = repo;
+    this.dumpsK8s = k8s;
+    this.dumpsS3 = s3;
+
+    return {
+      repo,
+      envDb,
+      createJob: (ns, body) => k8s.createJob(ns, body),
+      presign: (key) => s3.presignDownload(key),
+      image:
+        process.env.VETRA_DUMPS_IMAGE ??
+        "cr.vetra.io/powerhouse-inc/pgdump-uploader:1.0.0",
+      bucket: process.env.VETRA_DUMPS_BUCKET ?? "powerhouse-env-dumps",
+      s3Endpoint:
+        process.env.VETRA_DUMPS_S3_ENDPOINT ??
+        "https://fsn1.your-objectstorage.com",
+    };
+  }
+
+  /**
+   * Periodically reconciles in-flight dump rows against their k8s
+   * Jobs. List the cluster's managed Jobs once per tick and look up
+   * each in-flight row by its dump-id label, so subgraph restarts
+   * resume cleanly.
+   */
+  private startDumpJobWatcher() {
+    const tick = async () => {
+      const repo = this.dumpsRepo;
+      const k8s = this.dumpsK8s;
+      const s3 = this.dumpsS3;
+      if (!repo || !k8s || !s3) return;
+      try {
+        const inFlight = await repo.listInFlight();
+        if (inFlight.length === 0) return;
+        const managed = await k8s.listManagedJobs();
+        const byDumpId = new Map<string, { namespace: string; name: string }>();
+        for (const j of managed) {
+          byDumpId.set(j.dumpId, { namespace: j.namespace, name: j.name });
+        }
+
+        for (const dump of inFlight) {
+          const ref = byDumpId.get(dump.id);
+          if (!ref) continue;
+          const status = await k8s.readJobStatus(ref.namespace, ref.name);
+          if (!status) continue;
+          const podPhase = await k8s.readPodPhaseForJob(
+            ref.namespace,
+            ref.name,
+          );
+          await reconcileJob({
+            repo,
+            dumpId: dump.id,
+            jobName: ref.name,
+            jobStatus: status,
+            podPhase,
+            now: new Date(),
+            headSize: (key) => s3.headSize(key),
+            readPodLogs: () =>
+              k8s.readPodLogsForJob(ref.namespace, ref.name),
+          });
+        }
+      } catch (err) {
+        console.warn("[dump-job-watcher] error:", err);
+      }
+    };
+    // 10s tick — same cadence as deployment reconciler
+    this.dumpJobWatcher = setInterval(() => void tick(), 10_000);
+    void tick();
+  }
+
+  /** Hourly sweep that drops dump rows older than 7 days. The S3 file
+   *  itself expires at 24h via bucket lifecycle; we keep the row
+   *  visible for a week so users see "expired" history rather than
+   *  silently disappearing dumps. */
+  private startDumpRowPruner() {
+    const tick = async () => {
+      const repo = this.dumpsRepo;
+      if (!repo) return;
+      try {
+        const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+        const removed = await repo.pruneOlderThan(cutoff);
+        if (removed > 0) {
+          console.info(`[dump-row-pruner] pruned ${removed} row(s)`);
+        }
+      } catch (err) {
+        console.warn("[dump-row-pruner] error:", err);
+      }
+    };
+    this.dumpRowPruner = setInterval(() => void tick(), 60 * 60 * 1000);
   }
 
   /** Grace period (ms) before marking a DEPLOYING environment as failed.
