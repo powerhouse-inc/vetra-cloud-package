@@ -433,6 +433,18 @@ export async function generateValuesYaml(
   const connectEnabled = state.services.some(
     (s) => s.type === "CONNECT" && s.enabled,
   );
+  const clintEnabled = state.services.some(
+    (s) => s.type === "CLINT" && s.enabled,
+  );
+  // Activate the tenantSecretsController flag whenever switchboard or
+  // clint are enabled. Switchboard hosts the GraphQL writes (and needs
+  // the per-tenant Vault encrypt policy + KubernetesAuthEngineRole the
+  // chart creates under this flag); clint agents consume the
+  // <tenant>-env / <tenant>-secrets via envFrom (rendered
+  // unconditionally with `optional: true`, but the flag also drives
+  // the Reloader-friendly flow). Connect-only envs without either get
+  // skipped — no reconcile target to wire up.
+  const tenantSecretsControllerEnabled = switchboardEnabled || clintEnabled;
   const switchboardService = state.services.find(
     (s) => s.type === "SWITCHBOARD",
   );
@@ -509,7 +521,20 @@ export async function generateValuesYaml(
     state.genericBaseDomain ?? "vetra.io",
   );
 
-  return `global:
+  // Optional preamble — only emitted when there's an active service
+  // that needs the controller's wiring. Tenants without switchboard
+  // and without clint stay quiet (their values.yaml omits the block,
+  // chart default keeps the feature off).
+  const tenantSecretsControllerBlock = tenantSecretsControllerEnabled
+    ? `# Route tenant env vars & secrets through the standalone vetra-secrets-controller
+# (Postgres-backed; transit-encrypted secrets; auto rolling restart via Reloader).
+tenantSecretsController:
+  enabled: true
+
+`
+    : "";
+
+  return `${tenantSecretsControllerBlock}global:
   disabled: ${disabled}
   subdomain: ${yamlQuote(subdomain)}
   imagePullSecrets:
