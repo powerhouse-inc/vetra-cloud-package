@@ -375,7 +375,10 @@ function generateClintBlock(
     lines.push(`      image:`);
     lines.push(`        repository: ${yamlQuote(CLINT_RUNTIME_IMAGE)}`);
     lines.push(`        tag: ${yamlQuote(CLINT_RUNTIME_TAG)}`);
-    lines.push(`        pullPolicy: IfNotPresent`);
+    // CLINT_RUNTIME_TAG defaults to a floating channel tag ("dev"),
+    // so the registry's underlying digest moves under us on each
+    // build. IfNotPresent would cache the first-seen digest forever.
+    lines.push(`        pullPolicy: Always`);
     lines.push(`      package: ${yamlQuote(pkg.name)}`);
     lines.push(`      version: ${yamlQuote(pkg.version ?? "latest")}`);
     lines.push(
