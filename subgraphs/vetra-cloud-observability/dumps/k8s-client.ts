@@ -74,8 +74,15 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
       }
     },
     async readJobStatus(namespace, name) {
+      // Hit `readNamespacedJob` (the regular Job endpoint) rather than
+      // `readNamespacedJobStatus`. Both return the full object with
+      // `.status`, but the former only needs `get jobs` RBAC, while
+      // the latter additionally needs `get jobs/status` (a separate
+      // subresource). Our ClusterRole only grants `jobs`, and the
+      // 403 from the subresource was being swallowed silently here,
+      // leaving every dump stuck in PENDING.
       try {
-        const res = await batch.readNamespacedJobStatus({ namespace, name });
+        const res = await batch.readNamespacedJob({ namespace, name });
         const s = res.status ?? {};
         return {
           active: s.active,
@@ -87,7 +94,18 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
             reason: c.reason,
           })),
         };
-      } catch {
+      } catch (err) {
+        // 404 (Job already gone) is normal during cleanup races;
+        // anything else is worth surfacing rather than silently
+        // dropping the row into orphan-detection on the next tick.
+        const code = (err as { code?: number; statusCode?: number })?.code
+          ?? (err as { code?: number; statusCode?: number })?.statusCode;
+        if (code !== 404) {
+          console.warn(
+            `[dump-k8s] readJobStatus(${namespace}/${name}) failed:`,
+            err,
+          );
+        }
         return null;
       }
     },

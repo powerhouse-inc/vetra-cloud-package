@@ -77,6 +77,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
       this.startDumpJobWatcher();
       this.startDumpRowPruner();
+      console.info("[observability] DumpJobWatcher started (10s tick)");
+    } else {
+      console.info(
+        `[observability] DumpJobWatcher NOT started (dumpDeps=${!!dumpDeps}, VETRA_DUMPS_WATCHER_ENABLED=${process.env.VETRA_DUMPS_WATCHER_ENABLED ?? "(unset)"})`,
+      );
     }
 
     // Start watchers using the pod's in-cluster ServiceAccount.
@@ -257,11 +262,22 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       const repo = this.dumpsRepo;
       const k8s = this.dumpsK8s;
       const s3 = this.dumpsS3;
-      if (!repo || !k8s || !s3) return;
+      if (!repo || !k8s || !s3) {
+        console.warn(
+          `[dump-job-watcher] tick aborted: repo=${!!repo} k8s=${!!k8s} s3=${!!s3}`,
+        );
+        return;
+      }
       try {
         const inFlight = await repo.listInFlight();
         if (inFlight.length === 0) return;
+        console.info(
+          `[dump-job-watcher] tick: ${inFlight.length} in-flight dump(s)`,
+        );
         const managed = await k8s.listManagedJobs();
+        console.info(
+          `[dump-job-watcher] cluster reports ${managed.length} managed Job(s): ${managed.map((j) => j.dumpId).join(",")}`,
+        );
         const byDumpId = new Map<string, { namespace: string; name: string }>();
         for (const j of managed) {
           byDumpId.set(j.dumpId, { namespace: j.namespace, name: j.name });
