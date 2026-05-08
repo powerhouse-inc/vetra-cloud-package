@@ -9,6 +9,8 @@ describe("buildDumpJob", () => {
       image: "cr.vetra.io/powerhouse-inc/pgdump-uploader:1.0.0",
       bucket: "powerhouse-env-dumps",
       s3Endpoint: "https://fsn1.your-objectstorage.com",
+      s3AccessKey: "TESTACCESS",
+      s3SecretKey: "TESTSECRET",
     });
 
     expect(job.metadata?.name).toBe("pgdump-abc12345");
@@ -44,13 +46,14 @@ describe("buildDumpJob", () => {
     );
     expect(envMap.PGPASSWORD.valueFrom.secretKeyRef.key).toBe("password");
 
-    // S3 credentials come from a per-tenant ExternalSecret.
-    expect(envMap.AWS_ACCESS_KEY_ID.valueFrom.secretKeyRef.name).toBe(
-      "env-dumps-s3-credentials",
-    );
-    expect(envMap.AWS_SECRET_ACCESS_KEY.valueFrom.secretKeyRef.name).toBe(
-      "env-dumps-s3-credentials",
-    );
+    // S3 credentials are inlined from the subgraph host's env (see
+    // BuildDumpJobInput jsdoc on threat model). No per-namespace
+    // Secret is required, so dump Jobs work in any tenant ns without
+    // a chart change.
+    expect(envMap.AWS_ACCESS_KEY_ID.value).toBe("TESTACCESS");
+    expect(envMap.AWS_SECRET_ACCESS_KEY.value).toBe("TESTSECRET");
+    expect(envMap.AWS_ACCESS_KEY_ID.valueFrom).toBeUndefined();
+    expect(envMap.AWS_SECRET_ACCESS_KEY.valueFrom).toBeUndefined();
 
     const resources = job.spec?.template.spec?.containers?.[0]?.resources;
     expect(resources?.requests?.cpu).toBe("200m");

@@ -6,6 +6,19 @@ export type BuildDumpJobInput = {
   image: string;
   bucket: string;
   s3Endpoint: string;
+  /**
+   * S3 credentials, passed inline as plain env values rather than via
+   * secretKeyRef. Rationale: a per-namespace `env-dumps-s3-credentials`
+   * Secret would require either a chart change (per-tenant ExternalSecret
+   * gating) or RBAC `secrets: create` for the subgraph SA. The keys are
+   * visible to anyone with `kubectl get pod -o yaml` in the tenant ns,
+   * but those callers can already read the colocated `<ns>-pg-app` DB
+   * password Secret directly, so the disclosure surface is the same.
+   * Job pods are also short-lived (1h hard limit, 10min TTL after
+   * completion).
+   */
+  s3AccessKey: string;
+  s3SecretKey: string;
 };
 
 const MANAGED_BY = "vetra-cloud-observability";
@@ -24,9 +37,8 @@ const MANAGED_BY = "vetra-cloud-observability";
  *   ExternalSecret (one bucket prefix scope per tenant).
  */
 export function buildDumpJob(input: BuildDumpJobInput): V1Job {
-  const { dumpId, tenantNs, image, bucket, s3Endpoint } = input;
+  const { dumpId, tenantNs, image, bucket, s3Endpoint, s3AccessKey, s3SecretKey } = input;
   const dbSecret = `${tenantNs}-pg-app`;
-  const s3Secret = "env-dumps-s3-credentials";
   const labels = {
     "app.kubernetes.io/managed-by": MANAGED_BY,
     "vetra.io/dump-id": dumpId,
@@ -87,18 +99,8 @@ export function buildDumpJob(input: BuildDumpJobInput): V1Job {
                 { name: "S3_BUCKET", value: bucket },
                 { name: "S3_KEY", value: `${tenantNs}/${dumpId}.dump` },
                 { name: "S3_ENDPOINT", value: s3Endpoint },
-                {
-                  name: "AWS_ACCESS_KEY_ID",
-                  valueFrom: {
-                    secretKeyRef: { name: s3Secret, key: "accessKey" },
-                  },
-                },
-                {
-                  name: "AWS_SECRET_ACCESS_KEY",
-                  valueFrom: {
-                    secretKeyRef: { name: s3Secret, key: "secretKey" },
-                  },
-                },
+                { name: "AWS_ACCESS_KEY_ID", value: s3AccessKey },
+                { name: "AWS_SECRET_ACCESS_KEY", value: s3SecretKey },
               ],
               resources: {
                 requests: { cpu: "200m", memory: "256Mi" },

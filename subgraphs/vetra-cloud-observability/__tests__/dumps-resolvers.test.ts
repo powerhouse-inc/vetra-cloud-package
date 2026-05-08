@@ -50,6 +50,8 @@ beforeEach(async () => {
     image: "img:1",
     bucket: "powerhouse-env-dumps",
     s3Endpoint: "https://s3",
+    s3AccessKey: "TESTACCESS",
+    s3SecretKey: "TESTSECRET",
   };
 });
 afterEach(async () => db.destroy());
