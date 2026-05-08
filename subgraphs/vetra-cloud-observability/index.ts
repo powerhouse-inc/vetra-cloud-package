@@ -266,7 +266,28 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
         for (const dump of inFlight) {
           const ref = byDumpId.get(dump.id);
-          if (!ref) continue;
+          if (!ref) {
+            // Two cases produce a missing Job ref:
+            //
+            // 1. Race: the resolver has just inserted the row but
+            //    `setJobName` hasn't run yet (or `createJob` failed
+            //    before it could). `jobName` is still null.
+            // 2. Orphan: the row had a Job that's now gone — manually
+            //    deleted, evicted, or the cluster lost it. `jobName`
+            //    is set but no managed Job carries that label.
+            //
+            // We only act on case 2. Case 1 resolves itself on the
+            // next tick or via the resolver's catch path (markFailed
+            // on createJob error).
+            if (dump.jobName) {
+              await repo.markFailed(
+                dump.id,
+                `Job "${dump.jobName}" no longer exists in namespace ${dump.tenantId}; orphaned dump marked failed.`,
+                new Date(),
+              );
+            }
+            continue;
+          }
           const status = await k8s.readJobStatus(ref.namespace, ref.name);
           if (!status) continue;
           const podPhase = await k8s.readPodPhaseForJob(
