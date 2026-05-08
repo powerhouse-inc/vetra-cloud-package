@@ -283,4 +283,29 @@ describe("resolvers", () => {
       expect(calledUrl).toContain("tenant-1");
     });
   });
+
+  // When the host omits dumpDeps (S3 creds missing) the schema's
+  // non-nullable environmentDumps must still resolve cleanly so the
+  // GraphQL layer doesn't raise "Cannot return null for non-nullable
+  // field". Mutation calls instead surface a clear error code.
+  describe("dumps fallback (no dumpDeps)", () => {
+    it("environmentDumps returns an empty list", async () => {
+      const list = await getQuery().environmentDumps(
+        undefined,
+        { tenantId: "tenant-1" },
+        { user: { address: "0xabc" } } as never,
+      );
+      expect(list).toEqual([]);
+    });
+
+    it("requestEnvironmentDump throws DUMPS_NOT_CONFIGURED", async () => {
+      await expect(
+        resolvers.Mutation.requestEnvironmentDump(
+          undefined,
+          { tenantId: "tenant-1" },
+          { user: { address: "0xabc" } } as never,
+        ),
+      ).rejects.toThrow("DUMPS_NOT_CONFIGURED");
+    });
+  });
 });

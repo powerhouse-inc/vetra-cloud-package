@@ -22,11 +22,13 @@ export interface ResolverConfig {
    */
   dispatch: (documentId: string, type: string, input: Record<string, unknown>) => Promise<void>;
   /**
-   * Optional dependencies for the on-demand database dump feature. When
-   * absent the dump query/mutation are not registered on the resolver
-   * map (the GraphQL types are still in the schema; calls would
-   * resolve to undefined). The subgraph host omits this when S3
-   * credentials aren't configured — see `index.ts` startup gating.
+   * Optional dependencies for the on-demand database dump feature. The
+   * subgraph host omits this when S3 credentials aren't configured —
+   * see `index.ts` startup gating. When absent, `environmentDumps`
+   * still resolves (to an empty list) so the schema's non-null
+   * contract is honoured, and `requestEnvironmentDump` throws
+   * `DUMPS_NOT_CONFIGURED` so callers see a clear error rather than a
+   * confusing schema violation.
    */
   dumpDeps?: DumpResolverDeps;
 }
@@ -71,9 +73,23 @@ export function createResolvers(
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
   const dispatch = config.dispatch;
+  // Dump resolvers are always registered so the schema's non-nullable
+  // `environmentDumps` field never resolves to undefined (which would
+  // crash with "Cannot return null for non-nullable field"). When the
+  // host hasn't configured S3/k8s deps, the query returns an empty
+  // list and the mutation throws DUMPS_NOT_CONFIGURED.
   const dumpResolvers = config.dumpDeps
     ? createDumpResolvers(config.dumpDeps)
-    : null;
+    : {
+        Query: {
+          environmentDumps: async () => [] as never[],
+        },
+        Mutation: {
+          requestEnvironmentDump: async () => {
+            throw new Error("DUMPS_NOT_CONFIGURED");
+          },
+        },
+      };
 
   return {
     Query: {
@@ -340,7 +356,7 @@ export function createResolvers(
         }
         return Array.from(byPrefix.values());
       },
-      ...(dumpResolvers ? { environmentDumps: dumpResolvers.Query.environmentDumps } : {}),
+      environmentDumps: dumpResolvers.Query.environmentDumps,
     },
 
     Mutation: {
@@ -664,9 +680,7 @@ export function createResolvers(
         }
         return { updatedEnvironments: rolled };
       },
-      ...(dumpResolvers
-        ? { requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump }
-        : {}),
+      requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump,
     },
 
     ReleaseHistoryEntry: {},
