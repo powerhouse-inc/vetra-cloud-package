@@ -240,6 +240,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       s3Endpoint:
         process.env.VETRA_DUMPS_S3_ENDPOINT ??
         "https://fsn1.your-objectstorage.com",
+      s3AccessKey: accessKey,
+      s3SecretKey: secretKey,
     };
   }
 
