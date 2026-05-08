@@ -45,10 +45,23 @@ export type DumpResolverDeps = {
   image: string;
   bucket: string;
   s3Endpoint: string;
+  /** Inlined into the Job's pod env. See buildDumpJob's note on threat model. */
+  s3AccessKey: string;
+  s3SecretKey: string;
 };
 
 export function createDumpResolvers(deps: DumpResolverDeps) {
-  const { repo, envDb, createJob, presign, image, bucket, s3Endpoint } = deps;
+  const {
+    repo,
+    envDb,
+    createJob,
+    presign,
+    image,
+    bucket,
+    s3Endpoint,
+    s3AccessKey,
+    s3SecretKey,
+  } = deps;
 
   return {
     Query: {
@@ -106,6 +119,8 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
           image,
           bucket,
           s3Endpoint,
+          s3AccessKey,
+          s3SecretKey,
         });
         try {
           const jobName = await createJob(args.tenantId, job);
