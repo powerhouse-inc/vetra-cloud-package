@@ -88,6 +88,9 @@ export function createResolvers(
           requestEnvironmentDump: async () => {
             throw new Error("DUMPS_NOT_CONFIGURED");
           },
+          cancelEnvironmentDump: async () => {
+            throw new Error("DUMPS_NOT_CONFIGURED");
+          },
         },
       };
 
@@ -681,6 +684,7 @@ export function createResolvers(
         return { updatedEnvironments: rolled };
       },
       requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump,
+      cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
     },
 
     ReleaseHistoryEntry: {},

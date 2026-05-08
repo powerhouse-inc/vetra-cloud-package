@@ -169,6 +169,16 @@ export const schema: DocumentNode = gql`
     still PENDING or RUNNING.
     """
     requestEnvironmentDump(tenantId: String!): DatabaseDump!
+
+    """
+    Owner-gated. Cancels an in-flight (PENDING or RUNNING) dump:
+    deletes its k8s Job (best-effort) and marks the row FAILED with
+    'Cancelled by user'. No-op for terminal rows (READY/FAILED) —
+    returns them unchanged. Raises ENV_NOT_FOUND if the dump's tenant
+    has no env, FORBIDDEN for non-owners, DUMP_NOT_FOUND if the id
+    doesn't exist.
+    """
+    cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
   }
 
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }

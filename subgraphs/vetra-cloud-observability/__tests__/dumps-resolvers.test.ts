@@ -15,6 +15,7 @@ const TENANT = "tenant-1";
 let db: Kysely<ObservabilityDB>;
 let repo: DumpsRepo;
 let createJob: ReturnType<typeof vi.fn>;
+let deleteJob: ReturnType<typeof vi.fn>;
 let presign: ReturnType<typeof vi.fn>;
 let deps: DumpResolverDeps;
 
@@ -40,12 +41,14 @@ beforeEach(async () => {
   repo = new DumpsRepo(db);
 
   createJob = vi.fn(async () => "pgdump-abc");
+  deleteJob = vi.fn(async () => undefined);
   presign = vi.fn(async () => "https://signed.example/dump");
 
   deps = {
     repo,
     envDb: envDbStub("0xAbC") as never,
     createJob,
+    deleteJob,
     presign,
     image: "img:1",
     bucket: "powerhouse-env-dumps",
@@ -189,5 +192,86 @@ describe("environmentDumps query", () => {
         { user: { address: "0xdef" } },
       ),
     ).rejects.toThrow("FORBIDDEN");
+  });
+});
+
+describe("cancelEnvironmentDump", () => {
+  async function seed(jobName: string | null = "pgdump-x") {
+    const d = await repo.create({
+      documentId: "doc-1",
+      tenantId: TENANT,
+      requestedBy: "0xabc",
+      now: new Date(),
+    });
+    if (jobName) await repo.setJobName(d.id, jobName);
+    return d;
+  }
+
+  it("deletes the Job and marks the row FAILED", async () => {
+    const d = await seed("pgdump-x");
+    const resolvers = createDumpResolvers(deps);
+
+    const result = await resolvers.Mutation.cancelEnvironmentDump(
+      null,
+      { dumpId: d.id },
+      { user: { address: "0xabc" } },
+    );
+
+    expect(deleteJob).toHaveBeenCalledWith(TENANT, "pgdump-x");
+    expect(result.status).toBe("FAILED");
+    expect(result.errorMessage).toBe("Cancelled by user");
+  });
+
+  it("skips Job deletion when jobName is null (race window)", async () => {
+    const d = await seed(null);
+    const resolvers = createDumpResolvers(deps);
+
+    const result = await resolvers.Mutation.cancelEnvironmentDump(
+      null,
+      { dumpId: d.id },
+      { user: { address: "0xabc" } },
+    );
+
+    expect(deleteJob).not.toHaveBeenCalled();
+    expect(result.status).toBe("FAILED");
+  });
+
+  it("returns terminal rows unchanged (no-op for READY/FAILED)", async () => {
+    const d = await seed("pgdump-x");
+    await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 100, new Date());
+    const resolvers = createDumpResolvers(deps);
+
+    const result = await resolvers.Mutation.cancelEnvironmentDump(
+      null,
+      { dumpId: d.id },
+      { user: { address: "0xabc" } },
+    );
+
+    expect(deleteJob).not.toHaveBeenCalled();
+    expect(result.status).toBe("READY");
+  });
+
+  it("rejects non-owner", async () => {
+    const d = await seed();
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.cancelEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xdef" } },
+      ),
+    ).rejects.toThrow("FORBIDDEN");
+    expect(deleteJob).not.toHaveBeenCalled();
+  });
+
+  it("throws DUMP_NOT_FOUND for unknown id", async () => {
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.cancelEnvironmentDump(
+        null,
+        { dumpId: "nope" },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("DUMP_NOT_FOUND");
   });
 });

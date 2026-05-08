@@ -40,6 +40,8 @@ export type DumpResolverDeps = {
   envDb: Kysely<any>;
   /** Creates the k8s Job. Returns the assigned name. */
   createJob: (namespace: string, body: V1Job) => Promise<string>;
+  /** Deletes a Job. Used by cancelEnvironmentDump; idempotent on 404. */
+  deleteJob: (namespace: string, name: string) => Promise<void>;
   /** Mints a presigned download URL for the given s3 key. */
   presign: (s3Key: string) => Promise<string>;
   image: string;
@@ -55,6 +57,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
     repo,
     envDb,
     createJob,
+    deleteJob,
     presign,
     image,
     bucket,
@@ -132,6 +135,39 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         }
 
         return toGraphql(dump, null);
+      },
+      cancelEnvironmentDump: async (
+        _p: unknown,
+        args: { dumpId: string },
+        ctx: Caller,
+      ) => {
+        const row = await repo.getById(args.dumpId);
+        if (!row) throw new Error("DUMP_NOT_FOUND");
+
+        const env = await loadEnv(envDb, row.tenantId);
+        requireOwner({
+          caller: ctx.user?.address ?? null,
+          envOwner: env?.owner ?? null,
+        });
+
+        // Terminal states: nothing to cancel. Return the row as-is so
+        // the UI can refresh without special-casing the response.
+        if (row.status === "READY" || row.status === "FAILED") {
+          return toGraphql(row, null);
+        }
+
+        // Best-effort Job deletion. If jobName is null the row was
+        // created but the Job never registered — nothing to delete,
+        // just mark FAILED. If the Job is already gone, deleteJob
+        // swallows 404. Other errors propagate so the caller sees
+        // them (and the row stays in its current state for retry).
+        if (row.jobName) {
+          await deleteJob(row.tenantId, row.jobName);
+        }
+        await repo.markFailed(row.id, "Cancelled by user", new Date());
+
+        const updated = await repo.getById(row.id);
+        return toGraphql(updated ?? row, null);
       },
     },
   };

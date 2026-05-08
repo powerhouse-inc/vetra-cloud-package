@@ -232,6 +232,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       repo,
       envDb,
       createJob: (ns, body) => k8s.createJob(ns, body),
+      deleteJob: (ns, name) => k8s.deleteJob(ns, name),
       presign: (key) => s3.presignDownload(key),
       image:
         process.env.VETRA_DUMPS_IMAGE ??

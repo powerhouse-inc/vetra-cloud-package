@@ -9,6 +9,12 @@ import type { V1Job } from "@kubernetes/client-node";
 export interface DumpsK8sClient {
   /** Creates a Job in the given namespace. Returns the assigned name. */
   createJob(namespace: string, job: V1Job): Promise<string>;
+  /**
+   * Deletes a Job (and its child Pods, via propagationPolicy=Foreground).
+   * Idempotent: a missing Job resolves successfully so the caller can use
+   * this to cancel both running and orphaned dumps.
+   */
+  deleteJob(namespace: string, name: string): Promise<void>;
   /** Reads `.status` of a single Job. Returns null on error / 404. */
   readJobStatus(
     namespace: string,
@@ -52,6 +58,20 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
     async createJob(namespace, job) {
       const res = await batch.createNamespacedJob({ namespace, body: job });
       return res.metadata?.name ?? "";
+    },
+    async deleteJob(namespace, name) {
+      try {
+        await batch.deleteNamespacedJob({
+          namespace,
+          name,
+          propagationPolicy: "Foreground",
+        });
+      } catch (err: unknown) {
+        const code = (err as { code?: number; statusCode?: number })?.code
+          ?? (err as { code?: number; statusCode?: number })?.statusCode;
+        if (code === 404) return; // already gone — treat as success
+        throw err;
+      }
     },
     async readJobStatus(namespace, name) {
       try {
