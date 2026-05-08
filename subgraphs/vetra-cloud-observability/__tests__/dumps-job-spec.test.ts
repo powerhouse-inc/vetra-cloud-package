@@ -55,5 +55,12 @@ describe("buildDumpJob", () => {
     const resources = job.spec?.template.spec?.containers?.[0]?.resources;
     expect(resources?.requests?.cpu).toBe("200m");
     expect(resources?.limits?.memory).toBe("1Gi");
+
+    // Tenant namespaces ship a `harbor-credentials` Secret via the
+    // chart so the cr.vetra.io image can be pulled. Without this the
+    // pod hits ImagePullBackOff.
+    expect(job.spec?.template.spec?.imagePullSecrets).toEqual([
+      { name: "harbor-credentials" },
+    ]);
   });
 });
