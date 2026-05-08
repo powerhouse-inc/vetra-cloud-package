@@ -51,6 +51,11 @@ export function buildDumpJob(input: BuildDumpJobInput): V1Job {
         spec: {
           restartPolicy: "Never",
           serviceAccountName: "default",
+          // Tenant namespaces ship a `harbor-credentials` Secret via
+          // the chart so first-party images on cr.vetra.io can be
+          // pulled. Default SA does not auto-mount it, so we attach
+          // it explicitly on the pod spec.
+          imagePullSecrets: [{ name: "harbor-credentials" }],
           containers: [
             {
               name: "pgdump",

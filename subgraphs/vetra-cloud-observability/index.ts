@@ -235,7 +235,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       presign: (key) => s3.presignDownload(key),
       image:
         process.env.VETRA_DUMPS_IMAGE ??
-        "cr.vetra.io/powerhouse-inc/pgdump-uploader:1.0.0",
+        "cr.vetra.io/powerhouse-inc-powerhouse/pgdump-uploader:1.0.0",
       bucket: process.env.VETRA_DUMPS_BUCKET ?? "powerhouse-env-dumps",
       s3Endpoint:
         process.env.VETRA_DUMPS_S3_ENDPOINT ??
