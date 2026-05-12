@@ -17,6 +17,12 @@ import {
 import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import { createDumpAndJob } from "./dumps/service.js";
+import type { ExplorerResolverDeps } from "./explorer/resolvers.js";
+import {
+  createDefaultExplorerK8sClient,
+  createTenantPoolFactory,
+  type TenantPoolFactory,
+} from "./explorer/pg-client.js";
 import {
   runBackupScheduleTick,
   type BackupEnvSnapshot,
@@ -43,6 +49,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private dumpsRepo: DumpsRepo | null = null;
   private dumpsS3: S3Helper | null = null;
   private dumpDeps: DumpResolverDeps | null = null;
+  private explorerPoolFactory: TenantPoolFactory | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -74,12 +81,23 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     const dumpDeps = await this.buildDumpDeps(db, envDb);
     this.dumpDeps = dumpDeps;
 
+    // Explorer deps: built independently from dumps because the
+    // feature flag, the k8s surface, and the failure modes differ.
+    // When VETRA_EXPLORER_ENABLED is set to "false" or the k8s
+    // client can't be constructed, we skip the wiring and the
+    // resolver's fallback throws EXPLORER_NOT_CONFIGURED.
+    const explorerDeps =
+      process.env.VETRA_EXPLORER_ENABLED !== "false"
+        ? await this.buildExplorerDeps(envDb)
+        : null;
+
     this.resolvers = createResolvers(db, {
       prometheusUrl,
       lokiUrl,
       envDb,
       dispatch,
       dumpDeps: dumpDeps ?? undefined,
+      explorerDeps: explorerDeps ?? undefined,
     });
 
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
@@ -206,6 +224,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     }
     this.clintPullWorker?.stop();
     this.clintPullWorker = null;
+    // Drain explorer pools — without this, the process holds open
+    // connections to every tenant's pg-pooler past shutdown.
+    if (this.explorerPoolFactory) {
+      try {
+        await this.explorerPoolFactory.endAll();
+      } catch (err) {
+        console.warn("[observability] explorer pool drain failed:", err);
+      }
+      this.explorerPoolFactory = null;
+    }
   }
 
   /**
@@ -268,6 +296,39 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       s3AccessKey: accessKey,
       s3SecretKey: secretKey,
     };
+  }
+
+  /**
+   * Build the Database Explorer dependencies. Returns null on any
+   * failure to construct the k8s client so the rest of the subgraph
+   * still boots — the resolver's fallback then throws
+   * EXPLORER_NOT_CONFIGURED, which the UI maps to a feature-disabled
+   * banner.
+   *
+   * The factory itself is stored on the subgraph so `onDisconnect`
+   * can drain its pool cache (`endAll()`). The k8s client is
+   * lazy-loaded inside `createDefaultExplorerK8sClient` so test runs
+   * that disable the explorer don't pay the
+   * `@kubernetes/client-node` import cost.
+   */
+  private async buildExplorerDeps(
+    envDb: Kysely<any>,
+  ): Promise<ExplorerResolverDeps | null> {
+    try {
+      const k8s = await createDefaultExplorerK8sClient();
+      const factory = createTenantPoolFactory(k8s);
+      this.explorerPoolFactory = factory;
+      return {
+        envDb,
+        getPool: (ns) => factory.getPool(ns),
+      };
+    } catch (err) {
+      console.warn(
+        "[observability] explorer: kubernetes client init failed — explorer disabled:",
+        err,
+      );
+      return null;
+    }
   }
 
   /**
