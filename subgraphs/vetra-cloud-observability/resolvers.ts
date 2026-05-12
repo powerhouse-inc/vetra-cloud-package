@@ -6,6 +6,10 @@ import {
   createDumpResolvers,
   type DumpResolverDeps,
 } from "./dumps/resolvers.js";
+import {
+  createExplorerResolvers,
+  type ExplorerResolverDeps,
+} from "./explorer/resolvers.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -31,6 +35,17 @@ export interface ResolverConfig {
    * confusing schema violation.
    */
   dumpDeps?: DumpResolverDeps;
+  /**
+   * Optional dependencies for the Database Explorer feature. The
+   * subgraph host omits this when the k8s client can't be
+   * constructed (in-process tests, dev runs without
+   * `loadFromCluster`). When absent, `describeDatabase` and
+   * `executeReadOnlyQuery` both throw `EXPLORER_NOT_CONFIGURED` —
+   * mirroring the dumps fallback so the schema's non-null contract
+   * is honoured but every call surfaces a clear error instead of a
+   * confusing schema violation.
+   */
+  explorerDeps?: ExplorerResolverDeps;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -93,6 +108,24 @@ export function createResolvers(
           },
           restoreEnvironmentDump: async () => {
             throw new Error("DUMPS_NOT_CONFIGURED");
+          },
+        },
+      };
+  // Explorer resolvers parallel the dumps fallback: when the host
+  // hasn't configured a pool factory (no k8s access), every call
+  // throws EXPLORER_NOT_CONFIGURED rather than violating the
+  // schema's non-null contract.
+  const explorerResolvers = config.explorerDeps
+    ? createExplorerResolvers(config.explorerDeps)
+    : {
+        Query: {
+          describeDatabase: async () => {
+            throw new Error("EXPLORER_NOT_CONFIGURED");
+          },
+        },
+        Mutation: {
+          executeReadOnlyQuery: async () => {
+            throw new Error("EXPLORER_NOT_CONFIGURED");
           },
         },
       };
@@ -363,6 +396,7 @@ export function createResolvers(
         return Array.from(byPrefix.values());
       },
       environmentDumps: dumpResolvers.Query.environmentDumps,
+      describeDatabase: explorerResolvers.Query.describeDatabase,
     },
 
     Mutation: {
@@ -689,6 +723,7 @@ export function createResolvers(
       requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump,
       cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
       restoreEnvironmentDump: dumpResolvers.Mutation.restoreEnvironmentDump,
+      executeReadOnlyQuery: explorerResolvers.Mutation.executeReadOnlyQuery,
     },
 
     ReleaseHistoryEntry: {},

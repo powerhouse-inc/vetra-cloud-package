@@ -77,6 +77,18 @@ export const schema: DocumentNode = gql`
     only present when status=READY and the file hasn't expired.
     """
     environmentDumps(tenantId: String!): [DatabaseDump!]!
+
+    """
+    Owner-gated. Introspects the tenant's Postgres and returns a
+    static structural snapshot: schemas → tables → columns + indexes.
+    Schemas \`pg_catalog\` and \`information_schema\` are excluded.
+    Schemas with more than 500 tables get \`truncated: true\` flagged
+    and the first 500 tables alphabetically. Raises
+    EXPLORER_NOT_CONFIGURED when the subgraph wasn't started with
+    k8s access; FORBIDDEN/ENV_NOT_FOUND/UNAUTHENTICATED follow the
+    same contract as the dumps surface.
+    """
+    describeDatabase(tenantId: String!): DatabaseSchema!
   }
 
   """Grouping of runtime-announced endpoints under a single agent (= service prefix)."""
@@ -191,6 +203,32 @@ export const schema: DocumentNode = gql`
     non-owners, ENV_NOT_FOUND if the dump's tenant has no env.
     """
     restoreEnvironmentDump(dumpId: ID!): RestoreAck!
+
+    """
+    Owner-gated. Executes a single read-only SQL statement against
+    the tenant's Postgres. Sandboxing details:
+      - Only the first statement (split on \`;\`) is executed.
+      - Leading keyword is checked against the blocklist
+        (INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/GRANT/REVOKE/
+        COPY/CALL/DO/EXECUTE). A match raises QUERY_BLOCKED.
+      - Execution wraps in BEGIN READ ONLY + statement_timeout=5s +
+        lock_timeout=2s + unconditional ROLLBACK.
+      - LIMIT is enforced server-side: missing → append \`LIMIT n\`;
+        present and exceeding cap → wrapped to cap (n bounded to
+        [1, 10000], defaults to 1000).
+      - Cell payload capped at 4 MB; rows are truncated until under
+        and \`truncatedAt\` is set to the surviving row count.
+
+    Errors: QUERY_BLOCKED, QUERY_EMPTY, QUERY_TIMEOUT, QUERY_ERROR
+    (carrying the original PG message), plus the standard
+    FORBIDDEN/ENV_NOT_FOUND/UNAUTHENTICATED set. Returns the
+    DatabaseQueryResult including executionMs.
+    """
+    executeReadOnlyQuery(
+      tenantId: String!
+      sql: String!
+      limit: Int
+    ): DatabaseQueryResult!
   }
 
   type RestoreAck {
@@ -208,6 +246,51 @@ export const schema: DocumentNode = gql`
     env's state.backupSchedule.
   """
   enum DumpSource { MANUAL, SCHEDULED }
+
+  """Schema introspection result: every user schema with its tables."""
+  type DatabaseSchema {
+    schemas: [DatabaseSchemaInfo!]!
+  }
+
+  type DatabaseSchemaInfo {
+    name: String!
+    tables: [DatabaseTableInfo!]!
+    """True when the table list was capped at 500 (alphabetical)."""
+    truncated: Boolean
+  }
+
+  type DatabaseTableInfo {
+    name: String!
+    columns: [DatabaseColumnInfo!]!
+    indexes: [DatabaseIndexInfo!]!
+  }
+
+  type DatabaseColumnInfo {
+    name: String!
+    type: String!
+    nullable: Boolean!
+    default: String
+    isPrimaryKey: Boolean!
+  }
+
+  type DatabaseIndexInfo {
+    name: String!
+    columns: [String!]!
+    unique: Boolean!
+  }
+
+  """
+  Result of a single read-only query. Cells are serialized to strings
+  for JSON transport with SQL NULL preserved as null.
+  """
+  type DatabaseQueryResult {
+    columns: [String!]!
+    rows: [[String]!]!
+    rowCount: Int!
+    """Number of surviving rows when the payload cap forced truncation; null otherwise."""
+    truncatedAt: Int
+    executionMs: Int!
+  }
 
   type DatabaseDump {
     id: ID!
