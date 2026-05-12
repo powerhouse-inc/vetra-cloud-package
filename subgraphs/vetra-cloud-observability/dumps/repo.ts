@@ -15,10 +15,13 @@ const TTL_HOURS = 24;
 const IN_FLIGHT = ["PENDING", "RUNNING"] as const;
 const ERROR_MESSAGE_LIMIT = 500;
 
+export type DumpSource = "MANUAL" | "SCHEDULED";
+
 export type CreateInput = {
   documentId: string;
   tenantId: string;
   requestedBy: string;
+  source: DumpSource;
   now: Date;
 };
 
@@ -50,9 +53,55 @@ export class DumpsRepo {
       startedAt: null,
       completedAt: null,
       expiresAt: expiresAt.toISOString(),
+      source: input.source,
     };
     await this.db.insertInto("database_dumps").values(row).execute();
     return row;
+  }
+
+  /**
+   * Lists all SCHEDULED dumps for a tenant, oldest-first. Used by the
+   * backup scheduler to enforce retention (drop the oldest excess
+   * rows after a successful tick). Optionally filter by status —
+   * retention only cares about successful (READY) dumps, but the
+   * runner counts all SCHEDULED rows so a string of failures doesn't
+   * silently extend retention.
+   */
+  async listScheduledByTenant(
+    tenantId: string,
+    status?: string,
+  ): Promise<DatabaseDumps[]> {
+    let q = this.db
+      .selectFrom("database_dumps")
+      .selectAll()
+      .where("tenantId", "=", tenantId)
+      .where("source", "=", "SCHEDULED");
+    if (status) q = q.where("status", "=", status);
+    const rows = await q.orderBy("requestedAt", "asc").execute();
+    return rows as DatabaseDumps[];
+  }
+
+  /** Delete a single dump row by id. No-op if the row doesn't exist. */
+  async deleteById(id: string): Promise<void> {
+    await this.db.deleteFrom("database_dumps").where("id", "=", id).execute();
+  }
+
+  /**
+   * Most-recent requestedAt for SCHEDULED dumps for a tenant, or null if
+   * the tenant has no SCHEDULED dumps yet. Used by the runner to decide
+   * whether a new tick is due.
+   */
+  async lastScheduledRequestedAt(tenantId: string): Promise<Date | null> {
+    const row = (await this.db
+      .selectFrom("database_dumps")
+      .select(["requestedAt"])
+      .where("tenantId", "=", tenantId)
+      .where("source", "=", "SCHEDULED")
+      .orderBy("requestedAt", "desc")
+      .limit(1)
+      .executeTakeFirst()) as { requestedAt: string } | undefined;
+    if (!row) return null;
+    return new Date(row.requestedAt);
   }
 
   async setJobName(id: string, jobName: string): Promise<void> {

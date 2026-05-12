@@ -126,6 +126,14 @@ export interface DatabaseDumps {
   startedAt: string | null;
   completedAt: string | null;
   expiresAt: string;
+  /**
+   * Discriminator for who/what asked for the dump. `MANUAL` is a user
+   * clicking "Create dump" via requestEnvironmentDump. `SCHEDULED` is
+   * the backupScheduleRunner firing on cadence. Used by the UI to
+   * distinguish manual vs. scheduled dumps and by the runner for
+   * retention enforcement.
+   */
+  source: string; // MANUAL | SCHEDULED
 }
 
 export interface ObservabilityDB {

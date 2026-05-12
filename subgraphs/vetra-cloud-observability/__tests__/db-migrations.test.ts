@@ -161,5 +161,10 @@ describe("db migrations", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("PENDING");
     expect(rows[0].tenantId).toBe("tenant-1");
+    // The `source` column was added in a later migration step and
+    // defaults to MANUAL for rows that don't supply it — verifying the
+    // default protects against accidentally dropping the default in
+    // future migration edits.
+    expect(rows[0].source).toBe("MANUAL");
   });
 });

@@ -26,6 +26,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date("2026-05-07T10:00:00Z"),
     });
     expect(created.status).toBe("PENDING");
@@ -43,6 +44,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await expect(
@@ -50,6 +52,7 @@ describe("DumpsRepo", () => {
         documentId: "doc-1",
         tenantId: "tenant-1",
         requestedBy: "0xabc",
+        source: "MANUAL",
         now: new Date(),
       }),
     ).rejects.toThrow("DUMP_IN_PROGRESS");
@@ -60,6 +63,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await repo.markFailed(first.id, "boom", new Date());
@@ -69,6 +73,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     expect(second.status).toBe("PENDING");
@@ -79,6 +84,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await repo.markRunning(d.id, "pgdump-xxx", new Date());
@@ -100,6 +106,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     const longErr = "x".repeat(800);
@@ -115,6 +122,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xABC",
+      source: "MANUAL",
       now: new Date(),
     });
     expect(d.requestedBy).toBe("0xabc");
@@ -125,6 +133,7 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await repo.markRunning(a.id, "pgdump-a", new Date());
@@ -134,12 +143,105 @@ describe("DumpsRepo", () => {
       documentId: "doc-1",
       tenantId: "tenant-1",
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
 
     const inFlight = await repo.listInFlight();
     expect(inFlight).toHaveLength(1);
     expect(inFlight[0].id).toBe(b.id);
+  });
+
+  it("listScheduledByTenant returns SCHEDULED rows oldest-first, optionally filtered by status", async () => {
+    // Two SCHEDULED dumps (one READY, one PENDING) + one MANUAL dump.
+    const a = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      source: "SCHEDULED",
+      now: new Date("2026-05-01T00:00:00Z"),
+    });
+    await repo.markReady(a.id, "tenant-1/a.dump", 100, new Date());
+
+    const b = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      source: "SCHEDULED",
+      now: new Date("2026-05-02T00:00:00Z"),
+    });
+    await repo.markReady(b.id, "tenant-1/b.dump", 100, new Date());
+
+    // Manual dump: must not appear in the SCHEDULED listing.
+    await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "0xabc",
+      source: "MANUAL",
+      now: new Date("2026-05-03T00:00:00Z"),
+    });
+
+    const scheduled = await repo.listScheduledByTenant("tenant-1");
+    expect(scheduled).toHaveLength(2);
+    expect(scheduled[0].id).toBe(a.id);
+    expect(scheduled[1].id).toBe(b.id);
+
+    const readyOnly = await repo.listScheduledByTenant("tenant-1", "READY");
+    expect(readyOnly).toHaveLength(2);
+  });
+
+  it("deleteById drops a single row", async () => {
+    const a = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      source: "SCHEDULED",
+      now: new Date(),
+    });
+    await repo.markReady(a.id, "tenant-1/a.dump", 100, new Date());
+
+    await repo.deleteById(a.id);
+    const list = await repo.listByTenant("tenant-1");
+    expect(list).toHaveLength(0);
+
+    // Idempotent on missing id.
+    await repo.deleteById("does-not-exist");
+  });
+
+  it("lastScheduledRequestedAt returns the newest SCHEDULED row, or null", async () => {
+    expect(await repo.lastScheduledRequestedAt("tenant-1")).toBeNull();
+
+    const a = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      source: "SCHEDULED",
+      now: new Date("2026-05-01T00:00:00Z"),
+    });
+    await repo.markReady(a.id, "tenant-1/a.dump", 100, new Date());
+
+    const b = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      source: "SCHEDULED",
+      now: new Date("2026-05-02T12:00:00Z"),
+    });
+    await repo.markReady(b.id, "tenant-1/b.dump", 100, new Date());
+
+    const last = await repo.lastScheduledRequestedAt("tenant-1");
+    expect(last?.toISOString()).toBe("2026-05-02T12:00:00.000Z");
+    // Cross-check: source filter — a MANUAL dump after the SCHEDULED ones
+    // doesn't shift the answer.
+    await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "0xabc",
+      source: "MANUAL",
+      now: new Date("2026-05-03T00:00:00Z"),
+    });
+    const lastAgain = await repo.lastScheduledRequestedAt("tenant-1");
+    expect(lastAgain?.toISOString()).toBe("2026-05-02T12:00:00.000Z");
   });
 
   it("prunes rows older than the cutoff", async () => {
@@ -160,6 +262,7 @@ describe("DumpsRepo", () => {
         startedAt: null,
         completedAt: "2026-04-01T01:00:00Z",
         expiresAt: "2026-04-02T00:00:00Z",
+        source: "MANUAL",
       })
       .execute();
 

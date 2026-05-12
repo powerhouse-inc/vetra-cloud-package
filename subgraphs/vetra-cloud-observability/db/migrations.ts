@@ -141,6 +141,23 @@ export async function up(db: Kysely<any>): Promise<void> {
     .on("database_dumps")
     .columns(["tenantId", "requestedAt"])
     .execute();
+
+  // Add `source` discriminator to database_dumps (MANUAL | SCHEDULED).
+  // Existing rows backfill to MANUAL via the column default. Stays
+  // idempotent across Postgres (production) and SQLite (tests) by
+  // swallowing the duplicate-column error — same pattern as the
+  // environment_pods component/agent columns above.
+  try {
+    await db.schema
+      .alterTable("database_dumps")
+      .addColumn("source", "varchar(16)", (col) =>
+        col.notNull().defaultTo("MANUAL"),
+      )
+      .execute();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/already exists|duplicate column/i.test(msg)) throw err;
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {

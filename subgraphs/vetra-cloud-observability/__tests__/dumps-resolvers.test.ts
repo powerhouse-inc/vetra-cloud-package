@@ -132,6 +132,7 @@ describe("environmentDumps query", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, new Date());
@@ -155,6 +156,7 @@ describe("environmentDumps query", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: past,
     });
     await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, past);
@@ -174,6 +176,7 @@ describe("environmentDumps query", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     const resolvers = createDumpResolvers(deps);
@@ -204,6 +207,7 @@ describe("cancelEnvironmentDump", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     if (jobName) await repo.setJobName(d.id, jobName);
@@ -285,6 +289,7 @@ describe("restoreEnvironmentDump", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, new Date());
@@ -352,6 +357,7 @@ describe("restoreEnvironmentDump", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: new Date(),
     });
     const resolvers = createDumpResolvers(deps);
@@ -373,6 +379,7 @@ describe("restoreEnvironmentDump", () => {
       documentId: "doc-1",
       tenantId: TENANT,
       requestedBy: "0xabc",
+      source: "MANUAL",
       now: past,
     });
     await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, past);

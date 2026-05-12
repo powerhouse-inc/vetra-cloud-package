@@ -200,6 +200,15 @@ export const schema: DocumentNode = gql`
 
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }
 
+  """
+  Discriminator for who/what triggered a dump.
+  - MANUAL: requestEnvironmentDump invoked by an owner clicking
+    "Create dump".
+  - SCHEDULED: backup-schedule runner fired on cadence, per the
+    env's state.backupSchedule.
+  """
+  enum DumpSource { MANUAL, SCHEDULED }
+
   type DatabaseDump {
     id: ID!
     status: DatabaseDumpStatus!
@@ -213,6 +222,8 @@ export const schema: DocumentNode = gql`
     errorMessage: String
     """Presigned 15-min download URL. Null unless status=READY and not expired."""
     downloadUrl: String
+    """Whether this dump was user-requested (MANUAL) or fired by the schedule runner (SCHEDULED)."""
+    source: DumpSource!
   }
 
   type ClintRuntimeEndpoint {

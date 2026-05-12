@@ -32,6 +32,10 @@ function toGraphql(row: DatabaseDumps, presignedUrl: string | null) {
     sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
     errorMessage: row.errorMessage,
     downloadUrl: presignedUrl,
+    // Discriminator; defaults to MANUAL for rows that predate the
+    // migration (the column default backfills them, but be defensive
+    // in case a custom kysely flavour skips DEFAULT).
+    source: row.source ?? "MANUAL",
   };
 }
 
@@ -124,6 +128,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
           documentId: env.id,
           tenantId: args.tenantId,
           requestedBy: ctx.user!.address,
+          source: "MANUAL",
           now: new Date(),
         });
 
