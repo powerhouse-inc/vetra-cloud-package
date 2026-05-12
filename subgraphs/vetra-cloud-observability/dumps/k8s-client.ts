@@ -36,6 +36,10 @@ export interface DumpsK8sClient {
   listManagedJobs(): Promise<
     Array<{ namespace: string; name: string; dumpId: string }>
   >;
+  /** Lists currently-existing restore Jobs in the given namespace. Used
+   *  for the RESTORE_IN_PROGRESS concurrency gate. Returns an empty
+   *  array on error so the gate is fail-open if k8s is unreachable. */
+  listRestoreJobsInNamespace(namespace: string): Promise<Array<{ name: string }>>;
 }
 
 const MANAGED_BY_SELECTOR =
@@ -126,6 +130,24 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
           dumpId: j.metadata?.labels?.["vetra.io/dump-id"] ?? "",
         }))
         .filter((j) => j.name && j.dumpId);
+    },
+    async listRestoreJobsInNamespace(namespace) {
+      try {
+        const res = await batch.listNamespacedJob({
+          namespace,
+          labelSelector: "vetra.io/kind=restore",
+        });
+        return res.items
+          .map((j) => ({ name: j.metadata?.name ?? "" }))
+          .filter((j) => j.name);
+      } catch {
+        // Fail-open: the resolver uses an empty list to mean "no
+        // restore in progress", so a transient k8s outage doesn't
+        // block the owner from triggering a restore. The Job creation
+        // call that follows will surface a real error if k8s is still
+        // unreachable.
+        return [];
+      }
     },
   };
 }
