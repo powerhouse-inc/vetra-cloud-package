@@ -482,4 +482,21 @@ describe("ServicesOperations", () => {
       expect(op.error).toMatch(/No service with prefix/);
     });
   });
+
+  it("should handle setServiceSize operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetServiceSizeInputSchema());
+
+    const updatedDocument = reducer(document, setServiceSize(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_SERVICE_SIZE",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
 });
