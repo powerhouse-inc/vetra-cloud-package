@@ -456,7 +456,19 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // 60s cadence — finest grain that makes sense for the HOURLY
     // cadence option. Runs once on startup too so a fresh deploy
     // doesn't wait a minute before the first sweep.
-    this.backupScheduleRunner = setInterval(() => void tick(), 60_000);
+    // Re-entrancy guard: reactor.get over O(100) envs can exceed 60s
+    // under load; without this latch a slow tick could overlap the
+    // next one and double-fire SCHEDULED dumps for the same env.
+    let running = false;
+    this.backupScheduleRunner = setInterval(async () => {
+      if (running) return;
+      running = true;
+      try {
+        await tick();
+      } finally {
+        running = false;
+      }
+    }, 60_000);
     void tick();
   }
 

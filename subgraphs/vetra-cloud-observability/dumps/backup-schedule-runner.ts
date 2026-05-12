@@ -104,6 +104,11 @@ export async function runBackupScheduleTick(
       // next minute. Count all SCHEDULED rows for the tenant (any
       // status) so a string of FAILED dumps doesn't silently extend
       // retention beyond the cap.
+      // Note: retention counts ALL scheduled rows regardless of status, so a
+      // string of FAILED scheduled dumps eventually pushes oldest entries
+      // (including FAILED ones) out. This is intentional: a tenant whose
+      // scheduler is permanently broken shouldn't accumulate unbounded
+      // FAILED rows.
       const allScheduled = await repo.listScheduledByTenant(env.tenantId);
       const excess = allScheduled.length - sched.retention;
       if (excess > 0) {
