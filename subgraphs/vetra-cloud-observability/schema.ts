@@ -179,6 +179,23 @@ export const schema: DocumentNode = gql`
     doesn't exist.
     """
     cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
+
+    """
+    Owner-gated. Triggers a pg_restore Job in the tenant namespace,
+    reading from the S3 dump file identified by dumpId. Dump must be
+    status=READY and not expired. Returns immediately; the restore Job
+    runs asynchronously. Raises RESTORE_IN_PROGRESS if a restore Job is
+    already running in the tenant namespace, DUMP_NOT_FOUND if the id
+    doesn't exist, DUMP_NOT_READY if the dump isn't in status=READY,
+    DUMP_EXPIRED if its expiresAt is in the past, FORBIDDEN for
+    non-owners, ENV_NOT_FOUND if the dump's tenant has no env.
+    """
+    restoreEnvironmentDump(dumpId: ID!): RestoreAck!
+  }
+
+  type RestoreAck {
+    ok: Boolean!
+    message: String
   }
 
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }

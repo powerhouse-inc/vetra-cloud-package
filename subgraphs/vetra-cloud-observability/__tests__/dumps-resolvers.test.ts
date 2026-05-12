@@ -17,6 +17,7 @@ let repo: DumpsRepo;
 let createJob: ReturnType<typeof vi.fn>;
 let deleteJob: ReturnType<typeof vi.fn>;
 let presign: ReturnType<typeof vi.fn>;
+let listRestoreJobs: ReturnType<typeof vi.fn>;
 let deps: DumpResolverDeps;
 
 function envDbStub(envOwner: string | null) {
@@ -43,6 +44,7 @@ beforeEach(async () => {
   createJob = vi.fn(async () => "pgdump-abc");
   deleteJob = vi.fn(async () => undefined);
   presign = vi.fn(async () => "https://signed.example/dump");
+  listRestoreJobs = vi.fn(async () => [] as Array<{ name: string }>);
 
   deps = {
     repo,
@@ -50,6 +52,7 @@ beforeEach(async () => {
     createJob,
     deleteJob,
     presign,
+    listRestoreJobs,
     image: "img:1",
     bucket: "powerhouse-env-dumps",
     s3Endpoint: "https://s3",
@@ -273,5 +276,142 @@ describe("cancelEnvironmentDump", () => {
         { user: { address: "0xabc" } },
       ),
     ).rejects.toThrow("DUMP_NOT_FOUND");
+  });
+});
+
+describe("restoreEnvironmentDump", () => {
+  async function seedReady() {
+    const d = await repo.create({
+      documentId: "doc-1",
+      tenantId: TENANT,
+      requestedBy: "0xabc",
+      now: new Date(),
+    });
+    await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, new Date());
+    return d;
+  }
+
+  it("creates a pgrestore Job in the tenant namespace as the owner", async () => {
+    const d = await seedReady();
+    const resolvers = createDumpResolvers(deps);
+
+    const result = await resolvers.Mutation.restoreEnvironmentDump(
+      null,
+      { dumpId: d.id },
+      { user: { address: "0xabc" } },
+    );
+
+    expect(result).toEqual({ ok: true, message: null });
+    expect(createJob).toHaveBeenCalledTimes(1);
+    expect(createJob.mock.calls[0][0]).toBe(TENANT);
+    const jobManifest = createJob.mock.calls[0][1];
+    expect(jobManifest.metadata.name).toMatch(/^pgrestore-/);
+    expect(jobManifest.metadata.labels["vetra.io/kind"]).toBe("restore");
+  });
+
+  it("rejects non-owner", async () => {
+    const d = await seedReady();
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xdef" } },
+      ),
+    ).rejects.toThrow("FORBIDDEN");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated", async () => {
+    const d = await seedReady();
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        {},
+      ),
+    ).rejects.toThrow("UNAUTHENTICATED");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("throws DUMP_NOT_FOUND for unknown id", async () => {
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: "nope" },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("DUMP_NOT_FOUND");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("throws DUMP_NOT_READY when status is PENDING", async () => {
+    const d = await repo.create({
+      documentId: "doc-1",
+      tenantId: TENANT,
+      requestedBy: "0xabc",
+      now: new Date(),
+    });
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("DUMP_NOT_READY");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("throws DUMP_EXPIRED when expiresAt is in the past", async () => {
+    // Create the row in the past so its 24h-TTL expiresAt is already
+    // behind us.
+    const past = new Date("2026-01-01T00:00:00Z");
+    const d = await repo.create({
+      documentId: "doc-1",
+      tenantId: TENANT,
+      requestedBy: "0xabc",
+      now: past,
+    });
+    await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 12345, past);
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("DUMP_EXPIRED");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("throws RESTORE_IN_PROGRESS when a restore Job already exists in the namespace", async () => {
+    const d = await seedReady();
+    listRestoreJobs.mockResolvedValueOnce([{ name: "pgrestore-xyz" }]);
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("RESTORE_IN_PROGRESS");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("throws ENV_NOT_FOUND when env stub returns null", async () => {
+    const d = await seedReady();
+    deps = { ...deps, envDb: envDbStub(null) as never };
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("ENV_NOT_FOUND");
+    expect(createJob).not.toHaveBeenCalled();
   });
 });

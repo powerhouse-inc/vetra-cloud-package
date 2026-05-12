@@ -307,5 +307,15 @@ describe("resolvers", () => {
         ),
       ).rejects.toThrow("DUMPS_NOT_CONFIGURED");
     });
+
+    it("restoreEnvironmentDump throws DUMPS_NOT_CONFIGURED", async () => {
+      await expect(
+        resolvers.Mutation.restoreEnvironmentDump(
+          undefined,
+          { dumpId: "abc" },
+          { user: { address: "0xabc" } } as never,
+        ),
+      ).rejects.toThrow("DUMPS_NOT_CONFIGURED");
+    });
   });
 });

@@ -2,7 +2,7 @@ import type { Kysely } from "kysely";
 import type { V1Job } from "@kubernetes/client-node";
 import type { DumpsRepo } from "./repo.js";
 import { requireOwner } from "./auth.js";
-import { buildDumpJob } from "./job-spec.js";
+import { buildDumpJob, buildRestoreJob } from "./job-spec.js";
 import type { DatabaseDumps } from "../db/schema.js";
 
 type Caller = { user?: { address: string } };
@@ -44,6 +44,14 @@ export type DumpResolverDeps = {
   deleteJob: (namespace: string, name: string) => Promise<void>;
   /** Mints a presigned download URL for the given s3 key. */
   presign: (s3Key: string) => Promise<string>;
+  /**
+   * Lists currently-existing restore Jobs in the given namespace. Used
+   * by `restoreEnvironmentDump` for the RESTORE_IN_PROGRESS concurrency
+   * gate. Production wiring goes through
+   * `DumpsK8sClient.listRestoreJobsInNamespace`, which fails open on
+   * k8s errors.
+   */
+  listRestoreJobs: (namespace: string) => Promise<Array<{ name: string }>>;
   image: string;
   bucket: string;
   s3Endpoint: string;
@@ -59,6 +67,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
     createJob,
     deleteJob,
     presign,
+    listRestoreJobs,
     image,
     bucket,
     s3Endpoint,
@@ -168,6 +177,55 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
 
         const updated = await repo.getById(row.id);
         return toGraphql(updated ?? row, null);
+      },
+      /**
+       * Fire-and-forget restore. Validates the dump row + ownership +
+       * dump status + concurrency, then creates the pg_restore Job and
+       * returns immediately. v1 deliberately does NOT track restore
+       * history in the database — the Job's TTL (10min) handles
+       * cleanup, and the only gate is the namespace-scoped
+       * concurrency check. The frontend shows a banner until the
+       * mutation resolves and a toast on resolution; server-side
+       * there's nothing to reconcile.
+       */
+      restoreEnvironmentDump: async (
+        _p: unknown,
+        args: { dumpId: string },
+        ctx: Caller,
+      ) => {
+        const row = await repo.getById(args.dumpId);
+        if (!row) throw new Error("DUMP_NOT_FOUND");
+
+        const env = await loadEnv(envDb, row.tenantId);
+        requireOwner({
+          caller: ctx.user?.address ?? null,
+          envOwner: env?.owner ?? null,
+        });
+
+        if (row.status !== "READY") throw new Error("DUMP_NOT_READY");
+        if (new Date(row.expiresAt).getTime() <= Date.now()) {
+          throw new Error("DUMP_EXPIRED");
+        }
+
+        // Namespace-scoped concurrency gate. A previous restore Job
+        // may still be running (or its TTL hasn't expired yet) — we
+        // don't want two concurrent pg_restore --clean processes
+        // tearing into the same database.
+        const running = await listRestoreJobs(row.tenantId);
+        if (running.length > 0) throw new Error("RESTORE_IN_PROGRESS");
+
+        const job = buildRestoreJob({
+          dumpId: row.id,
+          tenantNs: row.tenantId,
+          image,
+          bucket,
+          s3Endpoint,
+          s3AccessKey,
+          s3SecretKey,
+        });
+        await createJob(row.tenantId, job);
+
+        return { ok: true, message: null };
       },
     },
   };

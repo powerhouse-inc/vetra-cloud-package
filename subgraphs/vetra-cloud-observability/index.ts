@@ -234,6 +234,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       createJob: (ns, body) => k8s.createJob(ns, body),
       deleteJob: (ns, name) => k8s.deleteJob(ns, name),
       presign: (key) => s3.presignDownload(key),
+      listRestoreJobs: (ns) => k8s.listRestoreJobsInNamespace(ns),
       image:
         process.env.VETRA_DUMPS_IMAGE ??
         "cr.vetra.io/powerhouse-inc-powerhouse/pgdump-uploader:1.0.0",
