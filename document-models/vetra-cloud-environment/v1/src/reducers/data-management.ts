@@ -92,4 +92,19 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       // Channel change doesn't affect rendered chart values, so no
       // markPendingIfDeployed — no gitops sync is required.
     },
+    setBackupScheduleOperation(state, action) {
+      assertOwner(state, action);
+      if (action.input.retention < 1 || action.input.retention > 30) {
+        throw new Error(
+          "INVALID_RETENTION: retention must be between 1 and 30",
+        );
+      }
+      state.backupSchedule = {
+        enabled: action.input.enabled,
+        cadence: action.input.cadence,
+        retention: action.input.retention,
+      };
+      // Scheduling doesn't affect rendered chart values, so no
+      // markPendingIfDeployed — same rationale as setAutoUpdateChannel.
+    },
   };

@@ -37,4 +37,5 @@ export const errors = {
   SetDnsRecords: { NotOwnerError },
   SetApexService: { NotOwnerError, ServiceNotEnabledError },
   SetAutoUpdateChannel: { NotOwnerError },
+  SetBackupSchedule: { NotOwnerError },
 };

@@ -5,6 +5,8 @@ import type {
   ApproveChangesInput,
   ArchiveInput,
   AutoUpdateChannel,
+  BackupCadence,
+  BackupSchedule,
   DisableServiceInput,
   DnsRecord,
   DnsRecordInput,
@@ -19,6 +21,7 @@ import type {
   ServiceStatus,
   SetApexServiceInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -65,6 +68,8 @@ export const definedNonNullAnySchema = z
   .refine((v) => isDefinedNonNullAny(v));
 
 export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
+
+export const BackupCadenceSchema = z.enum(["DAILY", "HOURLY", "WEEKLY"]);
 
 export const ServiceStatusSchema = z.enum([
   "ACTIVE",
@@ -123,6 +128,17 @@ export function ApproveChangesInputSchema(): z.ZodObject<
 export function ArchiveInputSchema(): z.ZodObject<Properties<ArchiveInput>> {
   return z.object({
     _placeholder: z.string().nullish(),
+  });
+}
+
+export function BackupScheduleSchema(): z.ZodObject<
+  Properties<BackupSchedule>
+> {
+  return z.object({
+    __typename: z.literal("BackupSchedule").optional(),
+    cadence: BackupCadenceSchema,
+    enabled: z.boolean(),
+    retention: z.number(),
   });
 }
 
@@ -237,6 +253,16 @@ export function SetAutoUpdateChannelInputSchema(): z.ZodObject<
 > {
   return z.object({
     channel: AutoUpdateChannelSchema.nullish(),
+  });
+}
+
+export function SetBackupScheduleInputSchema(): z.ZodObject<
+  Properties<SetBackupScheduleInput>
+> {
+  return z.object({
+    cadence: BackupCadenceSchema,
+    enabled: z.boolean(),
+    retention: z.number(),
   });
 }
 
@@ -391,6 +417,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
     apexService: VetraCloudEnvironmentServiceTypeSchema.nullish(),
     autoUpdateChannel: AutoUpdateChannelSchema.nullish(),
+    backupSchedule: z.lazy(() => BackupScheduleSchema().nullish()),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     genericBaseDomain: z.string().nullish(),

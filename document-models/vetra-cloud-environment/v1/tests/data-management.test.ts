@@ -16,6 +16,8 @@ import {
   SetOwnerInputSchema,
   SetApexServiceInputSchema,
   SetAutoUpdateChannelInputSchema,
+  setBackupSchedule,
+  SetBackupScheduleInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
 import { generateMock } from "@powerhousedao/codegen";
 
@@ -535,5 +537,125 @@ describe("DataManagementOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  it("should handle setBackupSchedule operation", () => {
+    const document = utils.createDocument();
+    const input = generateMock(SetBackupScheduleInputSchema());
+
+    const updatedDocument = reducer(document, setBackupSchedule(input));
+
+    expect(isVetraCloudEnvironmentDocument(updatedDocument)).toBe(true);
+    expect(updatedDocument.operations.global).toHaveLength(1);
+    expect(updatedDocument.operations.global[0].action.type).toBe(
+      "SET_BACKUP_SCHEDULE",
+    );
+    expect(updatedDocument.operations.global[0].action.input).toStrictEqual(
+      input,
+    );
+    expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_BACKUP_SCHEDULE", () => {
+    it("allows the owner to set the schedule", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setBackupSchedule({
+          enabled: true,
+          cadence: "DAILY",
+          retention: 7,
+        }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.backupSchedule).toStrictEqual({
+        enabled: true,
+        cadence: "DAILY",
+        retention: 7,
+      });
+    });
+
+    it("rejects a non-owner attempting to set the schedule", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setBackupSchedule({
+          enabled: true,
+          cadence: "DAILY",
+          retention: 7,
+        }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.backupSchedule).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /is not the owner/i,
+      );
+    });
+
+    it("rejects retention outside the 1..30 range", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+      // Above the upper bound.
+      document = reducer(document, {
+        ...setBackupSchedule({
+          enabled: true,
+          cadence: "DAILY",
+          retention: 31,
+        }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.backupSchedule).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /INVALID_RETENTION/,
+      );
+
+      // Below the lower bound.
+      document = reducer(document, {
+        ...setBackupSchedule({
+          enabled: true,
+          cadence: "DAILY",
+          retention: 0,
+        }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.backupSchedule).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /INVALID_RETENTION/,
+      );
+    });
+
+    it("can be disabled while keeping the cadence/retention", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setBackupSchedule({
+          enabled: false,
+          cadence: "WEEKLY",
+          retention: 4,
+        }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.backupSchedule).toStrictEqual({
+        enabled: false,
+        cadence: "WEEKLY",
+        retention: 4,
+      });
+    });
   });
 });

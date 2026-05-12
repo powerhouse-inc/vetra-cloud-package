@@ -31,12 +31,25 @@ type VetraCloudEnvironmentState {
   status: VetraCloudEnvironmentStatus!
   apexService: VetraCloudEnvironmentServiceType
   autoUpdateChannel: AutoUpdateChannel
+  backupSchedule: BackupSchedule
 }
 
 enum AutoUpdateChannel {
   DEV
   STAGING
   LATEST
+}
+
+type BackupSchedule {
+  enabled: Boolean!
+  cadence: BackupCadence!
+  retention: Int!
+}
+
+enum BackupCadence {
+  HOURLY
+  DAILY
+  WEEKLY
 }
 
 type VetraCustomDomain {
@@ -155,6 +168,12 @@ input SetApexServiceInput {
 
 input SetAutoUpdateChannelInput {
   channel: AutoUpdateChannel
+}
+
+input SetBackupScheduleInput {
+  enabled: Boolean!
+  cadence: BackupCadence!
+  retention: Int!
 }
 
 # services

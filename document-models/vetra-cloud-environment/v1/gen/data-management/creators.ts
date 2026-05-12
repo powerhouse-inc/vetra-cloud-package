@@ -8,6 +8,7 @@ import {
   SetDnsRecordsInputSchema,
   SetApexServiceInputSchema,
   SetAutoUpdateChannelInputSchema,
+  SetBackupScheduleInputSchema,
 } from "../schema/zod.js";
 import type {
   SetOwnerInput,
@@ -18,6 +19,7 @@ import type {
   SetDnsRecordsInput,
   SetApexServiceInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
 } from "../types.js";
 import type {
   SetOwnerAction,
@@ -28,6 +30,7 @@ import type {
   SetDnsRecordsAction,
   SetApexServiceAction,
   SetAutoUpdateChannelAction,
+  SetBackupScheduleAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -101,5 +104,14 @@ export const setAutoUpdateChannel = (input: SetAutoUpdateChannelInput) =>
     { ...input },
     undefined,
     SetAutoUpdateChannelInputSchema,
+    "global",
+  );
+
+export const setBackupSchedule = (input: SetBackupScheduleInput) =>
+  createAction<SetBackupScheduleAction>(
+    "SET_BACKUP_SCHEDULE",
+    { ...input },
+    undefined,
+    SetBackupScheduleInputSchema,
     "global",
   );

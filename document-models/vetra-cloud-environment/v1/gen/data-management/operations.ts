@@ -8,6 +8,7 @@ import type {
   SetDnsRecordsAction,
   SetApexServiceAction,
   SetAutoUpdateChannelAction,
+  SetBackupScheduleAction,
 } from "./actions.js";
 import type { VetraCloudEnvironmentState } from "../types.js";
 
@@ -50,6 +51,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setAutoUpdateChannelOperation: (
     state: VetraCloudEnvironmentState,
     action: SetAutoUpdateChannelAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setBackupScheduleOperation: (
+    state: VetraCloudEnvironmentState,
+    action: SetBackupScheduleAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

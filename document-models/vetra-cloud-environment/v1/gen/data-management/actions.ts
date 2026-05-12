@@ -8,6 +8,7 @@ import type {
   SetDnsRecordsInput,
   SetApexServiceInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {
@@ -42,6 +43,10 @@ export type SetAutoUpdateChannelAction = Action & {
   type: "SET_AUTO_UPDATE_CHANNEL";
   input: SetAutoUpdateChannelInput;
 };
+export type SetBackupScheduleAction = Action & {
+  type: "SET_BACKUP_SCHEDULE";
+  input: SetBackupScheduleInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -51,4 +56,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetDefaultPackageRegistryAction
   | SetDnsRecordsAction
   | SetApexServiceAction
-  | SetAutoUpdateChannelAction;
+  | SetAutoUpdateChannelAction
+  | SetBackupScheduleAction;
