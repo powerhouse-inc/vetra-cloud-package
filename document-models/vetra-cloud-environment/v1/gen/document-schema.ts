@@ -11,18 +11,18 @@ import type {
 } from "./types.js";
 
 /** Schema for validating the header object of a VetraCloudEnvironment document */
-export const VetraCloudEnvironmentDocumentHeaderSchema =
+export const VetraCloudEnvironmentDocumentHeaderSchema: z.ZodType<unknown> =
   BaseDocumentHeaderSchema.extend({
     documentType: z.literal(vetraCloudEnvironmentDocumentType),
   });
 
 /** Schema for validating the state object of a VetraCloudEnvironment document */
-export const VetraCloudEnvironmentPHStateSchema =
+export const VetraCloudEnvironmentPHStateSchema: z.ZodType<unknown> =
   BaseDocumentStateSchema.extend({
     global: VetraCloudEnvironmentStateSchema(),
   });
 
-export const VetraCloudEnvironmentDocumentSchema = z.object({
+export const VetraCloudEnvironmentDocumentSchema: z.ZodType<unknown> = z.object({
   header: VetraCloudEnvironmentDocumentHeaderSchema,
   state: VetraCloudEnvironmentPHStateSchema,
   initialState: VetraCloudEnvironmentPHStateSchema,
