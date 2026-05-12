@@ -401,6 +401,20 @@ describe("restoreEnvironmentDump", () => {
     expect(createJob).not.toHaveBeenCalled();
   });
 
+  it("fails closed as RESTORE_IN_PROGRESS when listRestoreJobs throws (k8s unreachable)", async () => {
+    const d = await seedReady();
+    listRestoreJobs.mockRejectedValueOnce(new Error("k8s API down"));
+    const resolvers = createDumpResolvers(deps);
+    await expect(
+      resolvers.Mutation.restoreEnvironmentDump(
+        null,
+        { dumpId: d.id },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("RESTORE_IN_PROGRESS");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
   it("throws ENV_NOT_FOUND when env stub returns null", async () => {
     const d = await seedReady();
     deps = { ...deps, envDb: envDbStub(null) as never };

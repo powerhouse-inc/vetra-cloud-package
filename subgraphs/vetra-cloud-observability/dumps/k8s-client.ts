@@ -37,8 +37,10 @@ export interface DumpsK8sClient {
     Array<{ namespace: string; name: string; dumpId: string }>
   >;
   /** Lists currently-existing restore Jobs in the given namespace. Used
-   *  for the RESTORE_IN_PROGRESS concurrency gate. Returns an empty
-   *  array on error so the gate is fail-open if k8s is unreachable. */
+   *  for the RESTORE_IN_PROGRESS concurrency gate. Throws on k8s API
+   *  errors — the resolver wraps this call and fails closed so a
+   *  transient outage can't let two concurrent pg_restore --clean
+   *  processes race the same database. */
   listRestoreJobsInNamespace(namespace: string): Promise<Array<{ name: string }>>;
 }
 
@@ -132,22 +134,17 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
         .filter((j) => j.name && j.dumpId);
     },
     async listRestoreJobsInNamespace(namespace) {
-      try {
-        const res = await batch.listNamespacedJob({
-          namespace,
-          labelSelector: "vetra.io/kind=restore",
-        });
-        return res.items
-          .map((j) => ({ name: j.metadata?.name ?? "" }))
-          .filter((j) => j.name);
-      } catch {
-        // Fail-open: the resolver uses an empty list to mean "no
-        // restore in progress", so a transient k8s outage doesn't
-        // block the owner from triggering a restore. The Job creation
-        // call that follows will surface a real error if k8s is still
-        // unreachable.
-        return [];
-      }
+      // No try/catch: callers (currently just the restoreEnvironmentDump
+      // resolver's concurrency gate) must decide how to handle k8s API
+      // errors. Swallowing here would let two concurrent restores both
+      // observe an empty list and both proceed.
+      const res = await batch.listNamespacedJob({
+        namespace,
+        labelSelector: "vetra.io/kind=restore",
+      });
+      return res.items
+        .map((j) => ({ name: j.metadata?.name ?? "" }))
+        .filter((j) => j.name);
     },
   };
 }

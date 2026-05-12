@@ -48,8 +48,10 @@ export type DumpResolverDeps = {
    * Lists currently-existing restore Jobs in the given namespace. Used
    * by `restoreEnvironmentDump` for the RESTORE_IN_PROGRESS concurrency
    * gate. Production wiring goes through
-   * `DumpsK8sClient.listRestoreJobsInNamespace`, which fails open on
-   * k8s errors.
+   * `DumpsK8sClient.listRestoreJobsInNamespace`, which throws on k8s
+   * errors; the resolver fails closed (treats a thrown error as "a
+   * restore may be running") to prevent two concurrent pg_restore
+   * --clean processes from racing the same database.
    */
   listRestoreJobs: (namespace: string) => Promise<Array<{ name: string }>>;
   image: string;
@@ -211,7 +213,16 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         // may still be running (or its TTL hasn't expired yet) — we
         // don't want two concurrent pg_restore --clean processes
         // tearing into the same database.
-        const running = await listRestoreJobs(row.tenantId);
+        let running: Array<{ name: string }>;
+        try {
+          running = await listRestoreJobs(row.tenantId);
+        } catch {
+          // Fail-closed: if k8s is unreachable we can't prove there's
+          // no other restore running, so refuse the call. Surface as
+          // RESTORE_IN_PROGRESS so the UI shows the same recovery
+          // affordance.
+          throw new Error("RESTORE_IN_PROGRESS");
+        }
         if (running.length > 0) throw new Error("RESTORE_IN_PROGRESS");
 
         const job = buildRestoreJob({
