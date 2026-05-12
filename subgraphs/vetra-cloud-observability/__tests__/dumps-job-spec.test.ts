@@ -65,6 +65,12 @@ describe("buildDumpJob", () => {
     expect(job.spec?.template.spec?.imagePullSecrets).toEqual([
       { name: "harbor-credentials" },
     ]);
+
+    // The dump container relies on the image's default ENTRYPOINT —
+    // unlike the restore container, which overrides `command`. Locking
+    // this in so a future edit can't accidentally inject a command
+    // that breaks pgdump-uploader.
+    expect(job.spec?.template.spec?.containers[0].command).toBeUndefined();
   });
 });
 

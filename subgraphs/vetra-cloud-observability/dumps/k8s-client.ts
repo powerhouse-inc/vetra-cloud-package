@@ -140,7 +140,7 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
       // observe an empty list and both proceed.
       const res = await batch.listNamespacedJob({
         namespace,
-        labelSelector: "vetra.io/kind=restore",
+        labelSelector: `${MANAGED_BY_SELECTOR},vetra.io/kind=restore`,
       });
       return res.items
         .map((j) => ({ name: j.metadata?.name ?? "" }))
