@@ -11,7 +11,17 @@ type QueryFn = () => Promise<{ rows: unknown[] }>;
 function poolStub(handlers: { match: RegExp; handler: QueryFn }[]) {
   const setStatementTimeout = vi.fn(async () => ({ rows: [] }));
   const release = vi.fn();
+  const captured: string[] = [];
   const queryImpl = (text: string) => {
+    captured.push(text);
+    const normalized = text.trim().toUpperCase();
+    if (
+      normalized.startsWith("BEGIN") ||
+      normalized === "COMMIT" ||
+      normalized === "ROLLBACK"
+    ) {
+      return Promise.resolve({ rows: [] });
+    }
     if (/SET LOCAL statement_timeout/i.test(text)) {
       return setStatementTimeout();
     }
@@ -28,6 +38,7 @@ function poolStub(handlers: { match: RegExp; handler: QueryFn }[]) {
     pool: { connect: async () => client } as never,
     setStatementTimeout,
     release,
+    captured,
   };
 }
 
@@ -236,6 +247,14 @@ describe("describeDatabase", () => {
     const release = vi.fn();
     const client = {
       query: async (text: string) => {
+        const normalized = text.trim().toUpperCase();
+        if (
+          normalized.startsWith("BEGIN") ||
+          normalized === "COMMIT" ||
+          normalized === "ROLLBACK"
+        ) {
+          return { rows: [] };
+        }
         if (/SET LOCAL/i.test(text)) return { rows: [] };
         throw new Error("BOOM");
       },
@@ -244,5 +263,70 @@ describe("describeDatabase", () => {
     const pool = { connect: async () => client } as never;
     await expect(describeDatabase(pool)).rejects.toThrow("BOOM");
     expect(release).toHaveBeenCalled();
+  });
+
+  it("wraps the introspection in BEGIN READ ONLY ... COMMIT around SET LOCAL", async () => {
+    const { pool, captured } = poolStub([
+      {
+        match: /FROM information_schema\.tables/i,
+        handler: async () => ({ rows: [] }),
+      },
+      {
+        match: /FROM information_schema\.columns/i,
+        handler: async () => ({ rows: [] }),
+      },
+      {
+        match: /FROM pg_constraint/i,
+        handler: async () => ({ rows: [] }),
+      },
+      {
+        match: /FROM pg_indexes/i,
+        handler: async () => ({ rows: [] }),
+      },
+    ]);
+
+    await describeDatabase(pool);
+
+    // Find each landmark in the order it was issued.
+    const beginIdx = captured.findIndex((q) => /^\s*BEGIN(\s|$)/i.test(q));
+    const setLocalIdx = captured.findIndex((q) =>
+      /SET LOCAL statement_timeout/i.test(q),
+    );
+    const commitIdx = captured.findIndex((q) => /^\s*COMMIT\s*$/i.test(q));
+    const rollbackIdx = captured.findIndex((q) => /^\s*ROLLBACK\s*$/i.test(q));
+    const lastTxIdx = commitIdx >= 0 ? commitIdx : rollbackIdx;
+
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(setLocalIdx).toBeGreaterThan(beginIdx);
+    expect(lastTxIdx).toBeGreaterThan(setLocalIdx);
+    // The first BEGIN matched explicitly: confirms it is a READ ONLY
+    // transaction (not a default read-write one).
+    expect(captured[beginIdx]).toMatch(/^BEGIN\s+READ\s+ONLY$/i);
+  });
+
+  it("issues ROLLBACK before releasing the client on error", async () => {
+    const captured: string[] = [];
+    const release = vi.fn();
+    const client = {
+      query: async (text: string) => {
+        captured.push(text);
+        const normalized = text.trim().toUpperCase();
+        if (normalized.startsWith("BEGIN") || normalized === "ROLLBACK") {
+          return { rows: [] };
+        }
+        if (/SET LOCAL/i.test(text)) return { rows: [] };
+        throw new Error("BOOM");
+      },
+      release,
+    };
+    const pool = { connect: async () => client } as never;
+    await expect(describeDatabase(pool)).rejects.toThrow("BOOM");
+
+    const rollbackIdx = captured.findIndex((q) => /^\s*ROLLBACK\s*$/i.test(q));
+    expect(rollbackIdx).toBeGreaterThanOrEqual(0);
+    // release() runs in the outer `finally`, after ROLLBACK is issued.
+    expect(release).toHaveBeenCalled();
+    // No COMMIT on the error path.
+    expect(captured.some((q) => /^\s*COMMIT\s*$/i.test(q))).toBe(false);
   });
 });
