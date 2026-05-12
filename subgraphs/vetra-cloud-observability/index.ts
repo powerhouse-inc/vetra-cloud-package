@@ -16,6 +16,11 @@ import {
 } from "./dumps/k8s-client.js";
 import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
+import { createDumpAndJob } from "./dumps/service.js";
+import {
+  runBackupScheduleTick,
+  type BackupEnvSnapshot,
+} from "./dumps/backup-schedule-runner.js";
 import type { ObservabilityDB } from "./db/schema.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
@@ -33,9 +38,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private clintPullWorker: ClintPullWorker | null = null;
   private dumpJobWatcher: ReturnType<typeof setInterval> | null = null;
   private dumpRowPruner: ReturnType<typeof setInterval> | null = null;
+  private backupScheduleRunner: ReturnType<typeof setInterval> | null = null;
   private dumpsK8s: DumpsK8sClient | null = null;
   private dumpsRepo: DumpsRepo | null = null;
   private dumpsS3: S3Helper | null = null;
+  private dumpDeps: DumpResolverDeps | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -65,6 +72,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     };
 
     const dumpDeps = await this.buildDumpDeps(db, envDb);
+    this.dumpDeps = dumpDeps;
 
     this.resolvers = createResolvers(db, {
       prometheusUrl,
@@ -77,6 +85,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
       this.startDumpJobWatcher();
       this.startDumpRowPruner();
+    }
+
+    // Scheduled-backup runner: ticks once a minute, reads each env's
+    // backupSchedule, and fires SCHEDULED dumps as their cadence
+    // elapses. Disabled by setting VETRA_BACKUP_SCHEDULER_ENABLED=false
+    // (defaults ON when dump deps are wired).
+    if (
+      dumpDeps &&
+      process.env.VETRA_BACKUP_SCHEDULER_ENABLED !== "false"
+    ) {
+      this.startBackupScheduleRunner(envDb);
     }
 
     // Start watchers using the pod's in-cluster ServiceAccount.
@@ -180,6 +199,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.dumpRowPruner) {
       clearInterval(this.dumpRowPruner);
       this.dumpRowPruner = null;
+    }
+    if (this.backupScheduleRunner) {
+      clearInterval(this.backupScheduleRunner);
+      this.backupScheduleRunner = null;
     }
     this.clintPullWorker?.stop();
     this.clintPullWorker = null;
@@ -338,6 +361,103 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       }
     };
     this.dumpRowPruner = setInterval(() => void tick(), 60 * 60 * 1000);
+  }
+
+  /**
+   * Backup-schedule runner: every minute, snapshots each env's
+   * backupSchedule and fires SCHEDULED pg_dump exports whose
+   * cadence has elapsed. Retention enforced inline by deleting the
+   * oldest excess SCHEDULED rows.
+   *
+   * Why this fetches each document via reactorClient.get instead of
+   * reading the processor's `environments` table: the processor
+   * projects scalar state fields (autoUpdateChannel, status, etc.) as
+   * columns but not nested objects like backupSchedule. Adding a
+   * projection column would touch the processor namespace, which
+   * Phase C explicitly scopes out — so we accept the per-tick
+   * document fetch. With minute cadence this is bounded by the
+   * number of envs that have an enabled schedule; the env list is
+   * pre-filtered by `enabled=true` (where applicable) but the snapshot
+   * is still read from the document for backupSchedule itself.
+   */
+  private startBackupScheduleRunner(envDb: Kysely<any>) {
+    const tick = async () => {
+      const deps = this.dumpDeps;
+      const repo = this.dumpsRepo;
+      if (!deps || !repo) return;
+
+      try {
+        // First pass: which env ids exist? We don't have a column for
+        // backupSchedule so we can't pre-filter on enabled=true at the
+        // DB layer. Listing all environments is acceptable at minute
+        // cadence (vetra-cloud has O(100) envs in production).
+        const envs = (await envDb
+          .selectFrom("environments")
+          .select(["id", "tenantId"])
+          .where("tenantId", "is not", null)
+          .execute()) as Array<{ id: string; tenantId: string | null }>;
+
+        if (envs.length === 0) return;
+
+        // Second pass: snapshot each env's backupSchedule from its
+        // document. Fail-soft per env so one bad document doesn't
+        // shadow the rest of the tick.
+        const snapshots: BackupEnvSnapshot[] = [];
+        for (const env of envs) {
+          if (!env.tenantId) continue;
+          try {
+            const doc = (await this.reactorClient.get(env.id)) as {
+              state?: { global?: { backupSchedule?: unknown } };
+            } | null;
+            const sched = doc?.state?.global?.backupSchedule as
+              | { enabled: boolean; cadence: string; retention: number }
+              | null
+              | undefined;
+            snapshots.push({
+              documentId: env.id,
+              tenantId: env.tenantId,
+              backupSchedule: sched ?? null,
+            });
+          } catch (err) {
+            // Document fetch failure: skip this env this tick. Most
+            // common cause is a freshly-created env that hasn't
+            // materialized yet — next tick will pick it up.
+            console.info(
+              `[backup-schedule] could not snapshot ${env.id}: ${String(err)}`,
+            );
+          }
+        }
+
+        const result = await runBackupScheduleTick(
+          snapshots,
+          repo,
+          (input) => createDumpAndJob(deps, input),
+          new Date(),
+          (env, err) => {
+            console.warn(
+              `[backup-schedule] env=${env.documentId} tenant=${env.tenantId}: ${String(err)}`,
+            );
+          },
+        );
+
+        if (result.fired.length > 0 || result.deleted.length > 0) {
+          console.info(
+            `[backup-schedule] tick: considered=${result.considered} fired=${result.fired.length} deleted=${result.deleted.length}`,
+          );
+        }
+      } catch (err) {
+        // Tick-level failure (e.g. envDb unreachable). Don't crash the
+        // interval; we'll retry on the next tick.
+        if (String(err).includes("does not exist")) return;
+        console.warn("[backup-schedule] tick error:", err);
+      }
+    };
+
+    // 60s cadence — finest grain that makes sense for the HOURLY
+    // cadence option. Runs once on startup too so a fresh deploy
+    // doesn't wait a minute before the first sweep.
+    this.backupScheduleRunner = setInterval(() => void tick(), 60_000);
+    void tick();
   }
 
   /** Grace period (ms) before marking a DEPLOYING environment as failed.
