@@ -2,7 +2,8 @@ import type { Kysely } from "kysely";
 import type { V1Job } from "@kubernetes/client-node";
 import type { DumpsRepo } from "./repo.js";
 import { requireOwner } from "./auth.js";
-import { buildDumpJob, buildRestoreJob } from "./job-spec.js";
+import { buildRestoreJob } from "./job-spec.js";
+import { createDumpAndJob } from "./service.js";
 import type { DatabaseDumps } from "../db/schema.js";
 
 type Caller = { user?: { address: string } };
@@ -124,31 +125,15 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         // explicit so we don't pass undefined to repo.create.
         if (!env) throw new Error("ENV_NOT_FOUND");
 
-        const dump = await repo.create({
+        // Delegates to the shared service helper, which the scheduled-
+        // backup runner also uses. The resolver's job is exclusively
+        // the auth check above + GraphQL projection below.
+        const dump = await createDumpAndJob(deps, {
           documentId: env.id,
           tenantId: args.tenantId,
           requestedBy: ctx.user!.address,
           source: "MANUAL",
-          now: new Date(),
         });
-
-        const job = buildDumpJob({
-          dumpId: dump.id,
-          tenantNs: args.tenantId,
-          image,
-          bucket,
-          s3Endpoint,
-          s3AccessKey,
-          s3SecretKey,
-        });
-        try {
-          const jobName = await createJob(args.tenantId, job);
-          await repo.setJobName(dump.id, jobName || `pgdump-${dump.id}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "createJob failed";
-          await repo.markFailed(dump.id, msg, new Date());
-          throw err;
-        }
 
         return toGraphql(dump, null);
       },
