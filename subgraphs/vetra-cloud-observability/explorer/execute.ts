@@ -1,6 +1,23 @@
 import type { Pool } from "pg";
 
 /**
+ * Read-only SQL explorer sandbox.
+ *
+ * Known limitations
+ * -----------------
+ * - The `;`-based first-statement split in `firstStatement` is not
+ *   string-literal-aware: a legitimate query like `SELECT '; ' AS x`
+ *   will be split mid-literal and only its left half is executed,
+ *   which Postgres rejects as a parse error. Fixing this properly
+ *   requires a SQL parser dependency; for v1 we accept the parse
+ *   error on these legit-but-pathological inputs because (a) the
+ *   READ ONLY transaction still prevents any actual write, and (b)
+ *   the whole-statement blocked-keyword scan (BLOCKED_KEYWORD_RE)
+ *   makes it nearly impossible to use the truncated half-statement
+ *   to do anything dangerous.
+ */
+
+/**
  * Result shape — strings + nulls in cells, ready for JSON transport.
  */
 export type DatabaseQueryResult = {
@@ -36,10 +53,12 @@ const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
  * Statement keywords that imply a write or admin operation. The check
  * is defence-in-depth on top of `BEGIN READ ONLY`; we want to reject
  * these before they hit the database (so we can surface a clean
- * QUERY_BLOCKED message instead of a Postgres error). Case is
- * normalised before the lookup.
+ * QUERY_BLOCKED message instead of a Postgres error). We scan the
+ * whole cleaned statement (not just its first word), so CTE-wrapped
+ * DML — e.g. `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x`
+ * — is rejected here rather than at the READ ONLY barrier.
  */
-const BLOCKED_KEYWORDS = new Set([
+const BLOCKED_KEYWORDS = [
   "INSERT",
   "UPDATE",
   "DELETE",
@@ -53,7 +72,22 @@ const BLOCKED_KEYWORDS = new Set([
   "CALL",
   "DO",
   "EXECUTE",
-]);
+] as const;
+
+/**
+ * Case-insensitive, whole-word match for any blocked keyword anywhere
+ * in the supplied string. Built once at module load.
+ *
+ * Heuristic by design: a literal that happens to spell a keyword
+ * (e.g. `SELECT 'delete me' AS msg`) will trip this and be blocked.
+ * That's an acceptable false-positive for v1 — the READ ONLY
+ * transaction is the actual safety barrier, and dodging the
+ * pre-check with a quoted keyword still can't perform a write.
+ */
+const BLOCKED_KEYWORD_RE = new RegExp(
+  `\\b(?:${BLOCKED_KEYWORDS.join("|")})\\b`,
+  "i",
+);
 
 /**
  * Strip line (`-- …`) and block (`/* … *\/`) comments from SQL before
@@ -137,8 +171,11 @@ function serializeCell(value: unknown): string | null {
  * Execution path:
  *   1. Take only the first statement (split on `;`)
  *   2. Reject empty input as QUERY_EMPTY
- *   3. Strip comments + check the leading keyword against the
- *      blocklist; reject as QUERY_BLOCKED on hit.
+ *   3. Strip comments + scan the whole cleaned statement (not just
+ *      the leading word) for any blocked keyword as a word-boundary
+ *      match; reject as QUERY_BLOCKED on hit. This rejects CTE-
+ *      wrapped DML at the pre-check rather than at the READ ONLY
+ *      barrier.
  *   4. Compute the effective LIMIT: min(user-or-default, MAX). If
  *      the statement has no trailing LIMIT, append one.
  *   5. Open a transaction with READ ONLY + 5s statement_timeout +
@@ -148,7 +185,8 @@ function serializeCell(value: unknown): string | null {
  *
  * Errors:
  *   - QUERY_EMPTY: empty after first-statement extraction.
- *   - QUERY_BLOCKED: leading keyword is on the blocklist.
+ *   - QUERY_BLOCKED: any blocked keyword appears (whole-word) in
+ *     the cleaned first statement.
  *   - QUERY_TIMEOUT: Postgres `57014` (`query_canceled`).
  *   - QUERY_ERROR: any other Postgres error; original message
  *     attached on `.cause` for the resolver to log.
@@ -171,11 +209,15 @@ export async function executeReadOnlyQuery(
   if (!cleaned) {
     throw new Error("QUERY_EMPTY");
   }
-  // Leading keyword: word characters at the very start of the
-  // cleaned SQL. Matches case-insensitively against the blocklist.
-  const headMatch = cleaned.match(/^[A-Za-z][A-Za-z_]*/);
-  const head = headMatch ? headMatch[0].toUpperCase() : "";
-  if (BLOCKED_KEYWORDS.has(head)) {
+  // Whole-statement scan (not just the leading token) so a CTE-
+  // wrapped write like `WITH x AS (DELETE FROM t) SELECT * FROM x`
+  // is rejected here with a clean QUERY_BLOCKED rather than as a
+  // Postgres error from the READ ONLY barrier. The match is on word
+  // boundaries and case-insensitive; see BLOCKED_KEYWORD_RE for the
+  // documented heuristic trade-off (literal "delete" in a quoted
+  // string would also block, which we accept because the READ ONLY
+  // transaction still prevents any actual write).
+  if (BLOCKED_KEYWORD_RE.test(cleaned)) {
     throw new Error("QUERY_BLOCKED");
   }
 

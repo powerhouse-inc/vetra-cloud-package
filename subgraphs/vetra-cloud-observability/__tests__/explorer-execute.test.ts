@@ -201,6 +201,61 @@ describe("executeReadOnlyQuery — blocked keywords", () => {
   });
 });
 
+describe("executeReadOnlyQuery — CTE-wrapped DML", () => {
+  // Whole-statement scan rejects CTE-wrapped writes at the pre-check
+  // rather than letting them fall through to the READ ONLY barrier
+  // (which would surface a less helpful Postgres error).
+  it("rejects WITH x AS (DELETE FROM users) SELECT 1 with QUERY_BLOCKED", async () => {
+    const { pool, captured } = poolStub(() => ({ rows: [] }));
+    await expect(
+      executeReadOnlyQuery(
+        pool,
+        "WITH x AS (DELETE FROM users) SELECT 1",
+        DEFAULT_LIMIT,
+      ),
+    ).rejects.toThrow("QUERY_BLOCKED");
+    // Nothing reached the database.
+    expect(captured).toHaveLength(0);
+  });
+
+  it("rejects WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x", async () => {
+    const { pool, captured } = poolStub(() => ({ rows: [] }));
+    await expect(
+      executeReadOnlyQuery(
+        pool,
+        "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+        DEFAULT_LIMIT,
+      ),
+    ).rejects.toThrow("QUERY_BLOCKED");
+    expect(captured).toHaveLength(0);
+  });
+
+  it("allows a plain CTE with no blocked keyword", async () => {
+    const { pool } = poolStub(() => ({
+      rows: [{ n: 1 }],
+      fields: [{ name: "n" }],
+    }));
+    const result = await executeReadOnlyQuery(
+      pool,
+      "WITH x AS (SELECT 1 AS n) SELECT * FROM x",
+      DEFAULT_LIMIT,
+    );
+    expect(result.rows).toEqual([["1"]]);
+  });
+
+  it("known heuristic limitation: a blocked keyword inside a string literal is also blocked", async () => {
+    // Documented trade-off: the whole-statement scan can't tell the
+    // difference between a keyword in code vs in a quoted literal,
+    // so SELECT 'delete this' AS msg is also rejected. Fine for v1
+    // — the READ ONLY transaction is the real safety barrier.
+    const { pool, captured } = poolStub(() => ({ rows: [] }));
+    await expect(
+      executeReadOnlyQuery(pool, "SELECT 'delete this' AS msg", DEFAULT_LIMIT),
+    ).rejects.toThrow("QUERY_BLOCKED");
+    expect(captured).toHaveLength(0);
+  });
+});
+
 describe("executeReadOnlyQuery — empty input", () => {
   it("throws QUERY_EMPTY on empty input", async () => {
     const { pool } = poolStub(() => ({ rows: [] }));
