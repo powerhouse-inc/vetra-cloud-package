@@ -25,6 +25,23 @@ type MaybeSigner = {
  * Mutates state.owner when auto-claiming (the reducers that call this run
  * inside mutative's Draft wrapper, so direct assignment is correct).
  */
+/**
+ * Backfill `ownerDrive` from the legacy `owner` field when missing. Called at
+ * the top of every data-management reducer so any signed write transparently
+ * upgrades a legacy doc that predates the multi-drive model.
+ *
+ * Note: `state.owner` is kept around for backward compatibility through Phase
+ * 1; remove only after the migration window closes.
+ */
+export function backfillOwnerDriveIfMissing(state: {
+  owner: string | null | undefined;
+  ownerDrive: string | null | undefined;
+}) {
+  if (state.ownerDrive == null && state.owner) {
+    state.ownerDrive = `user:${state.owner.toLowerCase()}`;
+  }
+}
+
 export function assertOwner(
   state: { owner: string | null | undefined },
   action: MaybeSigner,

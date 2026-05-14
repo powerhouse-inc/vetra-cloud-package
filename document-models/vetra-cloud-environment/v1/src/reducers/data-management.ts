@@ -1,18 +1,21 @@
+import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 import {
   NotOwnerError,
+  OwnerDriveMismatchError,
   SelfClaimRequiredError,
   ServiceNotEnabledError,
 } from "../../gen/data-management/error.js";
 import {
   assertOwner,
+  backfillOwnerDriveIfMissing,
   markPendingIfDeployed,
   regenerateDnsRecords,
 } from "./utils.js";
-import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
   {
     setOwnerOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       const userAddr =
         action.context?.signer?.user?.address?.toLowerCase() ?? null;
       const inputAddr = action.input.address.toLowerCase();
@@ -34,7 +37,23 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
 
       state.owner = inputAddr;
     },
+    setOwnerDriveOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
+      if (state.ownerDrive && state.ownerDrive !== action.input.ownerDrive) {
+        const driveEth = state.ownerDrive.startsWith("user:")
+          ? state.ownerDrive.slice("user:".length)
+          : null;
+        const userAddr = action.context?.signer?.user?.address?.toLowerCase();
+        if (!driveEth || !userAddr || driveEth.toLowerCase() !== userAddr) {
+          throw new OwnerDriveMismatchError(
+            `Cannot reassign ownerDrive from ${state.ownerDrive} to ${action.input.ownerDrive}`,
+          );
+        }
+      }
+      state.ownerDrive = action.input.ownerDrive;
+    },
     setLabelOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       if (action.input.label) {
         state.label = action.input.label;
@@ -42,6 +61,7 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       }
     },
     setGenericSubdomainOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       if (action.input.genericSubdomain) {
         state.genericSubdomain = action.input.genericSubdomain;
@@ -49,6 +69,7 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       }
     },
     setCustomDomainOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       const domain = action.input.domain || null;
       const enabled = action.input.enabled;
@@ -58,6 +79,7 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       markPendingIfDeployed(state);
     },
     setDnsRecordsOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       if (!state.customDomain) {
         state.customDomain = { enabled: false, domain: null, dnsRecords: [] };
@@ -69,10 +91,12 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       }));
     },
     setDefaultPackageRegistryOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       state.defaultPackageRegistry = action.input.defaultPackageRegistry;
     },
     setApexServiceOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       const type = action.input.type ?? null;
       if (type) {
@@ -87,6 +111,7 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       markPendingIfDeployed(state);
     },
     setAutoUpdateChannelOperation(state, action) {
+      backfillOwnerDriveIfMissing(state);
       assertOwner(state, action);
       state.autoUpdateChannel = action.input.channel ?? null;
       // Channel change doesn't affect rendered chart values, so no
