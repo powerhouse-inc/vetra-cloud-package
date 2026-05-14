@@ -1,33 +1,40 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { createAction } from "document-model";
 import {
-  SetOwnerInputSchema,
-  SetLabelInputSchema,
-  SetGenericSubdomainInputSchema,
+  SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
-  SetApexServiceInputSchema,
-  SetAutoUpdateChannelInputSchema,
+  SetGenericSubdomainInputSchema,
+  SetLabelInputSchema,
+  SetOwnerDriveInputSchema,
+  SetOwnerInputSchema,
 } from "../schema/zod.js";
 import type {
-  SetOwnerInput,
-  SetLabelInput,
-  SetGenericSubdomainInput,
+  SetApexServiceInput,
+  SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
-  SetApexServiceInput,
-  SetAutoUpdateChannelInput,
+  SetGenericSubdomainInput,
+  SetLabelInput,
+  SetOwnerDriveInput,
+  SetOwnerInput,
 } from "../types.js";
 import type {
-  SetOwnerAction,
-  SetLabelAction,
-  SetGenericSubdomainAction,
+  SetApexServiceAction,
+  SetAutoUpdateChannelAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
-  SetApexServiceAction,
-  SetAutoUpdateChannelAction,
+  SetGenericSubdomainAction,
+  SetLabelAction,
+  SetOwnerAction,
+  SetOwnerDriveAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -36,6 +43,15 @@ export const setOwner = (input: SetOwnerInput) =>
     { ...input },
     undefined,
     SetOwnerInputSchema,
+    "global",
+  );
+
+export const setOwnerDrive = (input: SetOwnerDriveInput) =>
+  createAction<SetOwnerDriveAction>(
+    "SET_OWNER_DRIVE",
+    { ...input },
+    undefined,
+    SetOwnerDriveInputSchema,
     "global",
   );
 

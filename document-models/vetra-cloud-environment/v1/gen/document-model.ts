@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String!\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  ownerDrive: String\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String!\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
-            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null\n}',
+            '{\n  "owner": null,\n  "ownerDrive": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null\n}',
         },
       },
       modules: [
@@ -55,6 +55,28 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "SELF_CLAIM_REQUIRED",
                   description:
                     "A user-signed claim of an unowned environment must set the signer's own address as owner",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-owner-drive",
+              name: "SET_OWNER_DRIVE",
+              description:
+                "Set the drive identity that owns this environment. The drive id has the shape 'user:<eth-lowercase>' or 'team:<slug>'. Once set, only the current owner (for user drives) may reassign it; team drive reassignment is gated separately.",
+              schema: "input SetOwnerDriveInput {\n  ownerDrive: String!\n}",
+              template: "",
+              reducer:
+                'if (state.ownerDrive && state.ownerDrive !== action.input.ownerDrive) {\n  const driveEth = state.ownerDrive.startsWith("user:")\n    ? state.ownerDrive.slice("user:".length)\n    : null;\n  const userAddr = action.context?.signer?.user?.address?.toLowerCase();\n  if (!driveEth || !userAddr || driveEth.toLowerCase() !== userAddr) {\n    throw new OwnerDriveMismatchError(\n      `Cannot reassign ownerDrive from ${state.ownerDrive} to ${action.input.ownerDrive}`,\n    );\n  }\n}\nstate.ownerDrive = action.input.ownerDrive;',
+              errors: [
+                {
+                  id: "err-owner-drive-mismatch",
+                  name: "OwnerDriveMismatchError",
+                  code: "OWNER_DRIVE_MISMATCH",
+                  description:
+                    "The action signer is not authorized to reassign ownerDrive away from its current value",
                   template: "",
                 },
               ],

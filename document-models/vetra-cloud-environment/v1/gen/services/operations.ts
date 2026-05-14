@@ -1,54 +1,58 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { type SignalDispatch } from "document-model";
+import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
+  DisableServiceAction,
   EnableServiceAction,
   SetServiceConfigAction,
-  DisableServiceAction,
-  ToggleServiceAction,
-  UpdateServicePrefixAction,
+  SetServiceSizeAction,
   SetServiceStatusAction,
   SetServiceVersionAction,
-  SetServiceSizeAction,
+  ToggleServiceAction,
+  UpdateServicePrefixAction,
 } from "./actions.js";
-import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentServicesOperations {
   enableServiceOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: EnableServiceAction,
     dispatch?: SignalDispatch,
   ) => void;
   setServiceConfigOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetServiceConfigAction,
     dispatch?: SignalDispatch,
   ) => void;
   disableServiceOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: DisableServiceAction,
     dispatch?: SignalDispatch,
   ) => void;
   toggleServiceOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: ToggleServiceAction,
     dispatch?: SignalDispatch,
   ) => void;
   updateServicePrefixOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: UpdateServicePrefixAction,
     dispatch?: SignalDispatch,
   ) => void;
   setServiceStatusOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetServiceStatusAction,
     dispatch?: SignalDispatch,
   ) => void;
   setServiceVersionOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetServiceVersionAction,
     dispatch?: SignalDispatch,
   ) => void;
   setServiceSizeOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetServiceSizeAction,
     dispatch?: SignalDispatch,
   ) => void;

@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import * as z from "zod";
 import type {
   AddPackageInput,
@@ -24,6 +25,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetOwnerDriveInput,
   SetOwnerInput,
   SetPackageVersionInput,
   SetServiceConfigInput,
@@ -279,6 +281,14 @@ export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   });
 }
 
+export function SetOwnerDriveInputSchema(): z.ZodObject<
+  Properties<SetOwnerDriveInput>
+> {
+  return z.object({
+    ownerDrive: z.string(),
+  });
+}
+
 export function SetOwnerInputSchema(): z.ZodObject<Properties<SetOwnerInput>> {
   return z.object({
     address: z
@@ -402,6 +412,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
         message: "Invalid Ethereum address format",
       })
       .nullish(),
+    ownerDrive: z.string().nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,

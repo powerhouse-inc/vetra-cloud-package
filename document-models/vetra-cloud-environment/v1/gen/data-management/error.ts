@@ -1,6 +1,7 @@
 export type ErrorCode =
   | "NotOwnerError"
   | "SelfClaimRequiredError"
+  | "OwnerDriveMismatchError"
   | "ServiceNotEnabledError";
 
 export interface ReducerError {
@@ -21,6 +22,13 @@ export class SelfClaimRequiredError extends Error implements ReducerError {
   }
 }
 
+export class OwnerDriveMismatchError extends Error implements ReducerError {
+  errorCode = "OwnerDriveMismatchError" as ErrorCode;
+  constructor(message = "OwnerDriveMismatchError") {
+    super(message);
+  }
+}
+
 export class ServiceNotEnabledError extends Error implements ReducerError {
   errorCode = "ServiceNotEnabledError" as ErrorCode;
   constructor(message = "ServiceNotEnabledError") {
@@ -30,6 +38,7 @@ export class ServiceNotEnabledError extends Error implements ReducerError {
 
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
+  SetOwnerDrive: { OwnerDriveMismatchError },
   SetLabel: { NotOwnerError },
   SetGenericSubdomain: { NotOwnerError },
   SetCustomDomain: { NotOwnerError },

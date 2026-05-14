@@ -1,44 +1,45 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 import type { Reducer, StateReducer } from "document-model";
-import { isDocumentAction, createReducer } from "document-model";
+import { createReducer, isDocumentAction } from "document-model";
 import type { VetraCloudEnvironmentPHState } from "document-models/vetra-cloud-environment/v1";
 
 import { vetraCloudEnvironmentDataManagementOperations } from "../src/reducers/data-management.js";
-import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
 import { vetraCloudEnvironmentPackagesOperations } from "../src/reducers/packages.js";
+import { vetraCloudEnvironmentServicesOperations } from "../src/reducers/services.js";
 import { vetraCloudEnvironmentStatusTransitionsOperations } from "../src/reducers/status-transitions.js";
 
 import {
-  SetOwnerInputSchema,
-  SetLabelInputSchema,
-  SetGenericSubdomainInputSchema,
-  SetCustomDomainInputSchema,
-  SetDefaultPackageRegistryInputSchema,
-  SetDnsRecordsInputSchema,
-  SetApexServiceInputSchema,
-  SetAutoUpdateChannelInputSchema,
-  EnableServiceInputSchema,
-  SetServiceConfigInputSchema,
-  DisableServiceInputSchema,
-  ToggleServiceInputSchema,
-  UpdateServicePrefixInputSchema,
-  SetServiceStatusInputSchema,
-  SetServiceVersionInputSchema,
-  SetServiceSizeInputSchema,
   AddPackageInputSchema,
-  RemovePackageInputSchema,
-  SetPackageVersionInputSchema,
+  ApproveChangesInputSchema,
+  ArchiveInputSchema,
+  DisableServiceInputSchema,
+  EnableServiceInputSchema,
   InitializeInputSchema,
   MarkChangesPushedInputSchema,
   MarkDeploymentStartedInputSchema,
-  ReportDeploymentSucceededInputSchema,
-  ReportDeploymentFailedInputSchema,
-  ApproveChangesInputSchema,
-  TerminateEnvironmentInputSchema,
   MarkDestroyedInputSchema,
-  ArchiveInputSchema,
+  RemovePackageInputSchema,
+  ReportDeploymentFailedInputSchema,
+  ReportDeploymentSucceededInputSchema,
+  SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
+  SetCustomDomainInputSchema,
+  SetDefaultPackageRegistryInputSchema,
+  SetDnsRecordsInputSchema,
+  SetGenericSubdomainInputSchema,
+  SetLabelInputSchema,
+  SetOwnerDriveInputSchema,
+  SetOwnerInputSchema,
+  SetPackageVersionInputSchema,
+  SetServiceConfigInputSchema,
+  SetServiceSizeInputSchema,
+  SetServiceStatusInputSchema,
+  SetServiceVersionInputSchema,
+  TerminateEnvironmentInputSchema,
+  ToggleServiceInputSchema,
   UnarchiveInputSchema,
+  UpdateServicePrefixInputSchema,
 } from "./schema/zod.js";
 
 const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
@@ -54,6 +55,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetOwnerInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setOwnerOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_OWNER_DRIVE": {
+      SetOwnerDriveInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setOwnerDriveOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
