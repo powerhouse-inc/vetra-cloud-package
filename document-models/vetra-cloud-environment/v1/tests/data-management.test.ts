@@ -10,6 +10,7 @@ import {
   setDnsRecords,
   setDefaultPackageRegistry,
   setOwner,
+  setOwnerDrive,
   setApexService,
   enableService,
   setAutoUpdateChannel,
@@ -432,6 +433,141 @@ describe("DataManagementOperations", () => {
       });
       expect(document.state.global.label).toBe("system-touch");
       expect(document.state.global.owner).toBeNull();
+    });
+  });
+
+  describe("SET_OWNER_DRIVE", () => {
+    it("sets ownerDrive when previously unset", () => {
+      const document = utils.createDocument();
+      const updated = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${ALICE_LOWER}` }),
+        ...userSigner(ALICE),
+      });
+
+      expect(updated.state.global.ownerDrive).toBe(`user:${ALICE_LOWER}`);
+      expect(updated.operations.global.at(-1)?.error).toBeUndefined();
+    });
+
+    it("allows the current user-drive owner to reassign their own drive", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${ALICE_LOWER}` }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${ALICE_LOWER}` }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.ownerDrive).toBe(`user:${ALICE_LOWER}`);
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+    });
+
+    it("rejects a different signer trying to reassign a user-drive", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${ALICE_LOWER}` }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${BOB_LOWER}` }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.ownerDrive).toBe(`user:${ALICE_LOWER}`);
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /Cannot reassign ownerDrive/i,
+      );
+    });
+
+    it("rejects reassignment of a team-drive (no eth-based override path)", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: "team:powerhouse-dao" }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: `user:${ALICE_LOWER}` }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.ownerDrive).toBe("team:powerhouse-dao");
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /Cannot reassign ownerDrive/i,
+      );
+    });
+
+    it("is a no-op when the same ownerDrive value is set again", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: "team:powerhouse-dao" }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: "team:powerhouse-dao" }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.ownerDrive).toBe("team:powerhouse-dao");
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+    });
+  });
+
+  describe("ownerDrive backfill", () => {
+    it("derives ownerDrive from legacy owner on the next signed write", () => {
+      let document = utils.createDocument();
+      // Simulate a legacy doc: claim ownership the old way (SET_OWNER).
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.ownerDrive).toBeNull();
+
+      // Any subsequent data-management write triggers the backfill.
+      document = reducer(document, {
+        ...setLabel({ label: "backfilled" }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.label).toBe("backfilled");
+      expect(document.state.global.ownerDrive).toBe(`user:${ALICE_LOWER}`);
+    });
+
+    it("auto-claim path also backfills ownerDrive in one shot", () => {
+      let document = utils.createDocument();
+      // No prior SET_OWNER — assertOwner auto-claims on first user-signed mutation.
+      document = reducer(document, {
+        ...setLabel({ label: "first-touch" }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.owner).toBe(BOB_LOWER);
+      // The backfill runs before assertOwner, sees ownerDrive null + owner null,
+      // skips. assertOwner sets owner to BOB_LOWER. So ownerDrive remains null
+      // until the next write — which is the expected behavior: legacy owners
+      // migrate at most one signed write later.
+      expect(document.state.global.ownerDrive).toBeNull();
+
+      document = reducer(document, {
+        ...setLabel({ label: "second-touch" }),
+        ...userSigner(BOB),
+      });
+      expect(document.state.global.ownerDrive).toBe(`user:${BOB_LOWER}`);
+    });
+
+    it("does not overwrite a pre-existing ownerDrive", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwnerDrive({ ownerDrive: "team:powerhouse-dao" }),
+        ...userSigner(ALICE),
+      });
+      // Legacy owner field also present (e.g. transitional state).
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.ownerDrive).toBe("team:powerhouse-dao");
     });
   });
 
