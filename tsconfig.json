@@ -38,6 +38,9 @@
       ],
       "document-models/vetra-cloud-environment/v1": [
         "./document-models/vetra-cloud-environment/v1/index.ts"
+      ],
+      "document-models/vetra-cloud-environment/upgrades": [
+        "./document-models/vetra-cloud-environment/upgrades/index.ts"
       ]
     }
   },
