@@ -9,6 +9,13 @@ import {
   type RestartableService,
 } from "./service.js";
 
+// Project invariant: tenantId IS the k8s namespace name. Every resolver
+// that touches k8s resources (dump jobs, restore jobs, explorer pool,
+// reset/restart) passes the GraphQL `tenantId` arg directly as the
+// namespace. The dumps watcher and protection reconciler rely on the
+// same identity. If this ever needs to diverge, add a mapping layer in
+// ResetResolverDeps and update the dumps client too.
+
 type Caller = { user?: { address: string } };
 
 type EnvRow = { id: string; tenantId: string | null; owner: string | null };
