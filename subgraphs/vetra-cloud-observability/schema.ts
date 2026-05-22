@@ -229,10 +229,58 @@ export const schema: DocumentNode = gql`
       sql: String!
       limit: Int
     ): DatabaseQueryResult!
+
+    """
+    Owner-gated. TRUNCATE every user-schema base table in the tenant's
+    Postgres (CASCADE + RESTART IDENTITY), then patch every tenant app
+    deployment with a kubectl rollout-restart annotation. Returns the
+    counts plus, when applicable, a partial-success message naming
+    deployments that failed to patch.
+
+    Errors: UNAUTHENTICATED, FORBIDDEN, ENV_NOT_FOUND, TRUNCATE_FAILED,
+    RESET_NOT_CONFIGURED. RESTART_PARTIAL is NOT an error — it is a
+    successful ResetAck with a non-null message and deploymentsRestarted
+    less than the number of matched deployments.
+    """
+    resetEnvironment(tenantId: String!): ResetAck!
+
+    """
+    Owner-gated. Patch one deployment's pod template with the rollout-
+    restart annotation. For CLINT services the optional agentPrefix
+    argument disambiguates which clint deployment to restart (each
+    agent prefix produces its own Deployment via the chart).
+
+    Errors: UNAUTHENTICATED, FORBIDDEN, ENV_NOT_FOUND,
+    DEPLOYMENT_NOT_FOUND, AMBIGUOUS_SERVICE, RESTART_NOT_CONFIGURED.
+    """
+    restartEnvironmentService(
+      tenantId: String!
+      service: TenantService!
+      agentPrefix: String
+    ): RestartAck!
   }
 
   type RestoreAck {
     ok: Boolean!
+    message: String
+  }
+
+  type ResetAck {
+    ok: Boolean!
+    tablesCleared: Int!
+    deploymentsRestarted: Int!
+    """
+    Human-readable note when partial-success — null on full success.
+    Populated with a RESTART_PARTIAL summary when some deployment patches
+    failed but the TRUNCATE succeeded.
+    """
+    message: String
+  }
+
+  type RestartAck {
+    ok: Boolean!
+    """The k8s Deployment name that was patched."""
+    deploymentName: String!
     message: String
   }
 
@@ -413,6 +461,6 @@ export const schema: DocumentNode = gql`
   enum ArgoHealthStatus { HEALTHY, DEGRADED, PROGRESSING, MISSING, UNKNOWN }
   enum PodPhase { RUNNING, PENDING, SUCCEEDED, FAILED, UNKNOWN }
   enum EventType { NORMAL, WARNING }
-  enum TenantService { CONNECT, SWITCHBOARD }
+  enum TenantService { CONNECT, SWITCHBOARD, CLINT, FUSION }
   enum MetricRange { ONE_MIN, FIVE_MIN, FIFTEEN_MIN, ONE_HOUR, SIX_HOURS, TWENTY_FOUR_HOURS }
 `;

@@ -23,6 +23,7 @@ import {
   createTenantPoolFactory,
   type TenantPoolFactory,
 } from "./explorer/pg-client.js";
+import type { ResetResolverDeps } from "./reset/resolvers.js";
 import {
   runBackupScheduleTick,
   type BackupEnvSnapshot,
@@ -91,6 +92,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         ? await this.buildExplorerDeps(envDb)
         : null;
 
+    // Reset/restart deps reuse both surfaces — the explorer's
+    // per-tenant pool factory (for TRUNCATE) and the dumps k8s
+    // client (extended with `listAppDeployments` +
+    // `patchDeploymentRestart`). If either is missing the
+    // resolver-level fallback throws RESET_NOT_CONFIGURED /
+    // RESTART_NOT_CONFIGURED so the schema's non-null contract
+    // is honoured and the UI sees a clear error rather than a
+    // surprising schema violation.
+    const resetDeps = this.buildResetDeps(envDb, explorerDeps);
+
     this.resolvers = createResolvers(db, {
       prometheusUrl,
       lokiUrl,
@@ -98,6 +109,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       dispatch,
       dumpDeps: dumpDeps ?? undefined,
       explorerDeps: explorerDeps ?? undefined,
+      resetDeps: resetDeps ?? undefined,
     });
 
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
@@ -311,6 +323,30 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * that disable the explorer don't pay the
    * `@kubernetes/client-node` import cost.
    */
+  /**
+   * Build the Reset Environment + Restart Service dependencies.
+   * Returns null when either upstream surface (explorer's pool
+   * factory or dumps' k8s client) is unavailable — the resolver's
+   * NOT_CONFIGURED fallback then takes over.
+   *
+   * Pure assembly: both deps are already wired by their respective
+   * builders, so this is purely a per-feature gating step. The k8s
+   * surface comes from the dumps client because that client already
+   * has the in-cluster auth shape we need; commit 3 added the two
+   * new methods to that interface.
+   */
+  private buildResetDeps(
+    envDb: Kysely<any>,
+    explorerDeps: ExplorerResolverDeps | null,
+  ): ResetResolverDeps | null {
+    if (!explorerDeps || !this.dumpsK8s) return null;
+    return {
+      envDb,
+      getPool: explorerDeps.getPool,
+      k8s: this.dumpsK8s,
+    };
+  }
+
   private async buildExplorerDeps(
     envDb: Kysely<any>,
   ): Promise<ExplorerResolverDeps | null> {

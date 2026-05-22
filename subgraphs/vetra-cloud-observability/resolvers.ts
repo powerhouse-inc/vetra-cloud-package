@@ -10,6 +10,10 @@ import {
   createExplorerResolvers,
   type ExplorerResolverDeps,
 } from "./explorer/resolvers.js";
+import {
+  createResetResolvers,
+  type ResetResolverDeps,
+} from "./reset/resolvers.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -46,6 +50,17 @@ export interface ResolverConfig {
    * confusing schema violation.
    */
   explorerDeps?: ExplorerResolverDeps;
+  /**
+   * Optional dependencies for the Reset Environment + Restart Service
+   * feature. Needs both a tenant pg.Pool factory (for the TRUNCATE
+   * step) and a k8s client (for the deployment patches). Wired by
+   * the subgraph host once the explorer's pool factory and the dumps
+   * k8s client are both available; when missing, `resetEnvironment`
+   * throws `RESET_NOT_CONFIGURED` and `restartEnvironmentService`
+   * throws `RESTART_NOT_CONFIGURED` — same fallback shape as dumps
+   * and explorer.
+   */
+  resetDeps?: ResetResolverDeps;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -126,6 +141,25 @@ export function createResolvers(
         Mutation: {
           executeReadOnlyQuery: async () => {
             throw new Error("EXPLORER_NOT_CONFIGURED");
+          },
+        },
+      };
+  // Reset/restart resolvers parallel the dumps and explorer
+  // fallbacks: missing config (no pool factory or no k8s client)
+  // surfaces a clear NOT_CONFIGURED error per mutation. The two
+  // codes are distinct so the frontend can decide whether to hide
+  // the entire Danger Zone "Reset" row or just the per-service
+  // restart button. In practice the UI maps both to one toast,
+  // but the codes are kept separate at the API boundary.
+  const resetResolvers = config.resetDeps
+    ? createResetResolvers(config.resetDeps)
+    : {
+        Mutation: {
+          resetEnvironment: async () => {
+            throw new Error("RESET_NOT_CONFIGURED");
+          },
+          restartEnvironmentService: async () => {
+            throw new Error("RESTART_NOT_CONFIGURED");
           },
         },
       };
@@ -724,6 +758,8 @@ export function createResolvers(
       cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
       restoreEnvironmentDump: dumpResolvers.Mutation.restoreEnvironmentDump,
       executeReadOnlyQuery: explorerResolvers.Mutation.executeReadOnlyQuery,
+      resetEnvironment: resetResolvers.Mutation.resetEnvironment,
+      restartEnvironmentService: resetResolvers.Mutation.restartEnvironmentService,
     },
 
     ReleaseHistoryEntry: {},
