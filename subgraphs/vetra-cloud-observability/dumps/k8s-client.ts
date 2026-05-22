@@ -42,7 +42,49 @@ export interface DumpsK8sClient {
    *  transient outage can't let two concurrent pg_restore --clean
    *  processes race the same database. */
   listRestoreJobsInNamespace(namespace: string): Promise<Array<{ name: string }>>;
+  /**
+   * Lists tenant-app Deployments in the namespace — those labelled
+   * `app.kubernetes.io/component` with a value the reset/restart
+   * feature recognises (connect / switchboard / clint / fusion). The
+   * caller filters by component (and, for clint, by the additional
+   * `clint.vetra.io/agent` label that disambiguates per-agent
+   * deployments) so this method deliberately returns the raw label
+   * map alongside the component shortcut.
+   *
+   * Throws on k8s API errors. The reset/restart resolvers wrap the
+   * call so a missing RBAC grant surfaces as a clear GraphQL error.
+   */
+  listAppDeployments(namespace: string): Promise<
+    Array<{
+      name: string;
+      component: string;
+      labels: Record<string, string>;
+    }>
+  >;
+  /**
+   * Patch the named Deployment's pod template with the standard
+   * `kubectl.kubernetes.io/restartedAt: <ISO>` annotation. The
+   * Deployment controller sees a change to the pod template hash and
+   * rolls the ReplicaSet — exactly what `kubectl rollout restart
+   * deployment/<name>` does.
+   *
+   * Uses a strategic-merge patch so the annotation is added without
+   * disturbing other annotations already on the template.
+   */
+  patchDeploymentRestart(namespace: string, name: string): Promise<void>;
 }
+
+/**
+ * Label selector matching tenant-app Deployments. The chart renders
+ * one Deployment per (component, [agent-prefix]) so a single list call
+ * with this selector returns everything the reset + restart feature
+ * cares about; the caller then filters by component / labels in TS.
+ *
+ * Kept colocated with the selector that distinguishes managed Jobs
+ * so the two layers of "which resources are ours" stay in one file.
+ */
+const APP_COMPONENT_SELECTOR =
+  "app.kubernetes.io/component in (connect,switchboard,clint,fusion)";
 
 const MANAGED_BY_SELECTOR =
   "app.kubernetes.io/managed-by=vetra-cloud-observability";
@@ -52,13 +94,19 @@ const MANAGED_BY_SELECTOR =
  * `loadFromCluster()` (the subgraph runs in-cluster).
  */
 export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
-  const { KubeConfig, BatchV1Api, CoreV1Api } = await import(
-    "@kubernetes/client-node"
-  );
+  const {
+    KubeConfig,
+    BatchV1Api,
+    CoreV1Api,
+    AppsV1Api,
+    PatchStrategy,
+    setHeaderOptions,
+  } = await import("@kubernetes/client-node");
   const kc = new KubeConfig();
   kc.loadFromCluster();
   const batch = kc.makeApiClient(BatchV1Api);
   const core = kc.makeApiClient(CoreV1Api);
+  const apps = kc.makeApiClient(AppsV1Api);
 
   return {
     async createJob(namespace, job) {
@@ -145,6 +193,45 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
       return res.items
         .map((j) => ({ name: j.metadata?.name ?? "" }))
         .filter((j) => j.name);
+    },
+    async listAppDeployments(namespace) {
+      const res = await apps.listNamespacedDeployment({
+        namespace,
+        labelSelector: APP_COMPONENT_SELECTOR,
+      });
+      return res.items
+        .map((d) => {
+          const labels = d.metadata?.labels ?? {};
+          return {
+            name: d.metadata?.name ?? "",
+            component: labels["app.kubernetes.io/component"] ?? "",
+            labels,
+          };
+        })
+        .filter((d) => d.name);
+    },
+    async patchDeploymentRestart(namespace, name) {
+      // strategic-merge is the patch type `kubectl rollout restart`
+      // uses. The generated SDK's `patchNamespacedDeployment` defaults
+      // to JSON-patch via `getPreferredMediaType`; we override the
+      // Content-Type per call with setHeaderOptions so the body is
+      // interpreted as a merge against the existing pod template
+      // rather than a list of JSON-patch operations.
+      const body = {
+        spec: {
+          template: {
+            metadata: {
+              annotations: {
+                "kubectl.kubernetes.io/restartedAt": new Date().toISOString(),
+              },
+            },
+          },
+        },
+      };
+      await apps.patchNamespacedDeployment(
+        { name, namespace, body },
+        setHeaderOptions("Content-Type", PatchStrategy.StrategicMergePatch),
+      );
     },
   };
 }
