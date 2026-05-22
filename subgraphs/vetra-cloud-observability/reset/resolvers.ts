@@ -40,15 +40,26 @@ export type ResetResolverDeps = {
    * canonical per-tenant pool cache; we deliberately don't create
    * a second pool so the subgraph's connection budget is one shared
    * resource.
+   *
+   * Optional: `resetEnvironment` throws `RESET_NOT_CONFIGURED` when
+   * absent, but `restartEnvironmentService` keeps working — the
+   * restart path only needs the k8s surface, not the DB pool. This
+   * matters in environments where the explorer feature flag is off
+   * (no per-tenant pool factory) but k8s access is wired and
+   * Liberuum-style operators still need to restart services.
    */
-  getPool: (tenantNs: string) => Promise<Pool>;
+  getPool?: (tenantNs: string) => Promise<Pool>;
   /**
    * Tenant-app k8s surface (list + restart deployments). Wired from
    * the same `DumpsK8sClient` that the dumps feature uses, with the
    * two new methods (`listAppDeployments`, `patchDeploymentRestart`)
    * added in commit 3.
+   *
+   * Optional: when absent both mutations throw their respective
+   * NOT_CONFIGURED codes (reset needs k8s to restart deployments
+   * after the truncate; restart needs it for the patch).
    */
-  k8s: ResetK8sClient;
+  k8sClient?: ResetK8sClient;
 };
 
 /**
@@ -63,7 +74,7 @@ export type ResetResolverDeps = {
  * honoured (same pattern as dumps / explorer).
  */
 export function createResetResolvers(deps: ResetResolverDeps) {
-  const { envDb, getPool, k8s } = deps;
+  const { envDb, getPool, k8sClient } = deps;
 
   return {
     Mutation: {
@@ -77,6 +88,12 @@ export function createResetResolvers(deps: ResetResolverDeps) {
         deploymentsRestarted: number;
         message: string | null;
       }> => {
+        // Reset needs both surfaces — pool for TRUNCATE, k8s for the
+        // post-truncate rollout-restart. Either being absent gates
+        // the whole feature with one error code so the UI's "Reset"
+        // affordance can be hidden uniformly.
+        if (!getPool || !k8sClient) throw new Error("RESET_NOT_CONFIGURED");
+
         const env = await loadEnv(envDb, args.tenantId);
         requireOwner({
           caller: ctx.user?.address ?? null,
@@ -102,7 +119,7 @@ export function createResetResolvers(deps: ResetResolverDeps) {
         }
 
         const { restarted, failed } = await restartAppDeployments(
-          k8s,
+          k8sClient,
           args.tenantId,
         );
 
@@ -131,6 +148,13 @@ export function createResetResolvers(deps: ResetResolverDeps) {
         deploymentName: string;
         message: string | null;
       }> => {
+        // Restart only needs the k8s surface. Reusing the explorer's
+        // pool factory was a convenience in `buildResetDeps`, but
+        // operators can wire k8s without the explorer flag — in that
+        // shape, reset is correctly gated above while restart still
+        // works.
+        if (!k8sClient) throw new Error("RESTART_NOT_CONFIGURED");
+
         const env = await loadEnv(envDb, args.tenantId);
         requireOwner({
           caller: ctx.user?.address ?? null,
@@ -139,7 +163,7 @@ export function createResetResolvers(deps: ResetResolverDeps) {
         if (!env) throw new Error("ENV_NOT_FOUND");
 
         const deploymentName = await restartSingleService(
-          k8s,
+          k8sClient,
           args.tenantId,
           args.service,
           args.agentPrefix ?? undefined,

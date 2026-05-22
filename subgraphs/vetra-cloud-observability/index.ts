@@ -92,14 +92,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         ? await this.buildExplorerDeps(envDb)
         : null;
 
-    // Reset/restart deps reuse both surfaces — the explorer's
+    // Reset/restart deps pull from two surfaces — the explorer's
     // per-tenant pool factory (for TRUNCATE) and the dumps k8s
     // client (extended with `listAppDeployments` +
-    // `patchDeploymentRestart`). If either is missing the
-    // resolver-level fallback throws RESET_NOT_CONFIGURED /
-    // RESTART_NOT_CONFIGURED so the schema's non-null contract
-    // is honoured and the UI sees a clear error rather than a
-    // surprising schema violation.
+    // `patchDeploymentRestart`). The two fields are passed
+    // independently so the resolver can gate them per-mutation:
+    // `restartEnvironmentService` only needs k8s and stays alive
+    // even when the explorer isn't wired. `resetEnvironment`
+    // needs both and throws RESET_NOT_CONFIGURED otherwise. Both
+    // codes are caught by the GraphQL non-null contract via the
+    // resolver fallback in `createResolvers`.
     const resetDeps = this.buildResetDeps(envDb, explorerDeps);
 
     this.resolvers = createResolvers(db, {
@@ -325,9 +327,13 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    */
   /**
    * Build the Reset Environment + Restart Service dependencies.
-   * Returns null when either upstream surface (explorer's pool
-   * factory or dumps' k8s client) is unavailable — the resolver's
-   * NOT_CONFIGURED fallback then takes over.
+   * Returns null only when *both* upstream surfaces are absent — if
+   * either is wired the resolver itself decides which mutation to
+   * gate. `restartEnvironmentService` only needs `k8sClient`, so
+   * deployments that disable the explorer (no pool factory) still
+   * expose the restart path; `resetEnvironment` requires both and
+   * throws `RESET_NOT_CONFIGURED` per-mutation when the pool is
+   * absent.
    *
    * Pure assembly: both deps are already wired by their respective
    * builders, so this is purely a per-feature gating step. The k8s
@@ -339,11 +345,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     envDb: Kysely<any>,
     explorerDeps: ExplorerResolverDeps | null,
   ): ResetResolverDeps | null {
-    if (!explorerDeps || !this.dumpsK8s) return null;
+    if (!explorerDeps && !this.dumpsK8s) return null;
     return {
       envDb,
-      getPool: explorerDeps.getPool,
-      k8s: this.dumpsK8s,
+      getPool: explorerDeps?.getPool,
+      k8sClient: this.dumpsK8s ?? undefined,
     };
   }
 

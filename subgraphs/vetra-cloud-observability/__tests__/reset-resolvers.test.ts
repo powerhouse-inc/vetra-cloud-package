@@ -98,7 +98,7 @@ beforeEach(() => {
   deps = {
     envDb: envDbStub("0xAbC") as never,
     getPool: vi.fn(async () => pool.pool),
-    k8s: k8s.k8s,
+    k8sClient: k8s.k8s,
   };
 });
 afterEach(() => vi.restoreAllMocks());
@@ -148,7 +148,7 @@ describe("resetEnvironment", () => {
       ],
       { failPatch: (n) => n === "switchboard" },
     );
-    deps.k8s = k8s.k8s;
+    deps.k8sClient = k8s.k8s;
 
     const resolvers = createResetResolvers(deps);
     const res = await resolvers.Mutation.resetEnvironment(
@@ -239,7 +239,7 @@ describe("restartEnvironmentService", () => {
         labels: { "clint.vetra.io/agent": "b" },
       },
     ]);
-    deps.k8s = k8s.k8s;
+    deps.k8sClient = k8s.k8s;
     const resolvers = createResetResolvers(deps);
     const res = await resolvers.Mutation.restartEnvironmentService(
       null,
@@ -281,7 +281,7 @@ describe("restartEnvironmentService", () => {
         labels: { "clint.vetra.io/agent": "a" },
       },
     ]);
-    deps.k8s = k8s.k8s;
+    deps.k8sClient = k8s.k8s;
     const resolvers = createResetResolvers(deps);
     await expect(
       resolvers.Mutation.restartEnvironmentService(
@@ -321,5 +321,46 @@ describe("reset fallback (no resetDeps)", () => {
         { user: { address: "0xabc" } } as never,
       ),
     ).rejects.toThrow("RESTART_NOT_CONFIGURED");
+  });
+});
+
+describe("partial deps (k8s present, pool absent)", () => {
+  // The explorer's pool factory is optional but the dumps k8s client
+  // is wired — operators in this shape need the restart affordance
+  // (Liberuum-style break/fix) without the explorer feature flag
+  // being on. Reset still throws RESET_NOT_CONFIGURED per-mutation,
+  // but restart succeeds.
+  it("resetEnvironment throws RESET_NOT_CONFIGURED, restartEnvironmentService succeeds", async () => {
+    const k8sOnly = makeK8s([
+      { name: "connect", component: "connect", labels: {} },
+    ]);
+    const partialDeps: ResetResolverDeps = {
+      envDb: envDbStub("0xAbC") as never,
+      // getPool intentionally omitted
+      k8sClient: k8sOnly.k8s,
+    };
+    const resolvers = createResetResolvers(partialDeps);
+
+    await expect(
+      resolvers.Mutation.resetEnvironment(
+        null,
+        { tenantId: TENANT },
+        { user: { address: "0xabc" } },
+      ),
+    ).rejects.toThrow("RESET_NOT_CONFIGURED");
+    // The reset path bails before touching k8s.
+    expect(k8sOnly.patches).toEqual([]);
+
+    const res = await resolvers.Mutation.restartEnvironmentService(
+      null,
+      { tenantId: TENANT, service: "CONNECT" },
+      { user: { address: "0xabc" } },
+    );
+    expect(res).toEqual({
+      ok: true,
+      deploymentName: "connect",
+      message: null,
+    });
+    expect(k8sOnly.patches).toEqual(["connect"]);
   });
 });
