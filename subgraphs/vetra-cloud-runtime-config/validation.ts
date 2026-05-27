@@ -1,4 +1,4 @@
-import Ajv from "ajv";
+import { Ajv } from "ajv";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { BUNDLED_RUNTIME_CONFIG_SCHEMA } from "./bundled-schema.js";
 import type { RuntimeConfigIssue } from "./errors.js";

@@ -23,7 +23,7 @@ function deepMerge<T>(base: T, override: unknown): T {
   for (const key of Object.keys(override)) {
     result[key] = deepMerge(
       (base as Record<string, unknown>)[key],
-      (override as Record<string, unknown>)[key],
+      override[key],
     );
   }
   return result as T;

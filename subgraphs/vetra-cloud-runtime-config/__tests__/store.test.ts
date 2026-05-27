@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Kysely } from "kysely";
 import { PGlite } from "@electric-sql/pglite";
-// eslint-disable-next-line import/no-unresolved
 import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   InMemoryEnvVarsStore,
