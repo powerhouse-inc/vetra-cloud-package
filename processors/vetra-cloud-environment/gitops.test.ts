@@ -276,3 +276,53 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 });
+
+describe("generateValuesYaml — CLINT prebuilt agent image", () => {
+  function clintState(pkgName: string, version: string) {
+    return envState({
+      services: [
+        {
+          type: "CLINT",
+          prefix: "agent",
+          enabled: true,
+          url: null,
+          status: "ACTIVE",
+          version: null,
+          selectedRessource: "VETRA_AGENT_S",
+          config: {
+            package: {
+              registry: "https://registry.dev.vetra.io",
+              name: pkgName,
+              version,
+            },
+            env: [],
+            serviceCommand: null,
+            selectedRessource: null,
+          },
+        },
+      ],
+    });
+  }
+
+  it("emits the per-agent prebuilt image repo with the scoped name sanitized", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      clintState("@powerhousedao/ph-pirate-cli", "0.0.1-dev.1"),
+      "doc-prebuilt-scoped",
+    );
+    expect(yaml).toContain(
+      'repository: "cr.vetra.io/powerhouse-inc-powerhouse/clint-agent/powerhousedao-ph-pirate-cli"',
+    );
+    expect(yaml).toMatch(/clint:[\s\S]*?tag: "0\.0\.1-dev\.1"/);
+  });
+
+  it("uses IfNotPresent and no longer points at the generic clint-runtime image", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      clintState("p", "1.2.3"),
+      "doc-prebuilt-pullpolicy",
+    );
+    expect(yaml).toMatch(/clint:[\s\S]*?pullPolicy: IfNotPresent/);
+    expect(yaml).not.toMatch(/repository: ".*\/clint-runtime"/);
+  });
+});

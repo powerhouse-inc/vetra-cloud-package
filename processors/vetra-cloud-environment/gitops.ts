@@ -249,7 +249,25 @@ function tlsSecretName(
 const CLINT_RUNTIME_IMAGE =
   process.env.CLINT_RUNTIME_IMAGE_REPOSITORY ??
   "cr.vetra.io/powerhouse-inc-powerhouse/clint-runtime";
-const CLINT_RUNTIME_TAG = process.env.CLINT_RUNTIME_IMAGE_TAG ?? "dev";
+
+// Prebuilt per-agent images: the in-cluster clint-image-builder bakes each
+// published agent into its own image at <base>/clint-agent/<sanitized-pkg>:<version>
+// on publish, so pods start with pull + exec (no runtime `pnpm add`). The base
+// is the Harbor project that also hosts clint-runtime.
+const CLINT_AGENT_IMAGE_BASE =
+  process.env.CLINT_AGENT_IMAGE_BASE ??
+  CLINT_RUNTIME_IMAGE.replace(/\/[^/]+$/, "");
+
+/** Container repo paths can't hold "@" and a scoped "/" would add an unintended
+ *  path segment: strip a leading "@" and replace "/" with "-". Mirrors the
+ *  sanitization in clint-image-builder's image-ref.ts. */
+function sanitizeAgentPackageName(name: string): string {
+  return name.replace(/^@/, "").replace(/\//g, "-");
+}
+
+function clintAgentImageRepository(pkgName: string): string {
+  return `${CLINT_AGENT_IMAGE_BASE}/clint-agent/${sanitizeAgentPackageName(pkgName)}`;
+}
 
 type ResourceSpec = {
   requests: { cpu: string; memory: string };
@@ -371,16 +389,20 @@ function generateClintBlock(
     const command = cfg?.serviceCommand ?? pkg.name;
     const envVars = cfg?.env ?? [];
 
+    const agentVersion = pkg.version ?? "latest";
     lines.push(`    - name: ${yamlQuote(svc.prefix)}`);
     lines.push(`      image:`);
-    lines.push(`        repository: ${yamlQuote(CLINT_RUNTIME_IMAGE)}`);
-    lines.push(`        tag: ${yamlQuote(CLINT_RUNTIME_TAG)}`);
-    // CLINT_RUNTIME_TAG defaults to a floating channel tag ("dev"),
-    // so the registry's underlying digest moves under us on each
-    // build. IfNotPresent would cache the first-seen digest forever.
-    lines.push(`        pullPolicy: Always`);
+    // Prebuilt per-agent image (built on publish by clint-image-builder),
+    // tagged with the concrete package version — the package is baked in, so
+    // the pod does pull + exec, no runtime install.
+    lines.push(`        repository: ${yamlQuote(clintAgentImageRepository(pkg.name))}`);
+    lines.push(`        tag: ${yamlQuote(agentVersion)}`);
+    // Per-version tags are immutable, so IfNotPresent lets the kubelet reuse
+    // cached layers. If the image isn't pushed yet the pod waits in
+    // ImagePullBackOff until the builder finishes — intended "wait" behavior.
+    lines.push(`        pullPolicy: IfNotPresent`);
     lines.push(`      package: ${yamlQuote(pkg.name)}`);
-    lines.push(`      version: ${yamlQuote(pkg.version ?? "latest")}`);
+    lines.push(`      version: ${yamlQuote(agentVersion)}`);
     lines.push(
       `      registry: ${yamlQuote(pkg.registry || state.defaultPackageRegistry || "https://registry.dev.vetra.io/")}`,
     );
