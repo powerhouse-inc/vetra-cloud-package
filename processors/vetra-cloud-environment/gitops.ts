@@ -269,6 +269,39 @@ function clintAgentImageRepository(pkgName: string): string {
   return `${CLINT_AGENT_IMAGE_BASE}/clint-agent/${sanitizeAgentPackageName(pkgName)}`;
 }
 
+/**
+ * Resolve a package "version" that may be a dist-tag (latest/dev/staging) or
+ * null into a concrete published version. The clint-image-builder only pushes
+ * a prebuilt image per CONCRETE version, so the emitted image tag must be the
+ * concrete version — otherwise a `latest`-pinned agent would reference a
+ * `clint-agent/<pkg>:latest` tag that is never built (ImagePullBackOff).
+ * Concrete versions pass through unchanged; falls back to the input (or
+ * "latest") if the registry is unreachable.
+ */
+async function resolveConcreteVersion(
+  registry: string,
+  pkgName: string,
+  version: string | null | undefined,
+): Promise<string> {
+  const requested = version ?? "latest";
+  try {
+    const base = registry.replace(/\/$/, "");
+    const res = await fetch(`${base}/${pkgName}`);
+    if (res.ok) {
+      const body = (await res.json()) as {
+        "dist-tags"?: Record<string, string>;
+      };
+      const concrete = (body["dist-tags"] ?? {})[requested];
+      if (concrete) return concrete;
+    }
+  } catch (e) {
+    logger.warn(
+      `clint version resolution failed for ${pkgName}@${requested}: ${String(e)}`,
+    );
+  }
+  return requested;
+}
+
 type ResourceSpec = {
   requests: { cpu: string; memory: string };
   limits: { cpu: string; memory: string };
@@ -361,12 +394,12 @@ function readServiceSize(
   );
 }
 
-function generateClintBlock(
+async function generateClintBlock(
   state: VetraCloudEnvironmentState,
   documentId: string,
   subdomain: string,
   baseDomain: string,
-): string {
+): Promise<string> {
   const clintServices = (state.services ?? []).filter(
     (s) => s.type === "CLINT" && s.enabled,
   );
@@ -389,7 +422,17 @@ function generateClintBlock(
     const command = cfg?.serviceCommand ?? pkg.name;
     const envVars = cfg?.env ?? [];
 
-    const agentVersion = pkg.version ?? "latest";
+    const registry =
+      pkg.registry ||
+      state.defaultPackageRegistry ||
+      "https://registry.dev.vetra.io/";
+    // Resolve dist-tags (latest/dev) to a concrete version so the image tag
+    // matches a prebuilt clint-agent tag.
+    const agentVersion = await resolveConcreteVersion(
+      registry,
+      pkg.name,
+      pkg.version,
+    );
     lines.push(`    - name: ${yamlQuote(svc.prefix)}`);
     lines.push(`      image:`);
     // Prebuilt per-agent image (built on publish by clint-image-builder),
@@ -403,9 +446,7 @@ function generateClintBlock(
     lines.push(`        pullPolicy: IfNotPresent`);
     lines.push(`      package: ${yamlQuote(pkg.name)}`);
     lines.push(`      version: ${yamlQuote(agentVersion)}`);
-    lines.push(
-      `      registry: ${yamlQuote(pkg.registry || state.defaultPackageRegistry || "https://registry.dev.vetra.io/")}`,
-    );
+    lines.push(`      registry: ${yamlQuote(registry)}`);
     lines.push(`      command: ${yamlQuote(command)}`);
     lines.push(`      resources:`);
     lines.push(
@@ -539,7 +580,7 @@ export async function generateValuesYaml(
   // consumes it to render the agent Deployments/Services/Ingresses.
   // Endpoint discovery is now pull-based (see clint-pull-worker); the
   // chart no longer receives announce env vars.
-  const clintBlock = generateClintBlock(
+  const clintBlock = await generateClintBlock(
     state,
     documentId,
     subdomain,

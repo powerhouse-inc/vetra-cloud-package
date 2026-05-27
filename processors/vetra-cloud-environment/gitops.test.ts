@@ -1,8 +1,23 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Kysely } from "kysely";
 import { generateValuesYaml } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
+
+// generateClintBlock resolves dist-tags -> concrete versions via a registry
+// fetch. Stub fetch so the emit tests are deterministic and offline.
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        "dist-tags": { latest: "9.9.9", dev: "0.0.1-dev.7" },
+      }),
+    })),
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
 
 // Stub Kysely passed to generateValuesYaml; the CLINT path no longer
 // touches the DB after the move to pull-based endpoint discovery.
@@ -324,5 +339,17 @@ describe("generateValuesYaml — CLINT prebuilt agent image", () => {
     );
     expect(yaml).toMatch(/clint:[\s\S]*?pullPolicy: IfNotPresent/);
     expect(yaml).not.toMatch(/repository: ".*\/clint-runtime"/);
+  });
+
+  it("resolves a 'latest' dist-tag to the concrete version for tag + version", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      clintState("@x/foo-cli", "latest"),
+      "doc-prebuilt-latest",
+    );
+    // stubbed registry: dist-tags.latest = 9.9.9
+    expect(yaml).toMatch(/clint:[\s\S]*?tag: "9\.9\.9"/);
+    expect(yaml).toMatch(/clint:[\s\S]*?version: "9\.9\.9"/);
+    expect(yaml).not.toMatch(/clint:[\s\S]*?tag: "latest"/);
   });
 });
