@@ -137,11 +137,11 @@
 
 **Reference:** `subgraphs/vetra-cloud-secrets/{schema,resolvers}.ts` for the SDL + transaction+NOTIFY pattern.
 
-- [ ] Write `schema.ts`: `scalar JSON`; `type RuntimeConfigPayload { effective: JSON! overrides: JSON! schemaVersion: String! updatedAt: String }`; `extend type Query { runtimeConfig(tenantId: String!): RuntimeConfigPayload! }`; `extend type Mutation { setRuntimeConfig(tenantId: String!, json: JSON!): RuntimeConfigPayload! }`.
-- [ ] Write `resolvers.ts`:
+- [x] Write `schema.ts`: `scalar JSON`; `type RuntimeConfigPayload { effective: JSON! overrides: JSON! schemaVersion: String! updatedAt: String }`; `extend type Query { runtimeConfig(tenantId: String!): RuntimeConfigPayload! }`; `extend type Mutation { setRuntimeConfig(tenantId: String!, json: JSON!): RuntimeConfigPayload! }`.
+- [x] Write `resolvers.ts`:
   - `Query.runtimeConfig` — read row, `safeParse` value (defends against corrupt JSON + arrays), `mergeWithDefaults`, return `{ effective, overrides, schemaVersion: "2", updatedAt }`.
   - `Mutation.setRuntimeConfig` — `validateRuntimeConfig`, throw `InvalidRuntimeConfigError` on failure. In a single transaction: if `json === {}` delete the row; else upsert (`onConflict... doUpdateSet`); then `pg_notify('vetra_runtime_config_changed', tenantId)`. Return same payload shape.
-- [ ] Write `resolvers.test.ts`: defaults + empty overrides for unknown tenant; merged for known; corrupt value treated as empty (no throw); array stored value treated as empty (object guard); upsert; clear-on-empty (delete + null updatedAt); INVALID_RUNTIME_CONFIG on bad enum / unknown key; tenant isolation.
+- [x] Write `resolvers.test.ts`: defaults + empty overrides for unknown tenant; merged for known; corrupt value treated as empty (no throw); array stored value treated as empty (object guard); upsert; clear-on-empty (delete + null updatedAt); INVALID_RUNTIME_CONFIG on bad enum / unknown key; tenant isolation.
 
 **Verification:** `pnpm test subgraphs/runtime-config/__tests__/resolvers.test.ts` passes; `pnpm tsc` clean.
 
