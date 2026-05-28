@@ -98,15 +98,15 @@
 
 **Reference:** PR #23's same-named files for portable code (just the validation/defaults/types/errors — the storage-shaped code there is wrong).
 
-- [ ] Add `ajv` to `package.json` dependencies. `pnpm install`.
-- [ ] Write `types.ts`: `PHConnectRuntimeConfig` mirrors the connect subtree (branding, app, packages, drives, renown, sentry); `RuntimeConfigPayload = { effective, overrides, schemaVersion, updatedAt }`; constants `RUNTIME_CONFIG_ENV_KEY = "PH_CONNECT_CONFIG_JSON"`, `RUNTIME_CONFIG_SCHEMA_VERSION = "2"`, `RUNTIME_CONFIG_NOTIFY_CHANNEL = "vetra_runtime_config_changed"`, `RUNTIME_CONFIG_DB_NAMESPACE = "vetra-cloud-runtime-config"`.
-- [ ] Write `errors.ts`: `InvalidRuntimeConfigError extends GraphQLError`, `extensions.code = "INVALID_RUNTIME_CONFIG"`, payload `{ path, message }` issues array.
-- [ ] Write `bundled-defaults.ts`: frozen snapshot of `DEFAULT_CONNECT_CONFIG.connect` (branding.appName "Powerhouse Connect", app.logLevel "info", drives.defaultDrives [], etc.).
-- [ ] Write `bundled-schema.ts`: frozen snapshot of `runtime-config.schema.json.properties.connect` (the subtree only — not the full envelope). `additionalProperties: false` at every level.
-- [ ] Write `validation.ts`: Ajv `new Ajv({ allErrors: true, strict: false })`, compile `BUNDLED_CONNECT_SCHEMA`, expose `validateRuntimeConfig(json) → { ok: true } | { ok: false, issues }`.
-- [ ] Write `defaults.ts`: `mergeWithDefaults(overrides, defaults?)` does deep-merge with these rules — plain objects merge per-key (override wins), arrays/primitives/null replace, undefined leaves base in place. Don't mutate inputs.
-- [ ] Write `defaults.test.ts`: empty → clone of defaults; primitive replace; nested merge; array wholesale replace; null replaces non-null; undefined no-op; custom defaults param honoured; non-mutating.
-- [ ] Write `validation.test.ts`: empty `{}` ok; partial override ok; full connect-shape ok; unknown top-level rejected (additionalProperties); unknown nested rejected; type/enum mismatch rejected; `defaultDrives` item missing `url` rejected; `homeBackground: null` ok; `homeBackground: { avif, png }` ok.
+- [x] Add `ajv` to `package.json` dependencies. `pnpm install`.
+- [x] Write `types.ts`: `PHConnectRuntimeConfig` mirrors the connect subtree (branding, app, packages, drives, renown, sentry); `RuntimeConfigPayload = { effective, overrides, schemaVersion, updatedAt }`; constants `RUNTIME_CONFIG_ENV_KEY = "PH_CONNECT_CONFIG_JSON"`, `RUNTIME_CONFIG_SCHEMA_VERSION = "2"`, `RUNTIME_CONFIG_NOTIFY_CHANNEL = "vetra_runtime_config_changed"`, `RUNTIME_CONFIG_DB_NAMESPACE = "vetra-cloud-runtime-config"`.
+- [x] Write `errors.ts`: `InvalidRuntimeConfigError extends GraphQLError`, `extensions.code = "INVALID_RUNTIME_CONFIG"`, payload `{ path, message }` issues array.
+- [x] Write `bundled-defaults.ts`: frozen snapshot of `DEFAULT_CONNECT_CONFIG.connect` (branding.appName "Powerhouse Connect", app.logLevel "info", drives.defaultDrives [], etc.).
+- [x] Write `bundled-schema.ts`: frozen snapshot of `runtime-config.schema.json.properties.connect` (the subtree only — not the full envelope). `additionalProperties: false` at every level.
+- [x] Write `validation.ts`: Ajv `new Ajv({ allErrors: true, strict: false })`, compile `BUNDLED_CONNECT_SCHEMA`, expose `validateRuntimeConfig(json) → { ok: true } | { ok: false, issues }`.
+- [x] Write `defaults.ts`: `mergeWithDefaults(overrides, defaults?)` does deep-merge with these rules — plain objects merge per-key (override wins), arrays/primitives/null replace, undefined leaves base in place. Don't mutate inputs.
+- [x] Write `defaults.test.ts`: empty → clone of defaults; primitive replace; nested merge; array wholesale replace; null replaces non-null; undefined no-op; custom defaults param honoured; non-mutating.
+- [x] Write `validation.test.ts`: empty `{}` ok; partial override ok; full connect-shape ok; unknown top-level rejected (additionalProperties); unknown nested rejected; type/enum mismatch rejected; `defaultDrives` item missing `url` rejected; `homeBackground: null` ok; `homeBackground: { avif, png }` ok.
 
 **Verification:** `pnpm test subgraphs/runtime-config/__tests__/{defaults,validation}.test.ts` passes; `pnpm tsc` clean.
 
