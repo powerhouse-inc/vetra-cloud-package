@@ -29,8 +29,15 @@ import { OpenBaoTransitClient } from "../subgraphs/vetra-cloud-secrets/openbao-t
 import { PostgresListener } from "../subgraphs/vetra-cloud-secrets/postgres-listener.js";
 import { createReconciler } from "../subgraphs/vetra-cloud-secrets/reconciler.js";
 
-import { loadConfig } from "./config.js";
-import { createOwnedRepository } from "./db.js";
+import {
+  loadConfig,
+  RUNTIME_CONFIG_DB_NAMESPACE,
+  RUNTIME_CONFIG_NOTIFY_CHANNEL,
+} from "./config.js";
+import {
+  createOwnedRepository,
+  createOwnedRuntimeConfigRepository,
+} from "./db.js";
 import { startHealthServer } from "./health.js";
 
 async function main(): Promise<void> {
@@ -45,6 +52,14 @@ async function main(): Promise<void> {
   });
   console.info(`[main] resolved DB schema: ${repo.schema}`);
 
+  const runtimeConfigRepo = createOwnedRuntimeConfigRepository({
+    databaseUrl: config.databaseUrl,
+    namespace: RUNTIME_CONFIG_DB_NAMESPACE,
+  });
+  console.info(
+    `[main] resolved runtime-config DB schema: ${runtimeConfigRepo.schema}`,
+  );
+
   const k8s = createK8sClient();
   const transit = new OpenBaoTransitClient({
     addr: config.openbaoAddr,
@@ -53,6 +68,7 @@ async function main(): Promise<void> {
   });
   const reconciler = createReconciler({
     repo,
+    runtimeConfigRepo,
     k8s,
     transit,
     managedLabelValue: config.managedLabelValue,
@@ -60,38 +76,52 @@ async function main(): Promise<void> {
 
   let startupReconcileDone = false;
 
+  const onTenantNotify = (source: string) => (tenantId: string) => {
+    if (!tenantId) {
+      console.warn(
+        `[main] received empty NOTIFY payload on ${source}; skipping`,
+      );
+      return;
+    }
+    void reconciler.reconcileTenant(tenantId).catch((err) => {
+      console.error(
+        `[main] reconcileTenant(${tenantId}) failed (source=${source}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
+  const onReconnect = (source: string) => () => {
+    void reconciler.reconcileAll().catch((err) => {
+      console.error(
+        `[main] post-reconnect reconcileAll failed (source=${source}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
   const listener = new PostgresListener({
     databaseUrl: config.databaseUrl,
     channel: config.notifyChannel,
-    onNotify: (tenantId) => {
-      if (!tenantId) {
-        console.warn("[main] received empty NOTIFY payload; skipping");
-        return;
-      }
-      void reconciler.reconcileTenant(tenantId).catch((err) => {
-        console.error(
-          `[main] reconcileTenant(${tenantId}) failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    },
+    onNotify: onTenantNotify("secrets"),
     // Notifications between disconnect and reconnect are silently dropped
     // by Postgres. After every reconnect, run a full sweep so we converge
     // on whatever the DB looks like now.
-    onReconnect: () => {
-      void reconciler.reconcileAll().catch((err) => {
-        console.error(
-          `[main] post-reconnect reconcileAll failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    },
+    onReconnect: onReconnect("secrets"),
+  });
+
+  const runtimeConfigListener = new PostgresListener({
+    databaseUrl: config.databaseUrl,
+    channel: RUNTIME_CONFIG_NOTIFY_CHANNEL,
+    onNotify: onTenantNotify("runtime-config"),
+    onReconnect: onReconnect("runtime-config"),
   });
 
   const healthServer = startHealthServer(config.healthPort, {
-    listenerConnected: () => listener.isConnected(),
+    listenerConnected: () =>
+      listener.isConnected() && runtimeConfigListener.isConnected(),
     startupReconcileDone: () => startupReconcileDone,
   });
 
-  await listener.start();
+  await Promise.all([listener.start(), runtimeConfigListener.start()]);
 
   try {
     await reconciler.reconcileAll();
@@ -116,9 +146,9 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.info(`[main] received ${signal}, shutting down`);
     clearInterval(safetyNet);
-    await listener.stop();
+    await Promise.all([listener.stop(), runtimeConfigListener.stop()]);
     await new Promise<void>((resolve) => healthServer.close(() => resolve()));
-    await repo.close();
+    await Promise.all([repo.close(), runtimeConfigRepo.close()]);
     process.exit(0);
   };
 

@@ -1,12 +1,26 @@
 import type { SecretsRepository } from "./repository.js";
 import type { K8sClient } from "./k8s-client.js";
 import type { OpenBaoTransitClient } from "./openbao-transit.js";
+import type { RuntimeConfigRepository } from "../runtime-config/repository.js";
+import { RUNTIME_CONFIG_ENV_KEY } from "../runtime-config/types.js";
 
 export interface ReconcilerDeps {
   repo: SecretsRepository;
   k8s: K8sClient;
   transit: OpenBaoTransitClient;
   managedLabelValue: string;
+  /**
+   * Optional second data source. When provided, reconcileTenant also reads
+   * the tenant's runtime-config row and projects it as a single
+   * `PH_CONNECT_CONFIG_JSON` entry in the `<tenantId>-env` ConfigMap
+   * (wrapped as `{ "connect": <stored-subtree> }` to match the full
+   * powerhouse.config.json envelope shape that Connect's entrypoint
+   * deep-merges). reconcileAll walks the union of secrets + runtime-config
+   * tenant ids.
+   *
+   * When undefined, the reconciler behaves exactly as before (secrets only).
+   */
+  runtimeConfigRepo?: RuntimeConfigRepository;
 }
 
 export interface Reconciler {
@@ -15,7 +29,7 @@ export interface Reconciler {
 }
 
 export function createReconciler(deps: ReconcilerDeps): Reconciler {
-  const { repo, k8s, transit, managedLabelValue } = deps;
+  const { repo, k8s, transit, managedLabelValue, runtimeConfigRepo } = deps;
 
   async function decryptSecrets(
     tenantId: string,
@@ -54,13 +68,39 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
   }
 
   async function reconcileTenant(tenantId: string): Promise<void> {
-    const [envRows, secretRows] = await Promise.all([
+    const [envRows, secretRows, runtimeRow] = await Promise.all([
       repo.envVarsForTenant(tenantId),
       repo.secretsForTenant(tenantId),
+      runtimeConfigRepo
+        ? runtimeConfigRepo.runtimeConfigForTenant(tenantId)
+        : Promise.resolve(null),
     ]);
 
     const envData: Record<string, string> = {};
     for (const row of envRows) envData[row.key] = row.value;
+
+    // Fan-in runtime-config: wrap the stored connect.* subtree back into the
+    // full envelope shape Connect's entrypoint expects to deep-merge into
+    // /dist/powerhouse.config.json. Skip when the stored value is corrupt —
+    // a single broken row should not poison the rest of the tenant's env.
+    if (runtimeRow) {
+      try {
+        const connect: unknown = JSON.parse(runtimeRow.value);
+        if (connect && typeof connect === "object" && !Array.isArray(connect)) {
+          envData[RUNTIME_CONFIG_ENV_KEY] = JSON.stringify({ connect });
+        } else {
+          console.warn(
+            `[reconciler] runtime-config row for ${tenantId} is not a plain object; skipping`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[reconciler] runtime-config row for ${tenantId} is invalid JSON; skipping (${
+            err instanceof Error ? err.message : String(err)
+          })`,
+        );
+      }
+    }
 
     const secretData = await decryptSecrets(tenantId, secretRows);
 
@@ -87,7 +127,13 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
   }
 
   async function reconcileAll(): Promise<void> {
-    const tenantIds = await repo.allTenantIds();
+    const [secretsIds, runtimeIds] = await Promise.all([
+      repo.allTenantIds(),
+      runtimeConfigRepo
+        ? runtimeConfigRepo.allTenantIds()
+        : Promise.resolve([] as string[]),
+    ]);
+    const tenantIds = [...new Set([...secretsIds, ...runtimeIds])].sort();
     console.info(`[reconciler] full reconcile: ${tenantIds.length} tenant(s)`);
     const errors: Array<{ tenantId: string; error: string }> = [];
     for (const tenantId of tenantIds) {

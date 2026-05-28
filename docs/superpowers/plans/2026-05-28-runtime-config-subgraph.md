@@ -175,20 +175,20 @@
 
 **Reference:** `secrets-controller/main.ts` (existing single-listener wiring) — extend symmetrically. `secrets-controller/db.ts` (`createOwnedRepository`) — duplicate the pattern for the new namespace.
 
-- [ ] Add to `secrets-controller/config.ts`: export `RUNTIME_CONFIG_DB_NAMESPACE = "vetra-cloud-runtime-config"` and `RUNTIME_CONFIG_NOTIFY_CHANNEL = "vetra_runtime_config_changed"` as hardcoded constants (Option A — both are 1:1 with subgraph identity, no env-var override).
-- [ ] Add to `secrets-controller/db.ts`: `createOwnedRuntimeConfigRepository({ databaseUrl, namespace })` — opens its own pg Pool + Kysely + `withSchema(hashNamespace(namespace))` and delegates to `subgraphs/runtime-config/repository.ts`. Returns `OwnedRuntimeConfigRepository` (schema, runtimeConfigForTenant, allTenantIds, close).
-- [ ] Update `subgraphs/vetra-cloud-secrets/reconciler.ts`:
+- [x] Add to `secrets-controller/config.ts`: export `RUNTIME_CONFIG_DB_NAMESPACE = "vetra-cloud-runtime-config"` and `RUNTIME_CONFIG_NOTIFY_CHANNEL = "vetra_runtime_config_changed"` as hardcoded constants (Option A — both are 1:1 with subgraph identity, no env-var override).
+- [x] Add to `secrets-controller/db.ts`: `createOwnedRuntimeConfigRepository({ databaseUrl, namespace })` — opens its own pg Pool + Kysely + `withSchema(hashNamespace(namespace))` and delegates to `subgraphs/runtime-config/repository.ts`. Returns `OwnedRuntimeConfigRepository` (schema, runtimeConfigForTenant, allTenantIds, close).
+- [x] Update `subgraphs/vetra-cloud-secrets/reconciler.ts`:
   - Add optional `runtimeConfigRepo?: RuntimeConfigRepository` to `ReconcilerDeps`.
   - In `reconcileTenant`: when the dep is provided, parallel-fetch the runtime-config row alongside env vars + secrets. If present and parses to an object (not array, not corrupt), set `envData[RUNTIME_CONFIG_ENV_KEY] = JSON.stringify({ connect: <parsed> })`. Corrupt or non-object rows are logged and skipped (a single broken row should not poison the rest of the tenant's env).
   - In `reconcileAll`: read tenant ids from both repos and walk the deduped union.
-- [ ] Update `secrets-controller/main.ts`:
+- [x] Update `secrets-controller/main.ts`:
   - Instantiate `runtimeConfigRepo` via the new factory, log its resolved schema.
   - Pass `runtimeConfigRepo` to `createReconciler({ ... })`.
   - Factor `onTenantNotify(source)` and `onReconnect(source)` so two listeners share the same dispatch logic (with `source` in the log line).
   - Construct a second `PostgresListener` bound to `RUNTIME_CONFIG_NOTIFY_CHANNEL`. `await Promise.all([listener.start(), runtimeConfigListener.start()])`.
   - Health check: `listenerConnected` is `listener.isConnected() && runtimeConfigListener.isConnected()`.
   - Shutdown: `await Promise.all([listener.stop(), runtimeConfigListener.stop()])` and `await Promise.all([repo.close(), runtimeConfigRepo.close()])`.
-- [ ] Write `reconciler-with-runtime-config.test.ts`: 7 cases — projects wrapped envelope; omits key when no runtime row; works with runtime row only (no env rows); skips on invalid JSON; skips on array value; backward-compatible when `runtimeConfigRepo` undefined; `reconcileAll` unions tenant ids.
+- [x] Write `reconciler-with-runtime-config.test.ts`: 7 cases — projects wrapped envelope; omits key when no runtime row; works with runtime row only (no env rows); skips on invalid JSON; skips on array value; backward-compatible when `runtimeConfigRepo` undefined; `reconcileAll` unions tenant ids.
 
 **Verification:** `pnpm test subgraphs/vetra-cloud-secrets` — both existing reconciler tests + the new fan-in tests green; `pnpm tsc` clean.
 
