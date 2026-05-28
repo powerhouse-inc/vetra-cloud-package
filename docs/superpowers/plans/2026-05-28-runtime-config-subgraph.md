@@ -156,9 +156,9 @@
 
 **Reference:** `subgraphs/vetra-cloud-secrets/index.ts` for the `BaseSubgraph` subclass pattern. `subgraphs/index.ts` already uses `export * as` namespace re-exports for the other two subgraphs — mirror that.
 
-- [ ] Write `subgraphs/runtime-config/index.ts`: `class RuntimeConfigSubgraph extends BaseSubgraph` with `name = "runtime-config"`, `typeDefs = schema`, `additionalContextFields = {}`. In `onSetup()`, `await this.relationalDb.createNamespace(RUNTIME_CONFIG_DB_NAMESPACE)`, run migration `up(db)`, wire `this.resolvers = createResolvers(db)`.
-- [ ] Update `subgraphs/index.ts`: append `export * as RuntimeConfigSubgraph from "./runtime-config/index.js";` after the existing two.
-- [ ] Update `powerhouse.manifest.json`: append `{ "id": "runtime-config", "name": "Runtime Config", "documentTypes": ["powerhouse/vetra-cloud-environment"] }` to the `subgraphs` array.
+- [x] Write `subgraphs/runtime-config/index.ts`: `class RuntimeConfigSubgraph extends BaseSubgraph` with `name = "runtime-config"`, `typeDefs = schema`, `additionalContextFields = {}`. In `onSetup()`, `await this.relationalDb.createNamespace(RUNTIME_CONFIG_DB_NAMESPACE)`, run migration `up(db)`, wire `this.resolvers = createResolvers(db)`.
+- [x] Update `subgraphs/index.ts`: append `export * as RuntimeConfigSubgraph from "./runtime-config/index.js";` after the existing two.
+- [x] Update `powerhouse.manifest.json`: append `{ "id": "runtime-config", "name": "Runtime Config", "documentTypes": ["powerhouse/vetra-cloud-environment"] }` to the `subgraphs` array.
 
 **Verification:** `pnpm tsc` clean; `pnpm build` produces `dist/node/subgraphs/runtime-config/index.mjs` and `dist/node/subgraphs/index.mjs` re-exports `RuntimeConfigSubgraph`.
 

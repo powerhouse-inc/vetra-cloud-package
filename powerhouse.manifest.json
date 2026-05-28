@@ -32,6 +32,11 @@
             "id": "vetra-cloud-secrets",
             "name": "Vetra Cloud Secrets",
             "documentTypes": ["powerhouse/vetra-cloud-environment"]
+        },
+        {
+            "id": "runtime-config",
+            "name": "Runtime Config",
+            "documentTypes": ["powerhouse/vetra-cloud-environment"]
         }
     ],
     "processors": [
