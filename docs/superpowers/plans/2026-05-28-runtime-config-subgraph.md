@@ -75,9 +75,9 @@
 
 **Reference:** `subgraphs/vetra-cloud-secrets/db/schema.ts`, `migrations.ts`, `__tests__/db-migrations.test.ts`.
 
-- [ ] Define `TenantRuntimeConfig` interface — `tenantId`, `value` (JSON-encoded connect subtree), `updatedAt`. Export `RuntimeConfigDB`.
-- [ ] Write `up(db)` migration: `createTable("tenant_runtime_config")` with primary key on `tenantId` alone (single-row-per-tenant). Use `ifNotExists()` for idempotency. Write `down(db)` to drop the table.
-- [ ] Write pglite-backed test covering: empty table; insert + select; tenantId PK rejects duplicate; distinct tenant rows allowed; `up` is idempotent; `down` drops the table.
+- [x] Define `TenantRuntimeConfig` interface — `tenantId`, `value` (JSON-encoded connect subtree), `updatedAt`. Export `RuntimeConfigDB`.
+- [x] Write `up(db)` migration: `createTable("tenant_runtime_config")` with primary key on `tenantId` alone (single-row-per-tenant). Use `ifNotExists()` for idempotency. Write `down(db)` to drop the table.
+- [x] Write pglite-backed test covering: empty table; insert + select; tenantId PK rejects duplicate; distinct tenant rows allowed; `up` is idempotent; `down` drops the table.
 
 **Verification:** `pnpm test subgraphs/runtime-config/__tests__/db-migrations.test.ts` passes.
 
