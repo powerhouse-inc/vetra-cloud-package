@@ -120,9 +120,9 @@
 
 **Reference:** `subgraphs/vetra-cloud-secrets/repository.ts` for the shape (interface + factory function shared between subgraph and controller).
 
-- [ ] Define `RuntimeConfigRepository` interface with two methods: `runtimeConfigForTenant(tenantId)` returns `{ value, updatedAt } | null`; `allTenantIds()` returns sorted distinct tenantIds.
-- [ ] Write `createRepository(db)` factory — Kysely queries against `tenant_runtime_config`.
-- [ ] Test: returns null for unknown tenant; returns the row when set; isolates tenants; `allTenantIds` returns [] when empty and sorted distinct otherwise.
+- [x] Define `RuntimeConfigRepository` interface with two methods: `runtimeConfigForTenant(tenantId)` returns `{ value, updatedAt } | null`; `allTenantIds()` returns sorted distinct tenantIds.
+- [x] Write `createRepository(db)` factory — Kysely queries against `tenant_runtime_config`.
+- [x] Test: returns null for unknown tenant; returns the row when set; isolates tenants; `allTenantIds` returns [] when empty and sorted distinct otherwise.
 
 **Verification:** `pnpm test subgraphs/runtime-config/__tests__/repository.test.ts` passes.
 
