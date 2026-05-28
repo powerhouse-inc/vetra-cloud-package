@@ -1000,7 +1000,7 @@ export class VetraCloudRuntimeConfigSubgraph extends BaseSubgraph {
     super(args);
     const store =
       options.store ??
-      new KyselyEnvVarsStore(this.relationalDb as unknown as never);
+      new KyselyEnvVarsStore(this.relationalDb as Kysely<EnvVarsTable>);
     this.resolvers = createResolvers({ store });
   }
 }

@@ -93,7 +93,7 @@ The port intentionally keeps schema specifics behind one method pair so a deploy
 
 1. Authenticated check: `ctx.user?.address` must be present (deployment-side adds the tenant-owner DID check).
 2. `row = store.getRuntimeConfigOverrides(tenantId)`.
-3. `overrides = row ? JSON.parse(row.value) : {}`. If parse fails, log and treat as `{}` (a stale row should never make the query throw).
+3. `overrides = row ? JSON.parse(row.value) : {}`. If parse fails, treat as `{}` (a stale row should never make the query throw).
 4. `effective = mergeWithDefaults(overrides)`.
 5. Return `{ effective, overrides, schemaVersion: '2', updatedAt: row?.updatedAt?.toISOString() ?? null }`.
 

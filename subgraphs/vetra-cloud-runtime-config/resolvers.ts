@@ -65,7 +65,7 @@ function parseOverrides(value: string | undefined): RuntimeConfigOverrides {
   if (!value) return {};
   try {
     const parsed: unknown = JSON.parse(value);
-    if (parsed && typeof parsed === "object") {
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as RuntimeConfigOverrides;
     }
   } catch {

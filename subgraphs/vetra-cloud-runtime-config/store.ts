@@ -58,7 +58,7 @@ export class KyselyEnvVarsStore implements EnvVarsStore {
 
   async getRuntimeConfigOverrides(tenantId: string) {
     const row = await this.db
-      .selectFrom("env_vars")
+      .selectFrom(this.tableName as "env_vars")
       .select(["value", "updated_at"])
       .where("tenant_id", "=", tenantId)
       .where("key", "=", RUNTIME_CONFIG_ENV_KEY)
@@ -75,7 +75,7 @@ export class KyselyEnvVarsStore implements EnvVarsStore {
   async setRuntimeConfigOverrides(tenantId: string, value: string | null) {
     if (value === null) {
       await this.db
-        .deleteFrom("env_vars")
+        .deleteFrom(this.tableName as "env_vars")
         .where("tenant_id", "=", tenantId)
         .where("key", "=", RUNTIME_CONFIG_ENV_KEY)
         .execute();
@@ -84,7 +84,7 @@ export class KyselyEnvVarsStore implements EnvVarsStore {
     }
 
     const inserted = await this.db
-      .insertInto("env_vars")
+      .insertInto(this.tableName as "env_vars")
       .values({
         tenant_id: tenantId,
         key: RUNTIME_CONFIG_ENV_KEY,
