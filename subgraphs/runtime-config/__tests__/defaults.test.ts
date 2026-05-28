@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { BUNDLED_DEFAULT_CONNECT_CONFIG } from "../bundled-defaults.js";
 import { mergeWithDefaults } from "../defaults.js";
 

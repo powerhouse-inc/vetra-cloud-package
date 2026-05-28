@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { validateRuntimeConfig } from "../validation.js";
 
 describe("validateRuntimeConfig", () => {

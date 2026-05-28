@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createReconciler } from "../reconciler.js";
 import type { SecretsRepository } from "../repository.js";
 import type { K8sClient } from "../k8s-client.js";
