@@ -201,9 +201,9 @@
 
 **Reference:** the existing `KEY_PATTERN` validator in the same file — extend it with a denylist check.
 
-- [ ] Define `RESERVED_KEYS = new Set(["PH_CONNECT_CONFIG_JSON"])`.
-- [ ] In `validateKey`, after the regex check, throw a clear error if the key is reserved (point operators at `setRuntimeConfig`).
-- [ ] Existing `resolvers.test.ts` should still pass (no test currently sets `PH_CONNECT_CONFIG_JSON` via `setEnvVar`).
+- [x] Define `RESERVED_KEYS = new Set(["PH_CONNECT_CONFIG_JSON"])`.
+- [x] In `validateKey`, after the regex check, throw a clear error if the key is reserved (point operators at `setRuntimeConfig`).
+- [x] Existing `resolvers.test.ts` should still pass (no test currently sets `PH_CONNECT_CONFIG_JSON` via `setEnvVar`).
 
 **Verification:** `pnpm test subgraphs/vetra-cloud-secrets/__tests__/resolvers.test.ts` passes unchanged.
 
@@ -213,10 +213,10 @@
 
 After all 7 tasks committed:
 
-- [ ] `pnpm tsc` clean
-- [ ] `pnpm lint` — no new errors introduced (pre-existing lint failures in `subgraphs/vetra-cloud-observability/clint-pull-worker.ts` predate this PR and are unrelated)
-- [ ] `pnpm test subgraphs/runtime-config subgraphs/vetra-cloud-secrets` — all green
-- [ ] `pnpm build` — `dist/node/subgraphs/runtime-config/index.mjs` exists; barrel re-exports `RuntimeConfigSubgraph`
+- [x] `pnpm tsc` clean
+- [x] `pnpm lint` — no new errors introduced (pre-existing lint failures in `subgraphs/vetra-cloud-observability/clint-pull-worker.ts` predate this PR and are unrelated)
+- [x] `pnpm test subgraphs/runtime-config subgraphs/vetra-cloud-secrets` — all green
+- [x] `pnpm build` — `dist/node/subgraphs/runtime-config/index.mjs` exists; barrel re-exports `RuntimeConfigSubgraph`
 
 ---
 

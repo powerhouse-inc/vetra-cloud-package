@@ -5,10 +5,26 @@ import type { OpenBaoTransitClient } from "./openbao-transit.js";
 const KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const NOTIFY_CHANNEL = "vetra_secrets_changed";
 
+/**
+ * Keys reserved for other subgraphs' write paths. Setting these via
+ * setEnvVar would either be overwritten on the next reconcile or, worse,
+ * stomp a typed write coming through a different subgraph. The denylist
+ * is intentionally tiny — only add keys that have a dedicated owner.
+ *
+ * PH_CONNECT_CONFIG_JSON is owned by the runtime-config subgraph; use
+ * setRuntimeConfig to write it.
+ */
+const RESERVED_KEYS = new Set<string>(["PH_CONNECT_CONFIG_JSON"]);
+
 function validateKey(key: string): void {
   if (!KEY_PATTERN.test(key)) {
     throw new Error(
       `Invalid key "${key}": key must match ^[A-Z][A-Z0-9_]*$ (e.g. MY_VAR, API_KEY)`,
+    );
+  }
+  if (RESERVED_KEYS.has(key)) {
+    throw new Error(
+      `Reserved key "${key}" cannot be set via setEnvVar; use the runtime-config subgraph (setRuntimeConfig) instead`,
     );
   }
 }
