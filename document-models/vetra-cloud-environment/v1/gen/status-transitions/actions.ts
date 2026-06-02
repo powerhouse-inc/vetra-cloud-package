@@ -1,14 +1,18 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import type { Action } from "document-model";
 import type {
+  ApproveChangesInput,
+  ArchiveInput,
   InitializeInput,
   MarkChangesPushedInput,
   MarkDeploymentStartedInput,
-  ReportDeploymentSucceededInput,
-  ReportDeploymentFailedInput,
-  ApproveChangesInput,
-  TerminateEnvironmentInput,
   MarkDestroyedInput,
-  ArchiveInput,
+  ReportDeploymentFailedInput,
+  ReportDeploymentSucceededInput,
+  TerminateEnvironmentInput,
   UnarchiveInput,
 } from "../types.js";
 

@@ -1,38 +1,42 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { createAction } from "document-model";
 import {
+  ApproveChangesInputSchema,
+  ArchiveInputSchema,
   InitializeInputSchema,
   MarkChangesPushedInputSchema,
   MarkDeploymentStartedInputSchema,
-  ReportDeploymentSucceededInputSchema,
-  ReportDeploymentFailedInputSchema,
-  ApproveChangesInputSchema,
-  TerminateEnvironmentInputSchema,
   MarkDestroyedInputSchema,
-  ArchiveInputSchema,
+  ReportDeploymentFailedInputSchema,
+  ReportDeploymentSucceededInputSchema,
+  TerminateEnvironmentInputSchema,
   UnarchiveInputSchema,
 } from "../schema/zod.js";
 import type {
+  ApproveChangesInput,
+  ArchiveInput,
   InitializeInput,
   MarkChangesPushedInput,
   MarkDeploymentStartedInput,
-  ReportDeploymentSucceededInput,
-  ReportDeploymentFailedInput,
-  ApproveChangesInput,
-  TerminateEnvironmentInput,
   MarkDestroyedInput,
-  ArchiveInput,
+  ReportDeploymentFailedInput,
+  ReportDeploymentSucceededInput,
+  TerminateEnvironmentInput,
   UnarchiveInput,
 } from "../types.js";
 import type {
+  ApproveChangesAction,
+  ArchiveAction,
   InitializeAction,
   MarkChangesPushedAction,
   MarkDeploymentStartedAction,
-  ReportDeploymentSucceededAction,
-  ReportDeploymentFailedAction,
-  ApproveChangesAction,
-  TerminateEnvironmentAction,
   MarkDestroyedAction,
-  ArchiveAction,
+  ReportDeploymentFailedAction,
+  ReportDeploymentSucceededAction,
+  TerminateEnvironmentAction,
   UnarchiveAction,
 } from "./actions.js";
 

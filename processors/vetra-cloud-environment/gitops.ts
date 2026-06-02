@@ -12,6 +12,7 @@ import type {
   VetraCloudRessourceSize,
 } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
+import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -394,11 +395,31 @@ function readServiceSize(
   );
 }
 
+/**
+ * Heuristic for classifying legacy env entries (those without an
+ * explicit isSecret flag — pre-isSecret schema or pre-UI-update data).
+ * Matches names commonly used for sensitive values; conservative on
+ * purpose, only the well-known suffixes. Anything not matching is
+ * treated as a plain env var. Explicit isSecret on the entry always
+ * wins over this heuristic.
+ */
+const LEGACY_SECRET_NAME_PATTERN = /(_API_KEY|_SECRET|_PASSWORD|_TOKEN|_PRIVATE_KEY)$/;
+
+function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolean | null }): "secret" | "plain" {
+  if (e.isSecret === true) return "secret";
+  if (e.isSecret === false) return "plain";
+  // No explicit flag: fall back to name pattern. Used for legacy data
+  // produced before the isSecret schema field shipped.
+  return LEGACY_SECRET_NAME_PATTERN.test(e.name) ? "secret" : "plain";
+}
+
 async function generateClintBlock(
   state: VetraCloudEnvironmentState,
   documentId: string,
   subdomain: string,
   baseDomain: string,
+  tenantId: string,
+  secretsService: SecretsService | null,
 ): Promise<string> {
   const clintServices = (state.services ?? []).filter(
     (s) => s.type === "CLINT" && s.enabled,
@@ -459,14 +480,58 @@ async function generateClintBlock(
     // The clint-runtime image is Node-based and runs `pnpm install` at boot;
     // without this, V8 caps the heap at its default (~75% of detected memory)
     // which on small sizes is well under what large agent installs need.
-    // User-provided envVars come last so they can override if desired.
     lines.push(`      env:`);
     lines.push(
       `        - { name: "NODE_OPTIONS", value: "--max-old-space-size=${resources.nodeMaxOldSpaceMb}" }`,
     );
+    // Route each declared env entry. Anything classified as a secret goes
+    // through the encrypted tenant_secrets table (via the secrets service);
+    // it is OMITTED from this inline block — the chart's `envFrom: secretRef:
+    // <tenant>-secrets` picks it up after the secrets-controller materializes
+    // the Secret. Plain env vars are written to tenant_env_vars (which becomes
+    // the <tenant>-env ConfigMap) when the service is available; otherwise
+    // they're emitted inline (legacy fallback for environments where
+    // OPENBAO_ADDR isn't configured).
+    //
+    // Secret VALUES never re-enter inline values.yaml even if the document
+    // state still carries one (legacy data with isSecret heuristic-matched
+    // names). This is the load-bearing line for "secrets must not leak to
+    // git": classifyEnv() + the conditional below.
     for (const e of envVars) {
+      const kind = classifyEnv(e);
+      const value = e.value ?? "";
+      if (kind === "secret") {
+        if (secretsService && value !== "") {
+          try {
+            await secretsService.setSecret(tenantId, e.name, value);
+          } catch (err) {
+            logger.warn(
+              `Failed to upsert secret ${e.name} for tenant ${tenantId}: ${String(err)} — skipping inline emit to avoid plaintext leak`,
+            );
+          }
+        } else if (!secretsService) {
+          logger.warn(
+            `[secrets] No SecretsService available — secret entry ${e.name} for tenant ${tenantId} cannot be routed; SKIPPING (will not be available to the agent until OPENBAO_ADDR is configured)`,
+          );
+        }
+        // Either way: do NOT emit inline. Defense in depth against the
+        // plaintext leak the user explicitly flagged.
+        continue;
+      }
+      // Plain env var. Prefer the secrets-controller path (tenant_env_vars)
+      // when available so the values.yaml stays lean; otherwise emit inline.
+      if (secretsService) {
+        try {
+          await secretsService.setEnvVar(tenantId, e.name, value);
+          continue;
+        } catch (err) {
+          logger.warn(
+            `Failed to upsert env var ${e.name} for tenant ${tenantId}: ${String(err)} — falling back to inline emit`,
+          );
+        }
+      }
       lines.push(
-        `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+        `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(value)} }`,
       );
     }
     // Public HTTPS ingress — required so the observability subgraph's pull
@@ -489,6 +554,7 @@ export async function generateValuesYaml(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
+  secretsService: SecretsService | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -585,6 +651,8 @@ export async function generateValuesYaml(
     documentId,
     subdomain,
     state.genericBaseDomain ?? "vetra.io",
+    tenantId,
+    secretsService,
   );
 
   // Optional preamble — only emitted when there's an active service
@@ -828,6 +896,7 @@ export async function syncEnvironment(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
+  secretsService: SecretsService | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -842,7 +911,7 @@ export async function syncEnvironment(
 
   await gitMutex.acquire();
   try {
-    await syncEnvironmentEphemeral(db, state, documentId);
+    await syncEnvironmentEphemeral(db, state, documentId, secretsService);
   } finally {
     gitMutex.release();
   }
@@ -885,6 +954,7 @@ async function syncEnvironmentEphemeral(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
   documentId: string,
+  secretsService: SecretsService | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -906,7 +976,7 @@ async function syncEnvironmentEphemeral(
 
     // Write values file
     const valuesPath = join(tenantDir, "powerhouse-values.yaml");
-    const yaml = await generateValuesYaml(db, state, documentId);
+    const yaml = await generateValuesYaml(db, state, documentId, secretsService);
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
 

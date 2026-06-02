@@ -5,6 +5,7 @@ import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnv
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import type { DB } from "./schema.js";
 import { childLogger } from "document-model";
+import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
@@ -13,11 +14,23 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
   private relationalDb: Kysely<DB>;
   private dispatch: IProcessorHostModule["dispatch"];
   private documentView: IDocumentView;
+  /**
+   * Optional — null when OPENBAO_ADDR is unset (local dev, tests). When
+   * present, gitops sync routes secret env entries through the encrypted
+   * tenant_secrets table so they never land in values.yaml plaintext.
+   */
+  private secretsService: SecretsService | null;
 
-  constructor(relationalDb: Kysely<DB>, dispatch: IProcessorHostModule["dispatch"], documentView: IDocumentView) {
+  constructor(
+    relationalDb: Kysely<DB>,
+    dispatch: IProcessorHostModule["dispatch"],
+    documentView: IDocumentView,
+    secretsService: SecretsService | null = null,
+  ) {
     this.relationalDb = relationalDb;
     this.dispatch = dispatch;
     this.documentView = documentView;
+    this.secretsService = secretsService;
   }
 
   private async dispatchAction(documentId: string, action: VetraCloudEnvironmentAction) {
@@ -147,7 +160,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       if (status === "CHANGES_APPROVED") {
         logger.info(`Triggering gitops sync for "${label}"`);
         try {
-          await syncEnvironment(this.relationalDb, state, documentId);
+          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
           logger.info(`Gitops sync completed for "${label}"`);
 
           // Re-check status before dispatching to avoid duplicate transitions

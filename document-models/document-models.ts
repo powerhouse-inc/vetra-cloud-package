@@ -1,6 +1,8 @@
-import type { DocumentModelModule } from "document-model";
-import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "./vetra-cloud-environment/v1/module.js";
+import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "document-models/vetra-cloud-environment/v1";
 
-export const documentModels: DocumentModelModule<any>[] = [
-  VetraCloudEnvironmentV1,
-];
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
+
+export const documentModels = [VetraCloudEnvironmentV1] as const;

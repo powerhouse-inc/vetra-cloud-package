@@ -1,54 +1,58 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { type SignalDispatch } from "document-model";
+import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
-  SetOwnerAction,
-  SetLabelAction,
-  SetGenericSubdomainAction,
+  SetApexServiceAction,
+  SetAutoUpdateChannelAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
-  SetApexServiceAction,
-  SetAutoUpdateChannelAction,
+  SetGenericSubdomainAction,
+  SetLabelAction,
+  SetOwnerAction,
 } from "./actions.js";
-import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
   setOwnerOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetOwnerAction,
     dispatch?: SignalDispatch,
   ) => void;
   setLabelOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetLabelAction,
     dispatch?: SignalDispatch,
   ) => void;
   setGenericSubdomainOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetGenericSubdomainAction,
     dispatch?: SignalDispatch,
   ) => void;
   setCustomDomainOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetCustomDomainAction,
     dispatch?: SignalDispatch,
   ) => void;
   setDefaultPackageRegistryOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetDefaultPackageRegistryAction,
     dispatch?: SignalDispatch,
   ) => void;
   setDnsRecordsOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetDnsRecordsAction,
     dispatch?: SignalDispatch,
   ) => void;
   setApexServiceOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetApexServiceAction,
     dispatch?: SignalDispatch,
   ) => void;
   setAutoUpdateChannelOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetAutoUpdateChannelAction,
     dispatch?: SignalDispatch,
   ) => void;

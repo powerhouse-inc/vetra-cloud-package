@@ -1,13 +1,17 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import type { Action } from "document-model";
 import type {
-  SetOwnerInput,
-  SetLabelInput,
-  SetGenericSubdomainInput,
+  SetApexServiceInput,
+  SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
-  SetApexServiceInput,
-  SetAutoUpdateChannelInput,
+  SetGenericSubdomainInput,
+  SetLabelInput,
+  SetOwnerInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {

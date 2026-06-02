@@ -1,6 +1,6 @@
+import type { VetraCloudEnvironmentStatusTransitionsOperations } from "document-models/vetra-cloud-environment/v1";
 import { InvalidStatusTransitionError } from "../../gen/status-transitions/error.js";
 import { assertOwner } from "./utils.js";
-import type { VetraCloudEnvironmentStatusTransitionsOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnvironmentStatusTransitionsOperations =
   {

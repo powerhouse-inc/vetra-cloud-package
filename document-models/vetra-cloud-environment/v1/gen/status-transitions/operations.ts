@@ -1,66 +1,70 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { type SignalDispatch } from "document-model";
+import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
+  ApproveChangesAction,
+  ArchiveAction,
   InitializeAction,
   MarkChangesPushedAction,
   MarkDeploymentStartedAction,
-  ReportDeploymentSucceededAction,
-  ReportDeploymentFailedAction,
-  ApproveChangesAction,
-  TerminateEnvironmentAction,
   MarkDestroyedAction,
-  ArchiveAction,
+  ReportDeploymentFailedAction,
+  ReportDeploymentSucceededAction,
+  TerminateEnvironmentAction,
   UnarchiveAction,
 } from "./actions.js";
-import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentStatusTransitionsOperations {
   initializeOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: InitializeAction,
     dispatch?: SignalDispatch,
   ) => void;
   markChangesPushedOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: MarkChangesPushedAction,
     dispatch?: SignalDispatch,
   ) => void;
   markDeploymentStartedOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: MarkDeploymentStartedAction,
     dispatch?: SignalDispatch,
   ) => void;
   reportDeploymentSucceededOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: ReportDeploymentSucceededAction,
     dispatch?: SignalDispatch,
   ) => void;
   reportDeploymentFailedOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: ReportDeploymentFailedAction,
     dispatch?: SignalDispatch,
   ) => void;
   approveChangesOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: ApproveChangesAction,
     dispatch?: SignalDispatch,
   ) => void;
   terminateEnvironmentOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: TerminateEnvironmentAction,
     dispatch?: SignalDispatch,
   ) => void;
   markDestroyedOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: MarkDestroyedAction,
     dispatch?: SignalDispatch,
   ) => void;
   archiveOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: ArchiveAction,
     dispatch?: SignalDispatch,
   ) => void;
   unarchiveOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: UnarchiveAction,
     dispatch?: SignalDispatch,
   ) => void;

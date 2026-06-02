@@ -1,3 +1,7 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import {
   BaseDocumentHeaderSchema,
   BaseDocumentStateSchema,
@@ -11,18 +15,18 @@ import type {
 } from "./types.js";
 
 /** Schema for validating the header object of a VetraCloudEnvironment document */
-export const VetraCloudEnvironmentDocumentHeaderSchema: z.ZodType<unknown> =
+export const VetraCloudEnvironmentDocumentHeaderSchema =
   BaseDocumentHeaderSchema.extend({
     documentType: z.literal(vetraCloudEnvironmentDocumentType),
   });
 
 /** Schema for validating the state object of a VetraCloudEnvironment document */
-export const VetraCloudEnvironmentPHStateSchema: z.ZodType<unknown> =
+export const VetraCloudEnvironmentPHStateSchema =
   BaseDocumentStateSchema.extend({
     global: VetraCloudEnvironmentStateSchema(),
   });
 
-export const VetraCloudEnvironmentDocumentSchema: z.ZodType<unknown> = z.object({
+export const VetraCloudEnvironmentDocumentSchema = z.object({
   header: VetraCloudEnvironmentDocumentHeaderSchema,
   state: VetraCloudEnvironmentPHStateSchema,
   initialState: VetraCloudEnvironmentPHStateSchema,

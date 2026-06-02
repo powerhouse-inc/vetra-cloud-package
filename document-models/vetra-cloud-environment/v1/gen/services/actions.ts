@@ -1,13 +1,17 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import type { Action } from "document-model";
 import type {
+  DisableServiceInput,
   EnableServiceInput,
   SetServiceConfigInput,
-  DisableServiceInput,
-  ToggleServiceInput,
-  UpdateServicePrefixInput,
+  SetServiceSizeInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
-  SetServiceSizeInput,
+  ToggleServiceInput,
+  UpdateServicePrefixInput,
 } from "../types.js";
 
 export type EnableServiceAction = Action & {

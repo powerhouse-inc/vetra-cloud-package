@@ -1,3 +1,4 @@
+import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 import {
   NotOwnerError,
   SelfClaimRequiredError,
@@ -8,7 +9,6 @@ import {
   markPendingIfDeployed,
   regenerateDnsRecords,
 } from "./utils.js";
-import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 
 export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmentDataManagementOperations =
   {
