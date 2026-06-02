@@ -1,6 +1,6 @@
 {
   "name": "@powerhousedao/vetra-cloud-package",
-  "version": "0.0.3-dev.85",
+  "version": "0.0.3-dev.86",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -12,43 +12,43 @@
   ],
   "exports": {
     ".": {
-      "types": "./dist/browser/index.d.ts",
+      "types": "./dist/index.d.ts",
       "browser": "./dist/browser/index.js",
       "node": "./dist/node/index.mjs",
       "default": "./dist/browser/index.js"
     },
     "./document-models": {
-      "types": "./dist/browser/document-models/index.d.ts",
+      "types": "./dist/document-models/index.d.ts",
       "browser": "./dist/browser/document-models/index.js",
       "node": "./dist/node/document-models/index.mjs",
       "default": "./dist/browser/document-models/index.js"
     },
     "./document-models/*": {
-      "types": "./dist/browser/document-models/*/index.d.ts",
+      "types": "./dist/document-models/*/index.d.ts",
       "browser": "./dist/browser/document-models/*/index.js",
       "node": "./dist/node/document-models/*/index.mjs",
       "default": "./dist/browser/document-models/*/index.js"
     },
     "./editors": {
-      "types": "./dist/browser/editors/index.d.ts",
+      "types": "./dist/editors/index.d.ts",
       "browser": "./dist/browser/editors/index.js",
       "node": "./dist/node/editors/index.mjs",
       "default": "./dist/browser/editors/index.js"
     },
     "./editors/*": {
-      "types": "./dist/browser/editors/*/index.d.ts",
+      "types": "./dist/editors/*/index.d.ts",
       "browser": "./dist/browser/editors/*/index.js",
       "node": "./dist/node/editors/*/index.mjs",
       "default": "./dist/browser/editors/*/index.js"
     },
     "./subgraphs": {
-      "types": "./dist/browser/subgraphs/index.d.ts",
+      "types": "./dist/subgraphs/index.d.ts",
       "browser": "./dist/browser/subgraphs/index.js",
       "node": "./dist/node/subgraphs/index.mjs",
       "default": "./dist/browser/subgraphs/index.js"
     },
     "./processors": {
-      "types": "./dist/browser/processors/index.d.ts",
+      "types": "./dist/processors/index.d.ts",
       "browser": "./dist/browser/processors/index.js",
       "node": "./dist/node/processors/index.mjs",
       "default": "./dist/browser/processors/index.js"

@@ -7,6 +7,11 @@ import type { DB } from "./schema.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
+// Re-export the factory under the codegen-expected name so the auto-
+// generated processors/switchboard.ts (which imports
+// `vetraCloudEnvironmentFactoryBuilder` from this module) resolves.
+export { vetraCloudEnvironmentProcessorFactory as vetraCloudEnvironmentFactoryBuilder } from "./factory.js";
+
 const logger = childLogger(["vetra-cloud-environment-processor"]);
 
 
