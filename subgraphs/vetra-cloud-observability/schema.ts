@@ -179,6 +179,31 @@ export const schema: DocumentNode = gql`
     doesn't exist.
     """
     cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
+
+    """
+    Owner-gated. Trigger a rolling restart of one of an environment's
+    Deployments by stamping the standard rollout-restart annotation on its
+    pod template. 'service' selects CONNECT/SWITCHBOARD; for CLINT pass the
+    agent's 'agentPrefix' to disambiguate (each agent is its own
+    Deployment). The target Deployment is located by its chart labels, so
+    this is robust to k8s name truncation.
+
+    Raises UNAUTHENTICATED, FORBIDDEN, ENV_NOT_FOUND, AMBIGUOUS_SERVICE
+    (CLINT without a prefix, or >1 matching Deployment), DEPLOYMENT_NOT_FOUND,
+    and RESTART_NOT_CONFIGURED (cluster client unavailable).
+    """
+    restartEnvironmentService(
+      tenantId: String!
+      service: TenantService!
+      agentPrefix: String
+    ): RestartEnvironmentServiceResult!
+  }
+
+  type RestartEnvironmentServiceResult {
+    ok: Boolean!
+    """Name of the Deployment that was restarted."""
+    deploymentName: String!
+    message: String
   }
 
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }
@@ -302,6 +327,6 @@ export const schema: DocumentNode = gql`
   enum ArgoHealthStatus { HEALTHY, DEGRADED, PROGRESSING, MISSING, UNKNOWN }
   enum PodPhase { RUNNING, PENDING, SUCCEEDED, FAILED, UNKNOWN }
   enum EventType { NORMAL, WARNING }
-  enum TenantService { CONNECT, SWITCHBOARD }
+  enum TenantService { CONNECT, SWITCHBOARD, CLINT }
   enum MetricRange { ONE_MIN, FIVE_MIN, FIFTEEN_MIN, ONE_HOUR, SIX_HOURS, TWENTY_FOUR_HOURS }
 `;
