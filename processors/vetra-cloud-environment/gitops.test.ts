@@ -353,3 +353,52 @@ describe("generateValuesYaml — CLINT prebuilt agent image", () => {
     expect(yaml).not.toMatch(/clint:[\s\S]*?tag: "latest"/);
   });
 });
+
+describe("generateValuesYaml — connect runtime config", () => {
+  const connectService = {
+    type: "CONNECT" as const,
+    prefix: "connect",
+    enabled: true,
+    url: null,
+    status: "PROVISIONING" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  };
+
+  it("renders PH_CONNECT_CONFIG_JSON verbatim (full-file shape, no wrapping)", async () => {
+    // runtimeConfig already holds the powerhouse.config.json partial
+    // (connect.* + top-level packageRegistryUrl), so it's emitted as-is.
+    const runtimeConfig = {
+      connect: { app: { logLevel: "debug" } },
+      packageRegistryUrl: "https://registry.example/-/cdn/",
+    };
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [connectService], runtimeConfig }),
+      "doc-connect-config",
+    );
+
+    const json = JSON.stringify(runtimeConfig);
+    const expectedQuoted = `"${json.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    expect(yaml).toContain(`PH_CONNECT_CONFIG_JSON: ${expectedQuoted}`);
+  });
+
+  it("omits PH_CONNECT_CONFIG_JSON when null", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [connectService], runtimeConfig: null }),
+      "doc-connect-null",
+    );
+    expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
+  });
+
+  it("omits PH_CONNECT_CONFIG_JSON when an empty object", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [connectService], runtimeConfig: {} }),
+      "doc-connect-empty",
+    );
+    expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
+  });
+});

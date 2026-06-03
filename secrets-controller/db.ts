@@ -5,9 +5,6 @@ import { Pool } from "pg";
 import type { SecretsDB } from "../subgraphs/vetra-cloud-secrets/db/schema.js";
 import { createRepository as createSubgraphRepository } from "../subgraphs/vetra-cloud-secrets/repository.js";
 import type { SecretsRepository } from "../subgraphs/vetra-cloud-secrets/repository.js";
-import type { RuntimeConfigDB } from "../subgraphs/runtime-config/db/schema.js";
-import { createRepository as createRuntimeConfigSubgraphRepository } from "../subgraphs/runtime-config/repository.js";
-import type { RuntimeConfigRepository } from "../subgraphs/runtime-config/repository.js";
 
 /**
  * Resolve the Postgres schema name for the given reactor namespace.
@@ -54,35 +51,3 @@ export function createOwnedRepository(opts: {
   };
 }
 
-export interface OwnedRuntimeConfigRepository extends RuntimeConfigRepository {
-  readonly schema: string;
-  close(): Promise<void>;
-}
-
-/**
- * Build a `RuntimeConfigRepository` backed by a fresh Postgres pool the
- * controller fully owns. The schema is recomputed via `hashNamespace` so the
- * controller reads the same schema that the runtime-config subgraph wrote.
- *
- * Mirrors `createOwnedRepository` for the secrets schema — the two pools
- * are independent so connection lifecycle is self-contained per source.
- */
-export function createOwnedRuntimeConfigRepository(opts: {
-  databaseUrl: string;
-  namespace: string;
-}): OwnedRuntimeConfigRepository {
-  const schema = resolveSchema(opts.namespace);
-  const pool = new Pool({ connectionString: opts.databaseUrl });
-  const baseDb = new Kysely<RuntimeConfigDB>({
-    dialect: new PostgresDialect({ pool }),
-  });
-  const db = baseDb.withSchema(schema);
-  const repo = createRuntimeConfigSubgraphRepository(db);
-
-  return {
-    schema,
-    runtimeConfigForTenant: (tenantId) => repo.runtimeConfigForTenant(tenantId),
-    allTenantIds: () => repo.allTenantIds(),
-    close: () => baseDb.destroy(),
-  };
-}

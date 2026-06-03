@@ -1,24 +1,28 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { type SignalDispatch } from "document-model";
+import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
   AddPackageAction,
   RemovePackageAction,
   SetPackageVersionAction,
 } from "./actions.js";
-import type { VetraCloudEnvironmentState } from "../types.js";
 
 export interface VetraCloudEnvironmentPackagesOperations {
   addPackageOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: AddPackageAction,
     dispatch?: SignalDispatch,
   ) => void;
   removePackageOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: RemovePackageAction,
     dispatch?: SignalDispatch,
   ) => void;
   setPackageVersionOperation: (
-    state: VetraCloudEnvironmentState,
+    state: VetraCloudEnvironmentGlobalState,
     action: SetPackageVersionAction,
     dispatch?: SignalDispatch,
   ) => void;

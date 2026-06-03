@@ -11,8 +11,8 @@ const NOTIFY_CHANNEL = "vetra_secrets_changed";
  * stomp a typed write coming through a different subgraph. The denylist
  * is intentionally tiny — only add keys that have a dedicated owner.
  *
- * PH_CONNECT_CONFIG_JSON is owned by the runtime-config subgraph; use
- * setRuntimeConfig to write it.
+ * PH_CONNECT_CONFIG_JSON is owned by the vetra-cloud-environment document
+ * model; set it via the SET_RUNTIME_CONFIG operation.
  */
 const RESERVED_KEYS = new Set<string>(["PH_CONNECT_CONFIG_JSON"]);
 
@@ -24,7 +24,7 @@ function validateKey(key: string): void {
   }
   if (RESERVED_KEYS.has(key)) {
     throw new Error(
-      `Reserved key "${key}" cannot be set via setEnvVar; use the runtime-config subgraph (setRuntimeConfig) instead`,
+      `Reserved key "${key}" cannot be set via setEnvVar; set it through the vetra-cloud-environment document's SET_CONNECT_RUNTIME_CONFIG operation instead`,
     );
   }
 }

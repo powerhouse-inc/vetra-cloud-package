@@ -587,6 +587,23 @@ export async function generateValuesYaml(
     state.genericBaseDomain ?? "vetra.io",
   );
 
+  // Connect runtime config — the operator-editable powerhouse.config.json
+  // partial (connect.* block + top-level packageRegistryUrl), stored verbatim
+  // on state.runtimeConfig. Rendered as a single PH_CONNECT_CONFIG_JSON env var
+  // on the connect pod; the connect entrypoint deep-merges it (set-if-absent)
+  // into /dist/powerhouse.config.json. The stored object is already the
+  // full-file shape, so it is emitted as-is (no wrapping). Null / empty object
+  // → omit (fall back to bundled defaults).
+  const runtimeConfig = state.runtimeConfig;
+  const hasRuntimeConfig =
+    runtimeConfig != null &&
+    typeof runtimeConfig === "object" &&
+    !Array.isArray(runtimeConfig) &&
+    Object.keys(runtimeConfig as Record<string, unknown>).length > 0;
+  const connectConfigEnvLine = hasRuntimeConfig
+    ? `\n    PH_CONNECT_CONFIG_JSON: ${yamlQuote(JSON.stringify(runtimeConfig))}`
+    : "";
+
   // Optional preamble — only emitted when there's an active service
   // that needs the controller's wiring. Tenants without switchboard
   // and without clint stay quiet (their values.yaml omits the block,
@@ -749,7 +766,7 @@ connect:
     NODE_ENV: production
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${connectResources.nodeMaxOldSpaceMb}`)}
     PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || "https://registry.dev.vetra.io")}
-    PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
+    PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}${connectConfigEnvLine}
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}

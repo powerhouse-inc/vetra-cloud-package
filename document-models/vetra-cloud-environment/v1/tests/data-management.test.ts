@@ -13,11 +13,8 @@ import {
   setApexService,
   enableService,
   setAutoUpdateChannel,
-  SetOwnerInputSchema,
-  SetApexServiceInputSchema,
-  SetAutoUpdateChannelInputSchema,
+  setRuntimeConfig,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 const ALICE = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ALICE_LOWER = ALICE.toLowerCase();
@@ -490,7 +487,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setOwner operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetOwnerInputSchema());
+    const input = { address: ALICE };
 
     const updatedDocument = reducer(document, setOwner(input));
 
@@ -505,7 +502,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setApexService operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetApexServiceInputSchema());
+    const input = { type: null };
 
     const updatedDocument = reducer(document, setApexService(input));
 
@@ -522,7 +519,7 @@ describe("DataManagementOperations", () => {
 
   it("should handle setAutoUpdateChannel operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetAutoUpdateChannelInputSchema());
+    const input = { channel: null };
 
     const updatedDocument = reducer(document, setAutoUpdateChannel(input));
 
@@ -535,5 +532,153 @@ describe("DataManagementOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_RUNTIME_CONFIG", () => {
+    it("stores a valid runtime config (connect + packageRegistryUrl, owner-signed)", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      const config = {
+        connect: { app: { logLevel: "debug" } },
+        packageRegistryUrl: "https://registry.example/-/cdn/",
+      };
+      document = reducer(document, {
+        ...setRuntimeConfig({ config }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toEqual(config);
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+    });
+
+    it("rejects an invalid connect value (bad enum) without mutating state", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({
+          config: { connect: { app: { logLevel: "verbose" } } },
+        }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /invalid runtime config/i,
+      );
+    });
+
+    it("rejects a non-string packageRegistryUrl", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: { packageRegistryUrl: 123 } }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /invalid runtime config/i,
+      );
+    });
+
+    it("rejects unknown top-level keys (additionalProperties: false)", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      // `app` is a connect.* key, not a top-level key — must be nested under connect.
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: { app: { logLevel: "debug" } } }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /invalid runtime config/i,
+      );
+    });
+
+    it("clears overrides when given null", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: { connect: { app: { logLevel: "info" } } } }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.runtimeConfig).not.toBeNull();
+
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: null }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.runtimeConfig).toBeNull();
+    });
+
+    it("treats an empty object as a clear", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: {} }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+    });
+
+    it("rejects a non-owner signer", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: { connect: { app: { logLevel: "debug" } } } }),
+        ...userSigner(BOB),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /is not the owner/i,
+      );
+    });
+
+    it("moves a deployed env to CHANGES_PENDING (gated, flows through approve → deploy)", () => {
+      let document = utils.createDocument();
+      document = reducer(
+        document,
+        initialize({
+          genericSubdomain: "sub",
+          genericBaseDomain: "vetra.io",
+          defaultPackageRegistry: null,
+        }),
+      );
+      expect(document.state.global.status).toBe("CHANGES_APPROVED");
+
+      const config = { connect: { app: { logLevel: "warn" } } };
+      document = reducer(document, {
+        ...setRuntimeConfig({ config }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.status).toBe("CHANGES_PENDING");
+      expect(document.state.global.runtimeConfig).toEqual(config);
+    });
   });
 });

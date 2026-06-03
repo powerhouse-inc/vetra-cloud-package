@@ -1,33 +1,37 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { createAction } from "document-model";
 import {
+  DisableServiceInputSchema,
   EnableServiceInputSchema,
   SetServiceConfigInputSchema,
-  DisableServiceInputSchema,
-  ToggleServiceInputSchema,
-  UpdateServicePrefixInputSchema,
+  SetServiceSizeInputSchema,
   SetServiceStatusInputSchema,
   SetServiceVersionInputSchema,
-  SetServiceSizeInputSchema,
+  ToggleServiceInputSchema,
+  UpdateServicePrefixInputSchema,
 } from "../schema/zod.js";
 import type {
+  DisableServiceInput,
   EnableServiceInput,
   SetServiceConfigInput,
-  DisableServiceInput,
-  ToggleServiceInput,
-  UpdateServicePrefixInput,
+  SetServiceSizeInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
-  SetServiceSizeInput,
+  ToggleServiceInput,
+  UpdateServicePrefixInput,
 } from "../types.js";
 import type {
+  DisableServiceAction,
   EnableServiceAction,
   SetServiceConfigAction,
-  DisableServiceAction,
-  ToggleServiceAction,
-  UpdateServicePrefixAction,
+  SetServiceSizeAction,
   SetServiceStatusAction,
   SetServiceVersionAction,
-  SetServiceSizeAction,
+  ToggleServiceAction,
+  UpdateServicePrefixAction,
 } from "./actions.js";
 
 export const enableService = (input: EnableServiceInput) =>

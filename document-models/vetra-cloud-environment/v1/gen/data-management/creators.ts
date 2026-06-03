@@ -1,33 +1,40 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import { createAction } from "document-model";
 import {
-  SetOwnerInputSchema,
-  SetLabelInputSchema,
-  SetGenericSubdomainInputSchema,
+  SetApexServiceInputSchema,
+  SetAutoUpdateChannelInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
-  SetApexServiceInputSchema,
-  SetAutoUpdateChannelInputSchema,
+  SetGenericSubdomainInputSchema,
+  SetLabelInputSchema,
+  SetOwnerInputSchema,
+  SetRuntimeConfigInputSchema,
 } from "../schema/zod.js";
 import type {
-  SetOwnerInput,
-  SetLabelInput,
-  SetGenericSubdomainInput,
+  SetApexServiceInput,
+  SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
-  SetApexServiceInput,
-  SetAutoUpdateChannelInput,
+  SetGenericSubdomainInput,
+  SetLabelInput,
+  SetOwnerInput,
+  SetRuntimeConfigInput,
 } from "../types.js";
 import type {
-  SetOwnerAction,
-  SetLabelAction,
-  SetGenericSubdomainAction,
+  SetApexServiceAction,
+  SetAutoUpdateChannelAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
-  SetApexServiceAction,
-  SetAutoUpdateChannelAction,
+  SetGenericSubdomainAction,
+  SetLabelAction,
+  SetOwnerAction,
+  SetRuntimeConfigAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -101,5 +108,14 @@ export const setAutoUpdateChannel = (input: SetAutoUpdateChannelInput) =>
     { ...input },
     undefined,
     SetAutoUpdateChannelInputSchema,
+    "global",
+  );
+
+export const setRuntimeConfig = (input: SetRuntimeConfigInput) =>
+  createAction<SetRuntimeConfigAction>(
+    "SET_RUNTIME_CONFIG",
+    { ...input },
+    undefined,
+    SetRuntimeConfigInputSchema,
     "global",
   );

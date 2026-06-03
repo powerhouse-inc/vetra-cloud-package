@@ -1,7 +1,9 @@
 /**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
  * Factory methods for creating VetraCloudEnvironmentDocument instances
  */
-import type { PHAuthState, PHDocumentState, PHBaseState } from "document-model";
+import type { PHAuthState, PHBaseState, PHDocumentState } from "document-model";
 import { createBaseState, defaultBaseState } from "document-model";
 import type {
   VetraCloudEnvironmentDocument,
@@ -28,6 +30,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     status: "DRAFT",
     apexService: null,
     autoUpdateChannel: null,
+    runtimeConfig: null,
   };
 }
 
@@ -49,7 +52,7 @@ export function createGlobalState(
   return {
     ...defaultGlobalState(),
     ...(state || {}),
-  } as VetraCloudEnvironmentGlobalState;
+  };
 }
 
 export function createLocalState(

@@ -67,15 +67,3 @@ export function loadConfig(): ControllerConfig {
     managedLabelValue: "vetra-secrets-controller",
   };
 }
-
-/**
- * Hardcoded constants for the runtime-config fan-in source.
- *
- * Unlike the primary secrets-source (which exposes DB_NAMESPACE + NOTIFY_CHANNEL
- * as overridable env vars), the runtime-config source is 1:1 with the
- * `vetra-cloud-runtime-config` subgraph in this same package. Externalising
- * these as env vars would create the illusion of flexibility — both ends
- * are code, both ship together, so we keep them as code constants.
- */
-export const RUNTIME_CONFIG_DB_NAMESPACE = "vetra-cloud-runtime-config";
-export const RUNTIME_CONFIG_NOTIFY_CHANNEL = "vetra_runtime_config_changed";

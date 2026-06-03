@@ -31,6 +31,7 @@ type VetraCloudEnvironmentState {
   status: VetraCloudEnvironmentStatus!
   apexService: VetraCloudEnvironmentServiceType
   autoUpdateChannel: AutoUpdateChannel
+  runtimeConfig: Unknown
 }
 
 enum AutoUpdateChannel {
@@ -155,6 +156,10 @@ input SetApexServiceInput {
 
 input SetAutoUpdateChannelInput {
   channel: AutoUpdateChannel
+}
+
+input SetRuntimeConfigInput {
+  config: Unknown
 }
 
 # services

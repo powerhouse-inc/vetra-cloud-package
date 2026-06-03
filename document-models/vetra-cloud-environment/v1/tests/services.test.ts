@@ -15,7 +15,6 @@ import {
   setServiceSize,
   SetServiceSizeInputSchema,
 } from "document-models/vetra-cloud-environment/v1";
-import { generateMock } from "@powerhousedao/codegen";
 
 describe("ServicesOperations", () => {
   describe("ENABLE_SERVICE", () => {
@@ -386,7 +385,16 @@ describe("ServicesOperations", () => {
 
   it("should handle setServiceConfig operation", () => {
     const document = utils.createDocument();
-    const input = generateMock(SetServiceConfigInputSchema());
+    const input = {
+      prefix: "agent",
+      config: {
+        package: {
+          registry: "https://registry.dev.vetra.io/",
+          name: "my-agent",
+        },
+        env: [],
+      },
+    };
 
     const updatedDocument = reducer(document, setServiceConfig(input));
 
