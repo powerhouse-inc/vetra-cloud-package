@@ -115,7 +115,8 @@ export function createRestartResolver(deps?: RestartResolverDeps) {
  * `apps/deployments: get, list, patch` cluster-wide.
  */
 export async function createDefaultRestartK8sClient(): Promise<RestartK8sClient> {
-  const { KubeConfig, AppsV1Api } = await import("@kubernetes/client-node");
+  const { KubeConfig, AppsV1Api, PatchStrategy, setHeaderOptions } =
+    await import("@kubernetes/client-node");
   const kc = new KubeConfig();
   kc.loadFromCluster();
   const apps = kc.makeApiClient(AppsV1Api);
@@ -131,25 +132,30 @@ export async function createDefaultRestartK8sClient(): Promise<RestartK8sClient>
         .filter((n) => n.length > 0);
     },
     async restartDeployment(namespace, name, restartedAt) {
-      // Bare merge object, no explicit Content-Type — mirrors the working
-      // `patchNamespacedCustomObject` convention elsewhere in this subgraph
-      // (client-node defaults patch to a merge content type).
+      // Native-resource patch defaults to JSON Patch (an array of ops) in
+      // client-node, which rejects a merge object with "cannot unmarshal
+      // object into []jsonPatchOp". Force a strategic-merge patch via the
+      // options arg so the partial object is merged into the pod template —
+      // same mechanism as `kubectl rollout restart`.
       try {
-        await apps.patchNamespacedDeployment({
-          namespace,
-          name,
-          body: {
-            spec: {
-              template: {
-                metadata: {
-                  annotations: {
-                    "kubectl.kubernetes.io/restartedAt": restartedAt,
+        await apps.patchNamespacedDeployment(
+          {
+            namespace,
+            name,
+            body: {
+              spec: {
+                template: {
+                  metadata: {
+                    annotations: {
+                      "kubectl.kubernetes.io/restartedAt": restartedAt,
+                    },
                   },
                 },
               },
             },
           },
-        });
+          setHeaderOptions("Content-Type", PatchStrategy.StrategicMergePatch),
+        );
       } catch (err: unknown) {
         const code =
           (err as { code?: number; statusCode?: number })?.code ??
