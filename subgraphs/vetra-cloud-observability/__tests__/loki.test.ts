@@ -70,6 +70,29 @@ describe("LokiClient", () => {
       expect(url).not.toContain("app%3D");
     });
 
+    it("filters agent pods via a structured-metadata label-filter, not the stream selector", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => makeLokiResponse([]),
+      });
+
+      await client.logs("tenant-xyz", null, "ONE_HOUR", 50, [
+        "powerhouse-tenant-xyz-clint-foo",
+        "powerhouse-tenant-xyz-clint-bar",
+      ]);
+
+      const query = decodeURIComponent(
+        new URL(mockFetch.mock.calls[0][0]).searchParams.get("query") ?? "",
+      );
+      // `pod` is structured metadata — must be a `| pod=~` filter after the
+      // selector, never inside `{...}` (which silently matches nothing).
+      expect(query).toContain(
+        '| pod=~"powerhouse-tenant-xyz-clint-foo|powerhouse-tenant-xyz-clint-bar"',
+      );
+      expect(query).not.toMatch(/\{[^}]*pod=~/);
+      expect(query).toContain('{namespace="tenant-xyz"}');
+    });
+
     it("caps limit at 500", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

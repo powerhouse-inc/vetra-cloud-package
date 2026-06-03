@@ -99,7 +99,12 @@ export class LokiClient {
       const alternation = podNames
         .map((n) => n.replace(/[.+*?^$()[\]{}|\\]/g, "\\$&"))
         .join("|");
-      query = `{namespace="${tenantId}", pod=~"${alternation}"}`;
+      // `pod` is structured metadata in our Alloy/Loki pipeline, NOT an
+      // indexed stream label, so it cannot go inside the `{...}` stream
+      // selector (Loki silently matches nothing). Filter it after the
+      // selector with a label-filter expression. `container` (used by the
+      // service path above) IS a real stream label, so that path is fine.
+      query = `{namespace="${tenantId}"} | pod=~"${alternation}"`;
     }
     return this.queryRange(query, since, limit);
   }
