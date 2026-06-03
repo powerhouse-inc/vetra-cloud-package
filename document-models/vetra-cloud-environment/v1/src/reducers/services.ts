@@ -40,7 +40,17 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
                 name: clintConfig.package.name,
                 version: clintConfig.package.version ?? null,
               },
-              env: clintConfig.env ?? [],
+              // Normalize each env entry. Secret VALUES are intentionally
+              // never persisted in the document: when isSecret=true, the
+              // reducer drops the value field so the document only carries
+              // a reference to the env name. The actual encrypted value
+              // lives in tenant_secrets (written separately via the
+              // vetra-cloud-secrets `setSecret` mutation).
+              env: (clintConfig.env ?? []).map((e) => ({
+                name: e.name,
+                value: e.isSecret === true ? null : (e.value ?? null),
+                isSecret: e.isSecret ?? null,
+              })),
               serviceCommand: clintConfig.serviceCommand ?? null,
               selectedRessource: clintConfig.selectedRessource ?? null,
             }
@@ -162,7 +172,12 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           name: config.package.name,
           version: config.package.version ?? null,
         },
-        env: config.env ?? [],
+        // Same secret-value drop as enableService — see comment there.
+        env: (config.env ?? []).map((e) => ({
+          name: e.name,
+          value: e.isSecret === true ? null : (e.value ?? null),
+          isSecret: e.isSecret ?? null,
+        })),
         serviceCommand: config.serviceCommand ?? null,
         selectedRessource: config.selectedRessource ?? null,
       };

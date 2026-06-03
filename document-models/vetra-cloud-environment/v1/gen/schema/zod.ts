@@ -489,8 +489,9 @@ export function VetraCloudServiceEnvSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("VetraCloudServiceEnv").optional(),
+    isSecret: z.boolean().nullish(),
     name: z.string(),
-    value: z.string(),
+    value: z.string().nullish(),
   });
 }
 
@@ -498,8 +499,9 @@ export function VetraCloudServiceEnvConfigInputSchema(): z.ZodObject<
   Properties<VetraCloudServiceEnvConfigInput>
 > {
   return z.object({
+    isSecret: z.boolean().nullish(),
     name: z.string(),
-    value: z.string(),
+    value: z.string().nullish(),
   });
 }
 
@@ -507,8 +509,9 @@ export function VetraCloudServiceEnvInputSchema(): z.ZodObject<
   Properties<VetraCloudServiceEnvInput>
 > {
   return z.object({
+    isSecret: z.boolean().nullish(),
     name: z.string(),
-    value: z.string(),
+    value: z.string().nullish(),
   });
 }
 

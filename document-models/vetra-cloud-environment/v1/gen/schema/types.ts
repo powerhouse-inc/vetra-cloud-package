@@ -308,18 +308,21 @@ export type VetraCloudServiceClintInput = {
 };
 
 export type VetraCloudServiceEnv = {
+  isSecret: Maybe<Scalars["Boolean"]["output"]>;
   name: Scalars["String"]["output"];
-  value: Scalars["String"]["output"];
+  value: Maybe<Scalars["String"]["output"]>;
 };
 
 export type VetraCloudServiceEnvConfigInput = {
+  isSecret?: InputMaybe<Scalars["Boolean"]["input"]>;
   name: Scalars["String"]["input"];
-  value: Scalars["String"]["input"];
+  value?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export type VetraCloudServiceEnvInput = {
+  isSecret?: InputMaybe<Scalars["Boolean"]["input"]>;
   name: Scalars["String"]["input"];
-  value: Scalars["String"]["input"];
+  value?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export type VetraCustomDomain = {

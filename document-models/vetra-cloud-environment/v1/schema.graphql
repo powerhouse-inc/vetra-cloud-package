@@ -72,7 +72,8 @@ type VetraCloudServiceClint {
 
 type VetraCloudServiceEnv {
   name: String!
-  value: String!
+  value: String
+  isSecret: Boolean
 }
 
 enum VetraCloudRessourceSize {
@@ -186,7 +187,8 @@ input VetraCloudPackageInput {
 
 input VetraCloudServiceEnvInput {
   name: String!
-  value: String!
+  value: String
+  isSecret: Boolean
 }
 
 input SetServiceConfigInput {
@@ -209,7 +211,8 @@ input VetraCloudPackageConfigInput {
 
 input VetraCloudServiceEnvConfigInput {
   name: String!
-  value: String!
+  value: String
+  isSecret: Boolean
 }
 
 input DisableServiceInput {

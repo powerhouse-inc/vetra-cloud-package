@@ -14,6 +14,10 @@ import {
   createDefaultDumpsK8sClient,
   type DumpsK8sClient,
 } from "./dumps/k8s-client.js";
+import {
+  createDefaultRestartK8sClient,
+  type RestartResolverDeps,
+} from "./restart.js";
 import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
@@ -66,12 +70,26 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     const dumpDeps = await this.buildDumpDeps(db, envDb);
 
+    // Restart feature: build the in-cluster Deployments client. If it can't
+    // be constructed (e.g. running outside a cluster), the resolver throws
+    // RESTART_NOT_CONFIGURED rather than failing schema validation.
+    let restartDeps: RestartResolverDeps | undefined;
+    try {
+      restartDeps = { envDb, k8s: await createDefaultRestartK8sClient() };
+    } catch (err) {
+      console.warn(
+        "[observability] restart: kubernetes client init failed — restart disabled:",
+        err,
+      );
+    }
+
     this.resolvers = createResolvers(db, {
       prometheusUrl,
       lokiUrl,
       envDb,
       dispatch,
       dumpDeps: dumpDeps ?? undefined,
+      restartDeps,
     });
 
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {

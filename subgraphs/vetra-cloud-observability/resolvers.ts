@@ -6,6 +6,10 @@ import {
   createDumpResolvers,
   type DumpResolverDeps,
 } from "./dumps/resolvers.js";
+import {
+  createRestartResolver,
+  type RestartResolverDeps,
+} from "./restart.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -31,6 +35,12 @@ export interface ResolverConfig {
    * confusing schema violation.
    */
   dumpDeps?: DumpResolverDeps;
+  /**
+   * Optional dependencies for the service rollout-restart feature. Omitted
+   * by the host when the in-cluster Kubernetes client can't be constructed;
+   * `restartEnvironmentService` then throws RESTART_NOT_CONFIGURED.
+   */
+  restartDeps?: RestartResolverDeps;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -93,6 +103,10 @@ export function createResolvers(
           },
         },
       };
+
+  // Always registered; the resolver throws RESTART_NOT_CONFIGURED when the
+  // host couldn't build the in-cluster k8s client (restartDeps omitted).
+  const restartResolvers = createRestartResolver(config.restartDeps);
 
   return {
     Query: {
@@ -685,6 +699,8 @@ export function createResolvers(
       },
       requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump,
       cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
+      restartEnvironmentService:
+        restartResolvers.Mutation.restartEnvironmentService,
     },
 
     ReleaseHistoryEntry: {},
