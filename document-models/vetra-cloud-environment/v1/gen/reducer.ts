@@ -31,6 +31,7 @@ import {
   SetLabelInputSchema,
   SetOwnerInputSchema,
   SetPackageVersionInputSchema,
+  SetRuntimeConfigInputSchema,
   SetServiceConfigInputSchema,
   SetServiceSizeInputSchema,
   SetServiceStatusInputSchema,
@@ -138,6 +139,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetAutoUpdateChannelInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setAutoUpdateChannelOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_RUNTIME_CONFIG": {
+      SetRuntimeConfigInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setRuntimeConfigOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

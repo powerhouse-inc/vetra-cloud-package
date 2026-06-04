@@ -12,6 +12,7 @@ import {
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
   SetOwnerInputSchema,
+  SetRuntimeConfigInputSchema,
 } from "../schema/zod.js";
 import type {
   SetApexServiceInput,
@@ -22,6 +23,7 @@ import type {
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
+  SetRuntimeConfigInput,
 } from "../types.js";
 import type {
   SetApexServiceAction,
@@ -32,6 +34,7 @@ import type {
   SetGenericSubdomainAction,
   SetLabelAction,
   SetOwnerAction,
+  SetRuntimeConfigAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -105,5 +108,14 @@ export const setAutoUpdateChannel = (input: SetAutoUpdateChannelInput) =>
     { ...input },
     undefined,
     SetAutoUpdateChannelInputSchema,
+    "global",
+  );
+
+export const setRuntimeConfig = (input: SetRuntimeConfigInput) =>
+  createAction<SetRuntimeConfigAction>(
+    "SET_RUNTIME_CONFIG",
+    { ...input },
+    undefined,
+    SetRuntimeConfigInputSchema,
     "global",
   );

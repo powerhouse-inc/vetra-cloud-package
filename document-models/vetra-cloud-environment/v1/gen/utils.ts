@@ -40,6 +40,7 @@ export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   status: "DRAFT",
   apexService: null,
   autoUpdateChannel: null,
+  runtimeConfig: null,
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

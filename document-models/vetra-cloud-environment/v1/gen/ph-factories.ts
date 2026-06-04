@@ -30,6 +30,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     status: "DRAFT",
     apexService: null,
     autoUpdateChannel: null,
+    runtimeConfig: null,
   };
 }
 

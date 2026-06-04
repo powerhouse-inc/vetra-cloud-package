@@ -12,6 +12,7 @@ import type {
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
+  SetRuntimeConfigInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {
@@ -46,6 +47,10 @@ export type SetAutoUpdateChannelAction = Action & {
   type: "SET_AUTO_UPDATE_CHANNEL";
   input: SetAutoUpdateChannelInput;
 };
+export type SetRuntimeConfigAction = Action & {
+  type: "SET_RUNTIME_CONFIG";
+  input: SetRuntimeConfigInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -55,4 +60,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetDefaultPackageRegistryAction
   | SetDnsRecordsAction
   | SetApexServiceAction
-  | SetAutoUpdateChannelAction;
+  | SetAutoUpdateChannelAction
+  | SetRuntimeConfigAction;

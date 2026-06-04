@@ -13,6 +13,7 @@ import type {
   SetGenericSubdomainAction,
   SetLabelAction,
   SetOwnerAction,
+  SetRuntimeConfigAction,
 } from "./actions.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
@@ -54,6 +55,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setAutoUpdateChannelOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetAutoUpdateChannelAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setRuntimeConfigOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetRuntimeConfigAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

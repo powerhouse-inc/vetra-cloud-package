@@ -1,7 +1,8 @@
 export type ErrorCode =
   | "NotOwnerError"
   | "SelfClaimRequiredError"
-  | "ServiceNotEnabledError";
+  | "ServiceNotEnabledError"
+  | "InvalidRuntimeConfigError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -28,6 +29,13 @@ export class ServiceNotEnabledError extends Error implements ReducerError {
   }
 }
 
+export class InvalidRuntimeConfigError extends Error implements ReducerError {
+  errorCode = "InvalidRuntimeConfigError" as ErrorCode;
+  constructor(message = "InvalidRuntimeConfigError") {
+    super(message);
+  }
+}
+
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
   SetLabel: { NotOwnerError },
@@ -37,4 +45,5 @@ export const errors = {
   SetDnsRecords: { NotOwnerError },
   SetApexService: { NotOwnerError, ServiceNotEnabledError },
   SetAutoUpdateChannel: { NotOwnerError },
+  SetRuntimeConfig: { NotOwnerError, InvalidRuntimeConfigError },
 };

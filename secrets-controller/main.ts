@@ -60,30 +60,36 @@ async function main(): Promise<void> {
 
   let startupReconcileDone = false;
 
+  const onTenantNotify = (source: string) => (tenantId: string) => {
+    if (!tenantId) {
+      console.warn(
+        `[main] received empty NOTIFY payload on ${source}; skipping`,
+      );
+      return;
+    }
+    void reconciler.reconcileTenant(tenantId).catch((err) => {
+      console.error(
+        `[main] reconcileTenant(${tenantId}) failed (source=${source}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
+  const onReconnect = (source: string) => () => {
+    void reconciler.reconcileAll().catch((err) => {
+      console.error(
+        `[main] post-reconnect reconcileAll failed (source=${source}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
   const listener = new PostgresListener({
     databaseUrl: config.databaseUrl,
     channel: config.notifyChannel,
-    onNotify: (tenantId) => {
-      if (!tenantId) {
-        console.warn("[main] received empty NOTIFY payload; skipping");
-        return;
-      }
-      void reconciler.reconcileTenant(tenantId).catch((err) => {
-        console.error(
-          `[main] reconcileTenant(${tenantId}) failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    },
+    onNotify: onTenantNotify("secrets"),
     // Notifications between disconnect and reconnect are silently dropped
     // by Postgres. After every reconnect, run a full sweep so we converge
     // on whatever the DB looks like now.
-    onReconnect: () => {
-      void reconciler.reconcileAll().catch((err) => {
-        console.error(
-          `[main] post-reconnect reconcileAll failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    },
+    onReconnect: onReconnect("secrets"),
   });
 
   const healthServer = startHealthServer(config.healthPort, {

@@ -27,6 +27,7 @@ import type {
   SetLabelInput,
   SetOwnerInput,
   SetPackageVersionInput,
+  SetRuntimeConfigInput,
   SetServiceConfigInput,
   SetServiceSizeInput,
   SetServiceStatusInput,
@@ -299,6 +300,14 @@ export function SetPackageVersionInputSchema(): z.ZodObject<
   });
 }
 
+export function SetRuntimeConfigInputSchema(): z.ZodObject<
+  Properties<SetRuntimeConfigInput>
+> {
+  return z.object({
+    config: z.unknown().nullish(),
+  });
+}
+
 export function SetServiceConfigInputSchema(): z.ZodObject<
   Properties<SetServiceConfigInput>
 > {
@@ -404,6 +413,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
       })
       .nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())),
+    runtimeConfig: z.unknown().nullish(),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,
   });

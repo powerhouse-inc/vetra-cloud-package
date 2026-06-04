@@ -87,7 +87,7 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
   }
 
   async function reconcileAll(): Promise<void> {
-    const tenantIds = await repo.allTenantIds();
+    const tenantIds = (await repo.allTenantIds()).sort();
     console.info(`[reconciler] full reconcile: ${tenantIds.length} tenant(s)`);
     const errors: Array<{ tenantId: string; error: string }> = [];
     for (const tenantId of tenantIds) {

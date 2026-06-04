@@ -28,9 +28,22 @@ export class InvalidSecretsKeyError extends Error {
   }
 }
 
+/**
+ * Keys reserved for another write path. PH_CONNECT_CONFIG_JSON is owned by the
+ * vetra-cloud-environment document model (SET_RUNTIME_CONFIG operation) and is
+ * rendered onto the connect pod's env via the gitops processor — it must not be
+ * set as a raw env var here (via the resolvers or the processor's env routing).
+ */
+const RESERVED_KEYS = new Set<string>(["PH_CONNECT_CONFIG_JSON"]);
+
 function validateKey(key: string): void {
   if (!KEY_PATTERN.test(key)) {
     throw new InvalidSecretsKeyError(key);
+  }
+  if (RESERVED_KEYS.has(key)) {
+    throw new Error(
+      `Reserved key "${key}" cannot be set via setEnvVar; set it through the vetra-cloud-environment document's SET_RUNTIME_CONFIG operation instead`,
+    );
   }
 }
 
