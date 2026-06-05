@@ -175,7 +175,7 @@ export type SetPackageVersionInput = {
 };
 
 export type SetRuntimeConfigInput = {
-  config?: InputMaybe<Scalars["Unknown"]["input"]>;
+  config?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export type SetServiceConfigInput = {
@@ -243,7 +243,7 @@ export type VetraCloudEnvironmentState = {
   label: Maybe<Scalars["String"]["output"]>;
   owner: Maybe<Scalars["EthereumAddress"]["output"]>;
   packages: Array<VetraCloudPackage>;
-  runtimeConfig: Maybe<Scalars["Unknown"]["output"]>;
+  runtimeConfig: Maybe<Scalars["String"]["output"]>;
   services: Array<VetraCloudEnvironmentService>;
   status: VetraCloudEnvironmentStatus;
 };

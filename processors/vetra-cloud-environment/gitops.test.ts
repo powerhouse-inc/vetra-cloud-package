@@ -366,21 +366,20 @@ describe("generateValuesYaml — connect runtime config", () => {
     selectedRessource: null,
   };
 
-  it("renders PH_CONNECT_CONFIG_JSON verbatim (full-file shape, no wrapping)", async () => {
-    // runtimeConfig already holds the powerhouse.config.json partial
-    // (connect.* + top-level packageRegistryUrl), so it's emitted as-is.
-    const runtimeConfig = {
+  it("renders PH_CONNECT_CONFIG_JSON verbatim (the stored JSON string, no wrapping)", async () => {
+    // runtimeConfig is the JSON-stringified powerhouse.config.json partial
+    // (connect.* + top-level packageRegistryUrl); it's emitted as-is.
+    const runtimeConfig = JSON.stringify({
       connect: { app: { logLevel: "debug" } },
       packageRegistryUrl: "https://registry.example/-/cdn/",
-    };
+    });
     const yaml = await generateValuesYaml(
       dbStub,
       envState({ services: [connectService], runtimeConfig }),
       "doc-connect-config",
     );
 
-    const json = JSON.stringify(runtimeConfig);
-    const expectedQuoted = `"${json.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    const expectedQuoted = `"${runtimeConfig.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
     expect(yaml).toContain(`PH_CONNECT_CONFIG_JSON: ${expectedQuoted}`);
   });
 
@@ -393,10 +392,10 @@ describe("generateValuesYaml — connect runtime config", () => {
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
   });
 
-  it("omits PH_CONNECT_CONFIG_JSON when an empty object", async () => {
+  it("omits PH_CONNECT_CONFIG_JSON when an empty-object string", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
-      envState({ services: [connectService], runtimeConfig: {} }),
+      envState({ services: [connectService], runtimeConfig: "{}" }),
       "doc-connect-empty",
     );
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");

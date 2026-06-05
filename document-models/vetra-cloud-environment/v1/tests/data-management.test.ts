@@ -535,6 +535,8 @@ describe("DataManagementOperations", () => {
   });
 
   describe("SET_RUNTIME_CONFIG", () => {
+    // runtimeConfig is stored as a JSON String (federation-composable scalar);
+    // the input `config` is the JSON-stringified { connect, packageRegistryUrl }.
     it("stores a valid runtime config (connect + packageRegistryUrl, owner-signed)", () => {
       let document = utils.createDocument();
       document = reducer(document, {
@@ -546,11 +548,13 @@ describe("DataManagementOperations", () => {
         packageRegistryUrl: "https://registry.example/-/cdn/",
       };
       document = reducer(document, {
-        ...setRuntimeConfig({ config }),
+        ...setRuntimeConfig({ config: JSON.stringify(config) }),
         ...userSigner(ALICE),
       });
 
-      expect(document.state.global.runtimeConfig).toEqual(config);
+      expect(JSON.parse(document.state.global.runtimeConfig as string)).toEqual(
+        config,
+      );
       expect(document.operations.global.at(-1)?.error).toBeUndefined();
     });
 
@@ -562,7 +566,7 @@ describe("DataManagementOperations", () => {
       });
       document = reducer(document, {
         ...setRuntimeConfig({
-          config: { connect: { app: { logLevel: "verbose" } } },
+          config: JSON.stringify({ connect: { app: { logLevel: "verbose" } } }),
         }),
         ...userSigner(ALICE),
       });
@@ -573,6 +577,21 @@ describe("DataManagementOperations", () => {
       );
     });
 
+    it("rejects a non-JSON string", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: "not valid json" }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(/valid json/i);
+    });
+
     it("rejects a non-string packageRegistryUrl", () => {
       let document = utils.createDocument();
       document = reducer(document, {
@@ -580,7 +599,7 @@ describe("DataManagementOperations", () => {
         ...userSigner(ALICE),
       });
       document = reducer(document, {
-        ...setRuntimeConfig({ config: { packageRegistryUrl: 123 } }),
+        ...setRuntimeConfig({ config: JSON.stringify({ packageRegistryUrl: 123 }) }),
         ...userSigner(ALICE),
       });
 
@@ -598,7 +617,7 @@ describe("DataManagementOperations", () => {
       });
       // `app` is a connect.* key, not a top-level key — must be nested under connect.
       document = reducer(document, {
-        ...setRuntimeConfig({ config: { app: { logLevel: "debug" } } }),
+        ...setRuntimeConfig({ config: JSON.stringify({ app: { logLevel: "debug" } }) }),
         ...userSigner(ALICE),
       });
 
@@ -615,7 +634,9 @@ describe("DataManagementOperations", () => {
         ...userSigner(ALICE),
       });
       document = reducer(document, {
-        ...setRuntimeConfig({ config: { connect: { app: { logLevel: "info" } } } }),
+        ...setRuntimeConfig({
+          config: JSON.stringify({ connect: { app: { logLevel: "info" } } }),
+        }),
         ...userSigner(ALICE),
       });
       expect(document.state.global.runtimeConfig).not.toBeNull();
@@ -627,14 +648,14 @@ describe("DataManagementOperations", () => {
       expect(document.state.global.runtimeConfig).toBeNull();
     });
 
-    it("treats an empty object as a clear", () => {
+    it("treats an empty-object string as a clear", () => {
       let document = utils.createDocument();
       document = reducer(document, {
         ...setOwner({ address: ALICE }),
         ...userSigner(ALICE),
       });
       document = reducer(document, {
-        ...setRuntimeConfig({ config: {} }),
+        ...setRuntimeConfig({ config: "{}" }),
         ...userSigner(ALICE),
       });
 
@@ -649,7 +670,9 @@ describe("DataManagementOperations", () => {
         ...userSigner(ALICE),
       });
       document = reducer(document, {
-        ...setRuntimeConfig({ config: { connect: { app: { logLevel: "debug" } } } }),
+        ...setRuntimeConfig({
+          config: JSON.stringify({ connect: { app: { logLevel: "debug" } } }),
+        }),
         ...userSigner(BOB),
       });
 
@@ -673,12 +696,14 @@ describe("DataManagementOperations", () => {
 
       const config = { connect: { app: { logLevel: "warn" } } };
       document = reducer(document, {
-        ...setRuntimeConfig({ config }),
+        ...setRuntimeConfig({ config: JSON.stringify(config) }),
         ...userSigner(ALICE),
       });
 
       expect(document.state.global.status).toBe("CHANGES_PENDING");
-      expect(document.state.global.runtimeConfig).toEqual(config);
+      expect(JSON.parse(document.state.global.runtimeConfig as string)).toEqual(
+        config,
+      );
     });
   });
 });

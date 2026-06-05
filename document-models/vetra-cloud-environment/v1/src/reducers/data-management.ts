@@ -96,16 +96,14 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
     },
     setRuntimeConfigOperation(state, action) {
       assertOwner(state, action);
-      const config = action.input.config ?? null;
+      // Stored as a JSON String (not Unknown) so the field composes in the
+      // federated supergraph. `config` is the JSON-stringified operator-editable
+      // powerhouse.config.json partial ({ connect, packageRegistryUrl }).
+      const raw = action.input.config ?? null;
 
-      // null or empty object means "clear all overrides, fall back to the
+      // null / empty string / "{}" means "clear all overrides, fall back to the
       // bundled defaults applied at the Connect entrypoint".
-      const isEmpty =
-        config === null ||
-        (typeof config === "object" &&
-          !Array.isArray(config) &&
-          Object.keys(config as Record<string, unknown>).length === 0);
-      if (isEmpty) {
+      if (raw === null || raw.trim() === "" || raw.trim() === "{}") {
         state.runtimeConfig = null;
         // Clearing overrides changes the rendered values.yaml, so a deployed
         // env must go through approve → deploy again.
@@ -113,9 +111,16 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
         return;
       }
 
-      // config is the operator-editable powerhouse.config.json partial:
-      // the connect.* block plus the top-level packageRegistryUrl.
-      const result = validateRuntimeConfig(config);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new InvalidRuntimeConfigError(
+          "Runtime config must be a valid JSON string",
+        );
+      }
+
+      const result = validateRuntimeConfig(parsed);
       if (!result.ok) {
         throw new InvalidRuntimeConfigError(
           `Invalid runtime config: ${result.issues
@@ -128,7 +133,8 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       // into tenants/<name>/powerhouse-values.yaml (connect.env.PH_CONNECT_CONFIG_JSON)
       // by the processor on CHANGES_APPROVED, then deployed via ArgoCD. So a
       // change moves a deployed env to CHANGES_PENDING, same as service/env edits.
-      state.runtimeConfig = config;
+      // Store the JSON string verbatim (the parsed value was validated above).
+      state.runtimeConfig = raw;
       markPendingIfDeployed(state);
     },
   };

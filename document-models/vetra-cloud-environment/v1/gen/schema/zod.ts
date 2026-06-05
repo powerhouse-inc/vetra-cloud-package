@@ -304,7 +304,7 @@ export function SetRuntimeConfigInputSchema(): z.ZodObject<
   Properties<SetRuntimeConfigInput>
 > {
   return z.object({
-    config: z.unknown().nullish(),
+    config: z.string().nullish(),
   });
 }
 
@@ -413,7 +413,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
       })
       .nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())),
-    runtimeConfig: z.unknown().nullish(),
+    runtimeConfig: z.string().nullish(),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,
   });
