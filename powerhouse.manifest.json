@@ -46,6 +46,10 @@
 			"documentTypes": [
 				"powerhouse/vetra-cloud-environment"
 			]
+		},
+		{
+			"id": "vetra-access-codes",
+			"name": "Vetra Access Codes"
 		}
 	],
 	"config": []
