@@ -655,30 +655,60 @@ export async function generateValuesYaml(
     secretsService,
   );
 
-  // Connect runtime config — the operator-editable powerhouse.config.json
-  // partial (connect.* block + top-level packageRegistryUrl), stored on
-  // state.runtimeConfig as a JSON string (the field is a String scalar so it
-  // composes in the federated supergraph). Emitted verbatim as the single
+  // Connect runtime config + installed packages — composed into the single
   // PH_CONNECT_CONFIG_JSON env var; the connect entrypoint deep-merges it
-  // (set-if-absent) into /dist/powerhouse.config.json. Null / empty / "{}" /
-  // corrupt → omit (fall back to bundled defaults).
+  // (operator-wins) into /dist/powerhouse.config.json.
+  //
+  // - `state.runtimeConfig` (JSON string — String scalar so it composes in
+  //   the federated supergraph) carries the operator-edited connect.* block
+  //   and optional packageRegistryUrl.
+  // - `state.packages` (the first-class ADD_PACKAGE list) is the source of
+  //   truth for the top-level `packages` array — the SPA loads these from
+  //   the registry at boot. It wins over any `packages` key a stored
+  //   runtimeConfig might carry. When packages are emitted and the operator
+  //   didn't set a packageRegistryUrl, the env's default registry is
+  //   included so the SPA fetches them from the right place.
+  //
+  // Legacy PH_REGISTRY_PACKAGES / PH_REGISTRY_URL stay emitted alongside:
+  // Switchboard still consumes them, as do Connect images < 6.1.0-dev.16.
+  // Connect images 6.1.0-dev.16 .. 6.2.0-dev.9 read neither channel for
+  // packages (their set-if-absent entrypoint keeps the baked `packages: []`);
+  // the array lands on images >= 6.2.0-dev.10 (operator-wins entrypoint).
+  //
+  // Nothing to emit (no overrides, no packages) or corrupt stored JSON →
+  // omit (fall back to bundled defaults).
   const runtimeConfig = state.runtimeConfig;
-  let connectConfigEnvLine = "";
+  let connectConfigPayload: Record<string, unknown> = {};
   if (typeof runtimeConfig === "string" && runtimeConfig.trim() !== "") {
     try {
       const parsed: unknown = JSON.parse(runtimeConfig);
-      const hasOverrides =
+      if (
         parsed != null &&
         typeof parsed === "object" &&
-        !Array.isArray(parsed) &&
-        Object.keys(parsed as Record<string, unknown>).length > 0;
-      if (hasOverrides) {
-        connectConfigEnvLine = `\n    PH_CONNECT_CONFIG_JSON: ${yamlQuote(runtimeConfig)}`;
+        !Array.isArray(parsed)
+      ) {
+        connectConfigPayload = { ...(parsed as Record<string, unknown>) };
       }
     } catch {
-      // Corrupt stored JSON — skip rather than emit invalid config.
+      // Corrupt stored JSON — skip the overrides rather than emit invalid config.
     }
   }
+  delete connectConfigPayload.packages; // state.packages is the source of truth
+  const connectPackages = (state.packages ?? []).map((p) => ({
+    packageName: p.name,
+    ...(p.version ? { version: p.version } : {}),
+  }));
+  if (connectPackages.length > 0) {
+    connectConfigPayload.packages = connectPackages;
+    if (typeof connectConfigPayload.packageRegistryUrl !== "string") {
+      connectConfigPayload.packageRegistryUrl =
+        state.defaultPackageRegistry || "https://registry.dev.vetra.io";
+    }
+  }
+  const connectConfigEnvLine =
+    Object.keys(connectConfigPayload).length > 0
+      ? `\n    PH_CONNECT_CONFIG_JSON: ${yamlQuote(JSON.stringify(connectConfigPayload))}`
+      : "";
 
   // Optional preamble — only emitted when there's an active service
   // that needs the controller's wiring. Tenants without switchboard

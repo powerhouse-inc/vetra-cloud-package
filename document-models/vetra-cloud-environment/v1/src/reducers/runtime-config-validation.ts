@@ -31,19 +31,7 @@ const CONNECT_SUBSCHEMA = {
       additionalProperties: false,
       properties: {
         appName: { type: "string" },
-        homeBackground: {
-          oneOf: [
-            { type: "null" },
-            {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                avif: { type: "string" },
-                png: { type: "string" },
-              },
-            },
-          ],
-        },
+        homeBackground: { type: ["string", "null"] },
       },
     },
     app: {
@@ -63,6 +51,7 @@ const CONNECT_SUBSCHEMA = {
       additionalProperties: false,
       properties: {
         externalEnabled: { type: "boolean", default: true },
+        liveReload: { type: "boolean", default: false },
       },
     },
     drives: {

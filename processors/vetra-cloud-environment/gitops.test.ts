@@ -366,9 +366,17 @@ describe("generateValuesYaml — connect runtime config", () => {
     selectedRessource: null,
   };
 
-  it("renders PH_CONNECT_CONFIG_JSON verbatim (the stored JSON string, no wrapping)", async () => {
-    // runtimeConfig is the JSON-stringified powerhouse.config.json partial
-    // (connect.* + top-level packageRegistryUrl); it's emitted as-is.
+  // Pull the rendered PH_CONNECT_CONFIG_JSON env value back out of the YAML
+  // and parse it, so assertions work on the payload object instead of on
+  // escaped-string internals.
+  function readConnectConfigPayload(yaml: string): Record<string, unknown> {
+    const match = /PH_CONNECT_CONFIG_JSON: "((?:[^"\\]|\\.)*)"/.exec(yaml);
+    expect(match).not.toBeNull();
+    const unquoted = match![1].replace(/\\(["\\])/g, "$1");
+    return JSON.parse(unquoted) as Record<string, unknown>;
+  }
+
+  it("renders the stored runtime config as the PH_CONNECT_CONFIG_JSON payload", async () => {
     const runtimeConfig = JSON.stringify({
       connect: { app: { logLevel: "debug" } },
       packageRegistryUrl: "https://registry.example/-/cdn/",
@@ -379,11 +387,116 @@ describe("generateValuesYaml — connect runtime config", () => {
       "doc-connect-config",
     );
 
-    const expectedQuoted = `"${runtimeConfig.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    expect(yaml).toContain(`PH_CONNECT_CONFIG_JSON: ${expectedQuoted}`);
+    expect(readConnectConfigPayload(yaml)).toEqual({
+      connect: { app: { logLevel: "debug" } },
+      packageRegistryUrl: "https://registry.example/-/cdn/",
+    });
   });
 
-  it("omits PH_CONNECT_CONFIG_JSON when null", async () => {
+  it("composes state.packages into the payload's top-level packages array", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [connectService],
+        runtimeConfig: null,
+        packages: [
+          {
+            name: "@memo/builder-profile",
+            version: "1.1.0-dev.24",
+            registry: "https://registry.dev.vetra.io",
+          },
+        ],
+      }),
+      "doc-connect-pkgs",
+    );
+
+    expect(readConnectConfigPayload(yaml)).toEqual({
+      packages: [
+        { packageName: "@memo/builder-profile", version: "1.1.0-dev.24" },
+      ],
+      packageRegistryUrl: "https://registry.dev.vetra.io",
+    });
+  });
+
+  it("combines runtime-config overrides and installed packages in one payload", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [connectService],
+        runtimeConfig: JSON.stringify({
+          connect: { branding: { appName: "Powerhouse Connect runtime" } },
+        }),
+        packages: [
+          {
+            name: "@memo/builder-profile",
+            version: "1.1.0-dev.24",
+            registry: "https://registry.dev.vetra.io",
+          },
+        ],
+      }),
+      "doc-connect-combined",
+    );
+
+    expect(readConnectConfigPayload(yaml)).toEqual({
+      connect: { branding: { appName: "Powerhouse Connect runtime" } },
+      packages: [
+        { packageName: "@memo/builder-profile", version: "1.1.0-dev.24" },
+      ],
+      packageRegistryUrl: "https://registry.dev.vetra.io",
+    });
+  });
+
+  it("state.packages wins over a packages key smuggled into runtimeConfig", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [connectService],
+        runtimeConfig: JSON.stringify({
+          packages: [{ packageName: "@evil/stale", version: "0.0.1" }],
+        }),
+        packages: [
+          {
+            name: "@memo/builder-profile",
+            version: "1.1.0-dev.24",
+            registry: "https://registry.dev.vetra.io",
+          },
+        ],
+      }),
+      "doc-connect-precedence",
+    );
+
+    const payload = readConnectConfigPayload(yaml);
+    expect(payload.packages).toEqual([
+      { packageName: "@memo/builder-profile", version: "1.1.0-dev.24" },
+    ]);
+  });
+
+  it("omits the version field for packages without one and keeps an operator packageRegistryUrl", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [connectService],
+        runtimeConfig: JSON.stringify({
+          packageRegistryUrl: "https://registry.example/-/cdn/",
+        }),
+        packages: [
+          {
+            name: "@memo/builder-profile",
+            version: null,
+            registry: "https://registry.dev.vetra.io",
+          },
+        ],
+      }),
+      "doc-connect-noversion",
+    );
+
+    expect(readConnectConfigPayload(yaml)).toEqual({
+      packageRegistryUrl: "https://registry.example/-/cdn/",
+      packages: [{ packageName: "@memo/builder-profile" }],
+    });
+  });
+
+  it("omits PH_CONNECT_CONFIG_JSON when null and no packages", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
       envState({ services: [connectService], runtimeConfig: null }),
@@ -392,7 +505,7 @@ describe("generateValuesYaml — connect runtime config", () => {
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
   });
 
-  it("omits PH_CONNECT_CONFIG_JSON when an empty-object string", async () => {
+  it("omits PH_CONNECT_CONFIG_JSON when an empty-object string and no packages", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
       envState({ services: [connectService], runtimeConfig: "{}" }),
