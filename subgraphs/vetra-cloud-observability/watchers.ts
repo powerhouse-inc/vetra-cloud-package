@@ -8,6 +8,7 @@ import type {
   EnvironmentEvents,
   ObservabilityDB,
 } from "./db/schema.js";
+import { withTracingSuppressed } from "./trace-suppress.js";
 
 // ---------------------------------------------------------------------------
 // Utility
@@ -180,9 +181,14 @@ function watchWithReconnect(
         queryParams,
         (phase: string, obj: unknown) => {
           consecutiveFailures = 0;
-          onEvent(phase, obj).catch((err: unknown) => {
-            console.warn(`[watcher:${label}] event handler error`, err);
-          });
+          // Watch-event upserts are background poller work — suppress their
+          // spans so they don't each become a root transaction. See
+          // trace-suppress.ts.
+          withTracingSuppressed(() => onEvent(phase, obj)).catch(
+            (err: unknown) => {
+              console.warn(`[watcher:${label}] event handler error`, err);
+            },
+          );
         },
         (err: unknown) => {
           if (!active) return;
@@ -527,13 +533,18 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
 
   const watcherAborts: Array<{ abort(): void }> = [];
 
-  // Reconciliation interval (60 seconds)
+  // Reconciliation interval (60 seconds). Suppress tracing for the whole
+  // reconcile — its pg queries + k8s API calls are fixed-cadence poller
+  // work, not request-driven, and scale O(tenant-count). See
+  // trace-suppress.ts.
   const intervalId = setInterval(() => {
-    void reconcile(db, envDb, k8sToken, k8sApiUrl);
+    void withTracingSuppressed(() =>
+      reconcile(db, envDb, k8sToken, k8sApiUrl),
+    );
   }, 60_000);
 
   // Run an initial reconcile
-  void reconcile(db, envDb, k8sToken, k8sApiUrl);
+  void withTracingSuppressed(() => reconcile(db, envDb, k8sToken, k8sApiUrl));
 
   // Start K8s watches via dynamic import so tests don't require a live cluster
   (async () => {
