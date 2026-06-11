@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { ILogger } from "document-model";
+import { withTracingSuppressed } from "./trace-suppress.js";
 
 export type ClintServiceTuple = {
   documentId: string;
@@ -119,8 +120,13 @@ export class ClintPullWorker {
   }
 
   async tickOnce(): Promise<void> {
-    const tuples = await this.listClintServices();
-    await Promise.all(tuples.map((t) => this.pullOne(t)));
+    // Suppress tracing for the whole tick — these polling DB queries +
+    // agent HTTP fetches would otherwise each become a root transaction
+    // (volume scales O(tenant-count)). See trace-suppress.ts.
+    await withTracingSuppressed(async () => {
+      const tuples = await this.listClintServices();
+      await Promise.all(tuples.map((t) => this.pullOne(t)));
+    });
   }
 
   private async listClintServices(): Promise<ClintServiceTuple[]> {
