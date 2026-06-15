@@ -155,6 +155,15 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           `${createdBy ? ` (createdBy=${createdBy})` : ""}` +
           `${ownerNormalized ? ` (owner=${ownerNormalized})` : ""}`,
       );
+      // Capture the prior owner so we can detect an ownership transfer (e.g. a
+      // warm-pool claim) that doesn't move status to CHANGES_APPROVED but still
+      // needs a gitops re-render (owner-gated config like the network lock).
+      const existingRow = await this.relationalDb
+        .selectFrom("environments")
+        .select("owner")
+        .where("id", "=", documentId)
+        .executeTakeFirst();
+      const prevOwner = (existingRow?.owner as string | null | undefined) ?? null;
       await this.relationalDb
         .insertInto("environments")
         .values({ id: documentId, ...row, createdBy })
@@ -179,6 +188,20 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           }
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
+        }
+      } else if (prevOwner !== ownerNormalized && tenantId) {
+        // Ownership transferred (e.g. a warm-pool claim) without a status
+        // change. Re-render gitops so owner-gated config updates — notably
+        // dropping the default-deny NetworkPolicy on a freshly-claimed studio.
+        // No status transition / MARK_CHANGES_PUSHED here.
+        logger.info(
+          `Owner changed for "${label}" (${prevOwner ?? "none"} → ${ownerNormalized ?? "none"}); re-syncing gitops`,
+        );
+        try {
+          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
+          logger.info(`Owner-change gitops re-sync completed for "${label}"`);
+        } catch (error) {
+          logger.error(`Owner-change gitops re-sync failed for "${label}": ${String(error)}`);
         }
       } else {
         logger.info(`Skipping gitops sync for "${label}" (status: ${status})`);
