@@ -16,11 +16,11 @@ describe("VetraStudioPool resolvers", () => {
     expect(claim).not.toHaveBeenCalled();
   });
 
-  it("passes the caller address (lowercased) to claim and returns its result", async () => {
+  it("passes the caller's did:pkh to claim and returns its result", async () => {
     const claim = vi.fn(async () => ({ documentId: "d", subdomain: "s", tenantId: "t" }));
     const r = createResolvers({ claim } as never);
     const res = await r.VetraStudioPoolMutations.claimStudioEnvironment({}, {}, ctx("0xAbc"));
-    expect(claim).toHaveBeenCalledWith("0xabc");
+    expect(claim).toHaveBeenCalledWith("did:pkh:eip155:1:0xabc");
     expect(res).toEqual({ documentId: "d", subdomain: "s", tenantId: "t" });
   });
 
