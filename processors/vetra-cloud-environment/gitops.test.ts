@@ -229,6 +229,41 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  const clintService = {
+    type: "CLINT" as const,
+    prefix: "agent",
+    enabled: true,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    selectedRessource: "VETRA_AGENT_M" as const,
+    config: {
+      package: { registry: "https://r", name: "p", version: "1.0.0" },
+      env: [],
+      serviceCommand: null,
+      selectedRessource: null,
+    },
+  };
+
+  it("locks an unclaimed (owner-null) CLINT agent but keeps ingress enabled", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: null, services: [clintService] }),
+      "doc-locked",
+    );
+    expect(yaml).toMatch(/ingress:[\s\S]*?enabled: true/);
+    expect(yaml).toMatch(/locked: true/);
+  });
+
+  it("unlocks a claimed (owner-set) CLINT agent", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: "0xowner", services: [clintService] }),
+      "doc-unlocked",
+    );
+    expect(yaml).toMatch(/locked: false/);
+  });
+
   it("preserves user-provided env vars alongside NODE_OPTIONS for CLINT", async () => {
     const yaml = await generateValuesYaml(
       dbStub,

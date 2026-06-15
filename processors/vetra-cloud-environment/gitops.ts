@@ -540,6 +540,12 @@ async function generateClintBlock(
     lines.push(`      ingress:`);
     lines.push(`        enabled: true`);
     lines.push(`        host: ${yamlQuote(`${svc.prefix}.${subdomain}.${baseDomain}`)}`);
+    // Lock unclaimed (owner-null) envs off the internet while keeping the
+    // ingress/TLS warm: the chart renders a default-deny-ingress NetworkPolicy
+    // for `locked` agents (Traefik→pod blocked → 502, cert still issues via the
+    // separate ACME solver pod). Claim sets the owner → re-sync drops the lock
+    // → reachable instantly. Non-pool envs are always owned, so never locked.
+    lines.push(`      locked: ${!state.owner}`);
   }
   return lines.join("\n");
 }
