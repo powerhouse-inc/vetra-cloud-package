@@ -1,4 +1,4 @@
-import { type Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
@@ -12,6 +12,12 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("invite_codes_pkey", ["code"])
     .ifNotExists()
     .execute();
+
+  // Added after the initial table shipped; ADD COLUMN IF NOT EXISTS keeps the
+  // boot-time runner idempotent on databases created before this column.
+  await sql`ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS anthropic_key_ciphertext text`.execute(
+    db,
+  );
 
   await db.schema
     .createTable("invite_redemptions")
