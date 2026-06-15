@@ -192,6 +192,19 @@ function yamlQuote(value: string): string {
   return `"${escaped}"`;
 }
 
+/**
+ * Auth env entries for a switchboard, derived from the env owner. Auth is
+ * always on; the owner (lowercased) is the sole admin. Null/empty owner →
+ * auth on with no admin until the first claim (next deploy adds ADMINS).
+ */
+function switchboardAuthEnv(
+  owner: string | null | undefined,
+): { name: string; value: string }[] {
+  const entries = [{ name: "AUTH_ENABLED", value: "true" }];
+  if (owner) entries.push({ name: "ADMINS", value: owner.toLowerCase() });
+  return entries;
+}
+
 // ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
@@ -484,6 +497,13 @@ async function generateClintBlock(
     lines.push(
       `        - { name: "NODE_OPTIONS", value: "--max-old-space-size=${resources.nodeMaxOldSpaceMb}" }`,
     );
+    // Always-on Renown auth for the embedded switchboard; env owner is admin.
+    // Emitted inline (not via the secrets service) so they stay deterministic.
+    for (const e of switchboardAuthEnv(state.owner)) {
+      lines.push(
+        `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+      );
+    }
     // Route each declared env entry. Anything classified as a secret goes
     // through the encrypted tenant_secrets table (via the secrets service);
     // it is OMITTED from this inline block — the chart's `envFrom: secretRef:
@@ -710,6 +730,11 @@ export async function generateValuesYaml(
       ? `\n    PH_CONNECT_CONFIG_JSON: ${yamlQuote(JSON.stringify(connectConfigPayload))}`
       : "";
 
+  // Always-on Renown auth for the standalone switchboard; env owner is admin.
+  const switchboardAuthEnvLines = switchboardAuthEnv(state.owner)
+    .map((e) => `\n    ${e.name}: ${yamlQuote(e.value)}`)
+    .join("");
+
   // Optional preamble — only emitted when there's an active service
   // that needs the controller's wiring. Tenants without switchboard
   // and without clint stay quiet (their values.yaml omits the block,
@@ -799,7 +824,7 @@ switchboard:
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     OPENBAO_ADDR: https://openbao.vetra.io
     PROMETHEUS_URL: http://prometheus-server.monitoring.svc
-    LOKI_URL: http://loki.monitoring.svc:3100
+    LOKI_URL: http://loki.monitoring.svc:3100${switchboardAuthEnvLines}
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
