@@ -10,26 +10,24 @@ export interface ClaimedRow {
 
 export interface ClaimDb {
   /**
-   * Atomically flip exactly one AVAILABLE current-version row to CLAIMED.
-   * `FOR UPDATE SKIP LOCKED` guarantees two concurrent claims pick different
-   * rows. Returns the assigned row, or null when none is available.
+   * Atomically flip exactly one AVAILABLE, READY, current-version row to
+   * CLAIMED. `FOR UPDATE SKIP LOCKED` guarantees two concurrent claims pick
+   * different rows; the `status='READY'` guard ensures a recycled/terminating
+   * "zombie" (poolState lingering on a dead env) can never be handed out.
+   * Returns the assigned row, or null when none is available.
    */
   claimOneAvailable(
     addr: string,
     version: string,
     nowIso: string,
   ): Promise<ClaimedRow | null>;
-  /** Mark a (partially-mutated) env FAILED so it never re-enters the pool. */
-  markFailed(id: string): Promise<void>;
 }
 
 export function makeClaimDb(db: Kysely<DB>): ClaimDb {
   return {
     async claimOneAvailable(addr, version, nowIso) {
-      // Atomic: lock + flip exactly one AVAILABLE current-version row to CLAIMED.
-      // Uses the query builder (NOT raw sql) so the reactor's namespaced Kysely
-      // schema-qualifies `environments` — raw sql runs in the default search_path
-      // where the table doesn't exist.
+      // Query builder (NOT raw sql) so the reactor's namespaced Kysely
+      // schema-qualifies `environments`.
       const row = (await db
         .updateTable("environments")
         .set({ poolState: "CLAIMED", claimedBy: addr, claimedAt: nowIso })
@@ -40,6 +38,7 @@ export function makeClaimDb(db: Kysely<DB>): ClaimDb {
             .selectFrom("environments")
             .select("id")
             .where("poolState", "=", "AVAILABLE")
+            .where("status", "=", "READY")
             .where("pinnedVersion", "=", version)
             .orderBy("id")
             .limit(1)
@@ -49,14 +48,6 @@ export function makeClaimDb(db: Kysely<DB>): ClaimDb {
         .returning(["id", "tenantId", "subdomain", "poolState"])
         .executeTakeFirst()) as ClaimedRow | undefined;
       return row ?? null;
-    },
-
-    async markFailed(id) {
-      await db
-        .updateTable("environments")
-        .set({ poolState: "FAILED" })
-        .where("id", "=", id)
-        .execute();
     },
   };
 }
@@ -79,7 +70,8 @@ export interface KeeperDb {
   listPoolRows(): Promise<PoolRowDb[]>;
   seedWarming(input: SeedWarmingInput): Promise<void>;
   promoteReadyToAvailable(): Promise<void>;
-  markFailed(id: string): Promise<void>;
+  /** Clear poolState (→ null) for the given ids — removes them from the pool. */
+  clearPoolState(ids: string[]): Promise<void>;
 }
 
 /** Keeper-side helpers over the shared `environments` table. */
@@ -94,7 +86,9 @@ export function makeKeeperDb(db: Kysely<DB>): KeeperDb {
     },
 
     async seedWarming(input) {
-      // Disjoint from the processor's own upsert (which sets name/services/etc).
+      // New docs insert cleanly. The onConflict guard only (re)sets poolState
+      // when it is currently NULL (e.g. re-adopting a cleared env) — it never
+      // clobbers a WARMING/AVAILABLE/CLAIMED row.
       await db
         .insertInto("environments")
         .values({
@@ -105,10 +99,13 @@ export function makeKeeperDb(db: Kysely<DB>): KeeperDb {
           pinnedVersion: input.pinnedVersion,
         })
         .onConflict((oc) =>
-          oc.column("id").doUpdateSet({
-            poolState: "WARMING",
-            pinnedVersion: input.pinnedVersion,
-          }),
+          oc
+            .column("id")
+            .doUpdateSet({
+              poolState: "WARMING",
+              pinnedVersion: input.pinnedVersion,
+            })
+            .where("environments.poolState", "is", null),
         )
         .execute();
     },
@@ -122,11 +119,12 @@ export function makeKeeperDb(db: Kysely<DB>): KeeperDb {
         .execute();
     },
 
-    async markFailed(id) {
+    async clearPoolState(ids) {
+      if (ids.length === 0) return;
       await db
         .updateTable("environments")
-        .set({ poolState: "FAILED" })
-        .where("id", "=", id)
+        .set({ poolState: null })
+        .where("id", "in", ids)
         .execute();
     },
   };

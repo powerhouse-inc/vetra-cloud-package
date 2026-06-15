@@ -7,7 +7,7 @@ function deps(rows: any[]) {
       listPoolRows: vi.fn(async () => rows),
       seedWarming: vi.fn(async () => {}),
       promoteReadyToAvailable: vi.fn(async () => {}),
-      markFailed: vi.fn(async () => {}),
+      clearPoolState: vi.fn(async () => {}),
     },
     createEnv: vi.fn(async () => ({
       documentId: "new",
@@ -45,6 +45,27 @@ describe("PoolKeeper.reconcileOnce", () => {
     ]);
     await new PoolKeeper(d as never).reconcileOnce();
     expect(d.terminate).toHaveBeenCalledWith("old");
+  });
+
+  it("clears zombie (dead-status) pool rows", async () => {
+    const d = deps([
+      { id: "z", poolState: "AVAILABLE", pinnedVersion: "0.0.1-dev.19", status: "TERMINATING" },
+    ]);
+    await new PoolKeeper(d as never).reconcileOnce();
+    expect(d.db.clearPoolState).toHaveBeenCalledWith(["z"]);
+    // zombie not counted → still needs to create the full pool
+    expect(d.createEnv).toHaveBeenCalledTimes(2);
+  });
+
+  it("terminates the orphan doc when seeding fails after creation", async () => {
+    const d = deps([]);
+    d.db.seedWarming = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    await new PoolKeeper(d as never).reconcileOnce();
+    // createEnv returns documentId "new" twice (size 2); each seed fails → terminate
+    expect(d.terminate).toHaveBeenCalledWith("new");
+    expect(d.logger.warn).toHaveBeenCalled();
   });
 
   it("does not crash when create throws", async () => {
