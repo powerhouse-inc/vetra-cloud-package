@@ -1,4 +1,7 @@
-import { sql, type Kysely } from "kysely";
+import { type Kysely } from "kysely";
+
+/** Postgres SQLSTATE for "column already exists". */
+const DUPLICATE_COLUMN = "42701";
 
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
@@ -13,11 +16,20 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists()
     .execute();
 
-  // Added after the initial table shipped; ADD COLUMN IF NOT EXISTS keeps the
-  // boot-time runner idempotent on databases created before this column.
-  await sql`ALTER TABLE invite_codes ADD COLUMN IF NOT EXISTS anthropic_key_ciphertext text`.execute(
-    db,
-  );
+  // Added after the initial table shipped. Use the schema-aware builder (not a
+  // raw `sql` template) so the statement targets this subgraph's namespaced
+  // schema — a raw ALTER runs against the connection search_path and fails with
+  // 42P01 "relation invite_codes does not exist". addColumn has no
+  // IF NOT EXISTS, so swallow the duplicate-column error to stay idempotent
+  // across the boot-time runner's repeated invocations.
+  try {
+    await db.schema
+      .alterTable("invite_codes")
+      .addColumn("anthropic_key_ciphertext", "text")
+      .execute();
+  } catch (error) {
+    if ((error as { code?: string })?.code !== DUPLICATE_COLUMN) throw error;
+  }
 
   await db.schema
     .createTable("invite_redemptions")
