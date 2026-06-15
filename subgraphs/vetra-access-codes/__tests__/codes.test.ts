@@ -43,6 +43,15 @@ describe("migrations", () => {
       await db.selectFrom("invite_redemptions").selectAll().execute(),
     ).toEqual([]);
   });
+
+  it("is idempotent — re-running up() on an existing schema is a no-op", async () => {
+    // The boot-time runner calls up() on every start; the anthropic_key_ciphertext
+    // column add must not throw "column already exists" the second time.
+    await expect(up(db)).resolves.not.toThrow();
+    await createCode(db, { code: "after-rerun" });
+    const view = await listCodes(db);
+    expect(view.find((c) => c.code === "after-rerun")?.hasAnthropicKey).toBe(false);
+  });
 });
 
 describe("createCode", () => {
