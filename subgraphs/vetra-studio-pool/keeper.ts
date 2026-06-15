@@ -60,7 +60,20 @@ export class PoolKeeper {
       version: this.d.cfg.version,
     });
 
-    // 3. Recycle stale-version unclaimed envs.
+    // 3. Clear zombies: pool rows whose env is dead (terminated/recycled/failed)
+    //    so they stop counting and can't be claimed.
+    if (plan.toClear.length > 0) {
+      try {
+        await this.d.db.clearPoolState(plan.toClear);
+        this.d.logger.info(
+          `[studio-pool] cleared ${plan.toClear.length} dead pool row(s)`,
+        );
+      } catch (err) {
+        this.d.logger.warn(`[studio-pool] clear failed: ${String(err)}`);
+      }
+    }
+
+    // 4. Recycle stale-version unclaimed envs (terminate; next tick clears them).
     for (const id of plan.toRecycle) {
       try {
         await this.d.terminate(id);
@@ -70,10 +83,18 @@ export class PoolKeeper {
       }
     }
 
-    // 4. Create the deficit; seed each new doc as WARMING.
+    // 5. Create the deficit; seed each new doc as WARMING. If the doc was
+    //    created but seeding fails, terminate the orphan so it can't leak a
+    //    namespace/pod the pool no longer tracks.
     for (let i = 0; i < plan.toCreate; i++) {
+      let created: CreatedStudioEnv;
       try {
-        const created = await this.d.createEnv();
+        created = await this.d.createEnv();
+      } catch (err) {
+        this.d.logger.warn(`[studio-pool] create failed: ${String(err)}`);
+        continue;
+      }
+      try {
         await this.d.db.seedWarming({
           id: created.documentId,
           subdomain: created.subdomain,
@@ -84,7 +105,10 @@ export class PoolKeeper {
           `[studio-pool] warming ${created.documentId} (${created.tenantId})`,
         );
       } catch (err) {
-        this.d.logger.warn(`[studio-pool] create failed: ${String(err)}`);
+        this.d.logger.warn(
+          `[studio-pool] seed failed for ${created.documentId}; terminating orphan: ${String(err)}`,
+        );
+        await this.d.terminate(created.documentId).catch(() => {});
       }
     }
   }

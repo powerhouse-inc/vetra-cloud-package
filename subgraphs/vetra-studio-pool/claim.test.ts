@@ -16,13 +16,14 @@ function deps(over: Partial<any> = {}) {
         subdomain: "warm-newt-aaaa1111",
         poolState: "CLAIMED",
       })),
-      markFailed: vi.fn(async () => {}),
     },
     getKeyForDid: vi.fn(async () => "sk-ant-real"),
     setOwner: vi.fn(async () => {}),
     setSecret: vi.fn(async () => {}),
+    terminate: vi.fn(async () => {}),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
+    sleep: vi.fn(async () => {}), // no real delay in tests
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     ...over,
   };
@@ -68,12 +69,35 @@ describe("claimWarmEnvironment", () => {
     });
   });
 
-  it("marks FAILED and returns null when injection throws after assign", async () => {
+  it("retries a transient setSecret failure and still succeeds", async () => {
+    const d = deps();
+    let calls = 0;
+    d.setSecret = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new Error("transient");
+      // first call (ANTHROPIC_API_KEY) fails once then succeeds; rest succeed
+    });
+    const res = await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    expect(res).not.toBeNull();
+    expect(d.terminate).not.toHaveBeenCalled();
+  });
+
+  it("TERMINATES the half-claimed env and returns null when injection keeps failing", async () => {
     const d = deps();
     d.setSecret = vi.fn(async () => {
       throw new Error("inject boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
-    expect(d.claimDb.markFailed).toHaveBeenCalledWith("doc-1");
+    expect(d.terminate).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("TERMINATES and returns null when setOwner fails", async () => {
+    const d = deps();
+    d.setOwner = vi.fn(async () => {
+      throw new Error("owner boom");
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.terminate).toHaveBeenCalledWith("doc-1");
+    expect(d.setSecret).not.toHaveBeenCalled();
   });
 });

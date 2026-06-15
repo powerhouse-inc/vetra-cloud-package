@@ -193,12 +193,16 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         // Ownership transferred (e.g. a warm-pool claim) without a status
         // change. Re-render gitops so owner-gated config updates — notably
         // dropping the default-deny NetworkPolicy on a freshly-claimed studio.
-        // No status transition / MARK_CHANGES_PUSHED here.
+        // No status transition / MARK_CHANGES_PUSHED here. Use the freshest doc
+        // state so `locked` is rendered from the just-set owner (avoids a
+        // transient locked:true → locked:false double-commit).
         logger.info(
           `Owner changed for "${label}" (${prevOwner ?? "none"} → ${ownerNormalized ?? "none"}); re-syncing gitops`,
         );
         try {
-          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
+          const freshDoc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
+          const syncState = freshDoc?.state?.global ?? state;
+          await syncEnvironment(this.relationalDb, syncState, documentId, this.secretsService);
           logger.info(`Owner-change gitops re-sync completed for "${label}"`);
         } catch (error) {
           logger.error(`Owner-change gitops re-sync failed for "${label}": ${String(error)}`);
