@@ -50,6 +50,10 @@
 		{
 			"id": "vetra-access-codes",
 			"name": "Vetra Access Codes"
+		},
+		{
+			"id": "vetra-studio-pool",
+			"name": "Vetra Studio Pool"
 		}
 	],
 	"config": []

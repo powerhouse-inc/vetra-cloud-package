@@ -31,19 +31,20 @@ function deps(over: Partial<any> = {}) {
 describe("claimWarmEnvironment", () => {
   it("returns null when the caller has no attached key (without consuming an env)", async () => {
     const d = deps({ getKeyForDid: vi.fn(async () => null) });
-    expect(await claimWarmEnvironment(d as never, "0xCaller")).toBeNull();
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.claimDb.claimOneAvailable).not.toHaveBeenCalled();
   });
 
   it("returns null when no env is available", async () => {
     const d = deps();
     d.claimDb.claimOneAvailable = vi.fn(async () => null);
-    expect(await claimWarmEnvironment(d as never, "0xCaller")).toBeNull();
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
   });
 
-  it("assigns, sets owner (lowercased), injects 3 secrets, returns ids", async () => {
+  it("looks up the key by full DID; sets owner + claims by derived address", async () => {
     const d = deps();
-    const res = await claimWarmEnvironment(d as never, "0xCALLER");
+    const res = await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER");
+    expect(d.getKeyForDid).toHaveBeenCalledWith("did:pkh:eip155:1:0xCALLER");
     expect(d.claimDb.claimOneAvailable).toHaveBeenCalledWith(
       "0xcaller",
       "0.0.1-dev.19",
@@ -72,7 +73,7 @@ describe("claimWarmEnvironment", () => {
     d.setSecret = vi.fn(async () => {
       throw new Error("inject boom");
     });
-    expect(await claimWarmEnvironment(d as never, "0xCaller")).toBeNull();
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.claimDb.markFailed).toHaveBeenCalledWith("doc-1");
   });
 });
