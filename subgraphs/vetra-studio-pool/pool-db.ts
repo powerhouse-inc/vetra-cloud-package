@@ -1,4 +1,4 @@
-import { sql, type Kysely } from "kysely";
+import type { Kysely } from "kysely";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
 
 export interface ClaimedRow {
@@ -26,19 +26,29 @@ export interface ClaimDb {
 export function makeClaimDb(db: Kysely<DB>): ClaimDb {
   return {
     async claimOneAvailable(addr, version, nowIso) {
-      const rows = await sql<ClaimedRow>`
-        UPDATE environments
-        SET "poolState" = 'CLAIMED', "claimedBy" = ${addr}, "claimedAt" = ${nowIso}
-        WHERE id = (
-          SELECT id FROM environments
-          WHERE "poolState" = 'AVAILABLE' AND "pinnedVersion" = ${version}
-          ORDER BY id
-          LIMIT 1
-          FOR UPDATE SKIP LOCKED
+      // Atomic: lock + flip exactly one AVAILABLE current-version row to CLAIMED.
+      // Uses the query builder (NOT raw sql) so the reactor's namespaced Kysely
+      // schema-qualifies `environments` — raw sql runs in the default search_path
+      // where the table doesn't exist.
+      const row = (await db
+        .updateTable("environments")
+        .set({ poolState: "CLAIMED", claimedBy: addr, claimedAt: nowIso })
+        .where(
+          "id",
+          "=",
+          db
+            .selectFrom("environments")
+            .select("id")
+            .where("poolState", "=", "AVAILABLE")
+            .where("pinnedVersion", "=", version)
+            .orderBy("id")
+            .limit(1)
+            .forUpdate()
+            .skipLocked(),
         )
-        RETURNING id, "tenantId", subdomain, "poolState"
-      `.execute(db);
-      return rows.rows[0] ?? null;
+        .returning(["id", "tenantId", "subdomain", "poolState"])
+        .executeTakeFirst()) as ClaimedRow | undefined;
+      return row ?? null;
     },
 
     async markFailed(id) {
