@@ -85,6 +85,38 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Column already exists — expected for fresh installs
   }
 
+  // Warm-pool columns (added 2026-06-15) — see
+  // docs/superpowers/specs/2026-06-15-warm-pool-vetra-studio-design.md.
+  // Written by the studio-pool-keeper service and the claim subgraph.
+  for (const column of [
+    "poolState",
+    "claimedBy",
+    "claimedAt",
+    "pinnedVersion",
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("environments")
+        .addColumn(column, "varchar(255)")
+        .execute();
+    } catch {
+      // Column already exists — expected for fresh installs
+    }
+  }
+
+  // Fast claim selection: index only the rows the atomic claim query scans.
+  try {
+    await db.schema
+      .createIndex("environments_pool_available_idx")
+      .on("environments")
+      .column("poolState")
+      .where("poolState", "=", "AVAILABLE")
+      .ifNotExists()
+      .execute();
+  } catch {
+    // Index already exists or partial-index syntax unsupported on this backend
+  }
+
   // CLINT agents now expose endpoints via pull (see
   // docs/superpowers/specs/2026-05-01-clint-endpoints-pull-design.md).
   // Drop the legacy token table if a previous version created it.
