@@ -12,6 +12,8 @@ export type AccessStatus = {
   code?: string;
   label?: string;
   accessExpires?: string;
+  /** True when the caller has an active redemption whose code carries a key. */
+  hasAttachedKey: boolean;
 };
 
 export type InviteCodeView = {
@@ -22,6 +24,8 @@ export type InviteCodeView = {
   maxUses: number | null;
   createdAt: string;
   redemptions: number;
+  /** Whether a Claude key is attached. The key value itself is never exposed. */
+  hasAnthropicKey: boolean;
 };
 
 export type CreateCodeInput = {
@@ -29,6 +33,8 @@ export type CreateCodeInput = {
   label?: string | null;
   expiresAt?: string | null;
   maxUses?: number | null;
+  /** Pre-encrypted Anthropic key ciphertext, or null/undefined for none. */
+  anthropicKeyCiphertext?: string | null;
 };
 
 export type RedemptionView = {
@@ -158,13 +164,55 @@ export async function getAccessStatus(
     .orderBy("r.redeemed_at", "desc")
     .limit(1)
     .executeTakeFirst();
-  if (!row) return { allowed: false };
+  if (!row) return { allowed: false, hasAttachedKey: false };
   return {
     allowed: true,
     code: row.code,
     label: row.label ?? undefined,
     accessExpires: row.access_expires ?? undefined,
+    hasAttachedKey: await hasAttachedKeyForDid(db, did),
   };
+}
+
+/**
+ * True when the DID has at least one active (non-expired) redemption whose
+ * code carries an attached key. Mirrors the selection in
+ * getRedeemedKeyCiphertext so the UI's `hasAttachedKey` and the actual
+ * injection agree.
+ */
+export async function hasAttachedKeyForDid(
+  db: Kysely<VetraAccessCodesDB>,
+  did: string,
+): Promise<boolean> {
+  return (await getRedeemedKeyCiphertext(db, did)) !== null;
+}
+
+/**
+ * The encrypted attached key for the DID's most-recent active redemption whose
+ * code carries one, or null if there is none. "Active" means the redemption's
+ * access window has not expired.
+ */
+export async function getRedeemedKeyCiphertext(
+  db: Kysely<VetraAccessCodesDB>,
+  did: string,
+): Promise<string | null> {
+  const now = nowIso();
+  const row = await db
+    .selectFrom("invite_redemptions as r")
+    .innerJoin("invite_codes as c", "c.code", "r.code")
+    .select(["c.anthropic_key_ciphertext as ciphertext"])
+    .where("r.user_did", "=", did)
+    .where("c.anthropic_key_ciphertext", "is not", null)
+    .where((eb) =>
+      eb.or([
+        eb("r.access_expires", "is", null),
+        eb("r.access_expires", ">", now),
+      ]),
+    )
+    .orderBy("r.redeemed_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  return row?.ciphertext ?? null;
 }
 
 async function codeView(
@@ -181,6 +229,7 @@ async function codeView(
       "c.expires_at as expires_at",
       "c.max_uses as max_uses",
       "c.created_at as created_at",
+      "c.anthropic_key_ciphertext as anthropic_key_ciphertext",
       eb.fn.count<string>("r.user_did").as("redemptions"),
     ])
     .where("c.code", "=", code)
@@ -191,6 +240,7 @@ async function codeView(
       "c.expires_at",
       "c.max_uses",
       "c.created_at",
+      "c.anthropic_key_ciphertext",
     ])
     .executeTakeFirst();
   if (!row) return null;
@@ -202,6 +252,7 @@ async function codeView(
     maxUses: row.max_uses,
     createdAt: row.created_at,
     redemptions: Number(row.redemptions),
+    hasAnthropicKey: row.anthropic_key_ciphertext != null,
   };
 }
 
@@ -219,6 +270,7 @@ export async function listCodes(
       "c.expires_at as expires_at",
       "c.max_uses as max_uses",
       "c.created_at as created_at",
+      "c.anthropic_key_ciphertext as anthropic_key_ciphertext",
       eb.fn.count<string>("r.user_did").as("redemptions"),
     ])
     .groupBy([
@@ -228,6 +280,7 @@ export async function listCodes(
       "c.expires_at",
       "c.max_uses",
       "c.created_at",
+      "c.anthropic_key_ciphertext",
     ])
     .orderBy("c.created_at", "desc")
     .execute();
@@ -239,6 +292,7 @@ export async function listCodes(
     maxUses: row.max_uses,
     createdAt: row.created_at,
     redemptions: Number(row.redemptions),
+    hasAnthropicKey: row.anthropic_key_ciphertext != null,
   }));
 }
 
@@ -348,12 +402,34 @@ export async function createCode(
       expires_at: expiresAt,
       max_uses: input.maxUses ?? null,
       created_at: nowIso(),
+      anthropic_key_ciphertext: input.anthropicKeyCiphertext ?? null,
     })
     .onConflict((oc) => oc.column("code").doNothing())
     .execute();
   const view = await codeView(db, normalized);
   if (!view) throw new Error("CODE_NOT_FOUND");
   return view;
+}
+
+/**
+ * Set or clear a code's attached key. Pass the pre-encrypted ciphertext to set
+ * it, or null to detach. Returns the updated view, or null if the code is
+ * missing.
+ */
+export async function setCodeAnthropicKey(
+  db: Kysely<VetraAccessCodesDB>,
+  code: string,
+  ciphertext: string | null,
+): Promise<InviteCodeView | null> {
+  const normalized = normalizeCode(code);
+  const existing = await codeView(db, normalized);
+  if (!existing) return null;
+  await db
+    .updateTable("invite_codes")
+    .set({ anthropic_key_ciphertext: ciphertext })
+    .where("code", "=", normalized)
+    .execute();
+  return codeView(db, normalized);
 }
 
 /** Toggle a code's active flag. Returns the updated row, or null if missing. */
