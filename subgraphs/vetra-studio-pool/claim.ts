@@ -9,7 +9,7 @@ const SECRET_NAMES = [
 export interface ClaimDeps {
   claimDb: ClaimDb;
   /** Resolve + decrypt the Anthropic key attached to the caller's redeemed invite code; null if none. */
-  getKeyForDid: (addr: string) => Promise<string | null>;
+  getKeyForDid: (did: string) => Promise<string | null>;
   /** System action: SET_OWNER on the (owner-null) claimed document. */
   setOwner: (documentId: string, address: string) => Promise<void>;
   /** Inject one secret into the tenant secret store. */
@@ -26,20 +26,21 @@ export interface ClaimResult {
 }
 
 /**
- * Atomically claim one warm env for `addrRaw`, transfer ownership (system
- * SET_OWNER on the owner-null env), and inject the caller's attached key.
- * Returns null when the caller has no key or the pool is empty (frontend then
- * cold-falls-back). On post-assign failure the env is marked FAILED (never
- * returned to AVAILABLE — it may be partially mutated).
+ * Atomically claim one warm env for the caller `did` (a `did:pkh:...`), transfer
+ * ownership (system SET_OWNER on the owner-null env), and inject the caller's
+ * attached key. The key lookup is keyed by the full DID (matching how the
+ * redemption was recorded); `claimedBy`/owner use the bare address. Returns null
+ * when the caller has no key or the pool is empty (frontend then cold-falls-back).
+ * On post-assign failure the env is marked FAILED (never returned to AVAILABLE).
  */
 export async function claimWarmEnvironment(
   d: ClaimDeps,
-  addrRaw: string,
+  did: string,
 ): Promise<ClaimResult | null> {
-  const addr = addrRaw.toLowerCase();
+  const addr = (did.split(":").pop() ?? did).toLowerCase();
 
   // 1. No key → don't consume an env.
-  const apiKey = await d.getKeyForDid(addr);
+  const apiKey = await d.getKeyForDid(did);
   if (!apiKey) {
     d.logger.info(`[studio-pool] claim: no attached key for ${addr}`);
     return null;
