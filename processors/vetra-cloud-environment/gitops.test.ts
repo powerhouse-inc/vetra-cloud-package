@@ -549,3 +549,70 @@ describe("generateValuesYaml — connect runtime config", () => {
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
   });
 });
+
+describe("generateValuesYaml — always-on switchboard auth", () => {
+  const owner = "0xABCdef0000000000000000000000000000000001";
+  function authState(ownerValue: string | null) {
+    return envState({
+      owner: ownerValue,
+      services: [
+        {
+          type: "SWITCHBOARD",
+          prefix: "switchboard",
+          enabled: true,
+          url: null,
+          status: "ACTIVE",
+          version: null,
+          config: null,
+          selectedRessource: null,
+        },
+        {
+          type: "CLINT",
+          prefix: "agent",
+          enabled: true,
+          url: null,
+          status: "ACTIVE",
+          version: null,
+          selectedRessource: "VETRA_AGENT_S",
+          config: {
+            package: { registry: "https://r", name: "p", version: "1.0.0" },
+            env: [],
+            serviceCommand: null,
+            selectedRessource: null,
+          },
+        },
+      ],
+    });
+  }
+
+  it("emits AUTH_ENABLED + ADMINS=owner in the switchboard env when owner is set", async () => {
+    const yaml = await generateValuesYaml(dbStub, authState(owner), "doc-auth-sb");
+    expect(yaml).toMatch(
+      /switchboard:[\s\S]*?env:[\s\S]*?AUTH_ENABLED: "true"/,
+    );
+    expect(yaml).toMatch(
+      /switchboard:[\s\S]*?env:[\s\S]*?ADMINS: "0xabcdef0000000000000000000000000000000001"/,
+    );
+  });
+
+  it("emits AUTH_ENABLED + ADMINS=owner in a CLINT agent env when owner is set", async () => {
+    const yaml = await generateValuesYaml(dbStub, authState(owner), "doc-auth-clint");
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?env:[\s\S]*?name: "AUTH_ENABLED", value: "true"/,
+    );
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?env:[\s\S]*?name: "ADMINS", value: "0xabcdef0000000000000000000000000000000001"/,
+    );
+  });
+
+  it("emits AUTH_ENABLED but omits ADMINS when owner is null", async () => {
+    const yaml = await generateValuesYaml(dbStub, authState(null), "doc-auth-null");
+    expect(yaml).toMatch(
+      /switchboard:[\s\S]*?env:[\s\S]*?AUTH_ENABLED: "true"/,
+    );
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?env:[\s\S]*?name: "AUTH_ENABLED", value: "true"/,
+    );
+    expect(yaml).not.toContain("ADMINS");
+  });
+});
