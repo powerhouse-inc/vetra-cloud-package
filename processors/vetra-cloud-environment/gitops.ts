@@ -1,7 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { childLogger } from "document-model";
@@ -965,18 +964,21 @@ ${clintBlock}
 }
 
 // ---------------------------------------------------------------------------
-// Sync — ephemeral clone approach
+// Sync — persistent working-clone approach
 // ---------------------------------------------------------------------------
 
 /**
  * Sync an environment's values to the gitops repo.
  *
- * Each call creates a fresh shallow clone, writes the values file, commits,
- * and pushes. The clone is always cleaned up afterwards. This eliminates all
- * shared working-tree state issues.
+ * Reuses a single persistent working clone, refreshed to a pristine
+ * origin/branch (fetch + reset --hard + clean) before each render, then writes
+ * the values file, commits, and pushes. Reusing the clone — instead of a fresh
+ * clone per sync — is what keeps a claim's gitops re-render off the multi-second
+ * critical path.
  *
- * A mutex serializes syncs within the same process to avoid redundant clones.
- * Cross-process / cross-pod push races are handled by pull-rebase-retry.
+ * A mutex serializes syncs within the same process so the shared working tree
+ * is never touched concurrently. Cross-process / cross-pod push races are
+ * handled by pull-rebase-retry.
  */
 export async function syncEnvironment(
   db: Kysely<DB>,
@@ -1014,7 +1016,7 @@ export async function deleteEnvironmentFromGitops(
 ): Promise<void> {
   await gitMutex.acquire();
   try {
-    await withEphemeralClone(async (cloneDir, config) => {
+    await withWorkingClone(async (cloneDir, config) => {
       const tenantDir = join(cloneDir, "tenants", tenantId);
 
       if (!existsSync(tenantDir)) {
@@ -1055,7 +1057,7 @@ async function syncEnvironmentEphemeral(
     `subdomain=${subdomain}, customDomain=${state.customDomain?.domain ?? "unset"}`,
   );
 
-  await withEphemeralClone(async (cloneDir, config) => {
+  await withWorkingClone(async (cloneDir, config) => {
     // Create tenant directory
     const tenantDir = join(cloneDir, "tenants", tenantId);
     mkdirSync(tenantDir, { recursive: true });
@@ -1095,32 +1097,58 @@ async function syncEnvironmentEphemeral(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-async function withEphemeralClone(
+/** Resolve the persistent gitops working-clone path (read lazily so tests and
+ *  config changes take effect without a process restart). */
+function getWorkDir(): string {
+  return process.env.GITOPS_WORK_DIR ?? join(tmpdir(), "vetra-gitops-work");
+}
+
+/**
+ * Ensure a pristine working clone at origin/branch and return its path.
+ *
+ * First use (or a missing work dir) does a full clone. Every subsequent call
+ * refreshes the SAME directory with `fetch` + `reset --hard` + `clean -fd` —
+ * far cheaper than re-cloning on every sync, which is what dominated the
+ * post-claim latency. The gitMutex serializes callers within the process, so
+ * reusing one working tree is safe.
+ */
+async function ensureWorkingClone(config: GitOpsConfig): Promise<string> {
+  const dir = getWorkDir();
+
+  if (existsSync(join(dir, ".git"))) {
+    logger.info(`Refreshing persistent gitops clone: ${dir}`);
+    await git(["fetch", config.remote, config.branch], dir);
+    await git(["reset", "--hard", `${config.remote}/${config.branch}`], dir);
+    await git(["clean", "-fd"], dir);
+    return dir;
+  }
+
+  logger.info(`Creating persistent gitops clone: ${dir}`);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  await git(["clone", "--branch", config.branch, config.repoUrl, "."], dir);
+  await git(["config", "user.name", GIT_AUTHOR_NAME], dir);
+  await git(["config", "user.email", GIT_AUTHOR_EMAIL], dir);
+  return dir;
+}
+
+export async function withWorkingClone(
   fn: (cloneDir: string, config: GitOpsConfig) => Promise<void>,
 ): Promise<void> {
   const config = getConfig();
-  const cloneDir = mkdtempSync(join(tmpdir(), "gitops-"));
-  logger.info(`Cloning into ephemeral directory: ${cloneDir}`);
-
+  let cloneDir: string;
   try {
-    await git(
-      ["clone", "--depth", "1", "--branch", config.branch, config.repoUrl, "."],
-      cloneDir,
+    cloneDir = await ensureWorkingClone(config);
+  } catch (error) {
+    // A partial/corrupted work dir can wedge fetch/reset. Nuke it and re-clone
+    // once from scratch so a bad state self-heals instead of failing forever.
+    logger.warn(
+      `Working clone refresh failed, recreating from scratch: ${String(error)}`,
     );
-
-    // Set git identity for commits in this ephemeral clone
-    await git(["config", "user.name", GIT_AUTHOR_NAME], cloneDir);
-    await git(["config", "user.email", GIT_AUTHOR_EMAIL], cloneDir);
-
-    await fn(cloneDir, config);
-  } finally {
-    logger.info(`Cleaning up ephemeral clone: ${cloneDir}`);
-    try {
-      rmSync(cloneDir, { recursive: true, force: true });
-    } catch (cleanupError) {
-      logger.warn(`Failed to clean up ${cloneDir}: ${String(cleanupError)}`);
-    }
+    rmSync(getWorkDir(), { recursive: true, force: true });
+    cloneDir = await ensureWorkingClone(config);
   }
+  await fn(cloneDir, config);
 }
 
 async function pushWithRetry(
