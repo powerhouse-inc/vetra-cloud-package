@@ -350,6 +350,90 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
   });
 });
 
+describe("generateValuesYaml — vetra-cli switchboard auth env", () => {
+  function clintAgent(pkgName: string) {
+    return {
+      type: "CLINT" as const,
+      prefix: "agent",
+      enabled: true,
+      url: null,
+      status: "ACTIVE" as const,
+      version: null,
+      selectedRessource: "VETRA_AGENT_M" as const,
+      config: {
+        package: { registry: "https://r", name: pkgName, version: "1.0.0" },
+        env: [],
+        serviceCommand: null,
+        selectedRessource: null,
+      },
+    };
+  }
+
+  it("emits the auth env set on a vetra-cli agent with a non-null owner", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [clintAgent("vetra-cli")],
+      }),
+      "doc-auth-owner",
+    );
+    expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
+    expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true"/);
+    expect(yaml).toMatch(/name: "DEFAULT_PROTECTION", value: "true"/);
+    expect(yaml).toMatch(/name: "SKIP_CREDENTIAL_VERIFICATION", value: "true"/);
+    // owner lowercased into ADMINS
+    expect(yaml).toMatch(
+      /name: "ADMINS", value: "0xabcdef0000000000000000000000000000001234"/,
+    );
+  });
+
+  it("does NOT emit auth env on a non-vetra-cli CLINT agent", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [clintAgent("some-other-agent")],
+      }),
+      "doc-auth-other",
+    );
+    expect(yaml).not.toMatch(/AUTH_ENABLED/);
+  });
+
+  it("does NOT emit auth env on the standalone switchboard service block", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: null,
+          },
+        ],
+      }),
+      "doc-auth-switchboard",
+    );
+    expect(yaml).not.toMatch(/AUTH_ENABLED/);
+  });
+
+  it("omits ADMINS when owner is null but still enables auth on vetra-cli", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: null, services: [clintAgent("vetra-cli")] }),
+      "doc-auth-noowner",
+    );
+    expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
+    expect(yaml).not.toMatch(/name: "ADMINS"/);
+  });
+});
+
 describe("generateValuesYaml — CLINT prebuilt agent image", () => {
   function clintState(pkgName: string, version: string) {
     return envState({
