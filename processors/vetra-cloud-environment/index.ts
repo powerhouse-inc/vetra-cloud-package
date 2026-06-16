@@ -163,7 +163,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         .select("owner")
         .where("id", "=", documentId)
         .executeTakeFirst();
-      const prevOwner = (existingRow?.owner as string | null | undefined) ?? null;
+      const prevOwner = existingRow?.owner ?? null;
       await this.relationalDb
         .insertInto("environments")
         .values({ id: documentId, ...row, createdBy })
@@ -197,16 +197,23 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         // state so `locked` is rendered from the just-set owner (avoids a
         // transient locked:true → locked:false double-commit).
         logger.info(
-          `Owner changed for "${label}" (${prevOwner ?? "none"} → ${ownerNormalized ?? "none"}); re-syncing gitops`,
+          `Owner changed for "${label}" (${prevOwner ?? "none"} → ${ownerNormalized ?? "none"}); scheduling gitops re-sync`,
         );
-        try {
-          const freshDoc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
-          const syncState = freshDoc?.state?.global ?? state;
-          await syncEnvironment(this.relationalDb, syncState, documentId, this.secretsService);
-          logger.info(`Owner-change gitops re-sync completed for "${label}"`);
-        } catch (error) {
-          logger.error(`Owner-change gitops re-sync failed for "${label}": ${String(error)}`);
-        }
+        // Fire-and-forget so a claim's re-render never head-of-line-blocks the
+        // processor's operation loop (other envs / keeper creates keep flowing).
+        // syncEnvironment serializes on gitMutex, so a detached render can't race
+        // a concurrent one; errors are logged (same swallow-and-log semantics as
+        // the CHANGES_APPROVED path — the keeper / next event re-renders).
+        void (async () => {
+          try {
+            const freshDoc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
+            const syncState = freshDoc?.state?.global ?? state;
+            await syncEnvironment(this.relationalDb, syncState, documentId, this.secretsService);
+            logger.info(`Owner-change gitops re-sync completed for "${label}"`);
+          } catch (error) {
+            logger.error(`Owner-change gitops re-sync failed for "${label}": ${String(error)}`);
+          }
+        })();
       } else {
         logger.info(`Skipping gitops sync for "${label}" (status: ${status})`);
       }
