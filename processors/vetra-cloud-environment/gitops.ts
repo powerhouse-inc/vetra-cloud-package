@@ -386,7 +386,7 @@ const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   },
   VETRA_AGENT_XXL: {
     requests: { cpu: "2", memory: "4Gi" },
-    limits: { cpu: "8", memory: "8Gi" },
+    limits: { cpu: "4", memory: "8Gi" },
     nodeMaxOldSpaceMb: 6144,
   },
 };
