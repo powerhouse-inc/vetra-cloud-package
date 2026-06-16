@@ -1,4 +1,5 @@
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
+import { DocumentChangeType } from "@powerhousedao/reactor";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
 import { schema } from "./schema.js";
@@ -9,6 +10,11 @@ import { claimWarmEnvironment } from "./claim.js";
 import { createStudioEnvironmentDoc, type ReactorLike } from "./create-env.js";
 import { PoolKeeper } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
+import { removeEnvironmentRecord } from "../../processors/vetra-cloud-environment/cleanup.js";
+import {
+  deleteEnvironmentFromGitops,
+  getTenantId,
+} from "../../processors/vetra-cloud-environment/gitops.js";
 import {
   setOwner,
   terminateEnvironment,
@@ -41,6 +47,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
   resolvers: Record<string, unknown> = {};
   additionalContextFields = {};
   private keeper: PoolKeeper | null = null;
+  private unsubscribeDocumentDeleted: (() => void) | null = null;
 
   async onSetup() {
     const cfg = loadPoolConfig(process.env);
@@ -107,6 +114,30 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers({ claim });
 
+    // Reconcile the `environments` read-model + gitops tenant dir when a
+    // document is deleted via `deleteDocument(identifier)`. That path never
+    // emits a DELETE_NODE drive operation the vetra-cloud-environment processor
+    // can see, so without this subscription the row + tenant dir linger forever
+    // and surface as "phantom studios" in the UI. The DELETE_NODE path in the
+    // processor shares the same `removeEnvironmentRecord` cleanup.
+    //
+    // The reactor's deletion signal is exposed on IReactorClient via
+    // `subscribe(search, cb)` — it delivers a DocumentChangeEvent whose
+    // `type === Deleted` carries the deleted id in `context.childId`
+    // (onDocumentDeleted itself lives on the private subscriptionManager and is
+    // not reachable from the client). SearchFilter supports a `type` filter, so
+    // we scope to env documents; `removeEnvironmentRecord` is also a safe no-op
+    // for any non-env id that slips through (it deletes nothing, returns null).
+    this.unsubscribeDocumentDeleted = this.reactorClient.subscribe(
+      { type: ENV_DOC_TYPE },
+      (event) => {
+        if (event.type !== DocumentChangeType.Deleted) return;
+        const id = event.context?.childId;
+        if (!id) return;
+        void this.reconcileDeletedEnvironment(envDb, id);
+      },
+    );
+
     if (cfg.enabled) {
       this.keeper = new PoolKeeper({
         db: makeKeeperDb(envDb),
@@ -128,7 +159,36 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     }
   }
 
+  /**
+   * Remove a deleted environment's read-model row and tear down its gitops
+   * tenant directory. Defensive: a failure for one document must never kill the
+   * subscription, so the whole body is wrapped in try/catch.
+   */
+  private async reconcileDeletedEnvironment(
+    envDb: Kysely<DB>,
+    id: string,
+  ): Promise<void> {
+    try {
+      const removed = await removeEnvironmentRecord(envDb, id);
+      if (removed?.subdomain) {
+        try {
+          await deleteEnvironmentFromGitops(getTenantId(removed.subdomain, id));
+        } catch (e) {
+          console.warn(
+            `[studio-pool] gitops cleanup failed for deleted env ${id}: ${String(e)}`,
+          );
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[studio-pool] failed to reconcile deleted document ${id}: ${String(e)}`,
+      );
+    }
+  }
+
   async onDisconnect() {
+    this.unsubscribeDocumentDeleted?.();
+    this.unsubscribeDocumentDeleted = null;
     this.keeper?.stop();
     this.keeper = null;
   }
