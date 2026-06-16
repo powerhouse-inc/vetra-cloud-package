@@ -20,7 +20,7 @@ function deps(over: Partial<any> = {}) {
     getKeyForDid: vi.fn(async () => "sk-ant-real"),
     setOwner: vi.fn(async () => {}),
     setSecrets: vi.fn(async () => {}),
-    terminate: vi.fn(async () => {}),
+    deleteEnv: vi.fn(async () => {}),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
     sleep: vi.fn(async () => {}), // no real delay in tests
@@ -100,7 +100,7 @@ describe("claimWarmEnvironment", () => {
     });
     const res = await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
     expect(res).not.toBeNull();
-    expect(d.terminate).not.toHaveBeenCalled();
+    expect(d.deleteEnv).not.toHaveBeenCalled();
   });
 
   it("TERMINATES the half-claimed env and returns null when injection keeps failing", async () => {
@@ -109,7 +109,7 @@ describe("claimWarmEnvironment", () => {
       throw new Error("inject boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
-    expect(d.terminate).toHaveBeenCalledWith("doc-1");
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
   });
 
   it("TERMINATES and returns null when setOwner fails (after the key was injected)", async () => {
@@ -118,7 +118,7 @@ describe("claimWarmEnvironment", () => {
       throw new Error("owner boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
-    expect(d.terminate).toHaveBeenCalledWith("doc-1");
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
     // Secrets are injected first now, so the batch DID run before the owner step.
     expect(d.setSecrets).toHaveBeenCalled();
   });

@@ -24,8 +24,9 @@ export interface ClaimDeps {
     tenantId: string,
     entries: Array<{ key: string; value: string }>,
   ) => Promise<void>;
-  /** Terminate an env (used to clean up a half-claimed env on failure). */
-  terminate: (documentId: string) => Promise<void>;
+  /** Fully delete an env (deleteDocument) — used to clean up a half-claimed env
+   *  on failure so it doesn't leak a pod/namespace/cert as a TERMINATING husk. */
+  deleteEnv: (documentId: string) => Promise<void>;
   cfg: { version: string };
   nowIso: () => string;
   /** Optional async sleep (injectable for tests); defaults to setTimeout. */
@@ -112,13 +113,13 @@ export async function claimWarmEnvironment(
       tenantId: env.tenantId,
     };
   } catch (err) {
-    // Half-claimed (owned, possibly key-less) → terminate so nothing leaks; the
+    // Half-claimed (owned, possibly key-less) → delete so nothing leaks; the
     // keeper refills. Caller gets null → cold-falls-back.
     d.logger.warn(
-      `[studio-pool] claim post-assign failed for ${env.id}; terminating: ${String(err)}`,
+      `[studio-pool] claim post-assign failed for ${env.id}; deleting: ${String(err)}`,
     );
-    await d.terminate(env.id).catch((e) =>
-      d.logger.warn(`[studio-pool] cleanup terminate failed for ${env.id}: ${String(e)}`),
+    await d.deleteEnv(env.id).catch((e) =>
+      d.logger.warn(`[studio-pool] cleanup delete failed for ${env.id}: ${String(e)}`),
     );
     return null;
   }
