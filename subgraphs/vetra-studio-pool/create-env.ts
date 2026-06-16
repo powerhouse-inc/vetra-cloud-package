@@ -57,7 +57,13 @@ export async function createStudioEnvironmentDoc(
       prefix: "vetra-agent",
       clintConfig: {
         package: { registry: cfg.registry, name: "vetra-cli", version: cfg.version },
-        env: [{ name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false }],
+        env: [
+          { name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false },
+          // Gate agent work on a credential: an unclaimed (key-less) warm pod
+          // refuses to run until a claim injects the key — so "no key" is the
+          // lock, complementing/replacing the network policy.
+          { name: "VETRA_REQUIRE_API_KEY", value: "true", isSecret: false },
+        ],
         serviceCommand: "vetra",
         selectedRessource: cfg.sizeName as never,
       },
