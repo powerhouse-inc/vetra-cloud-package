@@ -3,6 +3,7 @@ import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
+import { removeEnvironmentRecord } from "./cleanup.js";
 import type { DB } from "./schema.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
@@ -231,25 +232,16 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     const deletedNodeId = input?.id;
     if (!deletedNodeId) return undefined;
 
-    const environment = await this.relationalDb
-      .selectFrom("environments")
-      .select(["id", "name", "subdomain"])
-      .where("id", "=", deletedNodeId)
-      .executeTakeFirst();
+    const removed = await removeEnvironmentRecord(this.relationalDb, deletedNodeId);
 
-    if (!environment) return deletedNodeId;
+    if (!removed) return deletedNodeId;
 
-    const label = environment.name ?? deletedNodeId;
+    const label = removed.name ?? deletedNodeId;
     logger.info(`Deleting environment record for "${label}"`);
 
-    await this.relationalDb
-      .deleteFrom("environments")
-      .where("id", "=", deletedNodeId)
-      .execute();
-
     // Clean up gitops tenant directory
-    if (environment.subdomain) {
-      const tenantId = getTenantId(environment.subdomain, deletedNodeId);
+    if (removed.subdomain) {
+      const tenantId = getTenantId(removed.subdomain, deletedNodeId);
       logger.info(`Removing gitops tenant "${tenantId}" for deleted environment "${label}"`);
       try {
         await deleteEnvironmentFromGitops(tenantId);
