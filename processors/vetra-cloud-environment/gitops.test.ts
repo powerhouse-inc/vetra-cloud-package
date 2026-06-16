@@ -572,3 +572,57 @@ describe("generateValuesYaml — connect runtime config", () => {
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
   });
 });
+
+describe("generateValuesYaml — tenant cluster issuer (ZeroSSL routing)", () => {
+  const issuerEnv = "TENANT_CLUSTER_ISSUER";
+  afterEach(() => {
+    delete process.env[issuerEnv];
+  });
+
+  const clintAndSwitchboard = (): Partial<VetraCloudEnvironmentState> => ({
+    services: [
+      {
+        type: "CLINT",
+        prefix: "vetra-agent",
+        enabled: true,
+        url: null,
+        status: "ACTIVE",
+        version: null,
+        selectedRessource: "VETRA_AGENT_S",
+        config: {
+          package: { registry: "https://r", name: "p", version: "1.0.0" },
+          env: [],
+          serviceCommand: null,
+          selectedRessource: null,
+        },
+      },
+      {
+        type: "SWITCHBOARD",
+        prefix: "switchboard",
+        enabled: true,
+        url: null,
+        status: "ACTIVE",
+        version: null,
+        selectedRessource: "VETRA_AGENT_S",
+        config: null,
+      },
+    ],
+  });
+
+  it("defaults to letsencrypt-prod when TENANT_CLUSTER_ISSUER is unset", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState(clintAndSwitchboard()), "doc-issuer-default");
+    expect(yaml).toContain(`certClusterIssuer: "letsencrypt-prod"`);
+    expect(yaml).toMatch(/cert-manager\.io\/cluster-issuer: letsencrypt-prod/);
+    expect(yaml).not.toContain("zerossl-prod");
+  });
+
+  it("routes clint + switchboard certs to the configured issuer (zerossl-prod)", async () => {
+    process.env[issuerEnv] = "zerossl-prod";
+    const yaml = await generateValuesYaml(dbStub, envState(clintAndSwitchboard()), "doc-issuer-zerossl");
+    // clint block carries it for the chart's clint-ingress template...
+    expect(yaml).toContain(`certClusterIssuer: "zerossl-prod"`);
+    // ...and the switchboard ingress annotation uses it inline.
+    expect(yaml).toMatch(/cert-manager\.io\/cluster-issuer: zerossl-prod/);
+    expect(yaml).not.toMatch(/cluster-issuer: letsencrypt-prod/);
+  });
+});

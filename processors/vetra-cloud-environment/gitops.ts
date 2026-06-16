@@ -192,6 +192,21 @@ function yamlQuote(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Cert issuer
+// ---------------------------------------------------------------------------
+
+/**
+ * cert-manager ClusterIssuer for per-env ingress certs. Defaults to
+ * `letsencrypt-prod`; set `TENANT_CLUSTER_ISSUER=zerossl-prod` (on the
+ * switchboard) to move per-env issuance onto ZeroSSL's independent budget so
+ * warm-pool churn no longer exhausts the LE 50-certs/week cap on `vetra.io`.
+ * Read lazily so env changes apply without a process restart (and tests can set it).
+ */
+function tenantClusterIssuer(): string {
+  return process.env.TENANT_CLUSTER_ISSUER ?? "letsencrypt-prod";
+}
+
+// ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
 
@@ -210,7 +225,7 @@ function generateCustomDomainIngress(
         enabled: true
         secretName: ${service}-custom-${secretSuffix}-tls
       annotations:
-        cert-manager.io/cluster-issuer: letsencrypt-prod`;
+        cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}`;
 }
 
 /**
@@ -427,7 +442,15 @@ async function generateClintBlock(
     return `clint:\n  enabled: false\n  agents: []`;
   }
 
-  const lines: string[] = [`clint:`, `  enabled: true`, `  agents:`];
+  const lines: string[] = [
+    `clint:`,
+    `  enabled: true`,
+    // Per-env cert issuer for the clint agent ingress (chart reads
+    // .Values.clint.certClusterIssuer). Defaults to letsencrypt-prod; set to
+    // zerossl-prod via TENANT_CLUSTER_ISSUER to use ZeroSSL's budget.
+    `  certClusterIssuer: ${yamlQuote(tenantClusterIssuer())}`,
+    `  agents:`,
+  ];
   for (const svc of clintServices) {
     const cfg = svc.config;
     const pkg = cfg?.package;
@@ -789,7 +812,7 @@ switchboard:
       enabled: true
       secretName: ${switchboardTlsSecret}
     annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod${switchboardCustomIngress}
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${switchboardCustomIngress}
   env:
     PORT: "3000"
     NODE_ENV: production
@@ -865,7 +888,7 @@ connect:
       enabled: true
       secretName: ${connectTlsSecret}
     annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod${connectCustomIngress}
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${connectCustomIngress}
   env:
     PORT: "3001"
     NODE_ENV: production
