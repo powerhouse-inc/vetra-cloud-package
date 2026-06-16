@@ -40,5 +40,16 @@ describe("createStudioEnvironmentDoc", () => {
       (a) => a.type === "INITIALIZE",
     );
     expect(init?.input.genericSubdomain).toBe(res.subdomain);
+
+    // ENABLE_SERVICE injects VETRA_REQUIRE_API_KEY so the key-less warm pod
+    // refuses agent work until a claim provides a credential.
+    const svc = (
+      actions as { type: string; input: { clintConfig?: { env?: { name: string; value: string }[] } } }[]
+    ).find((a) => a.type === "ENABLE_SERVICE");
+    expect(svc?.input.clintConfig?.env).toContainEqual({
+      name: "VETRA_REQUIRE_API_KEY",
+      value: "true",
+      isSecret: false,
+    });
   });
 });
