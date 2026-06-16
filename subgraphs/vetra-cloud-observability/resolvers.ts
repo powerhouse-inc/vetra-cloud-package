@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { ObservabilityDB } from "./db/schema.js";
 import { PrometheusClient } from "./prometheus.js";
 import { LokiClient } from "./loki.js";
@@ -286,6 +286,93 @@ export function createResolvers(
               .execute();
 
         return rows;
+      },
+
+      myStudioProducts: async (
+        _parent: unknown,
+        _args: unknown,
+        ctx: AuthAwareContext,
+      ) => {
+        const me = ctx.user?.address?.toLowerCase();
+        if (!me) {
+          // Unauthenticated → empty list. The UI can prompt for login.
+          return [];
+        }
+
+        // Scope strictly by ownership OR a synchronous claim. claimedBy is
+        // written at claim time, so just-claimed envs show up immediately
+        // (no owner-propagation lag), and unclaimed warm-pool envs (owner
+        // and claimedBy both NULL) never leak. owner/claimedBy are stored
+        // lowercased; compare lowercased defensively.
+        const rows = (await envDb
+          .selectFrom("environments")
+          .select(["id", "name", "subdomain", "services", "status", "packages"])
+          .where((eb) =>
+            eb.or([
+              eb(sql<string>`lower(${eb.ref("owner")})`, "=", me),
+              eb(sql<string>`lower(${eb.ref("claimedBy")})`, "=", me),
+            ]),
+          )
+          .execute()) as StudioEnvRow[];
+
+        // Filter to live STUDIO envs, capturing the matched CLINT prefix.
+        const matched: Array<{
+          id: string;
+          subdomain: string;
+          prefix: string;
+          label: string;
+        }> = [];
+        for (const row of rows) {
+          if (row.status && RELEASED_STATUSES.has(row.status)) continue;
+          if (!row.subdomain) continue;
+
+          const services = parseEnvStudioServices(row.services);
+          // A studio env runs an enabled CLINT service whose package is
+          // vetra-cli — either declared inline on the service config or
+          // recorded in the env's packages array.
+          const hasVetraCliPackage = parseEnvPackages(row.packages).some(
+            (p) => p.name === "vetra-cli",
+          );
+          const studioService = services.find(
+            (s) =>
+              s.type === "CLINT" &&
+              s.enabled &&
+              (s.packageName === "vetra-cli" ||
+                (s.packageName === null && hasVetraCliPackage)),
+          );
+          if (!studioService) continue;
+
+          matched.push({
+            id: row.id,
+            subdomain: row.subdomain,
+            prefix: studioService.prefix,
+            label: row.name ?? row.subdomain,
+          });
+        }
+
+        // Batch-resolve readiness in a single query — no per-env N+1.
+        const readyKeys = new Set<string>();
+        const matchedEnvIds = matched.map((m) => m.id);
+        if (matchedEnvIds.length > 0) {
+          const endpoints = await db
+            .selectFrom("clint_runtime_endpoints")
+            .select(["documentId", "prefix", "type", "status"])
+            .where("documentId", "in", matchedEnvIds)
+            .execute();
+          for (const ep of endpoints) {
+            if (ep.type === "website" && ep.status === "enabled") {
+              readyKeys.add(`${ep.documentId}|${ep.prefix}`);
+            }
+          }
+        }
+
+        return matched.map((m) => ({
+          envId: m.id,
+          subdomain: m.subdomain,
+          prefix: m.prefix,
+          label: m.label,
+          status: readyKeys.has(`${m.id}|${m.prefix}`) ? "ready" : "booting",
+        }));
       },
 
       viewer: (_parent: unknown, _args: unknown, ctx: AuthAwareContext) => {
@@ -733,6 +820,54 @@ function parseEnvServices(
       enabled: !!s.enabled,
       version: s.version ?? null,
     }));
+  } catch {
+    return [];
+  }
+}
+
+/** Subset of the `environments` row read by `myStudioProducts`. */
+type StudioEnvRow = {
+  id: string;
+  name: string | null;
+  subdomain: string | null;
+  services: string | null;
+  status: string | null;
+  packages: string | null;
+};
+
+/**
+ * Parse the env's `services` JSON into the fields `myStudioProducts` needs.
+ * Each service is `{ type, prefix, enabled, config?: { package?: { name } } }`.
+ * `packageName` is null when the service carries no inline package config.
+ */
+function parseEnvStudioServices(
+  raw: string | null,
+): Array<{ type: string; prefix: string; enabled: boolean; packageName: string | null }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{
+      type?: string;
+      prefix?: string;
+      enabled?: boolean;
+      config?: { package?: { name?: string } };
+    }>;
+    return parsed.map((s) => ({
+      type: String(s.type ?? ""),
+      prefix: String(s.prefix ?? ""),
+      enabled: !!s.enabled,
+      packageName: s.config?.package?.name ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Parse the env's `packages` JSON array of `{ name, version }`. */
+function parseEnvPackages(raw: string | null): Array<{ name: string }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{ name?: string }>;
+    return parsed
+      .filter((p) => !!p.name)
+      .map((p) => ({ name: String(p.name) }));
   } catch {
     return [];
   }

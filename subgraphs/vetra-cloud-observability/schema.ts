@@ -39,6 +39,9 @@ export const schema: DocumentNode = gql`
     """
     myEnvironments(scope: ListScope = MINE): [VetraCloudEnvironmentSummary!]!
 
+    """Studio products owned or just-claimed by the caller, fully resolved."""
+    myStudioProducts: [StudioProduct!]!
+
     """
     Returns identity info for the caller — used by the UI to decide whether to
     show the admin-only "All" toggle.
@@ -242,6 +245,15 @@ export const schema: DocumentNode = gql`
   type NotifyNewImageReleaseResult {
     """Lowercased document IDs whose service versions were just bumped."""
     updatedEnvironments: [String!]!
+  }
+
+  type StudioProduct {
+    envId: String!
+    subdomain: String!
+    prefix: String!
+    label: String!
+    """One of "ready" | "booting"."""
+    status: String!
   }
 
   enum ListScope { MINE, ALL }
