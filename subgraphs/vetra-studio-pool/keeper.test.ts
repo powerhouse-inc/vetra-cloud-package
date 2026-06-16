@@ -14,7 +14,7 @@ function deps(rows: any[]) {
       subdomain: "warm-newt-aaaa1111",
       tenantId: "warm-newt-aaaa1111-aaaa1111",
     })),
-    terminate: vi.fn(async () => {}),
+    deleteEnv: vi.fn(async () => {}),
     cfg: {
       size: 2,
       version: "0.0.1-dev.19",
@@ -39,12 +39,12 @@ describe("PoolKeeper.reconcileOnce", () => {
     );
   });
 
-  it("recycles stale-version unclaimed envs", async () => {
+  it("recycles stale-version unclaimed envs by DELETING them (full teardown, not a TERMINATING husk)", async () => {
     const d = deps([
       { id: "old", poolState: "AVAILABLE", pinnedVersion: "0.0.1-dev.18", status: "READY" },
     ]);
     await new PoolKeeper(d as never).reconcileOnce();
-    expect(d.terminate).toHaveBeenCalledWith("old");
+    expect(d.deleteEnv).toHaveBeenCalledWith("old");
   });
 
   it("clears zombie (dead-status) pool rows", async () => {
@@ -57,14 +57,14 @@ describe("PoolKeeper.reconcileOnce", () => {
     expect(d.createEnv).toHaveBeenCalledTimes(2);
   });
 
-  it("terminates the orphan doc when seeding fails after creation", async () => {
+  it("deletes the orphan doc when seeding fails after creation", async () => {
     const d = deps([]);
     d.db.seedWarming = vi.fn(async () => {
       throw new Error("db down");
     });
     await new PoolKeeper(d as never).reconcileOnce();
-    // createEnv returns documentId "new" twice (size 2); each seed fails → terminate
-    expect(d.terminate).toHaveBeenCalledWith("new");
+    // createEnv returns documentId "new" twice (size 2); each seed fails → delete
+    expect(d.deleteEnv).toHaveBeenCalledWith("new");
     expect(d.logger.warn).toHaveBeenCalled();
   });
 

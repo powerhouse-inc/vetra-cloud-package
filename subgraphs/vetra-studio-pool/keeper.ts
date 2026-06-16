@@ -12,7 +12,14 @@ export interface KeeperLogger {
 export interface KeeperDeps {
   db: KeeperDb;
   createEnv: () => Promise<CreatedStudioEnv>;
-  terminate: (documentId: string) => Promise<void>;
+  /**
+   * Fully delete an env document (via `reactorClient.deleteDocument`). The
+   * delete subscription then tears down the read-model row + gitops tenant dir,
+   * and the namespace reaper releases the namespace + its TLS cert. Used for
+   * recycling stale-version envs and cleaning up failed-seed orphans — NOT a
+   * `terminateEnvironment` status flip, which leaves the pod + cert running.
+   */
+  deleteEnv: (documentId: string) => Promise<void>;
   cfg: PoolConfig;
   logger: KeeperLogger;
 }
@@ -73,19 +80,22 @@ export class PoolKeeper {
       }
     }
 
-    // 4. Recycle stale-version unclaimed envs (terminate; next tick clears them).
+    // 4. Recycle stale-version unclaimed envs by DELETING them — full teardown
+    //    (read-model + gitops + namespace/cert), not a TERMINATING husk that
+    //    keeps a pod + TLS cert alive. Deleting also removes the pool row, so
+    //    the next tick sees the deficit and replaces them.
     for (const id of plan.toRecycle) {
       try {
-        await this.d.terminate(id);
-        this.d.logger.info(`[studio-pool] recycled stale env ${id}`);
+        await this.d.deleteEnv(id);
+        this.d.logger.info(`[studio-pool] recycled (deleted) stale env ${id}`);
       } catch (err) {
         this.d.logger.warn(`[studio-pool] recycle ${id} failed: ${String(err)}`);
       }
     }
 
     // 5. Create the deficit; seed each new doc as WARMING. If the doc was
-    //    created but seeding fails, terminate the orphan so it can't leak a
-    //    namespace/pod the pool no longer tracks.
+    //    created but seeding fails, DELETE the orphan so it can't leak a
+    //    namespace/pod/cert the pool no longer tracks.
     for (let i = 0; i < plan.toCreate; i++) {
       let created: CreatedStudioEnv;
       try {
@@ -106,9 +116,9 @@ export class PoolKeeper {
         );
       } catch (err) {
         this.d.logger.warn(
-          `[studio-pool] seed failed for ${created.documentId}; terminating orphan: ${String(err)}`,
+          `[studio-pool] seed failed for ${created.documentId}; deleting orphan: ${String(err)}`,
         );
-        await this.d.terminate(created.documentId).catch(() => {});
+        await this.d.deleteEnv(created.documentId).catch(() => {});
       }
     }
   }

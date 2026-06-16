@@ -15,10 +15,7 @@ import {
   deleteEnvironmentFromGitops,
   getTenantId,
 } from "../../processors/vetra-cloud-environment/gitops.js";
-import {
-  setOwner,
-  terminateEnvironment,
-} from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import { setOwner } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import {
   createSecretsService,
@@ -91,6 +88,14 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           .then(() => undefined),
     };
 
+    // Hard-delete an env document. The delete subscription below tears down the
+    // read-model row + gitops tenant dir; the namespace reaper releases the
+    // namespace + its TLS cert. Used for recycling stale warm envs and cleaning
+    // up half-claimed/failed-seed orphans — replaces the old `terminateEnvironment`
+    // status flip, which left a pod + cert running (a leak).
+    const deleteEnv = (documentId: string) =>
+      this.reactorClient.deleteDocument(documentId).then(() => undefined);
+
     const claim = (did: string) =>
       claimWarmEnvironment(
         {
@@ -103,8 +108,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             reactor.execute(documentId, "main", [setOwner({ address })]),
           setSecrets: (tenantId, entries) =>
             secretsService.setSecrets(tenantId, entries),
-          terminate: (documentId) =>
-            reactor.execute(documentId, "main", [terminateEnvironment({})]),
+          deleteEnv,
           cfg: { version: cfg.version },
           nowIso: () => new Date().toISOString(),
           logger: console,
@@ -147,8 +151,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             sizeName: cfg.sizeName,
             registry: cfg.registry,
           }),
-        terminate: (documentId) =>
-          reactor.execute(documentId, "main", [terminateEnvironment({})]),
+        deleteEnv,
         cfg,
         logger: console,
       });
