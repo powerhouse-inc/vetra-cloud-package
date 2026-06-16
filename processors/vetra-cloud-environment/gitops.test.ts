@@ -319,6 +319,35 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
       /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"250m",\s*memory:\s*"512Mi"\s*\}/,
     );
   });
+
+  it("emits CLINT XXL with cpu request 2 and cpu limit 4 (Vetra Studio sizing)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "CLINT",
+            prefix: "vetra-agent",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            selectedRessource: "VETRA_AGENT_XXL",
+            config: {
+              package: { registry: "https://r", name: "p", version: "1.0.0" },
+              env: [],
+              serviceCommand: null,
+              selectedRessource: null,
+            },
+          },
+        ],
+      }),
+      "doc-clint-xxl",
+    );
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"2",\s*memory:\s*"4Gi"\s*\}[\s\S]*?limits:\s*\{\s*cpu:\s*"4",\s*memory:\s*"8Gi"\s*\}/,
+    );
+  });
 });
 
 describe("generateValuesYaml — CLINT prebuilt agent image", () => {
