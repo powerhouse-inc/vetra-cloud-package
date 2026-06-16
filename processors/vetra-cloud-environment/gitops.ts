@@ -427,6 +427,23 @@ function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolea
   return LEGACY_SECRET_NAME_PATTERN.test(e.name) ? "secret" : "plain";
 }
 
+// Switchboard auth env for a vetra-cli agent's embedded switchboard. Turns on
+// DOCUMENT_PERMISSIONS auth with the env owner as supreme admin.
+// owner null → auth on, no ADMINS yet (next deploy adds it once claimed).
+// SKIP_CREDENTIAL_VERIFICATION=true skips the renown.id credential check.
+function switchboardAuthEnv(
+  owner: string | null | undefined,
+): { name: string; value: string }[] {
+  const entries = [
+    { name: "AUTH_ENABLED", value: "true" },
+    { name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true" },
+    { name: "DEFAULT_PROTECTION", value: "true" },
+    { name: "SKIP_CREDENTIAL_VERIFICATION", value: "true" },
+  ];
+  if (owner) entries.push({ name: "ADMINS", value: owner.toLowerCase() });
+  return entries;
+}
+
 async function generateClintBlock(
   state: VetraCloudEnvironmentState,
   documentId: string,
@@ -506,6 +523,18 @@ async function generateClintBlock(
     lines.push(
       `        - { name: "NODE_OPTIONS", value: "--max-old-space-size=${resources.nodeMaxOldSpaceMb}" }`,
     );
+    // The vetra-cli agent embeds its own switchboard (reactor-api), which reads
+    // these from process.env at boot. Emit auth env ONLY for this agent so its
+    // drive is locked to the env owner; other agents and the standalone
+    // switchboard are untouched. Inline (not via cfg.env) so they stay in the
+    // deterministic YAML and never route through the secrets controller.
+    if (pkg.name === "vetra-cli") {
+      for (const e of switchboardAuthEnv(state.owner)) {
+        lines.push(
+          `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+        );
+      }
+    }
     // Route each declared env entry. Anything classified as a secret goes
     // through the encrypted tenant_secrets table (via the secrets service);
     // it is OMITTED from this inline block — the chart's `envFrom: secretRef:
