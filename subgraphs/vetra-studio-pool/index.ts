@@ -101,8 +101,8 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           },
           setOwner: (documentId, address) =>
             reactor.execute(documentId, "main", [setOwner({ address })]),
-          setSecret: (tenantId, key, value) =>
-            secretsService.setSecret(tenantId, key, value).then(() => undefined),
+          setSecrets: (tenantId, entries) =>
+            secretsService.setSecrets(tenantId, entries),
           terminate: (documentId) =>
             reactor.execute(documentId, "main", [terminateEnvironment({})]),
           cfg: { version: cfg.version },

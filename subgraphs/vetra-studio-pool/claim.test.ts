@@ -19,7 +19,7 @@ function deps(over: Partial<any> = {}) {
     },
     getKeyForDid: vi.fn(async () => "sk-ant-real"),
     setOwner: vi.fn(async () => {}),
-    setSecret: vi.fn(async () => {}),
+    setSecrets: vi.fn(async () => {}),
     terminate: vi.fn(async () => {}),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
@@ -52,16 +52,6 @@ describe("claimWarmEnvironment", () => {
       "2026-06-15T00:00:00Z",
     );
     expect(d.setOwner).toHaveBeenCalledWith("doc-1", "0xcaller");
-    expect(d.setSecret.mock.calls.map((c: any[]) => c[1]).sort()).toEqual(
-      [...SECRET_NAMES].sort(),
-    );
-    for (const call of d.setSecret.mock.calls) {
-      expect(call).toEqual([
-        "warm-newt-aaaa1111-aaaa1111",
-        expect.any(String),
-        "sk-ant-real",
-      ]);
-    }
     expect(res).toEqual({
       documentId: "doc-1",
       subdomain: "warm-newt-aaaa1111",
@@ -69,33 +59,44 @@ describe("claimWarmEnvironment", () => {
     });
   });
 
-  it("injects the key (setSecret) BEFORE transferring ownership (setOwner)", async () => {
-    // Coalescing the claim to a single pod rollout depends on the
-    // <tenant>-secrets Secret already materializing before the owner-change
-    // re-render fires. So every setSecret must run before setOwner.
+  it("writes all secrets + ADMINS in ONE batch (single notify → single pod bounce)", async () => {
+    const d = deps();
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER");
+    // Exactly one batched write — NOT one-per-key (which would bounce the pod
+    // once per secret).
+    expect(d.setSecrets).toHaveBeenCalledTimes(1);
+    const [tenantId, entries] = d.setSecrets.mock.calls[0];
+    expect(tenantId).toBe("warm-newt-aaaa1111-aaaa1111");
+    // The three Anthropic key names all carry the resolved key value...
+    for (const name of SECRET_NAMES) {
+      expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
+    }
+    // ...and ADMINS carries the claimant's lowercased address, so the owner is
+    // an admin of the embedded switchboard without a gitops re-render.
+    expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
+    expect(entries).toHaveLength(4);
+  });
+
+  it("injects the secrets BEFORE transferring ownership (setOwner)", async () => {
     const order: string[] = [];
     const d = deps({
-      setSecret: vi.fn(async () => {
-        order.push("setSecret");
+      setSecrets: vi.fn(async () => {
+        order.push("setSecrets");
       }),
       setOwner: vi.fn(async () => {
         order.push("setOwner");
       }),
     });
     await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
-    // All three secrets dispatched, then the single owner transfer.
-    expect(order).toEqual(["setSecret", "setSecret", "setSecret", "setOwner"]);
-    // setOwner is the LAST mutating call (so the re-render sees the key).
-    expect(order[order.length - 1]).toBe("setOwner");
+    expect(order).toEqual(["setSecrets", "setOwner"]);
   });
 
-  it("retries a transient setSecret failure and still succeeds", async () => {
+  it("retries a transient setSecrets failure and still succeeds", async () => {
     const d = deps();
     let calls = 0;
-    d.setSecret = vi.fn(async () => {
+    d.setSecrets = vi.fn(async () => {
       calls++;
       if (calls === 1) throw new Error("transient");
-      // first call (ANTHROPIC_API_KEY) fails once then succeeds; rest succeed
     });
     const res = await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
     expect(res).not.toBeNull();
@@ -104,7 +105,7 @@ describe("claimWarmEnvironment", () => {
 
   it("TERMINATES the half-claimed env and returns null when injection keeps failing", async () => {
     const d = deps();
-    d.setSecret = vi.fn(async () => {
+    d.setSecrets = vi.fn(async () => {
       throw new Error("inject boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
@@ -118,7 +119,7 @@ describe("claimWarmEnvironment", () => {
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.terminate).toHaveBeenCalledWith("doc-1");
-    // Key is injected first now, so the secrets DID run before the owner step.
-    expect(d.setSecret).toHaveBeenCalled();
+    // Secrets are injected first now, so the batch DID run before the owner step.
+    expect(d.setSecrets).toHaveBeenCalled();
   });
 });
