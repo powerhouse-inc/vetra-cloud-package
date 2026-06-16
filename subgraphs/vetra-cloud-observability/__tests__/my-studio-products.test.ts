@@ -38,6 +38,7 @@ async function createEnvTable(database: Kysely<any>): Promise<void> {
     .addColumn("status", "varchar(64)")
     .addColumn("owner", "varchar(255)")
     .addColumn("claimedBy", "varchar(255)")
+    .addColumn("claimedAt", "varchar(64)")
     .addColumn("poolState", "varchar(64)")
     .ifNotExists()
     .execute();
@@ -52,6 +53,7 @@ type EnvSeed = {
   status?: string | null;
   owner?: string | null;
   claimedBy?: string | null;
+  claimedAt?: string | null;
 };
 
 async function seedEnv(env: EnvSeed): Promise<void> {
@@ -68,6 +70,7 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       status: env.status ?? "RUNNING",
       owner: env.owner ?? null,
       claimedBy: env.claimedBy ?? null,
+      claimedAt: env.claimedAt ?? null,
       poolState: null,
     })
     .execute();
@@ -77,6 +80,7 @@ async function seedWebsiteEndpoint(
   documentId: string,
   prefix: string,
   status = "enabled",
+  lastSeen: string = new Date().toISOString(),
 ): Promise<void> {
   await db
     .insertInto("clint_runtime_endpoints")
@@ -88,7 +92,7 @@ async function seedWebsiteEndpoint(
       type: "website",
       port: "3000",
       status,
-      lastSeen: new Date().toISOString(),
+      lastSeen,
     })
     .execute();
 }
@@ -269,5 +273,82 @@ describe("myStudioProducts", () => {
     expect(byId["booting-env"].status).toBe("booting");
     // label falls back to subdomain when name is null.
     expect(byId["booting-env"].label).toBe("booting-env");
+  });
+
+  it("just-claimed env with a STALE pre-claim website announcement is 'booting'", async () => {
+    // The warm-pool pod announced its website endpoint BEFORE the claim, then
+    // restarts on claim (Reloader picks up new ADMINS+key). The pre-claim
+    // announcement's lastSeen is older than claimedAt, so the env is NOT ready.
+    const claimedAt = new Date().toISOString();
+    const staleLastSeen = new Date(Date.now() - 60_000).toISOString();
+    await seedEnv({
+      id: "just-claimed",
+      subdomain: "just-claimed",
+      owner: null,
+      claimedBy: ME,
+      claimedAt,
+      services: studioServices("studio"),
+    });
+    await seedWebsiteEndpoint("just-claimed", "studio", "enabled", staleLastSeen);
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["just-claimed"].status).toBe("booting");
+  });
+
+  it("claimed env whose endpoint lastSeen is AFTER claimedAt is 'ready'", async () => {
+    const claimedAt = new Date(Date.now() - 60_000).toISOString();
+    const freshLastSeen = new Date().toISOString();
+    await seedEnv({
+      id: "reannounced",
+      subdomain: "reannounced",
+      owner: ME,
+      claimedBy: ME,
+      claimedAt,
+      services: studioServices("studio"),
+    });
+    await seedWebsiteEndpoint("reannounced", "studio", "enabled", freshLastSeen);
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["reannounced"].status).toBe("ready");
+  });
+
+  it("never-claimed env (claimedAt null) with an enabled website is 'ready'", async () => {
+    // Cold-created envs were never warm-pool pods, so there's no stale
+    // pre-claim announcement to worry about — keep the original rule.
+    await seedEnv({
+      id: "cold",
+      subdomain: "cold",
+      owner: ME,
+      claimedAt: null,
+      services: studioServices("studio"),
+    });
+    await seedWebsiteEndpoint("cold", "studio", "enabled");
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["cold"].status).toBe("ready");
   });
 });

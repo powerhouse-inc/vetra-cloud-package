@@ -306,7 +306,15 @@ export function createResolvers(
         // lowercased; compare lowercased defensively.
         const rows = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "subdomain", "services", "status", "packages"])
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "services",
+            "status",
+            "packages",
+            "claimedAt",
+          ])
           .where((eb) =>
             eb.or([
               eb(sql<string>`lower(${eb.ref("owner")})`, "=", me),
@@ -316,11 +324,14 @@ export function createResolvers(
           .execute()) as StudioEnvRow[];
 
         // Filter to live STUDIO envs, capturing the matched CLINT prefix.
+        // `claimedAt` is threaded through so readiness can be evaluated against
+        // each env's own claim time (see freshness check below).
         const matched: Array<{
           id: string;
           subdomain: string;
           prefix: string;
           label: string;
+          claimedAt: string | null;
         }> = [];
         for (const row of rows) {
           if (row.status && RELEASED_STATUSES.has(row.status)) continue;
@@ -347,22 +358,39 @@ export function createResolvers(
             subdomain: row.subdomain,
             prefix: studioService.prefix,
             label: row.name ?? row.subdomain,
+            claimedAt: row.claimedAt,
           });
         }
 
         // Batch-resolve readiness in a single query — no per-env N+1.
+        //
+        // An enabled website endpoint is NOT sufficient on its own: a warm-pool
+        // pod announces its website endpoint BEFORE it's claimed, then RESTARTS
+        // on claim (Reloader picks up new ADMINS+key). Reading that stale
+        // pre-claim announcement would report "ready" while the pod is actually
+        // restarting. So a claimed env is only ready once an enabled website
+        // endpoint has been (re)announced at/after its `claimedAt` — i.e. the
+        // endpoint's `lastSeen` is fresh relative to the claim. Never-claimed
+        // (cold-created) envs have no such race, so they keep the old rule.
+        const claimedAtByEnv = new Map<string, string | null>(
+          matched.map((m) => [m.id, m.claimedAt]),
+        );
         const readyKeys = new Set<string>();
         const matchedEnvIds = matched.map((m) => m.id);
         if (matchedEnvIds.length > 0) {
           const endpoints = await db
             .selectFrom("clint_runtime_endpoints")
-            .select(["documentId", "prefix", "type", "status"])
+            .select(["documentId", "prefix", "type", "status", "lastSeen"])
             .where("documentId", "in", matchedEnvIds)
             .execute();
           for (const ep of endpoints) {
-            if (ep.type === "website" && ep.status === "enabled") {
-              readyKeys.add(`${ep.documentId}|${ep.prefix}`);
+            if (ep.type !== "website" || ep.status !== "enabled") continue;
+            const claimedAt = claimedAtByEnv.get(ep.documentId) ?? null;
+            if (claimedAt && !isFresherThanClaim(ep.lastSeen, claimedAt)) {
+              // Stale pre-claim announcement — pod is (re)starting post-claim.
+              continue;
             }
+            readyKeys.add(`${ep.documentId}|${ep.prefix}`);
           }
         }
 
@@ -833,7 +861,25 @@ type StudioEnvRow = {
   services: string | null;
   status: string | null;
   packages: string | null;
+  claimedAt: string | null;
 };
+
+/**
+ * True iff a CLINT endpoint announcement (`lastSeen`) is at/after the env's
+ * `claimedAt` — i.e. the endpoint was (re)announced post-claim and isn't a
+ * stale warm-pool announcement from before the claim-triggered restart. Both
+ * are ISO-8601 timestamps from the processor; compared as epoch millis (UTC,
+ * timezone-agnostic). A null/unparseable `lastSeen` yields NaN, which compares
+ * false → treated as not-fresh (booting), the safe default.
+ */
+function isFresherThanClaim(
+  lastSeen: string | null,
+  claimedAt: string,
+): boolean {
+  const seen = lastSeen ? new Date(lastSeen).getTime() : NaN;
+  const claimed = new Date(claimedAt).getTime();
+  return seen >= claimed;
+}
 
 /**
  * Parse the env's `services` JSON into the fields `myStudioProducts` needs.
