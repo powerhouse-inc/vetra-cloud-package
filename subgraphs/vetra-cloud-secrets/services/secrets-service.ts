@@ -66,6 +66,19 @@ export interface SecretsService {
     key: string,
     value: string,
   ): Promise<{ key: string }>;
+  /**
+   * Upsert several secrets for one tenant atomically: all rows + a SINGLE
+   * pg_notify in one transaction. The single notify is the load-bearing
+   * property — it makes the secrets-controller reconcile the tenant ONCE, so
+   * the agent pod gets ONE Reloader bounce instead of one per key. Used by the
+   * warm-pool claim to deliver the Anthropic key(s) + ADMINS in a single pod
+   * rollout. Keys are validated and values encrypted before the transaction
+   * opens, so an invalid key fails the whole batch with nothing written.
+   */
+  setSecrets(
+    tenantId: string,
+    entries: Array<{ key: string; value: string }>,
+  ): Promise<void>;
   /** Remove a secret. Returns true if a row was deleted. */
   deleteSecret(tenantId: string, key: string): Promise<boolean>;
 }
@@ -151,6 +164,39 @@ export function createSecretsService({
         await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
       });
       return { key };
+    },
+
+    async setSecrets(tenantId, entries) {
+      if (entries.length === 0) return;
+      // Validate + encrypt BEFORE opening the transaction so a bad key (or a
+      // transit failure) aborts the whole batch with nothing written — no
+      // partial materialization, no spurious notify.
+      for (const e of entries) validateKey(e.key);
+      await transit.ensureTenantKey(tenantId);
+      const now = new Date().toISOString();
+      const rows = await Promise.all(
+        entries.map(async (e) => ({
+          tenantId,
+          key: e.key,
+          updatedAt: now,
+          ciphertext: await transit.encrypt(tenantId, e.value),
+        })),
+      );
+      await db.transaction().execute(async (trx) => {
+        await trx
+          .insertInto("tenant_secrets")
+          .values(rows)
+          .onConflict((oc) =>
+            oc.columns(["tenantId", "key"]).doUpdateSet((eb) => ({
+              updatedAt: eb.ref("excluded.updatedAt"),
+              ciphertext: eb.ref("excluded.ciphertext"),
+            })),
+          )
+          .execute();
+        // Exactly one notify for the whole batch → one controller reconcile →
+        // one Reloader bounce.
+        await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
+      });
     },
 
     async deleteSecret(tenantId, key) {
