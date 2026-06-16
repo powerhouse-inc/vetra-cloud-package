@@ -69,6 +69,26 @@ describe("claimWarmEnvironment", () => {
     });
   });
 
+  it("injects the key (setSecret) BEFORE transferring ownership (setOwner)", async () => {
+    // Coalescing the claim to a single pod rollout depends on the
+    // <tenant>-secrets Secret already materializing before the owner-change
+    // re-render fires. So every setSecret must run before setOwner.
+    const order: string[] = [];
+    const d = deps({
+      setSecret: vi.fn(async () => {
+        order.push("setSecret");
+      }),
+      setOwner: vi.fn(async () => {
+        order.push("setOwner");
+      }),
+    });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    // All three secrets dispatched, then the single owner transfer.
+    expect(order).toEqual(["setSecret", "setSecret", "setSecret", "setOwner"]);
+    // setOwner is the LAST mutating call (so the re-render sees the key).
+    expect(order[order.length - 1]).toBe("setOwner");
+  });
+
   it("retries a transient setSecret failure and still succeeds", async () => {
     const d = deps();
     let calls = 0;
@@ -91,13 +111,14 @@ describe("claimWarmEnvironment", () => {
     expect(d.terminate).toHaveBeenCalledWith("doc-1");
   });
 
-  it("TERMINATES and returns null when setOwner fails", async () => {
+  it("TERMINATES and returns null when setOwner fails (after the key was injected)", async () => {
     const d = deps();
     d.setOwner = vi.fn(async () => {
       throw new Error("owner boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.terminate).toHaveBeenCalledWith("doc-1");
-    expect(d.setSecret).not.toHaveBeenCalled();
+    // Key is injected first now, so the secrets DID run before the owner step.
+    expect(d.setSecret).toHaveBeenCalled();
   });
 });

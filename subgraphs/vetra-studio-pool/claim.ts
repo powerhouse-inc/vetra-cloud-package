@@ -82,13 +82,20 @@ export async function claimWarmEnvironment(
   }
 
   try {
-    // 3. Transfer ownership (system action — env was created owner-null).
-    await d.setOwner(env.id, addr);
-    // 4. Inject the key under all required names → secrets-controller → Reloader
-    //    bounce. Retried for transient failures.
+    // 3. Inject the key FIRST, under all required names. This kicks off the
+    //    secrets-controller → <tenant>-secrets materialization BEFORE any
+    //    render, so by the time the owner-change re-render rolls the pod the
+    //    Secret is (already / nearly) in place — collapsing the previous TWO
+    //    rollouts (owner-change render, then secret bounce) toward ONE. Retried
+    //    for transient failures.
     for (const name of SECRET_NAMES) {
       await withRetry(() => d.setSecret(env.tenantId!, name, apiKey), SECRET_RETRIES, sleep);
     }
+    // 4. Transfer ownership LAST (system action — env was created owner-null).
+    //    This is the owner-change path in the processor, which re-renders gitops
+    //    (dropping the network lock, refreshing ADMINS) and triggers the single
+    //    rollout — now with the key already materializing.
+    await d.setOwner(env.id, addr);
     d.logger.info(`[studio-pool] claimed ${env.id} (${env.tenantId}) for ${addr}`);
     return {
       documentId: env.id,
