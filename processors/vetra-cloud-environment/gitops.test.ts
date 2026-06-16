@@ -245,23 +245,17 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     },
   };
 
-  it("locks an unclaimed (owner-null) CLINT agent but keeps ingress enabled", async () => {
+  it("renders a warm CLINT agent with ingress enabled and no network-lock field", async () => {
+    // The network lock was removed (it never enforced — Traefik hostNetwork
+    // traffic bypassed the default-deny policy). Unclaimed agents keep their
+    // warm ingress and are gated by auth + the credential guard instead.
     const yaml = await generateValuesYaml(
       dbStub,
       envState({ owner: null, services: [clintService] }),
-      "doc-locked",
+      "doc-clint-warm",
     );
     expect(yaml).toMatch(/ingress:[\s\S]*?enabled: true/);
-    expect(yaml).toMatch(/locked: true/);
-  });
-
-  it("unlocks a claimed (owner-set) CLINT agent", async () => {
-    const yaml = await generateValuesYaml(
-      dbStub,
-      envState({ owner: "0xowner", services: [clintService] }),
-      "doc-unlocked",
-    );
-    expect(yaml).toMatch(/locked: false/);
+    expect(yaml).not.toMatch(/locked:/);
   });
 
   it("preserves user-provided env vars alongside NODE_OPTIONS for CLINT", async () => {
