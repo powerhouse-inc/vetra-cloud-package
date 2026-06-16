@@ -14,8 +14,16 @@ export interface ClaimDeps {
   getKeyForDid: (did: string) => Promise<string | null>;
   /** System action: SET_OWNER on the (owner-null) claimed document. */
   setOwner: (documentId: string, address: string) => Promise<void>;
-  /** Inject one secret into the tenant secret store. */
-  setSecret: (tenantId: string, key: string, value: string) => Promise<void>;
+  /**
+   * Inject several secrets into the tenant secret store atomically — one write,
+   * one notify, one pod bounce. Carries the Anthropic key(s) AND `ADMINS` so the
+   * claimant becomes the embedded switchboard's admin without a gitops
+   * re-render (which was the slow ~30s second restart).
+   */
+  setSecrets: (
+    tenantId: string,
+    entries: Array<{ key: string; value: string }>,
+  ) => Promise<void>;
   /** Terminate an env (used to clean up a half-claimed env on failure). */
   terminate: (documentId: string) => Promise<void>;
   cfg: { version: string };
@@ -82,13 +90,21 @@ export async function claimWarmEnvironment(
   }
 
   try {
-    // 3. Transfer ownership (system action — env was created owner-null).
+    // 3. Inject the key (under all required names) AND ADMINS in ONE batched
+    //    write — a single pg_notify → one secrets-controller reconcile → ONE
+    //    Reloader bounce of the agent pod. Delivering ADMINS here (instead of
+    //    via an owner-change gitops re-render) is what collapses the claim from
+    //    two restarts (~3s secret bounce + ~30s gitops/ADMINS rollout) to one
+    //    ~3s bounce. Retried as a whole for transient failures.
+    const secretEntries = [
+      ...SECRET_NAMES.map((key) => ({ key, value: apiKey })),
+      { key: "ADMINS", value: addr },
+    ];
+    await withRetry(() => d.setSecrets(env.tenantId!, secretEntries), SECRET_RETRIES, sleep);
+    // 4. Transfer ownership LAST (system action — env was created owner-null).
+    //    SET_OWNER updates ownership/read-model only; it no longer triggers a
+    //    gitops rollout (ADMINS now arrives via the Secret above).
     await d.setOwner(env.id, addr);
-    // 4. Inject the key under all required names → secrets-controller → Reloader
-    //    bounce. Retried for transient failures.
-    for (const name of SECRET_NAMES) {
-      await withRetry(() => d.setSecret(env.tenantId!, name, apiKey), SECRET_RETRIES, sleep);
-    }
     d.logger.info(`[studio-pool] claimed ${env.id} (${env.tenantId}) for ${addr}`);
     return {
       documentId: env.id,

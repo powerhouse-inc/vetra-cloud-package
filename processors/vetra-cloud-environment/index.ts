@@ -156,15 +156,6 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
           `${createdBy ? ` (createdBy=${createdBy})` : ""}` +
           `${ownerNormalized ? ` (owner=${ownerNormalized})` : ""}`,
       );
-      // Capture the prior owner so we can detect an ownership transfer (e.g. a
-      // warm-pool claim) that doesn't move status to CHANGES_APPROVED but still
-      // needs a gitops re-render (owner-gated config like the network lock).
-      const existingRow = await this.relationalDb
-        .selectFrom("environments")
-        .select("owner")
-        .where("id", "=", documentId)
-        .executeTakeFirst();
-      const prevOwner = existingRow?.owner ?? null;
       await this.relationalDb
         .insertInto("environments")
         .values({ id: documentId, ...row, createdBy })
@@ -190,32 +181,13 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
         }
-      } else if (prevOwner !== ownerNormalized && tenantId) {
-        // Ownership transferred (e.g. a warm-pool claim) without a status
-        // change. Re-render gitops so owner-gated config updates — notably
-        // dropping the default-deny NetworkPolicy on a freshly-claimed studio.
-        // No status transition / MARK_CHANGES_PUSHED here. Use the freshest doc
-        // state so `locked` is rendered from the just-set owner (avoids a
-        // transient locked:true → locked:false double-commit).
-        logger.info(
-          `Owner changed for "${label}" (${prevOwner ?? "none"} → ${ownerNormalized ?? "none"}); scheduling gitops re-sync`,
-        );
-        // Fire-and-forget so a claim's re-render never head-of-line-blocks the
-        // processor's operation loop (other envs / keeper creates keep flowing).
-        // syncEnvironment serializes on gitMutex, so a detached render can't race
-        // a concurrent one; errors are logged (same swallow-and-log semantics as
-        // the CHANGES_APPROVED path — the keeper / next event re-renders).
-        void (async () => {
-          try {
-            const freshDoc = await this.documentView.get<VetraCloudEnvironmentDocument>(documentId);
-            const syncState = freshDoc?.state?.global ?? state;
-            await syncEnvironment(this.relationalDb, syncState, documentId, this.secretsService);
-            logger.info(`Owner-change gitops re-sync completed for "${label}"`);
-          } catch (error) {
-            logger.error(`Owner-change gitops re-sync failed for "${label}": ${String(error)}`);
-          }
-        })();
       } else {
+        // No gitops re-render on a bare ownership transfer (warm-pool claim).
+        // ADMINS — the only owner-gated value that remained after the network
+        // lock was removed — is now delivered through the tenant Secret in the
+        // claim's batched write (one Reloader bounce), so the slow ~30s
+        // owner-change gitops rollout is gone. A real config change still
+        // renders via the CHANGES_APPROVED path above.
         logger.info(`Skipping gitops sync for "${label}" (status: ${status})`);
       }
     }
