@@ -435,7 +435,10 @@ function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolea
 // Switchboard auth env for a vetra-cli agent's embedded switchboard. Turns on
 // DOCUMENT_PERMISSIONS auth with the env owner as supreme admin.
 // owner null → auth on, no ADMINS yet (next deploy adds it once claimed).
-// SKIP_CREDENTIAL_VERIFICATION=true skips the renown.id credential check.
+// NO SKIP_CREDENTIAL_VERIFICATION: the embedded switchboard does the real Renown
+// credential check (same as the management switchboard). vetra-cli's bundled
+// switchboard refuses the skip flag in production (it enables identity
+// spoofing), so emitting it crash-loops a claimed studio.
 function switchboardAuthEnv(
   owner: string | null | undefined,
 ): { name: string; value: string }[] {
@@ -443,7 +446,6 @@ function switchboardAuthEnv(
     { name: "AUTH_ENABLED", value: "true" },
     { name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true" },
     { name: "DEFAULT_PROTECTION", value: "true" },
-    { name: "SKIP_CREDENTIAL_VERIFICATION", value: "true" },
   ];
   if (owner) entries.push({ name: "ADMINS", value: owner.toLowerCase() });
   return entries;

@@ -381,7 +381,11 @@ describe("generateValuesYaml — vetra-cli switchboard auth env", () => {
     expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
     expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true"/);
     expect(yaml).toMatch(/name: "DEFAULT_PROTECTION", value: "true"/);
-    expect(yaml).toMatch(/name: "SKIP_CREDENTIAL_VERIFICATION", value: "true"/);
+    // No SKIP_CREDENTIAL_VERIFICATION: the studio's embedded switchboard does the
+    // real Renown credential check (like the management switchboard). vetra-cli's
+    // bundled switchboard refuses the skip flag in production, so emitting it
+    // crash-loops a claimed studio.
+    expect(yaml).not.toMatch(/SKIP_CREDENTIAL_VERIFICATION/);
     // owner lowercased into ADMINS
     expect(yaml).toMatch(
       /name: "ADMINS", value: "0xabcdef0000000000000000000000000000001234"/,
