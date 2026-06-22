@@ -6,12 +6,15 @@ import {
   ACCESS_DAYS,
   createCode,
   getAccessStatus,
+  getRedeemedKeyCiphertext,
+  hasAttachedKeyForDid,
   isCodeUsable,
   listCodes,
   listRedemptions,
   redeemCode,
   revokeAccess,
   setActiveCode,
+  setCodeAnthropicKey,
 } from "../db/codes.js";
 import type { VetraAccessCodesDB } from "../db/schema.js";
 
@@ -39,6 +42,15 @@ describe("migrations", () => {
     expect(
       await db.selectFrom("invite_redemptions").selectAll().execute(),
     ).toEqual([]);
+  });
+
+  it("is idempotent — re-running up() on an existing schema is a no-op", async () => {
+    // The boot-time runner calls up() on every start; the anthropic_key_ciphertext
+    // column add must not throw "column already exists" the second time.
+    await expect(up(db)).resolves.not.toThrow();
+    await createCode(db, { code: "after-rerun" });
+    const view = await listCodes(db);
+    expect(view.find((c) => c.code === "after-rerun")?.hasAnthropicKey).toBe(false);
   });
 });
 
@@ -153,7 +165,10 @@ describe("redeemCode + getAccessStatus", () => {
   });
 
   it("returns not-allowed when there is no redemption", async () => {
-    expect(await getAccessStatus(db, DID)).toEqual({ allowed: false });
+    expect(await getAccessStatus(db, DID)).toEqual({
+      allowed: false,
+      hasAttachedKey: false,
+    });
   });
 
   it("ignores expired access windows", async () => {
@@ -252,5 +267,78 @@ describe("revokeAccess", () => {
     // nothing was revoked
     expect((await getAccessStatus(db, DID)).allowed).toBe(true);
     expect((await getAccessStatus(db, DID2)).allowed).toBe(true);
+  });
+});
+
+describe("attached Claude key", () => {
+  // The ciphertext stored here is opaque to codes.ts — encryption happens in the
+  // resolver layer. These tests use a sentinel string as the stored ciphertext.
+  const CIPHER = "vault:v1:access-codes:sk-ant-xxx";
+
+  it("createCode stores the ciphertext and reports hasAnthropicKey", async () => {
+    const withKey = await createCode(db, {
+      code: "keyed",
+      anthropicKeyCiphertext: CIPHER,
+    });
+    expect(withKey.hasAnthropicKey).toBe(true);
+
+    const without = await createCode(db, { code: "plain" });
+    expect(without.hasAnthropicKey).toBe(false);
+  });
+
+  it("never exposes the raw ciphertext through a view", async () => {
+    await createCode(db, { code: "keyed", anthropicKeyCiphertext: CIPHER });
+    const listed = await listCodes(db);
+    const view = listed.find((c) => c.code === "keyed")!;
+    expect(view.hasAnthropicKey).toBe(true);
+    expect(JSON.stringify(view)).not.toContain(CIPHER);
+  });
+
+  it("setCodeAnthropicKey attaches, rotates, and detaches", async () => {
+    await createCode(db, { code: "c" });
+    expect((await setCodeAnthropicKey(db, "C", CIPHER))?.hasAnthropicKey).toBe(true);
+    expect(
+      (await setCodeAnthropicKey(db, "c", "vault:v1:access-codes:rotated"))
+        ?.hasAnthropicKey,
+    ).toBe(true);
+    expect((await setCodeAnthropicKey(db, "c", null))?.hasAnthropicKey).toBe(false);
+  });
+
+  it("setCodeAnthropicKey returns null for a missing code", async () => {
+    expect(await setCodeAnthropicKey(db, "nope", CIPHER)).toBeNull();
+  });
+
+  it("getRedeemedKeyCiphertext returns the key only for an active keyed redemption", async () => {
+    await createCode(db, { code: "keyed", anthropicKeyCiphertext: CIPHER });
+    await createCode(db, { code: "plain" });
+
+    // No redemption yet -> none.
+    expect(await getRedeemedKeyCiphertext(db, DID)).toBeNull();
+    expect(await hasAttachedKeyForDid(db, DID)).toBe(false);
+
+    // Redeeming a keyless code -> still none.
+    await redeemCode(db, "plain", DID);
+    expect(await getRedeemedKeyCiphertext(db, DID)).toBeNull();
+
+    // Redeeming the keyed code -> returns its ciphertext.
+    await redeemCode(db, "keyed", DID);
+    expect(await getRedeemedKeyCiphertext(db, DID)).toBe(CIPHER);
+    expect(await hasAttachedKeyForDid(db, DID)).toBe(true);
+    expect((await getAccessStatus(db, DID)).hasAttachedKey).toBe(true);
+  });
+
+  it("ignores an expired redemption when resolving the key", async () => {
+    await createCode(db, { code: "keyed", anthropicKeyCiphertext: CIPHER });
+    await db
+      .insertInto("invite_redemptions")
+      .values({
+        code: "keyed",
+        user_did: DID,
+        redeemed_at: "2000-01-01T00:00:00.000Z",
+        access_expires: "2000-02-01T00:00:00.000Z",
+      })
+      .execute();
+    expect(await getRedeemedKeyCiphertext(db, DID)).toBeNull();
+    expect((await getAccessStatus(db, DID)).hasAttachedKey).toBe(false);
   });
 });

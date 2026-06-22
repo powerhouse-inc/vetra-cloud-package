@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { ObservabilityDB } from "./db/schema.js";
 import { PrometheusClient } from "./prometheus.js";
 import { LokiClient } from "./loki.js";
@@ -286,6 +286,121 @@ export function createResolvers(
               .execute();
 
         return rows;
+      },
+
+      myStudioProducts: async (
+        _parent: unknown,
+        _args: unknown,
+        ctx: AuthAwareContext,
+      ) => {
+        const me = ctx.user?.address?.toLowerCase();
+        if (!me) {
+          // Unauthenticated → empty list. The UI can prompt for login.
+          return [];
+        }
+
+        // Scope strictly by ownership OR a synchronous claim. claimedBy is
+        // written at claim time, so just-claimed envs show up immediately
+        // (no owner-propagation lag), and unclaimed warm-pool envs (owner
+        // and claimedBy both NULL) never leak. owner/claimedBy are stored
+        // lowercased; compare lowercased defensively.
+        const rows = (await envDb
+          .selectFrom("environments")
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "services",
+            "status",
+            "packages",
+            "claimedAt",
+          ])
+          .where((eb) =>
+            eb.or([
+              eb(sql<string>`lower(${eb.ref("owner")})`, "=", me),
+              eb(sql<string>`lower(${eb.ref("claimedBy")})`, "=", me),
+            ]),
+          )
+          .execute()) as StudioEnvRow[];
+
+        // Filter to live STUDIO envs, capturing the matched CLINT prefix.
+        // `claimedAt` is threaded through so readiness can be evaluated against
+        // each env's own claim time (see freshness check below).
+        const matched: Array<{
+          id: string;
+          subdomain: string;
+          prefix: string;
+          label: string;
+          claimedAt: string | null;
+        }> = [];
+        for (const row of rows) {
+          if (row.status && RELEASED_STATUSES.has(row.status)) continue;
+          if (!row.subdomain) continue;
+
+          const services = parseEnvStudioServices(row.services);
+          // A studio env runs an enabled CLINT service whose package is
+          // vetra-cli — either declared inline on the service config or
+          // recorded in the env's packages array.
+          const hasVetraCliPackage = parseEnvPackages(row.packages).some(
+            (p) => p.name === "vetra-cli",
+          );
+          const studioService = services.find(
+            (s) =>
+              s.type === "CLINT" &&
+              s.enabled &&
+              (s.packageName === "vetra-cli" ||
+                (s.packageName === null && hasVetraCliPackage)),
+          );
+          if (!studioService) continue;
+
+          matched.push({
+            id: row.id,
+            subdomain: row.subdomain,
+            prefix: studioService.prefix,
+            label: row.name ?? row.subdomain,
+            claimedAt: row.claimedAt,
+          });
+        }
+
+        // Batch-resolve readiness in a single query — no per-env N+1.
+        //
+        // An enabled website endpoint is NOT sufficient on its own: a warm-pool
+        // pod announces its website endpoint BEFORE it's claimed, then RESTARTS
+        // on claim (Reloader picks up new ADMINS+key). Reading that stale
+        // pre-claim announcement would report "ready" while the pod is actually
+        // restarting. So a claimed env is only ready once an enabled website
+        // endpoint has been (re)announced at/after its `claimedAt` — i.e. the
+        // endpoint's `lastSeen` is fresh relative to the claim. Never-claimed
+        // (cold-created) envs have no such race, so they keep the old rule.
+        const claimedAtByEnv = new Map<string, string | null>(
+          matched.map((m) => [m.id, m.claimedAt]),
+        );
+        const readyKeys = new Set<string>();
+        const matchedEnvIds = matched.map((m) => m.id);
+        if (matchedEnvIds.length > 0) {
+          const endpoints = await db
+            .selectFrom("clint_runtime_endpoints")
+            .select(["documentId", "prefix", "type", "status", "lastSeen"])
+            .where("documentId", "in", matchedEnvIds)
+            .execute();
+          for (const ep of endpoints) {
+            if (ep.type !== "website" || ep.status !== "enabled") continue;
+            const claimedAt = claimedAtByEnv.get(ep.documentId) ?? null;
+            if (claimedAt && !isFresherThanClaim(ep.lastSeen, claimedAt)) {
+              // Stale pre-claim announcement — pod is (re)starting post-claim.
+              continue;
+            }
+            readyKeys.add(`${ep.documentId}|${ep.prefix}`);
+          }
+        }
+
+        return matched.map((m) => ({
+          envId: m.id,
+          subdomain: m.subdomain,
+          prefix: m.prefix,
+          label: m.label,
+          status: readyKeys.has(`${m.id}|${m.prefix}`) ? "ready" : "booting",
+        }));
       },
 
       viewer: (_parent: unknown, _args: unknown, ctx: AuthAwareContext) => {
@@ -733,6 +848,72 @@ function parseEnvServices(
       enabled: !!s.enabled,
       version: s.version ?? null,
     }));
+  } catch {
+    return [];
+  }
+}
+
+/** Subset of the `environments` row read by `myStudioProducts`. */
+type StudioEnvRow = {
+  id: string;
+  name: string | null;
+  subdomain: string | null;
+  services: string | null;
+  status: string | null;
+  packages: string | null;
+  claimedAt: string | null;
+};
+
+/**
+ * True iff a CLINT endpoint announcement (`lastSeen`) is at/after the env's
+ * `claimedAt` — i.e. the endpoint was (re)announced post-claim and isn't a
+ * stale warm-pool announcement from before the claim-triggered restart. Both
+ * are ISO-8601 timestamps from the processor; compared as epoch millis (UTC,
+ * timezone-agnostic). A null/unparseable `lastSeen` yields NaN, which compares
+ * false → treated as not-fresh (booting), the safe default.
+ */
+function isFresherThanClaim(
+  lastSeen: string | null,
+  claimedAt: string,
+): boolean {
+  const seen = lastSeen ? new Date(lastSeen).getTime() : NaN;
+  const claimed = new Date(claimedAt).getTime();
+  return seen >= claimed;
+}
+
+/**
+ * Parse the env's `services` JSON into the fields `myStudioProducts` needs.
+ * Each service is `{ type, prefix, enabled, config?: { package?: { name } } }`.
+ * `packageName` is null when the service carries no inline package config.
+ */
+function parseEnvStudioServices(
+  raw: string | null,
+): Array<{ type: string; prefix: string; enabled: boolean; packageName: string | null }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{
+      type?: string;
+      prefix?: string;
+      enabled?: boolean;
+      config?: { package?: { name?: string } };
+    }>;
+    return parsed.map((s) => ({
+      type: String(s.type ?? ""),
+      prefix: String(s.prefix ?? ""),
+      enabled: !!s.enabled,
+      packageName: s.config?.package?.name ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Parse the env's `packages` JSON array of `{ name, version }`. */
+function parseEnvPackages(raw: string | null): Array<{ name: string }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{ name?: string }>;
+    return parsed
+      .filter((p) => !!p.name)
+      .map((p) => ({ name: String(p.name) }));
   } catch {
     return [];
   }

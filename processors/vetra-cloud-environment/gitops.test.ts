@@ -229,6 +229,35 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  const clintService = {
+    type: "CLINT" as const,
+    prefix: "agent",
+    enabled: true,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    selectedRessource: "VETRA_AGENT_M" as const,
+    config: {
+      package: { registry: "https://r", name: "p", version: "1.0.0" },
+      env: [],
+      serviceCommand: null,
+      selectedRessource: null,
+    },
+  };
+
+  it("renders a warm CLINT agent with ingress enabled and no network-lock field", async () => {
+    // The network lock was removed (it never enforced — Traefik hostNetwork
+    // traffic bypassed the default-deny policy). Unclaimed agents keep their
+    // warm ingress and are gated by auth + the credential guard instead.
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: null, services: [clintService] }),
+      "doc-clint-warm",
+    );
+    expect(yaml).toMatch(/ingress:[\s\S]*?enabled: true/);
+    expect(yaml).not.toMatch(/locked:/);
+  });
+
   it("preserves user-provided env vars alongside NODE_OPTIONS for CLINT", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
@@ -289,6 +318,119 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     expect(yaml).toMatch(
       /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"250m",\s*memory:\s*"512Mi"\s*\}/,
     );
+  });
+
+  it("emits CLINT XXL with cpu request 2 and cpu limit 4 (Vetra Studio sizing)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "CLINT",
+            prefix: "vetra-agent",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            selectedRessource: "VETRA_AGENT_XXL",
+            config: {
+              package: { registry: "https://r", name: "p", version: "1.0.0" },
+              env: [],
+              serviceCommand: null,
+              selectedRessource: null,
+            },
+          },
+        ],
+      }),
+      "doc-clint-xxl",
+    );
+    expect(yaml).toMatch(
+      /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"2",\s*memory:\s*"4Gi"\s*\}[\s\S]*?limits:\s*\{\s*cpu:\s*"4",\s*memory:\s*"8Gi"\s*\}/,
+    );
+  });
+});
+
+describe("generateValuesYaml — vetra-cli switchboard auth env", () => {
+  function clintAgent(pkgName: string) {
+    return {
+      type: "CLINT" as const,
+      prefix: "agent",
+      enabled: true,
+      url: null,
+      status: "ACTIVE" as const,
+      version: null,
+      selectedRessource: "VETRA_AGENT_M" as const,
+      config: {
+        package: { registry: "https://r", name: pkgName, version: "1.0.0" },
+        env: [],
+        serviceCommand: null,
+        selectedRessource: null,
+      },
+    };
+  }
+
+  it("emits the auth env set on a vetra-cli agent with a non-null owner", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [clintAgent("vetra-cli")],
+      }),
+      "doc-auth-owner",
+    );
+    expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
+    expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true"/);
+    expect(yaml).toMatch(/name: "DEFAULT_PROTECTION", value: "true"/);
+    expect(yaml).toMatch(/name: "SKIP_CREDENTIAL_VERIFICATION", value: "true"/);
+    // owner lowercased into ADMINS
+    expect(yaml).toMatch(
+      /name: "ADMINS", value: "0xabcdef0000000000000000000000000000001234"/,
+    );
+  });
+
+  it("does NOT emit auth env on a non-vetra-cli CLINT agent", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [clintAgent("some-other-agent")],
+      }),
+      "doc-auth-other",
+    );
+    expect(yaml).not.toMatch(/AUTH_ENABLED/);
+  });
+
+  it("does NOT emit auth env on the standalone switchboard service block", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        owner: "0xABCdef0000000000000000000000000000001234",
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: null,
+          },
+        ],
+      }),
+      "doc-auth-switchboard",
+    );
+    expect(yaml).not.toMatch(/AUTH_ENABLED/);
+  });
+
+  it("omits ADMINS when owner is null but still enables auth on vetra-cli", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: null, services: [clintAgent("vetra-cli")] }),
+      "doc-auth-noowner",
+    );
+    expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
+    expect(yaml).not.toMatch(/name: "ADMINS"/);
   });
 });
 
@@ -351,6 +493,15 @@ describe("generateValuesYaml — CLINT prebuilt agent image", () => {
     expect(yaml).toMatch(/clint:[\s\S]*?tag: "9\.9\.9"/);
     expect(yaml).toMatch(/clint:[\s\S]*?version: "9\.9\.9"/);
     expect(yaml).not.toMatch(/clint:[\s\S]*?tag: "latest"/);
+  });
+
+  it("emits a per-agent storage size so the chart provisions a persistent volume", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      clintState("vetra-cli", "0.0.1-dev.23"),
+      "doc-clint-storage",
+    );
+    expect(yaml).toMatch(/clint:[\s\S]*?storage: "2Gi"/);
   });
 });
 
@@ -512,5 +663,59 @@ describe("generateValuesYaml — connect runtime config", () => {
       "doc-connect-empty",
     );
     expect(yaml).not.toContain("PH_CONNECT_CONFIG_JSON");
+  });
+});
+
+describe("generateValuesYaml — tenant cluster issuer (ZeroSSL routing)", () => {
+  const issuerEnv = "TENANT_CLUSTER_ISSUER";
+  afterEach(() => {
+    delete process.env[issuerEnv];
+  });
+
+  const clintAndSwitchboard = (): Partial<VetraCloudEnvironmentState> => ({
+    services: [
+      {
+        type: "CLINT",
+        prefix: "vetra-agent",
+        enabled: true,
+        url: null,
+        status: "ACTIVE",
+        version: null,
+        selectedRessource: "VETRA_AGENT_S",
+        config: {
+          package: { registry: "https://r", name: "p", version: "1.0.0" },
+          env: [],
+          serviceCommand: null,
+          selectedRessource: null,
+        },
+      },
+      {
+        type: "SWITCHBOARD",
+        prefix: "switchboard",
+        enabled: true,
+        url: null,
+        status: "ACTIVE",
+        version: null,
+        selectedRessource: "VETRA_AGENT_S",
+        config: null,
+      },
+    ],
+  });
+
+  it("defaults to letsencrypt-prod when TENANT_CLUSTER_ISSUER is unset", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState(clintAndSwitchboard()), "doc-issuer-default");
+    expect(yaml).toContain(`certClusterIssuer: "letsencrypt-prod"`);
+    expect(yaml).toMatch(/cert-manager\.io\/cluster-issuer: letsencrypt-prod/);
+    expect(yaml).not.toContain("zerossl-prod");
+  });
+
+  it("routes clint + switchboard certs to the configured issuer (zerossl-prod)", async () => {
+    process.env[issuerEnv] = "zerossl-prod";
+    const yaml = await generateValuesYaml(dbStub, envState(clintAndSwitchboard()), "doc-issuer-zerossl");
+    // clint block carries it for the chart's clint-ingress template...
+    expect(yaml).toContain(`certClusterIssuer: "zerossl-prod"`);
+    // ...and the switchboard ingress annotation uses it inline.
+    expect(yaml).toMatch(/cert-manager\.io\/cluster-issuer: zerossl-prod/);
+    expect(yaml).not.toMatch(/cluster-issuer: letsencrypt-prod/);
   });
 });

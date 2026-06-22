@@ -24,6 +24,18 @@ export interface Environments {
    * that should receive a new image tag when a release lands.
    */
   autoUpdateChannel: string | null;
+  /**
+   * Warm-pool tracking (NULL for ordinary, non-pool environments).
+   * Written by the studio-pool-keeper service and the claim subgraph.
+   * WARMING | AVAILABLE | CLAIMED | FAILED.
+   */
+  poolState: string | null;
+  /** Lowercased EthereumAddress of the caller who claimed this warm env. */
+  claimedBy: string | null;
+  /** ISO timestamp when the env was claimed. */
+  claimedAt: string | null;
+  /** vetra-cli version the warm env was built with (for version-drift recycling). */
+  pinnedVersion: string | null;
 }
 
 export interface DB {

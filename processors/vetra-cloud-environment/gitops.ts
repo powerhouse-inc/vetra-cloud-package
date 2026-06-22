@@ -1,7 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { childLogger } from "document-model";
@@ -193,6 +192,21 @@ function yamlQuote(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Cert issuer
+// ---------------------------------------------------------------------------
+
+/**
+ * cert-manager ClusterIssuer for per-env ingress certs. Defaults to
+ * `letsencrypt-prod`; set `TENANT_CLUSTER_ISSUER=zerossl-prod` (on the
+ * switchboard) to move per-env issuance onto ZeroSSL's independent budget so
+ * warm-pool churn no longer exhausts the LE 50-certs/week cap on `vetra.io`.
+ * Read lazily so env changes apply without a process restart (and tests can set it).
+ */
+function tenantClusterIssuer(): string {
+  return process.env.TENANT_CLUSTER_ISSUER ?? "letsencrypt-prod";
+}
+
+// ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
 
@@ -211,7 +225,7 @@ function generateCustomDomainIngress(
         enabled: true
         secretName: ${service}-custom-${secretSuffix}-tls
       annotations:
-        cert-manager.io/cluster-issuer: letsencrypt-prod`;
+        cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}`;
 }
 
 /**
@@ -348,6 +362,11 @@ const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   },
 };
 
+/** Persistent volume size for a clint agent's workdir (.ph: reactor store,
+ *  agent memory, identity). PGlite + documents are small; 2Gi is ample for a
+ *  studio. The chart provisions a per-agent PVC when this is emitted. */
+const CLINT_AGENT_STORAGE = "2Gi";
+
 /** CLINT agents — small-footprint runtime. nodeMaxOldSpaceMb is unused for
  *  CLINT (the runtime image isn't necessarily Node) but kept for type
  *  symmetry with APP_RESOURCE_MAP. */
@@ -374,7 +393,7 @@ const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   },
   VETRA_AGENT_XXL: {
     requests: { cpu: "2", memory: "4Gi" },
-    limits: { cpu: "8", memory: "8Gi" },
+    limits: { cpu: "4", memory: "8Gi" },
     nodeMaxOldSpaceMb: 6144,
   },
 };
@@ -413,6 +432,23 @@ function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolea
   return LEGACY_SECRET_NAME_PATTERN.test(e.name) ? "secret" : "plain";
 }
 
+// Switchboard auth env for a vetra-cli agent's embedded switchboard. Turns on
+// DOCUMENT_PERMISSIONS auth with the env owner as supreme admin.
+// owner null → auth on, no ADMINS yet (next deploy adds it once claimed).
+// SKIP_CREDENTIAL_VERIFICATION=true skips the renown.id credential check.
+function switchboardAuthEnv(
+  owner: string | null | undefined,
+): { name: string; value: string }[] {
+  const entries = [
+    { name: "AUTH_ENABLED", value: "true" },
+    { name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true" },
+    { name: "DEFAULT_PROTECTION", value: "true" },
+    { name: "SKIP_CREDENTIAL_VERIFICATION", value: "true" },
+  ];
+  if (owner) entries.push({ name: "ADMINS", value: owner.toLowerCase() });
+  return entries;
+}
+
 async function generateClintBlock(
   state: VetraCloudEnvironmentState,
   documentId: string,
@@ -428,7 +464,15 @@ async function generateClintBlock(
     return `clint:\n  enabled: false\n  agents: []`;
   }
 
-  const lines: string[] = [`clint:`, `  enabled: true`, `  agents:`];
+  const lines: string[] = [
+    `clint:`,
+    `  enabled: true`,
+    // Per-env cert issuer for the clint agent ingress (chart reads
+    // .Values.clint.certClusterIssuer). Defaults to letsencrypt-prod; set to
+    // zerossl-prod via TENANT_CLUSTER_ISSUER to use ZeroSSL's budget.
+    `  certClusterIssuer: ${yamlQuote(tenantClusterIssuer())}`,
+    `  agents:`,
+  ];
   for (const svc of clintServices) {
     const cfg = svc.config;
     const pkg = cfg?.package;
@@ -469,6 +513,10 @@ async function generateClintBlock(
     lines.push(`      version: ${yamlQuote(agentVersion)}`);
     lines.push(`      registry: ${yamlQuote(registry)}`);
     lines.push(`      command: ${yamlQuote(command)}`);
+    // Persistent volume for the agent workdir (.ph: reactor store, agent
+    // memory, identity keys). The chart renders a per-agent PVC + workdir mount
+    // when `storage` is set, so documents/projects survive every pod restart.
+    lines.push(`      storage: ${yamlQuote(CLINT_AGENT_STORAGE)}`);
     lines.push(`      resources:`);
     lines.push(
       `        requests: { cpu: ${yamlQuote(resources.requests.cpu)}, memory: ${yamlQuote(resources.requests.memory)} }`,
@@ -484,6 +532,18 @@ async function generateClintBlock(
     lines.push(
       `        - { name: "NODE_OPTIONS", value: "--max-old-space-size=${resources.nodeMaxOldSpaceMb}" }`,
     );
+    // The vetra-cli agent embeds its own switchboard (reactor-api), which reads
+    // these from process.env at boot. Emit auth env ONLY for this agent so its
+    // drive is locked to the env owner; other agents and the standalone
+    // switchboard are untouched. Inline (not via cfg.env) so they stay in the
+    // deterministic YAML and never route through the secrets controller.
+    if (pkg.name === "vetra-cli") {
+      for (const e of switchboardAuthEnv(state.owner)) {
+        lines.push(
+          `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
+        );
+      }
+    }
     // Route each declared env entry. Anything classified as a secret goes
     // through the encrypted tenant_secrets table (via the secrets service);
     // it is OMITTED from this inline block — the chart's `envFrom: secretRef:
@@ -790,7 +850,7 @@ switchboard:
       enabled: true
       secretName: ${switchboardTlsSecret}
     annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod${switchboardCustomIngress}
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${switchboardCustomIngress}
   env:
     PORT: "3000"
     NODE_ENV: production
@@ -866,7 +926,7 @@ connect:
       enabled: true
       secretName: ${connectTlsSecret}
     annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod${connectCustomIngress}
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${connectCustomIngress}
   env:
     PORT: "3001"
     NODE_ENV: production
@@ -934,18 +994,21 @@ ${clintBlock}
 }
 
 // ---------------------------------------------------------------------------
-// Sync — ephemeral clone approach
+// Sync — persistent working-clone approach
 // ---------------------------------------------------------------------------
 
 /**
  * Sync an environment's values to the gitops repo.
  *
- * Each call creates a fresh shallow clone, writes the values file, commits,
- * and pushes. The clone is always cleaned up afterwards. This eliminates all
- * shared working-tree state issues.
+ * Reuses a single persistent working clone, refreshed to a pristine
+ * origin/branch (fetch + reset --hard + clean) before each render, then writes
+ * the values file, commits, and pushes. Reusing the clone — instead of a fresh
+ * clone per sync — is what keeps a claim's gitops re-render off the multi-second
+ * critical path.
  *
- * A mutex serializes syncs within the same process to avoid redundant clones.
- * Cross-process / cross-pod push races are handled by pull-rebase-retry.
+ * A mutex serializes syncs within the same process so the shared working tree
+ * is never touched concurrently. Cross-process / cross-pod push races are
+ * handled by pull-rebase-retry.
  */
 export async function syncEnvironment(
   db: Kysely<DB>,
@@ -983,7 +1046,7 @@ export async function deleteEnvironmentFromGitops(
 ): Promise<void> {
   await gitMutex.acquire();
   try {
-    await withEphemeralClone(async (cloneDir, config) => {
+    await withWorkingClone(async (cloneDir, config) => {
       const tenantDir = join(cloneDir, "tenants", tenantId);
 
       if (!existsSync(tenantDir)) {
@@ -1024,7 +1087,7 @@ async function syncEnvironmentEphemeral(
     `subdomain=${subdomain}, customDomain=${state.customDomain?.domain ?? "unset"}`,
   );
 
-  await withEphemeralClone(async (cloneDir, config) => {
+  await withWorkingClone(async (cloneDir, config) => {
     // Create tenant directory
     const tenantDir = join(cloneDir, "tenants", tenantId);
     mkdirSync(tenantDir, { recursive: true });
@@ -1064,32 +1127,58 @@ async function syncEnvironmentEphemeral(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-async function withEphemeralClone(
+/** Resolve the persistent gitops working-clone path (read lazily so tests and
+ *  config changes take effect without a process restart). */
+function getWorkDir(): string {
+  return process.env.GITOPS_WORK_DIR ?? join(tmpdir(), "vetra-gitops-work");
+}
+
+/**
+ * Ensure a pristine working clone at origin/branch and return its path.
+ *
+ * First use (or a missing work dir) does a full clone. Every subsequent call
+ * refreshes the SAME directory with `fetch` + `reset --hard` + `clean -fd` —
+ * far cheaper than re-cloning on every sync, which is what dominated the
+ * post-claim latency. The gitMutex serializes callers within the process, so
+ * reusing one working tree is safe.
+ */
+async function ensureWorkingClone(config: GitOpsConfig): Promise<string> {
+  const dir = getWorkDir();
+
+  if (existsSync(join(dir, ".git"))) {
+    logger.info(`Refreshing persistent gitops clone: ${dir}`);
+    await git(["fetch", config.remote, config.branch], dir);
+    await git(["reset", "--hard", `${config.remote}/${config.branch}`], dir);
+    await git(["clean", "-fd"], dir);
+    return dir;
+  }
+
+  logger.info(`Creating persistent gitops clone: ${dir}`);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  await git(["clone", "--branch", config.branch, config.repoUrl, "."], dir);
+  await git(["config", "user.name", GIT_AUTHOR_NAME], dir);
+  await git(["config", "user.email", GIT_AUTHOR_EMAIL], dir);
+  return dir;
+}
+
+export async function withWorkingClone(
   fn: (cloneDir: string, config: GitOpsConfig) => Promise<void>,
 ): Promise<void> {
   const config = getConfig();
-  const cloneDir = mkdtempSync(join(tmpdir(), "gitops-"));
-  logger.info(`Cloning into ephemeral directory: ${cloneDir}`);
-
+  let cloneDir: string;
   try {
-    await git(
-      ["clone", "--depth", "1", "--branch", config.branch, config.repoUrl, "."],
-      cloneDir,
+    cloneDir = await ensureWorkingClone(config);
+  } catch (error) {
+    // A partial/corrupted work dir can wedge fetch/reset. Nuke it and re-clone
+    // once from scratch so a bad state self-heals instead of failing forever.
+    logger.warn(
+      `Working clone refresh failed, recreating from scratch: ${String(error)}`,
     );
-
-    // Set git identity for commits in this ephemeral clone
-    await git(["config", "user.name", GIT_AUTHOR_NAME], cloneDir);
-    await git(["config", "user.email", GIT_AUTHOR_EMAIL], cloneDir);
-
-    await fn(cloneDir, config);
-  } finally {
-    logger.info(`Cleaning up ephemeral clone: ${cloneDir}`);
-    try {
-      rmSync(cloneDir, { recursive: true, force: true });
-    } catch (cleanupError) {
-      logger.warn(`Failed to clean up ${cloneDir}: ${String(cleanupError)}`);
-    }
+    rmSync(getWorkDir(), { recursive: true, force: true });
+    cloneDir = await ensureWorkingClone(config);
   }
+  await fn(cloneDir, config);
 }
 
 async function pushWithRetry(

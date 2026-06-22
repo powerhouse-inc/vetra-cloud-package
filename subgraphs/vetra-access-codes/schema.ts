@@ -11,6 +11,8 @@ export const schema: DocumentNode = gql`
     code: String
     label: String
     accessExpires: String
+    "Whether the caller has an active redemption whose code carries a Claude key. The key value itself is never returned."
+    hasAttachedKey: Boolean!
   }
 
   """
@@ -24,6 +26,18 @@ export const schema: DocumentNode = gql`
     maxUses: Int
     createdAt: String!
     redemptions: Int!
+    "Whether a Claude API key is attached to this code. The key value itself is never returned."
+    hasAnthropicKey: Boolean!
+  }
+
+  """
+  Result of applying a code's attached secret to a tenant's secret store.
+  """
+  type ApplyInviteCodeSecretResult {
+    "True when a key was found for the caller and written to the tenant."
+    injected: Boolean!
+    "The secret names that were written (empty when nothing was injected)."
+    secretNames: [String!]!
   }
 
   """
@@ -50,15 +64,28 @@ export const schema: DocumentNode = gql`
   type VetraAccessCodesMutations {
     "Redeem a code for the authenticated caller. Idempotent."
     redeemInviteCode(code: String!): AccessStatus!
-    "Create a code. Admin only."
+    """
+    Write the caller's attached Claude key into a tenant's secret store under
+    each of secretNames. The key is resolved server-side from the caller's
+    redeemed code and never leaves the reactor. Returns injected=false when the
+    caller has no active redemption carrying a key. Authenticated caller only.
+    """
+    applyInviteCodeSecret(
+      tenantId: String!
+      secretNames: [String!]!
+    ): ApplyInviteCodeSecretResult!
+    "Create a code, optionally attaching a Claude API key. Admin only."
     createInviteCode(
       code: String!
       label: String
       expiresAt: String
       maxUses: Int
+      anthropicApiKey: String
     ): InviteCode!
     "Enable/disable a code. Admin only."
     setInviteCodeActive(code: String!, active: Boolean!): InviteCode!
+    "Attach or rotate (value) / detach (null) a code's Claude API key. Admin only."
+    setInviteCodeAnthropicKey(code: String!, anthropicApiKey: String): InviteCode!
     "Revoke a wallet's current access by expiring its redemptions. Returns how many grants were revoked. Admin only."
     revokeAccess(address: String!): Int!
   }
