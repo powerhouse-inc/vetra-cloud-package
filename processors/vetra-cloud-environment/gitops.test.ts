@@ -494,6 +494,15 @@ describe("generateValuesYaml — CLINT prebuilt agent image", () => {
     expect(yaml).toMatch(/clint:[\s\S]*?version: "9\.9\.9"/);
     expect(yaml).not.toMatch(/clint:[\s\S]*?tag: "latest"/);
   });
+
+  it("emits a per-agent storage size so the chart provisions a persistent volume", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      clintState("vetra-cli", "0.0.1-dev.23"),
+      "doc-clint-storage",
+    );
+    expect(yaml).toMatch(/clint:[\s\S]*?storage: "2Gi"/);
+  });
 });
 
 describe("generateValuesYaml — connect runtime config", () => {

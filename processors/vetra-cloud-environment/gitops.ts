@@ -362,6 +362,11 @@ const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   },
 };
 
+/** Persistent volume size for a clint agent's workdir (.ph: reactor store,
+ *  agent memory, identity). PGlite + documents are small; 2Gi is ample for a
+ *  studio. The chart provisions a per-agent PVC when this is emitted. */
+const CLINT_AGENT_STORAGE = "2Gi";
+
 /** CLINT agents — small-footprint runtime. nodeMaxOldSpaceMb is unused for
  *  CLINT (the runtime image isn't necessarily Node) but kept for type
  *  symmetry with APP_RESOURCE_MAP. */
@@ -508,6 +513,10 @@ async function generateClintBlock(
     lines.push(`      version: ${yamlQuote(agentVersion)}`);
     lines.push(`      registry: ${yamlQuote(registry)}`);
     lines.push(`      command: ${yamlQuote(command)}`);
+    // Persistent volume for the agent workdir (.ph: reactor store, agent
+    // memory, identity keys). The chart renders a per-agent PVC + workdir mount
+    // when `storage` is set, so documents/projects survive every pod restart.
+    lines.push(`      storage: ${yamlQuote(CLINT_AGENT_STORAGE)}`);
     lines.push(`      resources:`);
     lines.push(
       `        requests: { cpu: ${yamlQuote(resources.requests.cpu)}, memory: ${yamlQuote(resources.requests.memory)} }`,
