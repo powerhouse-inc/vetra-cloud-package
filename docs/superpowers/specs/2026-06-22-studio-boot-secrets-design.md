@@ -39,40 +39,45 @@ once the key arrives, rather than a baked-in broken agent.
   all current pods are 2d old / 0 restarts. The genuine risk is the transient
   keyless first boot baking a demo agent and a pod being routed before ready.
 
-## Approach (chosen: A — entrypoint gate + readiness probe)
+## Approach (chosen, REVISED to readiness-probe-only)
 
-### 1. Entrypoint key-gate (vetra-cli)
+### The entrypoint gate was dropped — it is a verified regression
 
-In `vetra-cli/vetra-cli/Dockerfile`'s `vetra-run.sh`, before `exec`-ing
-`SERVICE_COMMAND`, add a **bounded wait** for a usable key env var:
+The original plan added an entrypoint key-gate that exits when
+`VETRA_REQUIRE_API_KEY` is set and no key is present. **Live verification killed
+it.** A warm (unclaimed) pool pod `amber-ant` runs with
+`VETRA_REQUIRE_API_KEY=SET`, **all three key vars UNSET**, yet `ready=true`,
+**0 restarts**, for 2 days. `requireApiKey=true` + no key is the *normal,
+healthy* warm-pool state: `createAgent` is lazy and `assertCredentialIfRequired`
+(`vetra-cli/src/agents/require-key.ts:13-25`, called from `agent.ts:42`) only
+throws **at agent-run time**, never at boot. A boot gate would crashloop every
+warm pod for its entire unclaimed life — a regression of the warm-pool-healthy
+invariant. The existing lazy guard already prevents silent demo-serving on a
+claimed-but-keyless pod (it throws "not provisioned, retry" rather than serving
+demo), so no boot gate is needed for that protection.
 
-- Check for any of `ANTHROPIC_API_KEY` / `VETRA_ANTHROPIC_API_KEY` /
-  `VETRA_CLI_ANTHROPIC_API_KEY` (the three names `claim.ts:3-7` writes).
-- **Only gate when the env requires a key** — gate iff `VETRA_REQUIRE_API_KEY`
-  is truthy (warm studio pods). Key-less envs that legitimately run the demo
-  agent must boot unchanged. (Confirm the flag name against
-  `vetra-cli/src/framework.ts:21` / create-env wiring during planning.)
-- Poll up to a bounded timeout (e.g. 120s, env-overridable
-  `VETRA_KEY_WAIT_SECONDS`). On success → `exec`. On timeout → exit non-zero so
-  k8s restarts the container; Reloader will have rolled the pod once the secret
-  lands, so the replacement boots with the key.
-- Env vars only populate at container creation, so the wait mainly converts a
-  keyless start into "not started yet" — the demo agent is never baked in.
+### Readiness probe (chart) — the shipped change
 
-### 2. Readiness probe (chart)
+Add a `readinessProbe` (tcpSocket on the `http`/8080 port) to the clint
+container in `clint-deployment.yaml`. The pod is **NotReady → not routed** until
+the in-pod proxy is listening, closing the brief Recreate-restart gap. Tolerant
+thresholds (initialDelay 10s, period 10s, failureThreshold 6) so a ~16s boot
+never flaps; warm key-less pods stay Ready (they listen). Liveness deferred.
 
-Add a `readinessProbe` to the clint container in `clint-deployment.yaml`
-(currently none, `:171-177`). Probe the agent's serving endpoint (the same
-port the ingress targets) so the pod is **NotReady → not routed** until the
-agent process is actually serving. Keep it tolerant (initialDelay +
-failureThreshold) so a slow boot isn't flapped. Liveness optional/deferred to
-avoid killing a legitimately slow first boot.
+**Gated on `$agent.storage`** (same condition as the persistence volume in
+Spec 1). This is deliberate: the probe is a pod-template change, and applying it
+unconditionally would force ArgoCD (selfHeal on) to roll **every** existing
+clint pod — including claimed studios that do not yet have a PVC, wiping their
+ephemeral data (the very thing persistence fixes). Gating couples the probe to
+the persistence rollout: only envs being (re)rendered with `storage` get both,
+so existing un-persisted pods are untouched until they naturally re-render.
+Once all envs carry `storage`, the gate is effectively universal.
 
-### 3. Processor emit (gitops)
+### Processor emit (gitops)
 
-`generateClintBlock` emits whatever probe config the chart needs (path/port)
-and ensures `VETRA_REQUIRE_API_KEY` reaches studio agents (it already routes
-per-agent env; confirm it's set for studios). Mirror existing emit patterns.
+`generateClintBlock` emits `storage` per clint agent (Spec 1); that single field
+drives both the PVC/mount and the readiness probe in the chart. No probe-config
+emit is needed — the probe is fixed (tcpSocket :8080) in the template.
 
 ## Follow-up (NOT in this spec): B — lazy per-invocation key
 
@@ -84,29 +89,26 @@ spec; not blocked on it.
 
 ## Error handling / edge cases
 
-- **Gate must not deadlock claimed envs:** the bounded timeout + non-zero exit
-  guarantees k8s keeps cycling until the secret lands; Reloader's rollout
-  replaces the pod with a key-bearing one. No infinite silent sleep.
-- **Demo-agent envs:** gating only when `VETRA_REQUIRE_API_KEY` is set keeps
-  intentional key-less demo agents booting normally.
-- **Persistence interaction (Spec 1):** with a PVC, never persist a demo-agent
-  state to disk on a keyless boot — the gate prevents a keyless serving boot, so
-  reactor-storage is only written once the real agent is up.
+- **Warm-pool health preserved:** no boot gate, so `requireApiKey=true` warm
+  pods keep booting healthy (lazy guard throws only at agent-run).
+- **No fleet restart:** the probe is gated on `$agent.storage`, so applying the
+  chart change does not roll existing un-persisted pods.
+- **Persistence interaction (Spec 1):** a claimed pod that briefly lacks a key
+  errors clearly at agent-run (existing guard) rather than serving demo; once
+  the key lands it serves the real agent and writes to the persistent volume.
 
 ## Testing
 
-- **Entrypoint (TDD, shell):** unit-test `vetra-run.sh` gate logic with a small
-  harness — key set → starts immediately; `VETRA_REQUIRE_API_KEY=1` + no key →
-  exits non-zero after the (shortened) timeout; flag unset + no key → starts
-  (demo path unchanged).
-- **Chart render (TDD):** `helm template` → assert the clint container has the
-  readinessProbe with expected path/port.
-- **Live (staging):** claim a fresh env, watch the pod — it should go
-  Ready only after the key lands and it serves the real agent (not demo);
-  confirm it's never routed while keyless.
+- **Chart render (TDD):** `helm template` → the storage-enabled clint container
+  has the readinessProbe (tcpSocket :8080); a no-storage agent has none (and is
+  unchanged, so it won't roll). Validated via `kubectl apply --dry-run=client`.
+- **Live (staging):** a newly-rendered (persistent) studio pod goes Ready only
+  once the proxy listens; existing un-persisted pods do not restart on the
+  chart sync.
 
 ## Out of scope
 
-- Lazy per-invocation key (follow-up B).
+- Entrypoint key-gate (dropped — verified warm-pool regression).
+- Lazy per-invocation key (follow-up B — the real fix for the keyless window).
 - Fixing the unrelated `ph-apeiron` full-env CrashLoop (separate packaging bug).
 - Liveness probe (deferred; readiness is the routing-safety lever).

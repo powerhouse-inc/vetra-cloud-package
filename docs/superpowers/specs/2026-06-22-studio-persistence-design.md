@@ -53,10 +53,12 @@ The cluster (k3s/Hetzner) has:
 - `longhorn`: software-defined replicated storage, **no size floor**, no per-node
   attach cap (uses node disk + replication).
 
-**Recommendation: `longhorn` for studio PVCs**, sized ~2Gi. Avoids the 10Gi
-floor and the Hetzner per-node attach ceiling, which is the real scaling risk.
-Trade-off: longhorn consumes node disk and replicates. If the user prefers
-hardware isolation over density, fall back to `hcloud-volumes` at 10Gi.
+**Decision: `longhorn` for studio PVCs** (confirmed installed in-cluster:
+`kubectl get storageclass` → `longhorn`, `longhorn-static`), sized 2Gi. Avoids
+the 10Gi floor and the Hetzner per-node attach ceiling, which is the real
+scaling risk. Trade-off: longhorn consumes node disk and replicates. Overridable
+via `clint.storageClass` / per-agent `storageClass`; fall back to
+`hcloud-volumes` (10Gi) for hardware isolation if desired.
 
 ## Components & data flow
 
@@ -72,14 +74,16 @@ hardware isolation over density, fall back to `hcloud-volumes` at 10Gi.
      nil-pointer regression (`clint-ingress.yaml:29`) is the cautionary precedent.
 
 2. **Chart: mount in `clint-deployment.yaml`**
-   - Add a `volumes:` entry referencing the PVC and a `volumeMounts:` entry.
-   - **Mount path:** persist `.ph/<cli-name>/reactor-storage/` *without masking
-     image files*. The workdir is `process.cwd()` (`/home/clint/workspace` per
-     live pod logs). Mounting the whole `.ph` risks masking image-baked config;
-     mounting exactly `<workdir>/.ph/<cli>/reactor-storage` requires the cli name
-     at template time. **Resolve the exact subpath during planning** by reading
-     ph-clint's `getStoreFolder('reactor-storage')` resolution; prefer a
-     `subPath` mount scoped to reactor-storage only.
+   - Add a `volumes:` entry referencing the PVC and a `volumeMounts:` entry,
+     both gated on `$agent.storage`.
+   - **Mount path: the whole workdir `/home/clint/workspace`** (overridable via
+     `$agent.storagePath`). Verified on a live studio: the workdir is **empty
+     except the runtime-created `.ph`** — nothing is baked there by the image —
+     so mounting the whole workdir masks nothing and persists *everything*
+     stateful: `.ph/<cli>/reactor-storage/` (documents = projects),
+     `.ph/<cli>/.mastra/` (agent memory), `read-model.db`, and `.keypair.json`/
+     `.renown.json` (stable agent identity). This is more complete than the
+     reactor-storage subPath originally considered, at no extra risk.
 
 3. **Processor: `generateClintBlock` emits storage size**
    (`vetra-cloud-package/processors/vetra-cloud-environment/gitops.ts`)
