@@ -107,18 +107,17 @@ function userHeaders(userAccessToken: string): Record<string, string> {
 
 type UserInstallationsResponse = {
   total_count: number;
-  installations: { id: number; app_id: number }[];
+  installations: {
+    id: number;
+    app_id: number;
+    account: { type: string } | null;
+  }[];
 };
 
 /**
- * Discover *our* app's installation for the user behind `userAccessToken` by
- * listing the installations that token can see (`GET /user/installations`) and
- * matching on our `app_id`. Returns the installation id, or null if the app is
- * not installed for this user.
- *
- * The backend deriving the installation from the authenticated user token (vs.
- * accepting a client-supplied id) is what makes the bind un-spoofable: there is
- * no id to forge. The user token is used only here and never persisted.
+ * Find our app's installation on the user's personal account, from the
+ * installations the user access token can see (`GET /user/installations`).
+ * Returns the installation id, or null if the app is not installed there.
  */
 export async function findInstallationId(
   userAccessToken: string,
@@ -136,7 +135,9 @@ export async function findInstallationId(
       );
     }
     const body = (await response.json()) as UserInstallationsResponse;
-    const match = body.installations.find((i) => i.app_id === appId);
+    const match = body.installations.find(
+      (i) => i.app_id === appId && i.account?.type === "User",
+    );
     if (match) return String(match.id);
     if (body.installations.length < perPage) return null;
   }
@@ -178,6 +179,36 @@ export async function createRepo(
     html_url: string;
   };
   return { fullName: body.full_name, url: body.html_url };
+}
+
+/**
+ * Find a repo named `name` among those the installation can access, returning
+ * its full name and URL, or null if the installation has no such repo.
+ */
+export async function findInstallationRepo(
+  installationId: string,
+  name: string,
+): Promise<CreatedRepo | null> {
+  const { token } = await mintInstallationToken(installationId);
+  const perPage = 100;
+  for (let page = 1; ; page++) {
+    const response = await fetch(
+      `${GITHUB_API}/installation/repositories?per_page=${perPage}&page=${page}`,
+      { headers: userHeaders(token) },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Failed to list installation repositories: ${response.status} ${response.statusText}`,
+      );
+    }
+    const body = (await response.json()) as {
+      total_count: number;
+      repositories: { name: string; full_name: string; html_url: string }[];
+    };
+    const match = body.repositories.find((r) => r.name === name);
+    if (match) return { fullName: match.full_name, url: match.html_url };
+    if (body.repositories.length < perPage) return null;
+  }
 }
 
 const GITHUB_OAUTH_HOST = "https://github.com";

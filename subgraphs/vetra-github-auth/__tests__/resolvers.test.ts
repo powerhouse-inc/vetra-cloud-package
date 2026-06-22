@@ -15,6 +15,7 @@ vi.mock("../github-app.js", async (importActual) => {
     startDeviceFlow: vi.fn(),
     exchangeDeviceCode: vi.fn(),
     findInstallationId: vi.fn(),
+    findInstallationRepo: vi.fn(),
     createRepo: vi.fn(),
     mintInstallationToken: vi.fn(),
   };
@@ -24,6 +25,7 @@ import {
   createRepo,
   exchangeDeviceCode,
   findInstallationId,
+  findInstallationRepo,
   mintInstallationToken,
   startDeviceFlow,
   ReinstallRequiredError,
@@ -35,6 +37,7 @@ import { createResolvers } from "../resolvers.js";
 const startDeviceFlowMock = vi.mocked(startDeviceFlow);
 const exchangeDeviceCodeMock = vi.mocked(exchangeDeviceCode);
 const findInstallationIdMock = vi.mocked(findInstallationId);
+const findInstallationRepoMock = vi.mocked(findInstallationRepo);
 const createRepoMock = vi.mocked(createRepo);
 const mintInstallationTokenMock = vi.mocked(mintInstallationToken);
 
@@ -171,13 +174,14 @@ describe("connectGithub", () => {
     expect(await getConnection(db, DID, ENV)).toBeNull();
   });
 
-  it("maps a name clash to REPO_ALREADY_EXISTS and persists nothing", async () => {
+  it("maps a name clash to REPO_ALREADY_EXISTS when the installation cannot access it", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
     findInstallationIdMock.mockResolvedValue("123");
     createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
+    findInstallationRepoMock.mockResolvedValue(null);
 
     await expect(
       connectGithub(
@@ -187,6 +191,30 @@ describe("connectGithub", () => {
     ).rejects.toThrow("REPO_ALREADY_EXISTS");
 
     expect(await getConnection(db, DID, ENV)).toBeNull();
+  });
+
+  it("re-binds to the existing repo when the installation can already access it", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    findInstallationIdMock.mockResolvedValue("123");
+    createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
+    findInstallationRepoMock.mockResolvedValue({
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+
+    const status = await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    expect(status.connected).toBe(true);
+    expect(status.connection).toMatchObject({ repoFullName: "alice/widget" });
+    expect(await getConnection(db, DID, ENV)).toMatchObject({
+      repoFullName: "alice/widget",
+    });
   });
 
   it("requires an authenticated caller", async () => {

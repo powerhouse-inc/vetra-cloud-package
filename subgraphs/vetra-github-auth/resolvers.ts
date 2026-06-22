@@ -11,6 +11,7 @@ import {
   createRepo,
   exchangeDeviceCode,
   findInstallationId,
+  findInstallationRepo,
   mintInstallationToken,
   ReinstallRequiredError,
   RepoAlreadyExistsError,
@@ -154,9 +155,12 @@ export function createResolvers(
           repo = await createRepo(userAccessToken, repoName);
         } catch (error) {
           if (error instanceof RepoAlreadyExistsError) {
-            throw ghError("REPO_ALREADY_EXISTS");
+            const existing = await findInstallationRepo(installationId, repoName);
+            if (!existing) throw ghError("REPO_ALREADY_EXISTS");
+            repo = existing;
+          } else {
+            throw error;
           }
-          throw error;
         }
 
         const connection = await saveConnection(
