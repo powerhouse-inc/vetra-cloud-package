@@ -12,6 +12,12 @@ export interface ResolverDeps {
   claim: (
     did: string,
   ) => Promise<{ documentId: string; subdomain: string; tenantId: string } | null>;
+  /**
+   * Current studio CLI version the pool provisions (from STUDIO_POOL_VERSION).
+   * Surfaced via `VetraStudioPool.config.version` so the frontend can source the
+   * version live instead of baking it into a cacheable bundle.
+   */
+  version: string;
 }
 
 /** Mirror vetra-access-codes `callerDid` so the attached-key lookup matches the redemption. */
@@ -21,6 +27,12 @@ function callerDid(u: AuthUser): string {
 
 export function createResolvers(deps: ResolverDeps): Record<string, any> {
   return {
+    Query: {
+      VetraStudioPool: () => ({}),
+    },
+    VetraStudioPoolQueries: {
+      config: () => ({ version: deps.version }),
+    },
     Mutation: {
       VetraStudioPool: () => ({}),
     },

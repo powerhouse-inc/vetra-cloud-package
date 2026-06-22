@@ -13,8 +13,18 @@ export const schema: DocumentNode = gql`
     claimStudioEnvironment: ClaimStudioEnvironmentResult
   }
 
+  type StudioPoolConfig {
+    "The vetra-cli version the pool currently provisions (from STUDIO_POOL_VERSION)."
+    version: String!
+  }
+
+  type VetraStudioPoolQueries {
+    "Live provisioning config so clients source the version instead of baking it into a cacheable bundle."
+    config: StudioPoolConfig!
+  }
+
   type Query {
-    VetraStudioPool: String
+    VetraStudioPool: VetraStudioPoolQueries
   }
 
   type Mutation {

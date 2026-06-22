@@ -31,4 +31,14 @@ describe("VetraStudioPool resolvers", () => {
       await r.VetraStudioPoolMutations.claimStudioEnvironment({}, {}, ctx("0xAbc")),
     ).toBeNull();
   });
+
+  it("exposes the current studio CLI version under VetraStudioPool.config", async () => {
+    const claim = vi.fn();
+    const r = createResolvers({ claim, version: "0.0.1-dev.42" } as never);
+    // Query namespace resolves to an empty object the field resolver hangs off.
+    const ns = r.Query.VetraStudioPool();
+    expect(r.VetraStudioPoolQueries.config(ns, {}, ctx())).toEqual({
+      version: "0.0.1-dev.42",
+    });
+  });
 });

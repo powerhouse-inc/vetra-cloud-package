@@ -116,7 +116,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         did,
       );
 
-    this.resolvers = createResolvers({ claim });
+    this.resolvers = createResolvers({ claim, version: cfg.version });
 
     // Reconcile the `environments` read-model + gitops tenant dir when a
     // document is deleted via `deleteDocument(identifier)`. That path never
