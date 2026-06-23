@@ -244,7 +244,7 @@ describe("getPushToken", () => {
       token: "ghs_token",
       expiresAt: "2026-01-01T00:00:00Z",
     });
-    expect(mintInstallationTokenMock).toHaveBeenCalledWith("123");
+    expect(mintInstallationTokenMock).toHaveBeenCalledWith("123", "widget");
   });
 
   it("throws NOT_CONNECTED when the caller has no connection for the environment", async () => {

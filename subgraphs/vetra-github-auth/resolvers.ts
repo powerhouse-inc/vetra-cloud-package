@@ -99,7 +99,8 @@ export function createResolvers(
         const connection = await getConnection(db, did, environmentId);
         if (!connection) throw ghError("NOT_CONNECTED");
         try {
-          return await mintInstallationToken(connection.installationId);
+          const repoName = connection.repoFullName.split("/").pop();
+          return await mintInstallationToken(connection.installationId, repoName);
         } catch (error) {
           if (error instanceof ReinstallRequiredError) {
             await deleteConnection(db, did, environmentId);

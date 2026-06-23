@@ -61,18 +61,26 @@ export type InstallationToken = {
 };
 
 /**
- * Mint a ~1h installation access token for the given installation. Throws
+ * Mint a ~1h installation access token. When `repoName` is given, the token is
+ * scoped to that single repository with Contents access only. Throws
  * {@link ReinstallRequiredError} if the app has been uninstalled.
  */
 export async function mintInstallationToken(
   installationId: string,
+  repoName?: string,
 ): Promise<InstallationToken> {
   try {
     const auth = appAuth();
-    const result = await auth({
-      type: "installation",
-      installationId: Number(installationId),
-    });
+    const result = await auth(
+      repoName
+        ? {
+            type: "installation",
+            installationId: Number(installationId),
+            repositoryNames: [repoName],
+            permissions: { contents: "write" },
+          }
+        : { type: "installation", installationId: Number(installationId) },
+    );
     return { token: result.token, expiresAt: result.expiresAt };
   } catch (error) {
     if (isUninstalled(error)) {
