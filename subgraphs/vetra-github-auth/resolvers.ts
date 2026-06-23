@@ -24,11 +24,7 @@ function ghError(code: string): GraphQLError {
   return new GraphQLError(code, { extensions: { code } });
 }
 
-/**
- * Subset of the reactor-api resolver context this subgraph relies on. The
- * gateway verifies the Renown bearer token and populates `user`; we key every
- * connection off the caller's canonical DID plus the environment it owns.
- */
+/** Subset of the reactor-api resolver context this subgraph relies on. */
 type AuthContext = {
   user?: { address: string; chainId: number; networkId: string };
 };

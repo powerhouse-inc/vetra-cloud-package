@@ -1,10 +1,7 @@
 import { createAppAuth } from "@octokit/auth-app";
 
-/**
- * Backend-only GitHub App helpers: discover the user's installation, create the
- * product repo, and mint short-lived installation tokens. The app private key
- * is a singleton read from the environment and never leaves the backend.
- */
+/** Backend GitHub App helpers: installation discovery, repo creation, and
+ * short-lived installation tokens. */
 
 /** Raised when the GITHUB_APP_* environment is missing or incomplete. */
 export class GithubAppConfigError extends Error {
@@ -14,11 +11,8 @@ export class GithubAppConfigError extends Error {
   }
 }
 
-/**
- * Raised when minting an installation token fails because the app is no longer
- * installed (GitHub 401/404). The caller should clear the stale binding and
- * prompt the user to re-onboard.
- */
+/** Raised when minting an installation token fails because the app is no longer
+ * installed (GitHub 401/404). */
 export class ReinstallRequiredError extends Error {
   constructor(message: string) {
     super(message);
@@ -38,12 +32,8 @@ type AppAuth = ReturnType<typeof createAppAuth>;
 
 let cachedAuth: AppAuth | null = null;
 
-/**
- * Lazily build the app auth interface. `@octokit/auth-app` caches minted
- * installation tokens internally for their ~1h life, so we keep one instance.
- * Node accepts GitHub's PKCS#1 key directly; we only un-escape `\n` sequences
- * so a single-line env value works.
- */
+/** Lazily build (and cache) the app auth interface. Un-escapes `\n` so a
+ * single-line `GITHUB_APP_PRIVATE_KEY` env value works. */
 function appAuth(): AppAuth {
   if (cachedAuth) return cachedAuth;
 
@@ -148,13 +138,7 @@ export type CreatedRepo = {
   url: string;
 };
 
-/**
- * Create a **blank** private repo in the user's account with their access
- * token. Blank creation is what triggers GitHub's automatic installation grant
- * (a repo created via the app's user token is added to the app's access list,
- * even under a "selected repositories" install) — so we never create from a
- * template, which is the one case that does *not* auto-grant.
- */
+/** Create a blank private repo in the user's account with their access token. */
 export async function createRepo(
   userAccessToken: string,
   name: string,
