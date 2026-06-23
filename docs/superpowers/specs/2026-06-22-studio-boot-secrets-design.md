@@ -56,22 +56,26 @@ invariant. The existing lazy guard already prevents silent demo-serving on a
 claimed-but-keyless pod (it throws "not provisioned, retry" rather than serving
 demo), so no boot gate is needed for that protection.
 
-### Readiness probe (chart) — the shipped change
+### Readiness probe (chart) — ADDED THEN REMOVED (final: no probe)
 
-Add a `readinessProbe` (tcpSocket on the `http`/8080 port) to the clint
-container in `clint-deployment.yaml`. The pod is **NotReady → not routed** until
-the in-pod proxy is listening, closing the brief Recreate-restart gap. Tolerant
-thresholds (initialDelay 10s, period 10s, failureThreshold 6) so a ~16s boot
-never flaps; warm key-less pods stay Ready (they listen). Liveness deferred.
+A `readinessProbe` (tcpSocket :8080, gated on `$agent.storage`) was shipped
+first, then **removed the same day** (commit `0b2f5aa`) after migrating the pool
+to **vetra-cli dev.27**.
 
-**Gated on `$agent.storage`** (same condition as the persistence volume in
-Spec 1). This is deliberate: the probe is a pod-template change, and applying it
-unconditionally would force ArgoCD (selfHeal on) to roll **every** existing
-clint pod — including claimed studios that do not yet have a PVC, wiping their
-ephemeral data (the very thing persistence fixes). Gating couples the probe to
-the persistence rollout: only envs being (re)rendered with `storage` get both,
-so existing un-persisted pods are untouched until they naturally re-render.
-Once all envs carry `storage`, the gate is effectively universal.
+dev.27 carries the "wait on api key" behavior at the app layer: an unclaimed pod
+logs `holding, not serving (waiting for provisioning)` and **does not listen on
+8080 until it has a key**. A TCP/HTTP readiness probe on 8080 therefore can never
+pass for a warm pod, wedging it at NotReady → Deployment never Available →
+**ArgoCD Application stuck `PROGRESSING`** → the pool keeper's
+deployment-reconciler (marks an env AVAILABLE only on ArgoCD-Healthy) deadlocks →
+the pool can't fill → claims fail. Verified live, then fixed by dropping the
+probe.
+
+**Conclusion:** dev.27's hold-until-key already achieves Spec 2's goal ("never
+serve a demo agent") at a better layer than an infra probe. Do **not** re-add a
+clint readiness probe while the keeper gates AVAILABLE on ArgoCD-Healthy. The
+real remaining lever is the lazy per-invocation key (follow-up B), which also
+removes the claim-time Reloader restart.
 
 ### Processor emit (gitops)
 

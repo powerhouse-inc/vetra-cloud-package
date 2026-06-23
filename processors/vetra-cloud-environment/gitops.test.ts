@@ -381,7 +381,10 @@ describe("generateValuesYaml — vetra-cli switchboard auth env", () => {
     expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
     expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true"/);
     expect(yaml).toMatch(/name: "DEFAULT_PROTECTION", value: "true"/);
+    // Single-owner studio with no Renown verification backend: skip the credential
+    // check + acknowledge it (the bundled switchboard refuses a bare skip).
     expect(yaml).toMatch(/name: "SKIP_CREDENTIAL_VERIFICATION", value: "true"/);
+    expect(yaml).toMatch(/name: "ALLOW_INSECURE_SKIP_CREDENTIAL_VERIFICATION", value: "true"/);
     // owner lowercased into ADMINS
     expect(yaml).toMatch(
       /name: "ADMINS", value: "0xabcdef0000000000000000000000000000001234"/,
