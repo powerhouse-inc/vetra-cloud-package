@@ -60,10 +60,15 @@ is the single line the nightly job rewrites.
 - `schedule: cron` nightly + `workflow_dispatch`.
 - No repo secrets: anonymous Harbor pull token reads tags; `GITHUB_TOKEN`
   (`contents: write`) commits.
-- Resolve the concrete tag that `:dev` currently points to — fetch the manifest
-  digest of `:dev`, then find the `vX.Y.Z-dev.N` tag whose digest matches it —
-  for **switchboard**, and confirm the **same tag string** exists for
-  **connect**. If resolution fails or the two disagree, log and exit 0 (no bump).
+- Resolution = **highest semver** `vX.Y.Z-dev.N` present in **both** switchboard
+  and connect tag lists (sorted by `(major, minor, patch, devN)`; intersection
+  so the chosen tag is guaranteed pullable for both). NOTE: the floating `dev`/
+  `latest`/`staging` tags are independent build lineages and share no digest with
+  the versioned `vX.Y.Z-dev.N` series, so a digest-match against `:dev` does not
+  work — the versioned series is the real dev-release channel (it is what the
+  management plane runs). "Highest semver" can advance the minor line (e.g.
+  `v6.0.0-dev.258` → `v6.2.0-dev.31`), ahead of the management plane — accepted.
+- If resolution fails (no tag in both lists), log and exit 0 (no bump).
 - If the resolved tag differs from the value in `powerhouse-values.yaml`, rewrite
   `DEFAULT_APP_IMAGE_TAG`, commit straight to `main`. ArgoCD syncs.
 
