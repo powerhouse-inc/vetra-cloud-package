@@ -504,7 +504,7 @@ describe("generateValuesYaml — CLINT prebuilt agent image", () => {
       clintState("vetra-cli", "0.0.1-dev.23"),
       "doc-clint-storage",
     );
-    expect(yaml).toMatch(/clint:[\s\S]*?storage: "2Gi"/);
+    expect(yaml).toMatch(/clint:[\s\S]*?storage: "25Gi"/);
   });
 });
 

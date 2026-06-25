@@ -365,7 +365,7 @@ const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
 /** Persistent volume size for a clint agent's workdir (.ph: reactor store,
  *  agent memory, identity). PGlite + documents are small; 2Gi is ample for a
  *  studio. The chart provisions a per-agent PVC when this is emitted. */
-const CLINT_AGENT_STORAGE = "2Gi";
+const CLINT_AGENT_STORAGE = "25Gi";
 
 /** CLINT agents — small-footprint runtime. nodeMaxOldSpaceMb is unused for
  *  CLINT (the runtime image isn't necessarily Node) but kept for type
