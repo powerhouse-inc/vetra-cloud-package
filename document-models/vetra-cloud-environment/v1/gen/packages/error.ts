@@ -20,6 +20,8 @@ export class PackageNotFoundError extends Error implements ReducerError {
 
 export const errors = {
   AddPackage: { NotOwnerError },
+
   RemovePackage: { NotOwnerError },
+
   SetPackageVersion: { PackageNotFoundError, NotOwnerError },
 };

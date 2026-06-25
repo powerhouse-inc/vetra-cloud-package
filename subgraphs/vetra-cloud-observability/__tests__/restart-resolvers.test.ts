@@ -31,7 +31,12 @@ beforeEach(() => {
   restartDeployment = vi.fn(async () => undefined);
   deps = {
     envDb: envDbStub("0xAbC") as never,
-    k8s: { listDeploymentNames, restartDeployment },
+    k8s: {
+      listDeploymentNames:
+        listDeploymentNames as unknown as RestartResolverDeps["k8s"]["listDeploymentNames"],
+      restartDeployment:
+        restartDeployment as unknown as RestartResolverDeps["k8s"]["restartDeployment"],
+    },
   };
 });
 

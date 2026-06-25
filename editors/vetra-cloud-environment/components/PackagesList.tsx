@@ -3,8 +3,8 @@ import type { DocumentDispatch } from "@powerhousedao/reactor-browser";
 import type {
   VetraCloudEnvironmentAction,
   VetraCloudPackage,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
-import { actions } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "document-models/vetra-cloud-environment/v1";
+import { actions } from "document-models/vetra-cloud-environment/v1";
 
 const inputStyle: React.CSSProperties = {
   padding: "8px 12px",

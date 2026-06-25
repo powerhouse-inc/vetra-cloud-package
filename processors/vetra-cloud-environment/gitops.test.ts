@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Kysely } from "kysely";
 import { generateValuesYaml } from "./gitops.js";
-import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment";
 import type { DB } from "./schema.js";
 
 // generateClintBlock resolves dist-tags -> concrete versions via a registry
@@ -47,6 +47,7 @@ function envState(
     status: "READY",
     apexService: null,
     autoUpdateChannel: null,
+    runtimeConfig: null,
     ...overrides,
   };
 }
@@ -244,7 +245,7 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
             selectedRessource: "VETRA_AGENT_S",
             config: {
               package: { registry: "https://r", name: "p", version: "1.0.0" },
-              env: [{ name: "FOO", value: "bar" }],
+              env: [{ name: "FOO", value: "bar", isSecret: false }],
               serviceCommand: null,
               selectedRessource: null,
             },

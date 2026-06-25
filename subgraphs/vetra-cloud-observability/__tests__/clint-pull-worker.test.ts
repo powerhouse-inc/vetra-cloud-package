@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, Server } from 'node:http';
 import { Kysely, SqliteDialect } from 'kysely';
-import Database from 'better-sqlite3';
+// better-sqlite3 ships no bundled types and @types/better-sqlite3 isn't a
+// dependency; the module resolves to plain JS, so import it untyped.
+// @ts-expect-error -- untyped module, only used for the in-memory test DB
+import DatabaseImport from 'better-sqlite3';
+const Database = DatabaseImport as unknown as new (filename?: string) => any;
 import { ClintPullWorker } from '../clint-pull-worker.js';
 
 /** Shape of `GET /_proxy/routes` from ph-clint dev.41+. */
@@ -71,7 +75,13 @@ async function setupDbs(): Promise<{
   return { envDb, obsDb, insertEnv };
 }
 
-const noopLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+import type { ILogger } from "document-model";
+const noopLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as ILogger;
 
 describe('ClintPullWorker.tickOnce', () => {
   let server: Server | null = null;

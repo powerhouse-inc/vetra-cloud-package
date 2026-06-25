@@ -10,7 +10,7 @@ import type {
   VetraCloudEnvironmentService,
   VetraCloudEnvironmentState,
   VetraCloudRessourceSize,
-} from "../../document-models/vetra-cloud-environment/index.js";
+} from "document-models/vetra-cloud-environment";
 import type { DB } from "./schema.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
