@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Kysely } from "kysely";
-import { generateValuesYaml } from "./gitops.js";
+import {
+  generateValuesYaml,
+  resolveGenericHost,
+  effectiveApexType,
+  isTypeAtApex,
+  assertHostLabelLength,
+} from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
 
@@ -798,4 +804,134 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
       expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.99/);
     });
   });
+
+// ---------------------------------------------------------------------------
+// Flattened single-label hosts + wildcard TLS
+// ---------------------------------------------------------------------------
+
+const svc = (
+  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION",
+  prefix: string,
+  extra: Record<string, unknown> = {},
+) =>
+  ({
+    type,
+    prefix,
+    enabled: true,
+    url: null,
+    status: "ACTIVE",
+    version: null,
+    config: null,
+    selectedRessource: null,
+    ...extra,
+  }) as never;
+
+const clintSvc = (prefix = "vetra-agent") =>
+  svc("CLINT", prefix, {
+    config: {
+      package: { registry: "https://registry.dev.vetra.io", name: "vetra-cli", version: "dev" },
+      env: [],
+      serviceCommand: null,
+      selectedRessource: null,
+    },
+    selectedRessource: "VETRA_AGENT_XXL",
+  });
+
+describe("resolveGenericHost", () => {
+  it("apex → bare subdomain", () => {
+    expect(resolveGenericHost("tall-duck-ab12", "vetra-agent", true, "vetra.io")).toBe(
+      "tall-duck-ab12.vetra.io",
+    );
+  });
+  it("non-apex → subdomain-prefix flattened (single label)", () => {
+    const h = resolveGenericHost("tall-duck-ab12", "connect", false, "vetra.io");
+    expect(h).toBe("tall-duck-ab12-connect.vetra.io");
+    expect(h.split(".")[0]).not.toContain("."); // single label before .vetra.io
+  });
+});
+
+describe("effectiveApexType / isTypeAtApex", () => {
+  it("sole enabled service is apex by default", () => {
+    expect(effectiveApexType(envState({ services: [clintSvc()] }))).toBe("CLINT");
+    expect(isTypeAtApex(envState({ services: [clintSvc()] }), "CLINT")).toBe(true);
+  });
+  it("multi-service, none pinned → no apex", () => {
+    const s = envState({ services: [svc("CONNECT", "connect"), svc("SWITCHBOARD", "switchboard")] });
+    expect(effectiveApexType(s)).toBeNull();
+    expect(isTypeAtApex(s, "CONNECT")).toBe(false);
+  });
+  it("explicit apexService wins", () => {
+    const s = envState({
+      apexService: "CONNECT",
+      services: [svc("CONNECT", "connect"), svc("SWITCHBOARD", "switchboard")],
+    });
+    expect(effectiveApexType(s)).toBe("CONNECT");
+    expect(isTypeAtApex(s, "CONNECT")).toBe(true);
+    expect(isTypeAtApex(s, "SWITCHBOARD")).toBe(false);
+  });
+});
+
+describe("assertHostLabelLength", () => {
+  it("passes a normal flattened host", () => {
+    expect(() => assertHostLabelLength("tall-duck-ab12-connect.vetra.io")).not.toThrow();
+  });
+  it("throws on an over-long first label", () => {
+    expect(() => assertHostLabelLength(`${"x".repeat(64)}.vetra.io`)).toThrow(/exceeds 63 chars/);
+  });
+});
+
+describe("generateValuesYaml — flattened hosts + wildcardTls", () => {
+  it("sole CLINT studio renders the apex host + wildcardTls true", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ genericSubdomain: "tall-duck-ab12", services: [clintSvc()] }),
+      "doc-flat-1",
+    );
+    expect(yaml).toContain('host: "tall-duck-ab12.vetra.io"');
+    expect(yaml).toMatch(/global:[\s\S]*?wildcardTls: true/);
+  });
+
+  it("multi-service env renders flattened prefixed switchboard/connect hosts", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        genericSubdomain: "ns1",
+        services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")],
+      }),
+      "doc-flat-2",
+    );
+    expect(yaml).toContain("ns1-switchboard.vetra.io");
+    expect(yaml).toContain("ns1-connect.vetra.io");
+  });
+
+  it("customDomain env keeps wildcardTls false (per-env certs retained)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        genericSubdomain: "ns2",
+        customDomain: { enabled: true, domain: "app.acme.com", dnsRecords: [] },
+        apexService: "SWITCHBOARD",
+        services: [svc("SWITCHBOARD", "switchboard")],
+      }),
+      "doc-flat-3",
+    );
+    expect(yaml).toMatch(/global:[\s\S]*?wildcardTls: false/);
+  });
+
+  it("rejects an over-long flattened label", async () => {
+    await expect(
+      generateValuesYaml(
+        dbStub,
+        envState({
+          genericSubdomain: "ns-with-a-fairly-long-subdomain-token",
+          services: [
+            svc("CONNECT", "x".repeat(40)),
+            svc("SWITCHBOARD", "switchboard"),
+          ],
+        }),
+        "doc-flat-4",
+      ),
+    ).rejects.toThrow(/exceeds 63 chars/);
+  });
+});
 });
