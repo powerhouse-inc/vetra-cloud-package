@@ -6,6 +6,8 @@ export type ClintServiceTuple = {
   documentId: string;
   prefix: string;
   subdomain: string;
+  /** Served at the env apex (`<subdomain>.vetra.io`) — a sole-CLINT Studio. */
+  isApex: boolean;
 };
 
 export type ClintPullWorkerConfig = {
@@ -18,7 +20,8 @@ export type ClintPullWorkerConfig = {
   intervalMs?: number;
   /**
    * Maps a CLINT service tuple to its `/_proxy/routes` URL.
-   * Defaults to `https://${prefix}.${subdomain}.vetra.io/_proxy/routes`.
+   * Defaults to the flattened single-label host (apex: `<subdomain>.vetra.io`,
+   * else `<subdomain>-<prefix>.vetra.io`) + `/_proxy/routes`.
    * Overridable for tests.
    */
   buildAgentUrl?: (service: ClintServiceTuple) => string;
@@ -30,8 +33,16 @@ const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
 
+// Mirrors processors/vetra-cloud-environment/gitops.ts resolveGenericHost:
+// a single DNS label covered by the *.vetra.io wildcard cert.
+function genericHost(subdomain: string, prefix: string, isApex: boolean): string {
+  return isApex
+    ? `${subdomain}.${DEFAULT_BASE_DOMAIN}`
+    : `${subdomain}-${prefix}.${DEFAULT_BASE_DOMAIN}`;
+}
+
 function defaultBuildAgentUrl(svc: ClintServiceTuple): string {
-  return `https://${svc.prefix}.${svc.subdomain}.${DEFAULT_BASE_DOMAIN}/_proxy/routes`;
+  return `https://${genericHost(svc.subdomain, svc.prefix, svc.isApex)}/_proxy/routes`;
 }
 
 type ParsedService = {
@@ -137,9 +148,18 @@ export class ClintPullWorker {
     const out: ClintServiceTuple[] = [];
     for (const row of rows) {
       if (!row.subdomain) continue;
-      for (const svc of parseClintServices(row.services)) {
+      const all = parseClintServices(row.services);
+      // Apex = sole enabled service (mirrors gitops effectiveApexType's
+      // single-service default) → a Studio's lone CLINT agent is at the apex.
+      const enabledCount = all.filter((s) => s.enabled === true).length;
+      for (const svc of all) {
         if (svc.type === "CLINT" && svc.enabled === true && svc.prefix) {
-          out.push({ documentId: row.id, prefix: svc.prefix, subdomain: row.subdomain });
+          out.push({
+            documentId: row.id,
+            prefix: svc.prefix,
+            subdomain: row.subdomain,
+            isApex: enabledCount === 1,
+          });
         }
       }
     }
