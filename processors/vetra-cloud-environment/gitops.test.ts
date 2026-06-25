@@ -769,4 +769,33 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
     expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.258/);
     expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?pullPolicy: IfNotPresent/);
   });
+
+  describe("DEFAULT_APP_IMAGE_TAG env override", () => {
+    afterEach(() => {
+      delete process.env.DEFAULT_APP_IMAGE_TAG;
+    });
+
+    it("uses DEFAULT_APP_IMAGE_TAG for both switchboard and connect when no version is pinned", async () => {
+      process.env.DEFAULT_APP_IMAGE_TAG = "v6.0.0-dev.260";
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({
+          services: [appService("SWITCHBOARD", null), appService("CONNECT", null)],
+        }),
+        "doc-default-tag-env",
+      );
+      expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.260/);
+      expect(yaml).toMatch(/connect:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.260/);
+    });
+
+    it("a pinned per-service version still overrides DEFAULT_APP_IMAGE_TAG", async () => {
+      process.env.DEFAULT_APP_IMAGE_TAG = "v6.0.0-dev.260";
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({ services: [appService("SWITCHBOARD", "v6.0.0-dev.99")] }),
+        "doc-default-tag-env-pinned",
+      );
+      expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.99/);
+    });
+  });
 });

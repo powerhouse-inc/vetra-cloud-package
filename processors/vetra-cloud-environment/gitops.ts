@@ -613,14 +613,16 @@ async function generateClintBlock(
 // Values YAML generation
 // ---------------------------------------------------------------------------
 
-// New environments float on the `dev` tag instead of a hard-pinned version, so
-// envs created weeks apart no longer drift onto wildly different switchboard/
-// connect builds (the stale-pinned-version problem). pullPolicy stays
-// IfNotPresent below: a node re-pulls `dev` only when it isn't already cached
-// (new/recycled nodes, post image-GC), so the tag refreshes from time to time
-// without paying a registry pull on every pod start. An explicit per-service
-// version still overrides this default.
-const DEFAULT_IMAGE_TAG = "dev";
+// Default switchboard/connect image tag for new environments when a service
+// pins no explicit version. Sourced from the DEFAULT_APP_IMAGE_TAG env (set on
+// the management switchboard that runs this processor) so a nightly job can bump
+// it to the latest concrete `vX.Y.Z-dev.N` without republishing the package —
+// a changing concrete tag forces a re-pull even on long-lived nodes (kubelet
+// image GC here is disk-pressure-only and never fires). Falls back to the
+// floating `dev` tag when unset. Read per-call so it tracks the live env.
+function defaultAppImageTag(): string {
+  return process.env.DEFAULT_APP_IMAGE_TAG ?? "dev";
+}
 
 export async function generateValuesYaml(
   db: Kysely<DB>,
@@ -655,8 +657,8 @@ export async function generateValuesYaml(
   const connectService = state.services.find(
     (s) => s.type === "CONNECT",
   );
-  const switchboardTag = switchboardService?.version ?? DEFAULT_IMAGE_TAG;
-  const connectTag = connectService?.version ?? DEFAULT_IMAGE_TAG;
+  const switchboardTag = switchboardService?.version ?? defaultAppImageTag();
+  const connectTag = connectService?.version ?? defaultAppImageTag();
   const switchboardResources =
     APP_RESOURCE_MAP[readServiceSize(switchboardService)];
   const connectResources = APP_RESOURCE_MAP[readServiceSize(connectService)];
