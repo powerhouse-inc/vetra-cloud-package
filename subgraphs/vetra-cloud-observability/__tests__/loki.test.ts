@@ -161,7 +161,7 @@ describe("LokiClient", () => {
   describe("error handling", () => {
     it("returns [] when fetch throws", async () => {
       mockFetch.mockRejectedValueOnce(new Error("network error"));
-      const result = await client.logs("tenant-abc");
+      const result = await client.logs("tenant-abc", null);
       expect(result).toEqual([]);
     });
 
@@ -179,7 +179,7 @@ describe("LokiClient", () => {
           data: { resultType: "streams", result: [] },
         }),
       });
-      const result = await client.logs("tenant-abc");
+      const result = await client.logs("tenant-abc", null);
       expect(result).toEqual([]);
     });
   });

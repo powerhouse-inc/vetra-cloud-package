@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateSubdomain } from "./subdomain-generator";
+import { generateSubdomain } from "./subdomain-generator.js";
 
 describe("generateSubdomain", () => {
   it("produces adjective-animal-<8hex> from the id", () => {

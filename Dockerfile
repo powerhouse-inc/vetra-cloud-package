@@ -20,7 +20,7 @@ RUN apk add --no-cache python3 make g++ git bash \
 
 # Setup pnpm
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Configure JSR registry
@@ -30,8 +30,8 @@ RUN pnpm config set @jsr:registry https://npm.jsr.io
 ARG TAG=latest
 ARG PH_CONNECT_BASE_PATH="/"
 
-# Install ph-cmd, prisma, and prettier globally
-RUN pnpm add -g ph-cmd@$TAG prisma@5.17.0 prettier
+# Install ph-cmd, prisma, and oxfmt globally
+RUN pnpm add -g ph-cmd@$TAG prisma@5.17.0 oxfmt
 
 # Initialize project based on tag (dev/staging/latest)
 RUN case "$TAG" in \
@@ -54,6 +54,9 @@ RUN if [ -n "$PACKAGE_NAME" ]; then \
         echo "Warning: PACKAGE_NAME not provided, using local build"; \
         pnpm install; \
     fi
+
+# Regenerate Prisma client for Alpine Linux
+RUN prisma generate --schema node_modules/document-drive/dist/prisma/schema.prisma || true
 
 # -----------------------------------------------------------------------------
 # Connect build stage
@@ -106,7 +109,7 @@ RUN apk add --no-cache curl openssl
 
 # Setup pnpm
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Configure JSR registry
@@ -137,87 +140,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-
-# -----------------------------------------------------------------------------
-# Secrets controller build stage — compiles the controller sources and the
-# shared modules it imports from the vetra-cloud-secrets subgraph.
-#
-# Why a separate target: the controller has a different runtime profile from
-# switchboard (no Connect/UI assets, no ph-cli, no graphql server) and needs
-# to be small and audit-able since it has cluster-wide RBAC on Secrets and
-# ConfigMaps.
-# -----------------------------------------------------------------------------
-FROM node:24-alpine AS secrets-controller-builder
-
-WORKDIR /app
-
-RUN apk add --no-cache python3 make g++ git bash \
-    && ln -sf /usr/bin/python3 /usr/bin/python
-
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-RUN pnpm config set @jsr:registry https://npm.jsr.io
-
-COPY package.json pnpm-lock.yaml tsconfig.json ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
-
-COPY secrets-controller ./secrets-controller
-COPY subgraphs/vetra-cloud-secrets ./subgraphs/vetra-cloud-secrets
-
-# Minimal tsconfig that scopes compilation to the controller + the shared
-# subgraph modules it depends on. Tests are excluded.
-RUN cat > tsconfig.controller.json <<'EOF'
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "outDir": "./dist-controller",
-    "rootDir": ".",
-    "declaration": false,
-    "declarationMap": false,
-    "noEmit": false
-  },
-  "include": [
-    "secrets-controller/**/*",
-    "subgraphs/vetra-cloud-secrets/**/*"
-  ],
-  "exclude": [
-    "**/__tests__/**",
-    "**/*.test.ts"
-  ]
-}
-EOF
-RUN pnpm exec tsc -p tsconfig.controller.json
-
-# -----------------------------------------------------------------------------
-# Secrets controller final stage
-# -----------------------------------------------------------------------------
-FROM node:24-alpine AS secrets-controller
-
-WORKDIR /app
-
-RUN apk add --no-cache curl
-
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-# Pin pnpm to the version the lockfile was generated with — newer pnpm
-# is stricter about overrides hashing and rejects --frozen-lockfile.
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-
-# Install only the runtime deps the controller actually uses (pg, kysely,
-# @kubernetes/client-node, @powerhousedao/shared, etc.). --ignore-scripts
-# avoids running the package's own postinstall hooks; --prod skips devDeps.
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
-
-COPY --from=secrets-controller-builder /app/dist-controller ./dist-controller
-
-ENV NODE_ENV=production
-ENV HEALTH_PORT=8080
-
-EXPOSE 8080
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:${HEALTH_PORT}/healthz || exit 1
-
-ENTRYPOINT ["node", "dist-controller/secrets-controller/main.js"]

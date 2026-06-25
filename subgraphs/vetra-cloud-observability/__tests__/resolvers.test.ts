@@ -21,6 +21,8 @@ beforeEach(async () => {
   resolvers = createResolvers(db, {
     prometheusUrl: PROMETHEUS_URL,
     lokiUrl: LOKI_URL,
+    envDb: db as unknown as Kysely<any>,
+    dispatch: async () => {},
   });
 });
 

@@ -1,5 +1,7 @@
 /**
- * Connect (browser) processor exports.
- * Only browser-safe processors should be exported here.
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
  */
-export { processorFactory } from "./factory.js";
+import type { ProcessorFactoryBuilder } from "@powerhousedao/reactor";
+
+export const processorFactoryBuilders: ProcessorFactoryBuilder[] = [];

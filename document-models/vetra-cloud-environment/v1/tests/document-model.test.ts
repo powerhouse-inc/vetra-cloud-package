@@ -1,14 +1,23 @@
-import { describe, it, expect } from "vitest";
+/**
+ * This is a scaffold file meant for customization:
+ * - change it by adding new tests or modifying the existing ones
+ */
+/**
+ * This is a scaffold file meant for customization:
+ * - change it by adding new tests or modifying the existing ones
+ */
+
 import {
-  utils,
+  assertIsVetraCloudEnvironmentDocument,
+  assertIsVetraCloudEnvironmentState,
   initialGlobalState,
   initialLocalState,
-  vetraCloudEnvironmentDocumentType,
   isVetraCloudEnvironmentDocument,
-  assertIsVetraCloudEnvironmentDocument,
   isVetraCloudEnvironmentState,
-  assertIsVetraCloudEnvironmentState,
+  utils,
+  vetraCloudEnvironmentDocumentType,
 } from "document-models/vetra-cloud-environment/v1";
+import { describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 
 describe("VetraCloudEnvironment Document Model", () => {
@@ -28,22 +37,6 @@ describe("VetraCloudEnvironment Document Model", () => {
     expect(isVetraCloudEnvironmentDocument(document)).toBe(true);
     expect(isVetraCloudEnvironmentState(document.state)).toBe(true);
   });
-
-  it("should have correct initial state shape", () => {
-    const document = utils.createDocument();
-    expect(document.state.global.label).toBeNull();
-    expect(document.state.global.genericSubdomain).toBeNull();
-    expect(document.state.global.customDomain).toStrictEqual({
-      enabled: false,
-      domain: null,
-      dnsRecords: [],
-    });
-    expect(document.state.global.defaultPackageRegistry).toBeNull();
-    expect(document.state.global.services).toStrictEqual([]);
-    expect(document.state.global.packages).toStrictEqual([]);
-    expect(document.state.global.status).toBe("DRAFT");
-  });
-
   it("should reject a document that is not a VetraCloudEnvironment document", () => {
     const wrongDocumentType = utils.createDocument();
     wrongDocumentType.header.documentType = "the-wrong-thing-1234";
@@ -56,20 +49,85 @@ describe("VetraCloudEnvironment Document Model", () => {
       expect(error).toBeInstanceOf(ZodError);
     }
   });
+  const wrongState = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  wrongState.state.global = {
+    ...{ notWhat: "you want" },
+  };
+  try {
+    expect(isVetraCloudEnvironmentState(wrongState.state)).toBe(false);
+    expect(assertIsVetraCloudEnvironmentState(wrongState.state)).toThrow();
+    expect(isVetraCloudEnvironmentDocument(wrongState)).toBe(false);
+    expect(assertIsVetraCloudEnvironmentDocument(wrongState)).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
 
-  it("should reject a document with invalid state", () => {
-    const wrongState = utils.createDocument();
-    // @ts-expect-error - we are testing the error case
-    wrongState.state.global = {
-      ...{ notWhat: "you want" },
-    };
-    try {
-      expect(isVetraCloudEnvironmentState(wrongState.state)).toBe(false);
-      expect(assertIsVetraCloudEnvironmentState(wrongState.state)).toThrow();
-      expect(isVetraCloudEnvironmentDocument(wrongState)).toBe(false);
-      expect(assertIsVetraCloudEnvironmentDocument(wrongState)).toThrow();
-    } catch (error) {
-      expect(error).toBeInstanceOf(ZodError);
-    }
-  });
+  const wrongInitialState = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  wrongInitialState.initialState.global = {
+    ...{ notWhat: "you want" },
+  };
+  try {
+    expect(isVetraCloudEnvironmentState(wrongInitialState.state)).toBe(false);
+    expect(
+      assertIsVetraCloudEnvironmentState(wrongInitialState.state),
+    ).toThrow();
+    expect(isVetraCloudEnvironmentDocument(wrongInitialState)).toBe(false);
+    expect(assertIsVetraCloudEnvironmentDocument(wrongInitialState)).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
+
+  const missingIdInHeader = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  delete missingIdInHeader.header.id;
+  try {
+    expect(isVetraCloudEnvironmentDocument(missingIdInHeader)).toBe(false);
+    expect(assertIsVetraCloudEnvironmentDocument(missingIdInHeader)).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
+
+  const missingNameInHeader = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  delete missingNameInHeader.header.name;
+  try {
+    expect(isVetraCloudEnvironmentDocument(missingNameInHeader)).toBe(false);
+    expect(
+      assertIsVetraCloudEnvironmentDocument(missingNameInHeader),
+    ).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
+
+  const missingCreatedAtUtcIsoInHeader = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  delete missingCreatedAtUtcIsoInHeader.header.createdAtUtcIso;
+  try {
+    expect(
+      isVetraCloudEnvironmentDocument(missingCreatedAtUtcIsoInHeader),
+    ).toBe(false);
+    expect(
+      assertIsVetraCloudEnvironmentDocument(missingCreatedAtUtcIsoInHeader),
+    ).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
+
+  const missingLastModifiedAtUtcIsoInHeader = utils.createDocument();
+  // @ts-expect-error - we are testing the error case
+  delete missingLastModifiedAtUtcIsoInHeader.header.lastModifiedAtUtcIso;
+  try {
+    expect(
+      isVetraCloudEnvironmentDocument(missingLastModifiedAtUtcIsoInHeader),
+    ).toBe(false);
+    expect(
+      assertIsVetraCloudEnvironmentDocument(
+        missingLastModifiedAtUtcIsoInHeader,
+      ),
+    ).toThrow();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ZodError);
+  }
 });

@@ -47,9 +47,9 @@ beforeEach(async () => {
   deps = {
     repo,
     envDb: envDbStub("0xAbC") as never,
-    createJob,
-    deleteJob,
-    presign,
+    createJob: createJob as unknown as DumpResolverDeps["createJob"],
+    deleteJob: deleteJob as unknown as DumpResolverDeps["deleteJob"],
+    presign: presign as unknown as DumpResolverDeps["presign"],
     image: "img:1",
     bucket: "powerhouse-env-dumps",
     s3Endpoint: "https://s3",

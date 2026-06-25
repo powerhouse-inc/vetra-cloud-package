@@ -1,24 +1,30 @@
+/**
+ * WARNING: DO NOT EDIT
+ * This file is auto-generated and updated by codegen
+ */
 import type {
   IProcessorHostModule,
   ProcessorRecord,
-  ProcessorFactory,
 } from "@powerhousedao/reactor-browser";
 import type { PHDocumentHeader } from "document-model";
 
 export const processorFactory = async (module: IProcessorHostModule) => {
-  const factories: ProcessorFactory[] = [];
+  const { processorFactoryBuilders } =
+    module.processorApp === "connect"
+      ? await import("./connect.js")
+      : await import("./switchboard.js");
 
-  if (module.processorApp === "connect") {
-    await addConnectProcessorFactories(factories, module);
-  }
+  const factories = await Promise.all(
+    processorFactoryBuilders.map(
+      async (buildFactory) => await buildFactory(module),
+    ),
+  );
 
-  if (module.processorApp === "switchboard") {
-    await addSwitchboardProcessorFactories(factories, module);
-  }
-
+  // Return the inner function that will be called for each drive
   return async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
     const processors: ProcessorRecord[] = [];
 
+    // Call each cached factory with the driveHeader
     for (const factory of factories) {
       const factoryProcessors = await factory(driveHeader, module.processorApp);
       processors.push(...factoryProcessors);
@@ -27,22 +33,3 @@ export const processorFactory = async (module: IProcessorHostModule) => {
     return processors;
   };
 };
-
-async function addConnectProcessorFactories(factories: ProcessorFactory[], module: IProcessorHostModule) {
-  const connectProcessorFactories: ProcessorFactory[] = [];
-
-  for (const factory of connectProcessorFactories) {
-    factories.push(factory);
-  }
-}
-
-async function addSwitchboardProcessorFactories(factories: ProcessorFactory[], module: IProcessorHostModule) {
-  const { vetraCloudEnvironmentProcessorFactory } = await import("./vetra-cloud-environment/factory.js");
-  const switchboardProcessorFactories: ProcessorFactory[] = [
-    vetraCloudEnvironmentProcessorFactory(module),
-  ];
-
-  for (const factory of switchboardProcessorFactories) {
-    factories.push(factory);
-  }
-}

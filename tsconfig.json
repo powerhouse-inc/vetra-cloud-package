@@ -1,64 +1,33 @@
 {
   "compilerOptions": {
-    "outDir": "./dist",
     "rootDir": ".",
+    // paths for easy access to project modules
+    "paths": {
+      "document-models": ["./document-models/index.ts"],
+      "document-models/*": ["./document-models/*/index.ts"],
+      "editors": ["./editors/index.ts"],
+      "editors/*": ["./editors/*/index.ts"],
+      "processors/*": ["./processors/*/index.ts"],
+      "subgraphs": ["./subgraphs/index.ts"],
+      "subgraphs/*": ["./subgraphs/*/index.ts"]
+    },
     "module": "nodenext",
+    "moduleDetection": "force",
     "target": "esnext",
-    "types": [
-      "node",
-      "vitest/globals"
-    ],
-    "lib": [
-      "ESNext",
-      "dom",
-      "dom.iterable"
-    ],
-    "sourceMap": false,
-    "declaration": true,
-    "declarationMap": true,
-    "strict": true,
     "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"],
+    "lib": ["ESNext", "dom", "dom.iterable"],
+    "declaration": true,
+    "declarationDir": "./dist/types",
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": true,
+    "strict": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
-    "moduleDetection": "force",
-    "skipLibCheck": true,
-    "paths": {
-      "@powerhousedao/vetra-cloud-package/document-models": [
-        "./document-models/index.ts"
-      ],
-      "@powerhousedao/vetra-cloud-package/document-models/*": [
-        "./document-models/*/index.ts"
-      ],
-      "@powerhousedao/vetra-cloud-package/editors": [
-        "./editors/index.ts"
-      ],
-      "@powerhousedao/vetra-cloud-package/editors/*": [
-        "./editors/*/index.ts"
-      ],
-      "document-models/vetra-cloud-environment/v1": [
-        "./document-models/vetra-cloud-environment/v1/index.ts"
-      ],
-      "document-models/vetra-cloud-environment/upgrades": [
-        "./document-models/vetra-cloud-environment/upgrades/index.ts"
-      ],
-      "processors/vetra-cloud-environment": [
-        "./processors/vetra-cloud-environment/index.ts"
-      ]
-    }
+    "skipLibCheck": true
   },
-  "include": [
-    "**/*",
-    "./powerhouse.manifest.json"
-  ],
-  "exclude": [
-    "dist",
-    "node_modules",
-    ".ph",
-    "vitest.config.ts",
-    "**/*.test.ts",
-    "**/e2e.test.ts",
-    "**/gen/**/object.ts",
-    "**/gen/object.ts"
-  ]
+  "include": ["**/*", "./powerhouse.manifest.json"],
+  "exclude": ["dist", "node_modules", ".ph", "vitest.config.ts", "main.tsx"]
 }

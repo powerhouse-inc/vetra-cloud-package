@@ -23,13 +23,22 @@ export class NotOwnerError extends Error implements ReducerError {
 
 export const errors = {
   Initialize: { InvalidStatusTransitionError, NotOwnerError },
+
   MarkChangesPushed: { InvalidStatusTransitionError },
+
   MarkDeploymentStarted: { InvalidStatusTransitionError },
+
   ReportDeploymentSucceeded: { InvalidStatusTransitionError },
+
   ReportDeploymentFailed: { InvalidStatusTransitionError },
+
   ApproveChanges: { InvalidStatusTransitionError, NotOwnerError },
+
   TerminateEnvironment: { NotOwnerError },
+
   MarkDestroyed: { InvalidStatusTransitionError, NotOwnerError },
+
   Archive: { InvalidStatusTransitionError, NotOwnerError },
+
   Unarchive: { InvalidStatusTransitionError, NotOwnerError },
 };
