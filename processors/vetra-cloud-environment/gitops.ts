@@ -258,6 +258,69 @@ function tlsSecretName(
 }
 
 // ---------------------------------------------------------------------------
+// Flattened single-label hosts (covered by the *.vetra.io wildcard cert)
+// ---------------------------------------------------------------------------
+
+/**
+ * A service's generic `.vetra.io` ingress host, as a SINGLE DNS label so it is
+ * covered by the cluster `*.vetra.io` wildcard cert (served via Traefik's
+ * TLSStore/default — see infrastructure/wildcard-tls):
+ *   apex  -> `<subdomain>.<baseDomain>`              (e.g. tall-duck-ab12.vetra.io)
+ *   other -> `<subdomain>-<prefix>.<baseDomain>`     (e.g. tall-duck-ab12-connect.vetra.io)
+ */
+export function resolveGenericHost(
+  subdomain: string,
+  prefix: string,
+  isApex: boolean,
+  baseDomain: string,
+): string {
+  return isApex
+    ? `${subdomain}.${baseDomain}`
+    : `${subdomain}-${prefix}.${baseDomain}`;
+}
+
+/**
+ * The service TYPE served at the env apex (`<subdomain>.vetra.io`). Explicit
+ * `apexService` wins; otherwise a lone enabled service auto-claims the apex (so a
+ * single-CLINT Studio gets the bare subdomain). Null when ambiguous (multiple
+ * enabled services, none pinned).
+ */
+export function effectiveApexType(
+  state: VetraCloudEnvironmentState,
+): VetraCloudEnvironmentService["type"] | null {
+  if (state.apexService) return state.apexService;
+  const enabled = (state.services ?? []).filter((s) => s.enabled);
+  return enabled.length === 1 ? enabled[0].type : null;
+}
+
+/**
+ * Whether a given service type is served at the apex. The bare apex host can
+ * belong to only ONE service, so the type must have exactly one enabled instance
+ * (guards multi-agent CLINT envs from colliding on the bare host).
+ */
+export function isTypeAtApex(
+  state: VetraCloudEnvironmentState,
+  type: VetraCloudEnvironmentService["type"],
+): boolean {
+  if (effectiveApexType(state) !== type) return false;
+  const sameType = (state.services ?? []).filter(
+    (s) => s.enabled && s.type === type,
+  );
+  return sameType.length === 1;
+}
+
+/** Guard: a single DNS label must be ≤63 chars (RFC 1035). */
+export function assertHostLabelLength(host: string): void {
+  const firstLabel = host.split(".")[0] ?? "";
+  if (firstLabel.length > 63) {
+    throw new Error(
+      `Ingress host label exceeds 63 chars: "${firstLabel}" (${firstLabel.length}). ` +
+        `Use a shorter service prefix.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLINT services — image, resource mapping, announce-token provisioning
 // ---------------------------------------------------------------------------
 
@@ -604,7 +667,16 @@ async function generateClintBlock(
     // provisions TLS via the Let's Encrypt cluster issuer.
     lines.push(`      ingress:`);
     lines.push(`        enabled: true`);
-    lines.push(`        host: ${yamlQuote(`${svc.prefix}.${subdomain}.${baseDomain}`)}`);
+    // Flattened single-label host so it's covered by the *.vetra.io wildcard
+    // cert. A sole CLINT studio claims the apex (<subdomain>.vetra.io).
+    const clintHost = resolveGenericHost(
+      subdomain,
+      svc.prefix,
+      isTypeAtApex(state, "CLINT"),
+      baseDomain,
+    );
+    assertHostLabelLength(clintHost);
+    lines.push(`        host: ${yamlQuote(clintHost)}`);
   }
   return lines.join("\n");
 }
@@ -696,12 +768,32 @@ export async function generateValuesYaml(
     customDomain && connectEnabled && !connectApexDomain
       ? generateCustomDomainIngress("connect", customDomain)
       : "";
+  // Generic (non-customDomain-apex) services get an explicit flattened host so
+  // they're covered by the *.vetra.io wildcard cert. The chart's
+  // powerhouse.serviceHost helper prefers an explicit ingress.host, so emitting
+  // it here overrides the legacy `<svc>.<subdomain>.vetra.io` default.
+  const switchboardGenericHost = resolveGenericHost(
+    subdomain,
+    switchboardService?.prefix ?? "switchboard",
+    isTypeAtApex(state, "SWITCHBOARD"),
+    state.genericBaseDomain ?? "vetra.io",
+  );
+  const connectGenericHost = resolveGenericHost(
+    subdomain,
+    connectService?.prefix ?? "connect",
+    isTypeAtApex(state, "CONNECT"),
+    state.genericBaseDomain ?? "vetra.io",
+  );
+  if (switchboardEnabled && !switchboardApexDomain)
+    assertHostLabelLength(switchboardGenericHost);
+  if (connectEnabled && !connectApexDomain)
+    assertHostLabelLength(connectGenericHost);
   const switchboardHostLine = switchboardApexDomain
     ? `\n    host: ${yamlQuote(switchboardApexDomain)}`
-    : "";
+    : `\n    host: ${yamlQuote(switchboardGenericHost)}`;
   const connectHostLine = connectApexDomain
     ? `\n    host: ${yamlQuote(connectApexDomain)}`
-    : "";
+    : `\n    host: ${yamlQuote(connectGenericHost)}`;
   const switchboardTlsSecret = tlsSecretName(
     "switchboard",
     subdomain,
@@ -800,6 +892,7 @@ tenantSecretsController:
   return `${tenantSecretsControllerBlock}global:
   disabled: ${disabled}
   subdomain: ${yamlQuote(subdomain)}
+  wildcardTls: ${!customDomain}
   imagePullSecrets:
     enabled: true
     name: harbor-credentials
