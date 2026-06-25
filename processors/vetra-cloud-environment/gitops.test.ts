@@ -722,3 +722,51 @@ describe("generateValuesYaml — tenant cluster issuer (ZeroSSL routing)", () =>
     expect(yaml).not.toMatch(/cluster-issuer: letsencrypt-prod/);
   });
 });
+
+describe("generateValuesYaml — switchboard / connect default image tag", () => {
+  function appService(
+    type: "SWITCHBOARD" | "CONNECT",
+    version: string | null,
+  ): VetraCloudEnvironmentState["services"][number] {
+    return {
+      type,
+      prefix: type.toLowerCase(),
+      enabled: true,
+      url: null,
+      status: "ACTIVE",
+      version,
+      config: null,
+      selectedRessource: null,
+    };
+  }
+
+  it("defaults the switchboard image to the floating 'dev' tag (kept IfNotPresent)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [appService("SWITCHBOARD", null)] }),
+      "doc-sb-default-tag",
+    );
+    expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: dev\b/);
+    expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?pullPolicy: IfNotPresent/);
+  });
+
+  it("defaults the connect image to the floating 'dev' tag (kept IfNotPresent)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [appService("CONNECT", null)] }),
+      "doc-connect-default-tag",
+    );
+    expect(yaml).toMatch(/connect:[\s\S]*?image:[\s\S]*?tag: dev\b/);
+    expect(yaml).toMatch(/connect:[\s\S]*?image:[\s\S]*?pullPolicy: IfNotPresent/);
+  });
+
+  it("keeps IfNotPresent for an explicitly pinned switchboard version", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [appService("SWITCHBOARD", "v6.0.0-dev.258")] }),
+      "doc-sb-pinned-tag",
+    );
+    expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.0\.0-dev\.258/);
+    expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?pullPolicy: IfNotPresent/);
+  });
+});

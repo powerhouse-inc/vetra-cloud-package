@@ -613,7 +613,14 @@ async function generateClintBlock(
 // Values YAML generation
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IMAGE_TAG = "v6.0.0-dev.152";
+// New environments float on the `dev` tag instead of a hard-pinned version, so
+// envs created weeks apart no longer drift onto wildly different switchboard/
+// connect builds (the stale-pinned-version problem). pullPolicy stays
+// IfNotPresent below: a node re-pulls `dev` only when it isn't already cached
+// (new/recycled nodes, post image-GC), so the tag refreshes from time to time
+// without paying a registry pull on every pod start. An explicit per-service
+// version still overrides this default.
+const DEFAULT_IMAGE_TAG = "dev";
 
 export async function generateValuesYaml(
   db: Kysely<DB>,
