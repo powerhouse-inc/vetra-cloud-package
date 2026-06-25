@@ -138,7 +138,7 @@ jobs:
         run: pnpm install
 
       - name: Build package
-        run: pnpm build
+        run: pnpm exec ph-cli build
 
       - name: Run tests
         run: pnpm test || true
@@ -180,11 +180,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.VETRA_REGISTRY_TOKEN }}
         run: |
           CHANNEL="${{ needs.prepare.outputs.channel }}"
-          if [ "$CHANNEL" = "latest" ]; then
-            pnpm publish --access public --tag latest --no-git-checks
-          else
-            pnpm publish --access public --tag $CHANNEL --no-git-checks
-          fi
+          pnpm exec ph-cli publish \
+            --registry https://registry.dev.vetra.io \
+            --access public \
+            --tag "$CHANNEL"
 
       - name: Create git tag
         if: needs.prepare.outputs.dry_run != 'true'
