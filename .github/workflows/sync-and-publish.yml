@@ -179,6 +179,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.VETRA_REGISTRY_TOKEN }}
         run: |
+          # ph-cli publish is a thin wrapper over `npm publish` that resolves the
+          # registry URL and verifies auth via `npm whoami` before forwarding the
+          # remaining flags. --no-git-checks is pnpm-only and intentionally omitted.
           CHANNEL="${{ needs.prepare.outputs.channel }}"
           pnpm exec ph-cli publish \
             --registry https://registry.dev.vetra.io \
