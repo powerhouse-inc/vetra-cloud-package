@@ -21,6 +21,7 @@ import {
 import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
+import { coreServicesReady } from "./readiness.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -396,7 +397,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         // Find environments waiting for deployment
         const pendingEnvs = (await envDb
           .selectFrom("environments")
-          .select(["id", "tenantId", "status", "name", "deployingSince"])
+          .select(["id", "tenantId", "status", "name", "deployingSince", "services"])
           .where("status", "in", ["CHANGES_PUSHED", "DEPLOYING"])
           .execute()) as Array<{
           id: string;
@@ -404,6 +405,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           status: string;
           name: string | null;
           deployingSince: string | null;
+          services: unknown;
         }>;
 
         if (pendingEnvs.length === 0) return;
@@ -466,6 +468,34 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                 `[deployment-reconciler] ${label}: DEPLOYING, waiting for ArgoCD to reconcile ` +
                   `(argoLastSyncedAt=${argoLastSyncedAt ?? "null"}, ` +
                   `deployingSince=${env.deployingSince ?? "null"}, elapsed=${Math.round(elapsedMs / 1000)}s)`,
+              );
+              continue;
+            }
+
+            // Fast path: mark READY as soon as the workload pods are actually
+            // ready, instead of waiting for ArgoCD's slower health aggregation
+            // (which lags pod readiness by ~15-30s). The pod watcher already
+            // tracks readiness event-driven in environment_pods. Guarded by the
+            // `trustworthy` check above, so we never act on pods from a previous
+            // revision before ArgoCD has applied the new one.
+            const pods = await observabilityDb
+              .selectFrom("environment_pods")
+              .select(["ready", "phase"])
+              .where("tenantId", "=", env.tenantId)
+              .execute();
+            if (coreServicesReady(env.services, pods)) {
+              console.info(
+                `[deployment-reconciler] ${label}: DEPLOYING → READY (pods ready: ${pods.length})`,
+              );
+              await envDb
+                .updateTable("environments")
+                .set({ deployingSince: null })
+                .where("id", "=", env.id)
+                .execute();
+              await this.dispatchAction(
+                env.id,
+                "REPORT_DEPLOYMENT_SUCCEEDED",
+                {},
               );
               continue;
             }
