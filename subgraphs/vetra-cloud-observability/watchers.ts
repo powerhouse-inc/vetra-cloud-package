@@ -581,6 +581,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
               sync?: { status?: string };
               health?: { status?: string; message?: string };
               operationState?: { finishedAt?: string; message?: string };
+              reconciledAt?: string;
               conditions?: Array<{ type?: string }>;
             };
           };
@@ -590,7 +591,15 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
 
           const syncStatus = app.status?.sync?.status ?? "Unknown";
           const healthStatus = app.status?.health?.status ?? "Unknown";
-          const lastSyncedAt = app.status?.operationState?.finishedAt ?? null;
+          // Prefer reconciledAt (advances on every reconcile, incl. no-op syncs)
+          // over operationState.finishedAt (only set on an actual sync op, often
+          // null) — matching the periodic poll path. Using finishedAt here left
+          // argoLastSyncedAt null until the 60s poll, stalling the deployment
+          // reconciler's "argo saw our push" check by up to a minute.
+          const lastSyncedAt =
+            app.status?.reconciledAt ??
+            app.status?.operationState?.finishedAt ??
+            null;
           const message =
             app.status?.health?.message ??
             app.status?.operationState?.message ??
