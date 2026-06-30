@@ -3,8 +3,8 @@ import {
   deriveStudioPowerState,
   isAutomationRequest,
   isEligibleForSleep,
+  OBSERVABILITY_PULL_USER_AGENT,
 } from "./policy.js";
-import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-cloud-observability/clint-pull-worker.js";
 
 describe("isAutomationRequest", () => {
   it("flags the observability poll path", () => {

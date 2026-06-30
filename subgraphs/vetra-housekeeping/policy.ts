@@ -1,4 +1,10 @@
-import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-cloud-observability/clint-pull-worker.js";
+/**
+ * User-Agent the observability `clint-pull-worker` stamps on its `/_proxy/routes`
+ * poll so the idle signal + wake activator can exclude it as automation. Defined
+ * here (the dependency-free policy module) and re-exported by the worker, so the
+ * slim housekeeping-service build doesn't drag in the observability subgraph.
+ */
+export const OBSERVABILITY_PULL_USER_AGENT = "vetra-observability-pull";
 
 /**
  * Studio housekeeping policy — pure decision functions shared by the
