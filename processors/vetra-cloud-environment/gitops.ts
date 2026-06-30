@@ -734,7 +734,14 @@ export async function generateValuesYaml(
   const switchboardResources =
     APP_RESOURCE_MAP[readServiceSize(switchboardService)];
   const connectResources = APP_RESOURCE_MAP[readServiceSize(connectService)];
-  const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
+  // STOPPED = housekeeping sleep (wakeable): renders global.disabled=true so the
+  // workload + ingress are removed, but the namespace/PVC/secrets/cert remain.
+  const DISABLED_STATUSES = new Set([
+    "TERMINATING",
+    "DESTROYED",
+    "ARCHIVED",
+    "STOPPED",
+  ]);
   const disabled = DISABLED_STATUSES.has(state.status);
   // Postgres is only needed when Switchboard is enabled — Connect-only envs
   // (e.g. admin-style apex deployments) can skip the ~60-90s CNPG bootstrap
@@ -1219,7 +1226,14 @@ async function syncEnvironmentEphemeral(
     // else is a live update (initial provision, approval, service toggle,
     // version bump, custom-domain change, etc.).
     logger.info(`Changes detected: ${hasChanges}`);
-    const DISABLED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
+    // STOPPED = housekeeping sleep (wakeable): renders global.disabled=true so the
+  // workload + ingress are removed, but the namespace/PVC/secrets/cert remain.
+  const DISABLED_STATUSES = new Set([
+    "TERMINATING",
+    "DESTROYED",
+    "ARCHIVED",
+    "STOPPED",
+  ]);
     const statusLabel = DISABLED_STATUSES.has(state.status) ? "disable" : "update";
     const commitMsg = `chore(${tenantId}): ${statusLabel} tenant — synced from vetra-cloud-environment`;
     logger.info(`Committing: ${commitMsg}`);

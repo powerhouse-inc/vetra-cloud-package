@@ -33,6 +33,26 @@ const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
 
+/**
+ * User-Agent stamped on the `/_proxy/routes` poll so the studio-housekeeping
+ * idle signal and wake activator can exclude it as automation rather than a
+ * real user request. Exported so the housekeeping denylist stays in sync.
+ */
+export const OBSERVABILITY_PULL_USER_AGENT = "vetra-observability-pull";
+
+/**
+ * Env statuses whose chart renders `global.disabled=true` — no workload/ingress,
+ * so there's nothing to poll. STOPPED is housekeeping sleep (wakeable); the rest
+ * are teardown. Polling these is wasteful and, for STOPPED, would re-wake the
+ * studio via the activator every tick.
+ */
+const NO_WORKLOAD_STATUSES = new Set([
+  "STOPPED",
+  "TERMINATING",
+  "DESTROYED",
+  "ARCHIVED",
+]);
+
 // Mirrors processors/vetra-cloud-environment/gitops.ts resolveGenericHost:
 // a single DNS label covered by the *.vetra.io wildcard cert.
 function genericHost(subdomain: string, prefix: string, isApex: boolean): string {
@@ -143,11 +163,16 @@ export class ClintPullWorker {
   private async listClintServices(): Promise<ClintServiceTuple[]> {
     const rows = await this.config.envDb
       .selectFrom("environments")
-      .select(["id", "subdomain", "services"])
+      .select(["id", "subdomain", "services", "status"])
       .execute();
     const out: ClintServiceTuple[] = [];
     for (const row of rows) {
       if (!row.subdomain) continue;
+      // Skip envs with no running workload — STOPPED (housekeeping sleep) and the
+      // terminal statuses render global.disabled=true, so there's nothing to poll.
+      // Polling a STOPPED studio would also hit the wake activator every tick and
+      // re-wake it, defeating the sleep. See the studio-housekeeping design.
+      if (NO_WORKLOAD_STATUSES.has(row.status ?? "")) continue;
       const all = parseClintServices(row.services);
       // Apex = sole enabled service (mirrors gitops effectiveApexType's
       // single-service default) → a Studio's lone CLINT agent is at the apex.
@@ -171,7 +196,12 @@ export class ClintPullWorker {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
     try {
-      const res = await fetch(url, { signal: ac.signal });
+      // Distinct UA so the housekeeping idle signal + wake activator can exclude
+      // this poll as automation (not a "proper request"). See studio-housekeeping.
+      const res = await fetch(url, {
+        signal: ac.signal,
+        headers: { "user-agent": OBSERVABILITY_PULL_USER_AGENT },
+      });
       if (!res.ok) {
         this.config.logger.warn(
           `[clint-pull-worker] ${svc.documentId} ${svc.prefix} ${res.status} from ${url}`,
