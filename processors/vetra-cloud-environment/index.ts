@@ -181,6 +181,19 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         } catch (error) {
           logger.error(`Gitops sync failed for "${label}": ${String(error)}`);
         }
+      } else if (status === "STOPPED") {
+        // Housekeeping sleep: re-render so the chart sees global.disabled=true
+        // (workload + ingress removed; namespace/PVC/cert kept). No
+        // MARK_CHANGES_PUSHED dance — STOPPED is a resting state, not a deploy.
+        // (Wake flips the env back to CHANGES_APPROVED, which re-enables via the
+        // branch above and runs the normal deploy pipeline.)
+        logger.info(`Triggering gitops sync for "${label}" (sleep → disabled)`);
+        try {
+          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
+          logger.info(`Gitops sleep sync completed for "${label}"`);
+        } catch (error) {
+          logger.error(`Gitops sleep sync failed for "${label}": ${String(error)}`);
+        }
       } else {
         // No gitops re-render on a bare ownership transfer (warm-pool claim).
         // ADMINS — the only owner-gated value that remained after the network

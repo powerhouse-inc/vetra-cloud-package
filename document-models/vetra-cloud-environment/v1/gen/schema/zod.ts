@@ -32,6 +32,7 @@ import type {
   SetServiceSizeInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
+  SleepEnvironmentInput,
   TerminateEnvironmentInput,
   ToggleServiceInput,
   UnarchiveInput,
@@ -51,6 +52,7 @@ import type {
   VetraCloudServiceEnvConfigInput,
   VetraCloudServiceEnvInput,
   VetraCustomDomain,
+  WakeEnvironmentInput,
 } from "./types.js";
 
 type Properties<T> = Required<{
@@ -345,6 +347,14 @@ export function SetServiceVersionInputSchema(): z.ZodObject<
   });
 }
 
+export function SleepEnvironmentInputSchema(): z.ZodObject<
+  Properties<SleepEnvironmentInput>
+> {
+  return z.object({
+    _placeholder: z.string().nullish(),
+  });
+}
+
 export function TerminateEnvironmentInputSchema(): z.ZodObject<
   Properties<TerminateEnvironmentInput>
 > {
@@ -523,5 +533,13 @@ export function VetraCustomDomainSchema(): z.ZodObject<
     dnsRecords: z.array(z.lazy(() => DnsRecordSchema())),
     domain: z.string().nullish(),
     enabled: z.boolean(),
+  });
+}
+
+export function WakeEnvironmentInputSchema(): z.ZodObject<
+  Properties<WakeEnvironmentInput>
+> {
+  return z.object({
+    _placeholder: z.string().nullish(),
   });
 }

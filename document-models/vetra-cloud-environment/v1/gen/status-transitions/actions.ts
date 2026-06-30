@@ -12,8 +12,10 @@ import type {
   MarkDestroyedInput,
   ReportDeploymentFailedInput,
   ReportDeploymentSucceededInput,
+  SleepEnvironmentInput,
   TerminateEnvironmentInput,
   UnarchiveInput,
+  WakeEnvironmentInput,
 } from "../types.js";
 
 export type InitializeAction = Action & {
@@ -53,6 +55,14 @@ export type UnarchiveAction = Action & {
   type: "UNARCHIVE";
   input: UnarchiveInput;
 };
+export type SleepEnvironmentAction = Action & {
+  type: "SLEEP_ENVIRONMENT";
+  input: SleepEnvironmentInput;
+};
+export type WakeEnvironmentAction = Action & {
+  type: "WAKE_ENVIRONMENT";
+  input: WakeEnvironmentInput;
+};
 
 export type VetraCloudEnvironmentStatusTransitionsAction =
   | InitializeAction
@@ -64,4 +74,6 @@ export type VetraCloudEnvironmentStatusTransitionsAction =
   | TerminateEnvironmentAction
   | MarkDestroyedAction
   | ArchiveAction
-  | UnarchiveAction;
+  | UnarchiveAction
+  | SleepEnvironmentAction
+  | WakeEnvironmentAction;
