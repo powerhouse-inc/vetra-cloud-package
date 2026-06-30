@@ -12,8 +12,10 @@ import {
   MarkDestroyedInputSchema,
   ReportDeploymentFailedInputSchema,
   ReportDeploymentSucceededInputSchema,
+  SleepEnvironmentInputSchema,
   TerminateEnvironmentInputSchema,
   UnarchiveInputSchema,
+  WakeEnvironmentInputSchema,
 } from "../schema/zod.js";
 import type {
   ApproveChangesInput,
@@ -24,8 +26,10 @@ import type {
   MarkDestroyedInput,
   ReportDeploymentFailedInput,
   ReportDeploymentSucceededInput,
+  SleepEnvironmentInput,
   TerminateEnvironmentInput,
   UnarchiveInput,
+  WakeEnvironmentInput,
 } from "../types.js";
 import type {
   ApproveChangesAction,
@@ -36,8 +40,10 @@ import type {
   MarkDestroyedAction,
   ReportDeploymentFailedAction,
   ReportDeploymentSucceededAction,
+  SleepEnvironmentAction,
   TerminateEnvironmentAction,
   UnarchiveAction,
+  WakeEnvironmentAction,
 } from "./actions.js";
 
 export const initialize = (input: InitializeInput) =>
@@ -129,5 +135,23 @@ export const unarchive = (input: UnarchiveInput) =>
     { ...input },
     undefined,
     UnarchiveInputSchema,
+    "global",
+  );
+
+export const sleepEnvironment = (input: SleepEnvironmentInput) =>
+  createAction<SleepEnvironmentAction>(
+    "SLEEP_ENVIRONMENT",
+    { ...input },
+    undefined,
+    SleepEnvironmentInputSchema,
+    "global",
+  );
+
+export const wakeEnvironment = (input: WakeEnvironmentInput) =>
+  createAction<WakeEnvironmentAction>(
+    "WAKE_ENVIRONMENT",
+    { ...input },
+    undefined,
+    WakeEnvironmentInputSchema,
     "global",
   );

@@ -306,3 +306,11 @@ input ArchiveInput {
 input UnarchiveInput {
   _placeholder: String
 }
+
+input SleepEnvironmentInput {
+  _placeholder: String
+}
+
+input WakeEnvironmentInput {
+  _placeholder: String
+}

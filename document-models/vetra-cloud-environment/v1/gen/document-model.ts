@@ -833,6 +833,31 @@ export const documentModel: DocumentModelGlobalState = {
               template: "",
               scope: "global",
             },
+            {
+              description:
+                "Put a claimed studio to sleep (housekeeping). Renders global.disabled via the processor so the workload + ingress are removed while the namespace/PVC/cert/secrets remain.",
+              errors: [],
+              examples: [],
+              id: "op-sleep",
+              name: "SLEEP_ENVIRONMENT",
+              reducer: 'state.status = "STOPPED";',
+              schema:
+                "input SleepEnvironmentInput {\n  _placeholder: String\n}",
+              template: "",
+              scope: "global",
+            },
+            {
+              description:
+                "Wake a sleeping studio (housekeeping). Re-approves the existing config (STOPPED -> CHANGES_APPROVED) so the processor re-renders enabled values and the normal deploy pipeline brings it back to READY.",
+              errors: [],
+              examples: [],
+              id: "op-wake",
+              name: "WAKE_ENVIRONMENT",
+              reducer: 'state.status = "CHANGES_APPROVED";',
+              schema: "input WakeEnvironmentInput {\n  _placeholder: String\n}",
+              template: "",
+              scope: "global",
+            },
           ],
         },
       ],

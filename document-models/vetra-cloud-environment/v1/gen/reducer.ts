@@ -36,10 +36,12 @@ import {
   SetServiceSizeInputSchema,
   SetServiceStatusInputSchema,
   SetServiceVersionInputSchema,
+  SleepEnvironmentInputSchema,
   TerminateEnvironmentInputSchema,
   ToggleServiceInputSchema,
   UnarchiveInputSchema,
   UpdateServicePrefixInputSchema,
+  WakeEnvironmentInputSchema,
 } from "./schema/zod.js";
 
 const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
@@ -403,6 +405,30 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       UnarchiveInputSchema().parse(action.input);
 
       vetraCloudEnvironmentStatusTransitionsOperations.unarchiveOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SLEEP_ENVIRONMENT": {
+      SleepEnvironmentInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.sleepEnvironmentOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "WAKE_ENVIRONMENT": {
+      WakeEnvironmentInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentStatusTransitionsOperations.wakeEnvironmentOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

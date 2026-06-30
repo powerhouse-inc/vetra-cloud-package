@@ -199,6 +199,10 @@ export type SetServiceVersionInput = {
   version: Scalars["String"]["input"];
 };
 
+export type SleepEnvironmentInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type TerminateEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
@@ -329,4 +333,8 @@ export type VetraCustomDomain = {
   dnsRecords: Array<DnsRecord>;
   domain: Maybe<Scalars["String"]["output"]>;
   enabled: Scalars["Boolean"]["output"];
+};
+
+export type WakeEnvironmentInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
