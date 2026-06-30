@@ -4,7 +4,6 @@ import type { VetraGithubAuthDB } from "./schema.js";
 export type GithubConnection = {
   userDid: string;
   environmentId: string;
-  installationId: string;
   repoFullName: string;
   createdAt: string;
 };
@@ -16,14 +15,12 @@ function nowIso(): string {
 function toConnection(row: {
   user_did: string;
   environment_id: string;
-  installation_id: string;
   repo_full_name: string;
   created_at: string;
 }): GithubConnection {
   return {
     userDid: row.user_did,
     environmentId: row.environment_id,
-    installationId: row.installation_id,
     repoFullName: row.repo_full_name,
     createdAt: row.created_at,
   };
@@ -57,7 +54,6 @@ export async function saveConnection(
   db: Kysely<VetraGithubAuthDB>,
   did: string,
   environmentId: string,
-  installationId: string,
   repoFullName: string,
 ): Promise<GithubConnection> {
   const createdAt = nowIso();
@@ -66,19 +62,17 @@ export async function saveConnection(
     .values({
       user_did: did,
       environment_id: environmentId,
-      installation_id: installationId,
       repo_full_name: repoFullName,
       created_at: createdAt,
     })
     .onConflict((oc) =>
       oc.columns(["user_did", "environment_id"]).doUpdateSet({
-        installation_id: installationId,
         repo_full_name: repoFullName,
         created_at: createdAt,
       }),
     )
     .execute();
-  return { userDid: did, environmentId, installationId, repoFullName, createdAt };
+  return { userDid: did, environmentId, repoFullName, createdAt };
 }
 
 /**
