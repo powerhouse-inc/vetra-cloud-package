@@ -42,3 +42,24 @@ export async function findStudioByHost(
     tenantId: row.tenantId,
   };
 }
+
+/**
+ * All claimed studios currently READY — the sleep candidates the in-process
+ * keeper evaluates (pre-eligibility; `isEligibleForSleep` filters further).
+ */
+export async function listReadyStudios(db: Kysely<DB>): Promise<StudioRow[]> {
+  const rows = await db
+    .selectFrom("environments")
+    .select(["id", "subdomain", "status", "owner", "poolState", "tenantId"])
+    .where("status", "=", "READY")
+    .where("owner", "is not", null)
+    .execute();
+  return rows.map((row) => ({
+    envId: row.id,
+    subdomain: row.subdomain,
+    status: row.status,
+    owner: row.owner,
+    poolState: row.poolState,
+    tenantId: row.tenantId,
+  }));
+}

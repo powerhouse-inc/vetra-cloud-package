@@ -1,4 +1,4 @@
-import { AUTOMATION_PATHS, AUTOMATION_USER_AGENTS } from "../subgraphs/vetra-housekeeping/policy.js";
+import { AUTOMATION_PATHS, AUTOMATION_USER_AGENTS } from "./policy.js";
 
 /**
  * Loki access-log field names (Traefik JSON access log, flattened by Loki's
@@ -80,7 +80,6 @@ export function createLokiClient(opts: {
           data?: { result?: Array<{ value?: [number, string] }> };
         };
         const result = body.data?.result ?? [];
-        // Scalar/vector: sum the returned sample values.
         const count = result.reduce((acc, r) => acc + Number(r.value?.[1] ?? 0), 0);
         return count > 0;
       } catch (err) {

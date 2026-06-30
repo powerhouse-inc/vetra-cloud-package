@@ -247,13 +247,11 @@ COPY package.json pnpm-lock.yaml tsconfig.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY housekeeping-service ./housekeeping-service
-COPY subgraphs/vetra-housekeeping ./subgraphs/vetra-housekeeping
-COPY processors/vetra-cloud-environment/schema.ts ./processors/vetra-cloud-environment/schema.ts
+COPY subgraphs/vetra-housekeeping/policy.ts ./subgraphs/vetra-housekeeping/policy.ts
 
-# Scope compilation to the service + the dependency-free shared modules it
-# imports (policy, db, env read-model types). The subgraph's index/resolvers
-# (which pull in reactor-api + doc-model creators) are intentionally NOT built —
-# the service talks to the subgraph over GraphQL, it doesn't load it.
+# The activator is tiny: it imports only the dependency-free policy module
+# (isAutomationRequest) from the subgraph; everything else (detector, Loki, DB)
+# now lives in-process in the switchboard, not here. Scope compilation tightly.
 RUN cat > tsconfig.housekeeping.json <<'EOF'
 {
   "extends": "./tsconfig.json",
@@ -266,9 +264,7 @@ RUN cat > tsconfig.housekeeping.json <<'EOF'
   },
   "include": [
     "housekeeping-service/**/*",
-    "subgraphs/vetra-housekeeping/policy.ts",
-    "subgraphs/vetra-housekeeping/db.ts",
-    "processors/vetra-cloud-environment/schema.ts"
+    "subgraphs/vetra-housekeeping/policy.ts"
   ],
   "exclude": [
     "**/__tests__/**",
