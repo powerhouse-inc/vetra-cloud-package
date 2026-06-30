@@ -85,8 +85,11 @@ export class HousekeepingKeeper {
     for (const s of eligible) {
       if (!s.subdomain) continue;
       const host = studioHost(s.subdomain, config.baseDomain);
-      const active = await loki.hasRecentProperRequest(host, config.idleThresholdSeconds);
-      if (active) continue;
+      const activity = await loki.classifyHostActivity(host, config.idleThresholdSeconds);
+      // Sleep ONLY on a positive idle signal (logs exist, none proper). ACTIVE
+      // and UNKNOWN (no logs / query failed) are both left running — never sleep
+      // something we can't prove is idle.
+      if (activity !== "IDLE") continue;
 
       if (config.dryRun) {
         log.info(`[housekeeping-keeper] would sleep ${host} (idle ≥ ${config.idleThresholdSeconds}s)`);
