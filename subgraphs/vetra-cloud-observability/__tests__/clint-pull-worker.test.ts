@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { Kysely, SqliteDialect } from 'kysely';
 import Database from 'better-sqlite3';
-import { ClintPullWorker } from '../clint-pull-worker.js';
+import {
+  ClintPullWorker,
+  OBSERVABILITY_PULL_USER_AGENT,
+} from '../clint-pull-worker.js';
 
 /** Shape of `GET /_proxy/routes` from ph-clint dev.41+. */
 type ProxyRoute = {
@@ -37,7 +41,12 @@ function startMockAgent(response: ProxyRoute[] | { status: number }): Promise<{
 async function setupDbs(): Promise<{
   envDb: Kysely<any>;
   obsDb: Kysely<any>;
-  insertEnv: (row: { id: string; subdomain: string; services: string }) => Promise<void>;
+  insertEnv: (row: {
+    id: string;
+    subdomain: string;
+    services: string;
+    status?: string;
+  }) => Promise<void>;
 }> {
   const envDb = new Kysely<any>({
     dialect: new SqliteDialect({ database: new Database(':memory:') }),
@@ -47,6 +56,7 @@ async function setupDbs(): Promise<{
     .addColumn('id', 'text', (col) => col.primaryKey())
     .addColumn('subdomain', 'text')
     .addColumn('services', 'text')
+    .addColumn('status', 'text')
     .execute();
 
   const obsDb = new Kysely<any>({
@@ -64,7 +74,12 @@ async function setupDbs(): Promise<{
     .addColumn('lastSeen', 'text')
     .execute();
 
-  const insertEnv = async (row: { id: string; subdomain: string; services: string }) => {
+  const insertEnv = async (row: {
+    id: string;
+    subdomain: string;
+    services: string;
+    status?: string;
+  }) => {
     await envDb.insertInto('environments').values(row).execute();
   };
 
@@ -135,6 +150,79 @@ describe('ClintPullWorker.tickOnce', () => {
       expect(r.prefix).toBe('ph-pirate-wouter');
       expect(r.lastSeen).toBeTruthy();
     });
+  });
+
+  it('skips STOPPED (slept) studios — no poll, no upsert', async () => {
+    const mock = await startMockAgent([
+      {
+        prefix: '/switchboard/graphql',
+        upstream: 'http://localhost:35940/graphql',
+        ws: false,
+        source: 'switchboard',
+      },
+    ]);
+    server = mock.server;
+    let hits = 0;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-asleep',
+      subdomain: 'cozy-bat-09',
+      status: 'STOPPED',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'ph-agent' },
+      ]),
+    });
+
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: noopLogger,
+      buildAgentUrl: () => {
+        hits += 1;
+        return `http://127.0.0.1:${mock.port}/_proxy/routes`;
+      },
+    });
+
+    await worker.tickOnce();
+
+    expect(hits).toBe(0); // never even built a URL for the slept studio
+    const rows = await obsDb
+      .selectFrom('clint_runtime_endpoints')
+      .selectAll()
+      .where('documentId', '=', 'doc-asleep')
+      .execute();
+    expect(rows).toHaveLength(0);
+  });
+
+  it('stamps the observability-pull User-Agent on the /_proxy/routes fetch', async () => {
+    const seenUa: string[] = [];
+    const srv = createServer((req, res) => {
+      seenUa.push(req.headers['user-agent'] ?? '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('[]');
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const port = (srv.address() as AddressInfo).port;
+
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-ua',
+      subdomain: 'keen-owl-22',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'ph-agent' },
+      ]),
+    });
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: noopLogger,
+      buildAgentUrl: () => `http://127.0.0.1:${port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(seenUa).toContain(OBSERVABILITY_PULL_USER_AGENT);
   });
 
   it('removes routes that disappear from the agent response (replace semantics)', async () => {
