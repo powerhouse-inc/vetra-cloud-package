@@ -3,12 +3,11 @@ import type { DocumentNode } from "graphql";
 
 export const schema: DocumentNode = gql`
   """
-  A GitHub connection for one studio environment: the app installation and the
-  product repo created in the caller's account for that environment.
+  A GitHub connection for one studio environment: the repo created in the
+  caller's account for that environment.
   """
   type GithubConnection {
     environmentId: String!
-    installationId: String!
     repoFullName: String!
     repoUrl: String!
     createdAt: String!
@@ -48,10 +47,10 @@ export const schema: DocumentNode = gql`
     "The caller's GitHub connection for the given environment."
     myGithubConnection(environmentId: String!): GithubConnectionStatus!
     """
-    Mint a push token for the caller's installation bound to environmentId.
-    Errors: NOT_CONNECTED if no connection exists for the environment;
-    REINSTALL_REQUIRED if the app was uninstalled (the stale connection is
-    cleared); UNAUTHENTICATED if no caller.
+    Mint a push token for the repo bound to environmentId. The app installation
+    on the repo is resolved at call time. Errors: NOT_CONNECTED if no connection
+    exists for the environment; APP_NOT_INSTALLED if the app is not installed on
+    the repo yet; UNAUTHENTICATED if no caller.
     """
     getPushToken(environmentId: String!): GithubPushToken!
   }
@@ -68,13 +67,13 @@ export const schema: DocumentNode = gql`
     Complete onboarding for the authenticated caller from a deviceCode obtained
     via startGithubDeviceFlow, binding the result to environmentId (one repo per
     environment). The backend exchanges the code for a user access token
-    server-side (never exposed to the client or stored), discovers the app
-    installation, creates a blank private repo in the caller's account, and
-    persists the binding. Poll until it returns connected.
+    server-side (never exposed to the client or stored) and creates a blank
+    private repo in the caller's account. The app does not need to be installed
+    yet — that is required later, before pushing. Poll until it returns connected.
     Errors: AUTHORIZATION_PENDING or SLOW_DOWN while the user has not authorized
     yet (keep polling); DEVICE_CODE_EXPIRED if the code timed out; ACCESS_DENIED
-    if the user declined; APP_NOT_INSTALLED if the app is not installed for the
-    user; REPO_ALREADY_EXISTS if the name is taken; UNAUTHENTICATED if no caller.
+    if the user declined; REPO_ALREADY_EXISTS if the name is taken;
+    UNAUTHENTICATED if no caller.
     """
     connectGithub(
       deviceCode: String!

@@ -44,10 +44,9 @@ describe("getConnection", () => {
 
 describe("saveConnection", () => {
   it("persists a connection the caller can read back", async () => {
-    const connection = await saveConnection(db, DID, ENV, "42", "alice/widget");
+    const connection = await saveConnection(db, DID, ENV, "alice/widget");
     expect(connection.userDid).toBe(DID);
     expect(connection.environmentId).toBe(ENV);
-    expect(connection.installationId).toBe("42");
     expect(connection.repoFullName).toBe("alice/widget");
     expect(connection.createdAt).toBeTruthy();
 
@@ -56,11 +55,10 @@ describe("saveConnection", () => {
   });
 
   it("re-connecting the same environment replaces the row (one row per env)", async () => {
-    await saveConnection(db, DID, ENV, "42", "alice/widget");
-    await saveConnection(db, DID, ENV, "99", "alice/gadget");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    await saveConnection(db, DID, ENV, "alice/gadget");
 
     const fetched = await getConnection(db, DID, ENV);
-    expect(fetched?.installationId).toBe("99");
     expect(fetched?.repoFullName).toBe("alice/gadget");
 
     const rows = await db
@@ -73,8 +71,8 @@ describe("saveConnection", () => {
   });
 
   it("keeps a separate repo per environment for the same user", async () => {
-    await saveConnection(db, DID, ENV, "42", "alice/widget");
-    await saveConnection(db, DID, ENV2, "43", "alice/gadget");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    await saveConnection(db, DID, ENV2, "alice/gadget");
 
     expect((await getConnection(db, DID, ENV))?.repoFullName).toBe(
       "alice/widget",
@@ -92,17 +90,17 @@ describe("saveConnection", () => {
   });
 
   it("keeps connections isolated per DID for the same environment id", async () => {
-    await saveConnection(db, DID, ENV, "42", "alice/widget");
-    await saveConnection(db, DID2, ENV, "77", "bob/thing");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    await saveConnection(db, DID2, ENV, "bob/thing");
 
-    expect((await getConnection(db, DID, ENV))?.installationId).toBe("42");
+    expect((await getConnection(db, DID, ENV))?.repoFullName).toBe("alice/widget");
     expect((await getConnection(db, DID2, ENV))?.repoFullName).toBe("bob/thing");
   });
 });
 
 describe("deleteConnection", () => {
   it("removes the caller's connection for the environment", async () => {
-    await saveConnection(db, DID, ENV, "42", "alice/widget");
+    await saveConnection(db, DID, ENV, "alice/widget");
     await deleteConnection(db, DID, ENV);
     expect(await getConnection(db, DID, ENV)).toBeNull();
   });

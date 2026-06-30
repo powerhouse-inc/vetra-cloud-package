@@ -5,7 +5,6 @@ export async function up(db: Kysely<any>): Promise<void> {
     .createTable("github_installations")
     .addColumn("user_did", "varchar(255)", (col) => col.notNull())
     .addColumn("environment_id", "varchar(255)", (col) => col.notNull())
-    .addColumn("installation_id", "varchar(255)", (col) => col.notNull())
     .addColumn("repo_full_name", "varchar(255)", (col) => col.notNull())
     .addColumn("created_at", "varchar(255)", (col) => col.notNull())
     .addPrimaryKeyConstraint("github_installations_pkey", [
