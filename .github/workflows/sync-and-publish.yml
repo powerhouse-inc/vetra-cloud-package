@@ -231,10 +231,13 @@ jobs:
       - name: Determine image tags
         id: tags
         run: |
-          PROJECT="${{ needs.prepare.outputs.project_name }}"
+          # Hardcode the "vetra" Harbor project (where the robot account has push
+          # access and where the sibling secrets-controller image lives). The
+          # default project_name = repo name = "vetra-cloud-package", a project
+          # the robot can't push to (401). Must match the ArgoCD app's image ref.
           VERSION="${{ needs.publish.outputs.new_version }}"
           CHANNEL="${{ needs.prepare.outputs.channel }}"
-          BASE="${{ env.DOCKER_REGISTRY }}/${PROJECT}/housekeeping-service"
+          BASE="${{ env.DOCKER_REGISTRY }}/vetra/housekeeping-service"
           echo "tags=${BASE}:v${VERSION},${BASE}:${CHANNEL}" >> $GITHUB_OUTPUT
           echo "Image tags: ${BASE}:v${VERSION}, ${BASE}:${CHANNEL}"
 
