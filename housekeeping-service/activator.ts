@@ -40,8 +40,13 @@ code{font-family:ui-monospace,"SF Mono",Menlo,monospace;color:#c2a36f}
   var url = location.pathname + (location.search ? location.search + "&" : "?") + "${POLL_PARAM}=1";
   function poll(){
     fetch(url, {method:"HEAD", cache:"no-store"}).then(function(res){
-      // Once the studio reclaims the host, the activator sentinel disappears.
-      if (!res.headers.get("${SENTINEL_HEADER}")) { location.reload(); return; }
+      // Still served by the activator (sleeping/waking) → keep waiting.
+      if (res.headers.get("${SENTINEL_HEADER}")) { setTimeout(poll, 3000); return; }
+      // Studio router is back AND actually serving (2xx/3xx) → open it. We do
+      // NOT reload merely because the sentinel is gone: the studio's ingress
+      // returns ~30-60s before its agent is Ready, and hitting it then yields
+      // Traefik's "no available server" (404/503). Keep waiting through that gap.
+      if (res.status >= 200 && res.status < 400) { location.reload(); return; }
       setTimeout(poll, 3000);
     }).catch(function(){ setTimeout(poll, 3000); });
   }
