@@ -332,6 +332,7 @@ export function createResolvers(
           prefix: string;
           label: string;
           claimedAt: string | null;
+          status: string | null;
         }> = [];
         for (const row of rows) {
           if (row.status && RELEASED_STATUSES.has(row.status)) continue;
@@ -359,6 +360,7 @@ export function createResolvers(
             prefix: studioService.prefix,
             label: row.name ?? row.subdomain,
             claimedAt: row.claimedAt,
+            status: row.status,
           });
         }
 
@@ -399,7 +401,16 @@ export function createResolvers(
           subdomain: m.subdomain,
           prefix: m.prefix,
           label: m.label,
-          status: readyKeys.has(`${m.id}|${m.prefix}`) ? "ready" : "booting",
+          // STOPPED = housekeeping sleep: surface a distinct 'sleeping' state so
+          // the dashboard can show 💤 (and the card opens the host, where the
+          // activator shows the wake spinner). Otherwise fall back to the
+          // website-endpoint readiness check.
+          status:
+            m.status === "STOPPED"
+              ? "sleeping"
+              : readyKeys.has(`${m.id}|${m.prefix}`)
+                ? "ready"
+                : "booting",
         }));
       },
 

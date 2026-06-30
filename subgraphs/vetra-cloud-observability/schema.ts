@@ -252,7 +252,7 @@ export const schema: DocumentNode = gql`
     subdomain: String!
     prefix: String!
     label: String!
-    """One of "ready" | "booting"."""
+    """One of "ready" | "booting" | "sleeping" (housekeeping-hibernated)."""
     status: String!
   }
 
