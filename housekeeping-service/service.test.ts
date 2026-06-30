@@ -1,112 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { buildProperRequestCountQuery } from "./loki.js";
-import { runDetectionOnce, studioHost } from "./detector.js";
 import { handleRequest } from "./activator.js";
-import type { StudioRow } from "../subgraphs/vetra-housekeeping/db.js";
-
-const silent = { info: () => {}, warn: () => {} };
-
-describe("buildProperRequestCountQuery", () => {
-  it("selects the host and excludes automation paths + user-agents", () => {
-    const q = buildProperRequestCountQuery('{namespace="traefik"}', "x.vetra.io", 86400);
-    expect(q).toContain("x.vetra.io");
-    expect(q).toContain("[86400s]");
-    expect(q).toContain("_proxy/routes"); // path exclusion present
-    expect(q).toContain("vetra-observability-pull"); // UA exclusion present
-    expect(q).toMatch(/count_over_time/);
-  });
-});
-
-function studio(over: Partial<StudioRow> = {}): StudioRow {
-  return {
-    envId: "doc-1",
-    subdomain: "tall-duck-ab12",
-    status: "READY",
-    owner: "0xabc",
-    poolState: null,
-    tenantId: "tall-duck-ab12-9f8e",
-    ...over,
-  };
-}
-
-describe("runDetectionOnce", () => {
-  const base = {
-    baseDomain: "vetra.io",
-    idleThresholdSeconds: 86400,
-    allowlist: [] as string[],
-    logger: silent,
-  };
-
-  it("sleeps an eligible idle studio", async () => {
-    const switchboard = {
-      powerState: vi.fn(),
-      wakeStudio: vi.fn(),
-      sleepStudio: vi.fn(async (h: string) => ({
-        host: h, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: "SLEEPING" as const,
-      })),
-    };
-    const slept = await runDetectionOnce({
-      ...base,
-      dryRun: false,
-      envDb: { listReadyStudios: async () => [studio()], close: async () => {} },
-      loki: { hasRecentProperRequest: async () => false }, // idle
-      switchboard,
-    });
-    expect(switchboard.sleepStudio).toHaveBeenCalledWith("tall-duck-ab12.vetra.io");
-    expect(slept).toEqual(["tall-duck-ab12.vetra.io"]);
-  });
-
-  it("does not sleep when there is recent proper traffic", async () => {
-    const switchboard = { powerState: vi.fn(), wakeStudio: vi.fn(), sleepStudio: vi.fn() };
-    await runDetectionOnce({
-      ...base,
-      dryRun: false,
-      envDb: { listReadyStudios: async () => [studio()], close: async () => {} },
-      loki: { hasRecentProperRequest: async () => true }, // active
-      switchboard,
-    });
-    expect(switchboard.sleepStudio).not.toHaveBeenCalled();
-  });
-
-  it("dry-run never calls sleep but reports candidates", async () => {
-    const switchboard = { powerState: vi.fn(), wakeStudio: vi.fn(), sleepStudio: vi.fn() };
-    const slept = await runDetectionOnce({
-      ...base,
-      dryRun: true,
-      envDb: { listReadyStudios: async () => [studio()], close: async () => {} },
-      loki: { hasRecentProperRequest: async () => false },
-      switchboard,
-    });
-    expect(switchboard.sleepStudio).not.toHaveBeenCalled();
-    expect(slept).toEqual(["tall-duck-ab12.vetra.io"]);
-  });
-
-  it("skips ineligible studios (warm-pool / allowlist)", async () => {
-    const switchboard = { powerState: vi.fn(), wakeStudio: vi.fn(), sleepStudio: vi.fn() };
-    await runDetectionOnce({
-      ...base,
-      dryRun: false,
-      allowlist: ["tall-duck-ab12"],
-      envDb: {
-        listReadyStudios: async () => [
-          studio({ poolState: "AVAILABLE" }),
-          studio({ subdomain: "tall-duck-ab12" }), // allowlisted
-        ],
-        close: async () => {},
-      },
-      loki: { hasRecentProperRequest: async () => false },
-      switchboard,
-    });
-    expect(switchboard.sleepStudio).not.toHaveBeenCalled();
-  });
-
-  it("studioHost builds the apex host", () => {
-    expect(studioHost("cozy-bat-09", "vetra.io")).toBe("cozy-bat-09.vetra.io");
-  });
-});
-
-// --- activator -----------------------------------------------------------
 
 function fakeRes() {
   const out: { status?: number; headers?: Record<string, string>; body?: string } = {};
@@ -137,13 +31,14 @@ function fakeReq(opts: { host?: string; url?: string; method?: string; accept?: 
   } as unknown as IncomingMessage;
 }
 
+const silent = { info: () => {}, warn: () => {} };
+
 describe("activator handleRequest", () => {
   function deps(status: string) {
     const switchboard = {
       powerState: vi.fn(async (host: string) => ({
         host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: status as any,
       })),
-      sleepStudio: vi.fn(),
       wakeStudio: vi.fn(async (host: string) => ({
         host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: "WAKING" as const,
       })),

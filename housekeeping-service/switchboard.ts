@@ -12,18 +12,17 @@ const POWER_FIELDS = "host envId subdomain owner status";
 
 export interface SwitchboardClient {
   powerState(host: string): Promise<PowerState>;
-  sleepStudio(host: string): Promise<PowerState>;
   wakeStudio(host: string): Promise<PowerState>;
 }
 
 /**
- * Thin client for the vetra-housekeeping subgraph. The service authenticates as
- * an admin (the mutations are admin-gated); the bearer token is injected by the
- * activator/detector, never exposed to end users.
+ * Thin client for the vetra-housekeeping subgraph. The activator only uses the
+ * open operations — studioPowerState (query) and wakeStudio (open + idempotent)
+ * — so no token is required. (Manual sleepStudio is admin-gated and lives in the
+ * dashboard, not here.)
  */
 export function createSwitchboardClient(opts: {
   url: string;
-  adminToken: string;
   fetchTimeoutMs?: number;
 }): SwitchboardClient {
   const timeout = opts.fetchTimeoutMs ?? 15_000;
@@ -35,10 +34,7 @@ export function createSwitchboardClient(opts: {
       const res = await fetch(opts.url, {
         method: "POST",
         signal: ac.signal,
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${opts.adminToken}`,
-        },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ query, variables }),
       });
       const body = (await res.json()) as { data?: any; errors?: Array<{ message: string }> };
@@ -56,13 +52,6 @@ export function createSwitchboardClient(opts: {
         { host },
       );
       return d.VetraHousekeeping.studioPowerState;
-    },
-    async sleepStudio(host) {
-      const d = await gql<{ VetraHousekeeping: { sleepStudio: PowerState } }>(
-        `mutation($host:String!){ VetraHousekeeping { sleepStudio(host:$host){ ${POWER_FIELDS} } } }`,
-        { host },
-      );
-      return d.VetraHousekeeping.sleepStudio;
     },
     async wakeStudio(host) {
       const d = await gql<{ VetraHousekeeping: { wakeStudio: PowerState } }>(

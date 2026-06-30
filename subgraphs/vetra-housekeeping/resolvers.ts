@@ -45,14 +45,17 @@ export function createResolvers(deps: HousekeepingDeps): Record<string, any> {
       VetraHousekeeping: () => ({}),
     },
     VetraHousekeepingMutations: {
+      // Manual "sleep now" — admin only.
       sleepStudio: (_p: unknown, args: { host: string }, ctx: AuthContext) => {
         requireAdmin(ctx);
         return deps.sleep(args.host);
       },
-      wakeStudio: (_p: unknown, args: { host: string }, ctx: AuthContext) => {
-        requireAdmin(ctx);
-        return deps.wake(args.host);
-      },
+      // Open + idempotent: waking is inherently triggered by "someone wants this
+      // studio" (the activator calls this for any visitor to a sleeping host),
+      // and it only ever wakes a STOPPED env — so it needs no admin token, which
+      // is what lets the long-running activator call it without an expiring
+      // credential. Worst case is a wasted wake that re-sleeps within the window.
+      wakeStudio: (_p: unknown, args: { host: string }) => deps.wake(args.host),
     },
   };
 }
