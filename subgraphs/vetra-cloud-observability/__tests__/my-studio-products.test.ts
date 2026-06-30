@@ -275,6 +275,30 @@ describe("myStudioProducts", () => {
     expect(byId["booting-env"].label).toBe("booting-env");
   });
 
+  it("status='sleeping' for a STOPPED (housekeeping-hibernated) studio", async () => {
+    await seedEnv({
+      id: "asleep-env",
+      name: "Sleepy Studio",
+      subdomain: "asleep-env",
+      owner: ME,
+      status: "STOPPED",
+      services: studioServices("studio"),
+    });
+    // A stale pre-sleep website endpoint must not make it look ready/booting.
+    await seedWebsiteEndpoint("asleep-env", "studio", "enabled");
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["asleep-env"].status).toBe("sleeping");
+  });
+
   it("just-claimed env with a STALE pre-claim website announcement is 'booting'", async () => {
     // The warm-pool pod announced its website endpoint BEFORE the claim, then
     // restarts on claim (Reloader picks up new ADMINS+key). The pre-claim
