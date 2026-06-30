@@ -53,11 +53,11 @@ describe("buildProperRequestCountQuery", () => {
 });
 
 describe("HousekeepingKeeper.reconcileOnce", () => {
-  it("sleeps an eligible idle studio (system dispatch, by envId)", async () => {
+  it("sleeps an eligible IDLE studio (system dispatch, by envId)", async () => {
     const sleepEnv = vi.fn(async () => {});
     const slept = await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { hasRecentProperRequest: async () => false }, // idle
+      loki: { classifyHostActivity: async () => "IDLE" },
       sleepEnv,
       config: cfg(),
       logger: silent,
@@ -66,11 +66,11 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     expect(slept).toEqual(["tall-duck-ab12.vetra.io"]);
   });
 
-  it("does not sleep when there is recent proper traffic", async () => {
+  it("does not sleep an ACTIVE studio", async () => {
     const sleepEnv = vi.fn(async () => {});
     await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { hasRecentProperRequest: async () => true }, // active
+      loki: { classifyHostActivity: async () => "ACTIVE" },
       sleepEnv,
       config: cfg(),
       logger: silent,
@@ -78,11 +78,24 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     expect(sleepEnv).not.toHaveBeenCalled();
   });
 
-  it("dry-run never dispatches but reports candidates", async () => {
+  it("NEVER sleeps on UNKNOWN (no access logs / query failed) — the dev.140 dry-run bug", async () => {
     const sleepEnv = vi.fn(async () => {});
     const slept = await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { hasRecentProperRequest: async () => false },
+      loki: { classifyHostActivity: async () => "UNKNOWN" },
+      sleepEnv,
+      config: cfg(),
+      logger: silent,
+    }).reconcileOnce();
+    expect(sleepEnv).not.toHaveBeenCalled();
+    expect(slept).toEqual([]);
+  });
+
+  it("dry-run never dispatches but reports IDLE candidates", async () => {
+    const sleepEnv = vi.fn(async () => {});
+    const slept = await new HousekeepingKeeper({
+      listStudios: async () => [studio()],
+      loki: { classifyHostActivity: async () => "IDLE" },
       sleepEnv,
       config: cfg({ dryRun: true }),
       logger: silent,
@@ -98,7 +111,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
         studio({ poolState: "AVAILABLE" }),
         studio({ subdomain: "vip-studio", tenantId: "vip-studio-1" }),
       ],
-      loki: { hasRecentProperRequest: async () => false },
+      loki: { classifyHostActivity: async () => "IDLE" },
       sleepEnv,
       config: cfg({ allowlist: ["vip-studio"] }),
       logger: silent,
