@@ -1,6 +1,7 @@
 import type { Kysely } from "kysely";
 import type { ILogger } from "document-model";
 import { withTracingSuppressed } from "./trace-suppress.js";
+import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-housekeeping/policy.js";
 
 export type ClintServiceTuple = {
   documentId: string;
@@ -33,12 +34,9 @@ const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
 
-/**
- * User-Agent stamped on the `/_proxy/routes` poll so the studio-housekeeping
- * idle signal and wake activator can exclude it as automation rather than a
- * real user request. Exported so the housekeeping denylist stays in sync.
- */
-export const OBSERVABILITY_PULL_USER_AGENT = "vetra-observability-pull";
+// Canonical definition lives in the dependency-free housekeeping policy module
+// (imported above); re-export for the worker's existing consumers + tests.
+export { OBSERVABILITY_PULL_USER_AGENT };
 
 /**
  * Env statuses whose chart renders `global.disabled=true` — no workload/ingress,
