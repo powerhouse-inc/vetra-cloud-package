@@ -46,11 +46,18 @@ export class NotClintServiceError extends Error implements ReducerError {
 
 export const errors = {
   EnableService: { NotOwnerError, ClintConfigRequiredError, PrefixInUseError },
+
   SetServiceConfig: { ServiceNotFoundError, NotClintServiceError },
+
   DisableService: { NotOwnerError },
+
   ToggleService: { ServiceNotFoundError, NotOwnerError },
+
   UpdateServicePrefix: { ServiceNotFoundError, NotOwnerError },
+
   SetServiceStatus: { ServiceNotFoundError, NotOwnerError },
+
   SetServiceVersion: { ServiceNotFoundError, NotOwnerError },
+
   SetServiceSize: { ServiceNotFoundError, NotOwnerError },
 };
