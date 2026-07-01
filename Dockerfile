@@ -173,8 +173,11 @@ RUN cat > tsconfig.controller.json <<'EOF'
   "compilerOptions": {
     "outDir": "./dist-controller",
     "rootDir": ".",
-    "declaration": false,
+    "declaration": true,
     "declarationMap": false,
+    "declarationDir": "./dist-controller/types",
+    "emitDeclarationOnly": false,
+    "incremental": false,
     "noEmit": false
   },
   "include": [
@@ -258,8 +261,11 @@ RUN cat > tsconfig.housekeeping.json <<'EOF'
   "compilerOptions": {
     "outDir": "./dist-controller",
     "rootDir": ".",
-    "declaration": false,
+    "declaration": true,
     "declarationMap": false,
+    "declarationDir": "./dist-controller/types",
+    "emitDeclarationOnly": false,
+    "incremental": false,
     "noEmit": false
   },
   "include": [
