@@ -144,7 +144,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@openfeature/core": "^1.9.2"
+      "@openfeature/core": "^1.9.2",
+      "graphql": "16.13.2"
     },
     "onlyBuiltDependencies": [
       "better-sqlite3"
