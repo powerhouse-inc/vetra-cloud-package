@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import type { Kysely, OnConflictBuilder } from "kysely";
 import type { ILogger } from "document-model";
 import { withTracingSuppressed } from "./trace-suppress.js";
 import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-housekeeping/policy.js";
@@ -69,10 +69,22 @@ type ParsedService = {
   prefix?: string;
 };
 
+/** Column shape of the observability `clint_runtime_endpoints` table. */
+type ClintRuntimeEndpointRow = {
+  id: string;
+  documentId: string;
+  prefix: string;
+  endpointId: string;
+  type: string;
+  port: string;
+  status: string;
+  lastSeen: string;
+};
+
 function parseClintServices(servicesJson: string | null): ParsedService[] {
   if (!servicesJson) return [];
   try {
-    const parsed = JSON.parse(servicesJson);
+    const parsed: unknown = JSON.parse(servicesJson);
     if (!Array.isArray(parsed)) return [];
     return parsed as ParsedService[];
   } catch {
@@ -159,7 +171,12 @@ export class ClintPullWorker {
   }
 
   private async listClintServices(): Promise<ClintServiceTuple[]> {
-    const rows = await this.config.envDb
+    const rows: {
+      id: string;
+      subdomain: string | null;
+      services: string | null;
+      status: string | null;
+    }[] = await this.config.envDb
       .selectFrom("environments")
       .select(["id", "subdomain", "services", "status"])
       .execute();
@@ -227,15 +244,15 @@ export class ClintPullWorker {
     const presented = new Set(routes.map((r) => r.prefix));
 
     // Delete entries no longer present.
-    const existing = await this.config.obsDb
+    const existing: { id: string; endpointId: string }[] = await this.config.obsDb
       .selectFrom("clint_runtime_endpoints")
       .select(["id", "endpointId"])
       .where("documentId", "=", svc.documentId)
       .where("prefix", "=", svc.prefix)
       .execute();
     const toDelete = existing
-      .filter((r: any) => !presented.has(r.endpointId))
-      .map((r: any) => r.id);
+      .filter((r) => !presented.has(r.endpointId))
+      .map((r) => r.id);
     if (toDelete.length > 0) {
       await this.config.obsDb
         .deleteFrom("clint_runtime_endpoints")
@@ -261,7 +278,7 @@ export class ClintPullWorker {
       await this.config.obsDb
         .insertInto("clint_runtime_endpoints")
         .values(values)
-        .onConflict((oc: any) =>
+        .onConflict((oc: OnConflictBuilder<{ clint_runtime_endpoints: ClintRuntimeEndpointRow }, "clint_runtime_endpoints">) =>
           oc.column("id").doUpdateSet({
             type: values.type,
             port: values.port,

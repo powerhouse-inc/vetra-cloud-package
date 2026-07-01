@@ -5,11 +5,12 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import { getConnection, saveConnection } from "../db/installations.js";
 import type { VetraGithubAuthDB } from "../db/schema.js";
+import type * as GithubApp from "../github-app.js";
 
 // Mock the GitHub network calls but keep the real error classes so the
 // resolver's `instanceof` checks still work.
 vi.mock("../github-app.js", async (importActual) => {
-  const actual = await importActual<typeof import("../github-app.js")>();
+  const actual = await importActual<typeof GithubApp>();
   return {
     ...actual,
     startDeviceFlow: vi.fn(),

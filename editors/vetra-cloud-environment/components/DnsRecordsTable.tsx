@@ -1,4 +1,4 @@
-import type { DnsRecord } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+import type { DnsRecord } from "document-models/vetra-cloud-environment/v1";
 
 interface DnsRecordsTableProps {
   records: DnsRecord[];

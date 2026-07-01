@@ -32,10 +32,15 @@ const userSigner = (address: string) => ({
   },
 });
 
-/** Build a signer context representing a system (app-only) signed action. */
+/**
+ * Build a signer context representing a system (app-only) signed action.
+ * `ActionSigner` requires a `user`, so we supply one with an empty address:
+ * the reducers treat a falsy `signer.user.address` as "no user" (system-signed).
+ */
 const systemSigner = () => ({
   context: {
     signer: {
+      user: { address: "", networkId: "", chainId: 0 },
       app: { name: "switchboard", key: "system" },
       signatures: [],
     },

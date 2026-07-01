@@ -6,7 +6,11 @@ const WAKING_URL = "https://vetra.io/studio/waking";
 
 function fakeRes() {
   const out: { status?: number; headers?: Record<string, string>; body?: string } = {};
-  const res = {
+  const res: {
+    headersSent: boolean;
+    writeHead(status: number, headers: Record<string, string>): typeof res;
+    end(body?: string): void;
+  } = {
     headersSent: false,
     writeHead(status: number, headers: Record<string, string>) {
       out.status = status;
@@ -17,8 +21,8 @@ function fakeRes() {
     end(body?: string) {
       out.body = body;
     },
-  } as unknown as ServerResponse;
-  return { res, out };
+  };
+  return { res: res as unknown as ServerResponse, out };
 }
 
 function fakeReq(opts: { host?: string; url?: string; method?: string; accept?: string; ua?: string }): IncomingMessage {

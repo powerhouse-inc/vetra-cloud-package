@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer, Server } from 'node:http';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Kysely, SqliteDialect } from 'kysely';
+// better-sqlite3 ships no bundled types.
+// @ts-expect-error no bundled types for better-sqlite3
 import Database from 'better-sqlite3';
+import type { ILogger } from 'document-model';
 import {
   ClintPullWorker,
   OBSERVABILITY_PULL_USER_AGENT,
@@ -87,6 +91,13 @@ async function setupDbs(): Promise<{
 }
 
 const noopLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+/**
+ * `ILogger` has more members (`level`, `verbose`, `errorHandler`, `child`) than
+ * the worker actually uses; the worker only calls info/warn/error/debug. Cast the
+ * minimal mock once so the tests can pass it as an `ILogger` while retaining the
+ * `Mock`-typed members on `noopLogger` for `toHaveBeenCalledWith` assertions.
+ */
+const testLogger = noopLogger as unknown as ILogger;
 
 describe('ClintPullWorker.tickOnce', () => {
   let server: Server | null = null;
@@ -124,7 +135,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
     });
 
@@ -176,7 +187,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => {
         hits += 1;
         return `http://127.0.0.1:${mock.port}/_proxy/routes`;
@@ -216,7 +227,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${port}/_proxy/routes`,
     });
 
@@ -244,7 +255,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker1 = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/_proxy/routes`,
     });
     await worker1.tickOnce();
@@ -259,7 +270,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker2 = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/_proxy/routes`,
     });
     await worker2.tickOnce();
@@ -302,7 +313,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
     });
     await worker.tickOnce();
@@ -335,7 +346,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: (svc) => {
         fetchSpy(svc);
         return 'http://example.invalid/_proxy/routes';
@@ -364,7 +375,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker1 = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mockA.port}/_proxy/routes`,
     });
     await worker1.tickOnce();
@@ -384,7 +395,7 @@ describe('ClintPullWorker.tickOnce', () => {
     const worker2 = new ClintPullWorker({
       envDb,
       obsDb,
-      logger: noopLogger,
+      logger: testLogger,
       buildAgentUrl: () => `http://127.0.0.1:${mockB.port}/_proxy/routes`,
     });
     await worker2.tickOnce();
@@ -395,7 +406,11 @@ describe('ClintPullWorker.tickOnce', () => {
       .where('documentId', '=', 'doc-1')
       .execute();
     expect(rowsAfterFailure).toHaveLength(2);
-    expect(rowsAfterFailure.map((r: any) => r.endpointId).sort()).toEqual([
+    expect(
+      rowsAfterFailure
+        .map((r: any) => r.endpointId)
+        .sort((a: string, b: string) => a.localeCompare(b)),
+    ).toEqual([
       '/switchboard/graphql',
       '/switchboard/mcp',
     ]);
