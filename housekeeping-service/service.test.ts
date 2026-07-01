@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { handleRequest } from "./activator.js";
 
+const WAKING_URL = "https://vetra.io/studio/waking";
+
 function fakeRes() {
   const out: { status?: number; headers?: Record<string, string>; body?: string } = {};
   const res = {
@@ -33,30 +35,31 @@ function fakeReq(opts: { host?: string; url?: string; method?: string; accept?: 
 
 const silent = { info: () => {}, warn: () => {} };
 
-describe("activator handleRequest", () => {
-  function deps(status: string) {
-    const switchboard = {
-      powerState: vi.fn(async (host: string) => ({
-        host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: status as any,
-      })),
-      wakeStudio: vi.fn(async (host: string) => ({
-        host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: "WAKING" as const,
-      })),
-    };
-    return { switchboard, logger: silent };
-  }
+function deps(status: string) {
+  const switchboard = {
+    powerState: vi.fn(async (host: string) => ({
+      host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: status as any,
+    })),
+    wakeStudio: vi.fn(async (host: string) => ({
+      host, envId: "doc-1", subdomain: "tall-duck-ab12", owner: "0xabc", status: "WAKING" as const,
+    })),
+  };
+  return { switchboard, wakingPageUrl: WAKING_URL, logger: silent };
+}
 
-  it("serves the spinner and triggers wake for a browser hitting a sleeping host", async () => {
+describe("activator handleRequest", () => {
+  it("redirects a browser hitting a sleeping host to the vetra.io waking page (and wakes)", async () => {
     const d = deps("SLEEPING");
     const { res, out } = fakeRes();
     await handleRequest(fakeReq({ accept: "text/html" }), res, d);
-    expect(out.status).toBe(200);
-    expect(out.headers?.["x-vetra-activator"]).toBe("1");
-    expect(out.body).toContain("Waking your studio");
+    expect(out.status).toBe(302);
+    expect(out.headers?.["location"]).toBe(
+      `${WAKING_URL}?host=tall-duck-ab12.vetra.io`,
+    );
     expect(d.switchboard.wakeStudio).toHaveBeenCalledWith("tall-duck-ab12.vetra.io");
   });
 
-  it("returns 503 JSON (and wakes) for a non-browser client", async () => {
+  it("returns 503 JSON (and wakes) for a non-browser client on a sleeping host", async () => {
     const d = deps("SLEEPING");
     const { res, out } = fakeRes();
     await handleRequest(fakeReq({ accept: "application/json" }), res, d);
@@ -65,20 +68,20 @@ describe("activator handleRequest", () => {
     expect(d.switchboard.wakeStudio).toHaveBeenCalled();
   });
 
+  it("bounces an AWAKE host straight to the studio (no wake)", async () => {
+    const d = deps("AWAKE");
+    const { res, out } = fakeRes();
+    await handleRequest(fakeReq({ accept: "text/html" }), res, d);
+    expect(out.status).toBe(302);
+    expect(out.headers?.["location"]).toBe("https://tall-duck-ab12.vetra.io/");
+    expect(d.switchboard.wakeStudio).not.toHaveBeenCalled();
+  });
+
   it("short-circuits automation (the observability poll) with 204 and never wakes", async () => {
     const d = deps("SLEEPING");
     const { res, out } = fakeRes();
     await handleRequest(fakeReq({ url: "/_proxy/routes", accept: "*/*" }), res, d);
     expect(out.status).toBe(204);
-    expect(d.switchboard.wakeStudio).not.toHaveBeenCalled();
-  });
-
-  it("answers the readiness poll with the sentinel and never wakes", async () => {
-    const d = deps("SLEEPING");
-    const { res, out } = fakeRes();
-    await handleRequest(fakeReq({ url: "/?__vetra_activator_poll=1", method: "HEAD" }), res, d);
-    expect(out.status).toBe(200);
-    expect(out.headers?.["x-vetra-activator"]).toBe("1");
     expect(d.switchboard.wakeStudio).not.toHaveBeenCalled();
     expect(d.switchboard.powerState).not.toHaveBeenCalled();
   });
@@ -88,6 +91,7 @@ describe("activator handleRequest", () => {
     const { res, out } = fakeRes();
     await handleRequest(fakeReq({ accept: "text/html" }), res, d);
     expect(out.status).toBe(404);
+    expect(d.switchboard.wakeStudio).not.toHaveBeenCalled();
   });
 
   it("serves healthz", async () => {

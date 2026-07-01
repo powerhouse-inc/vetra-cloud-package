@@ -12,6 +12,8 @@
 export interface ActivatorConfig {
   /** Switchboard GraphQL endpoint exposing the vetra-housekeeping subgraph. */
   switchboardGraphqlUrl: string;
+  /** vetra.io waking page browsers are redirected to (branded spinner). */
+  wakingPageUrl: string;
   /** Port for the activator HTTP server + health endpoints. */
   port: number;
 }
@@ -26,6 +28,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ActivatorConfi
   const port = Number.parseInt(env.PORT ?? "8080", 10);
   return {
     switchboardGraphqlUrl: required("SWITCHBOARD_GRAPHQL_URL"),
+    wakingPageUrl: (env.WAKING_PAGE_URL ?? "https://vetra.io/studio/waking").replace(/\/$/, ""),
     port: Number.isNaN(port) || port <= 0 ? 8080 : port,
   };
 }

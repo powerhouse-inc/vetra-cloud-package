@@ -18,7 +18,10 @@ function main(): void {
   console.info(`[main] starting vetra-housekeeping-activator (port=${cfg.port})`);
 
   const switchboard = createSwitchboardClient({ url: cfg.switchboardGraphqlUrl });
-  const server = startActivator({ switchboard, logger: console }, cfg.port);
+  const server = startActivator(
+    { switchboard, wakingPageUrl: cfg.wakingPageUrl, logger: console },
+    cfg.port,
+  );
   console.info(`[main] activator listening on :${cfg.port}`);
 
   const shutdown = (sig: string) => {
