@@ -2,8 +2,8 @@ import { useCallback, useState } from "react";
 import {
   useSelectedVetraCloudEnvironmentDocument,
   actions,
-} from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
-import type { VetraCloudEnvironmentStatus } from "@powerhousedao/vetra-cloud-package/document-models/vetra-cloud-environment/v1";
+} from "document-models/vetra-cloud-environment/v1";
+import type { VetraCloudEnvironmentStatus } from "document-models/vetra-cloud-environment/v1";
 import { StatusBadge } from "./components/StatusBadge.js";
 import { ServicesList } from "./components/ServicesList.js";
 import { PackagesList } from "./components/PackagesList.js";

@@ -2,7 +2,6 @@ import { GraphQLError } from "graphql";
 import { type Kysely } from "kysely";
 import type { VetraGithubAuthDB } from "./db/schema.js";
 import {
-  deleteConnection,
   getConnection,
   saveConnection,
   type GithubConnection,
@@ -10,8 +9,8 @@ import {
 import {
   createRepo,
   exchangeDeviceCode,
-  findInstallationId,
-  findInstallationRepo,
+  findRepoInstallationId,
+  findUserRepo,
   mintInstallationToken,
   ReinstallRequiredError,
   RepoAlreadyExistsError,
@@ -46,7 +45,6 @@ type ConnectionStatusView = {
   connected: boolean;
   connection: {
     environmentId: string;
-    installationId: string;
     repoFullName: string;
     repoUrl: string;
     createdAt: string;
@@ -59,7 +57,6 @@ function toStatus(connection: GithubConnection | null): ConnectionStatusView {
     connection: connection
       ? {
           environmentId: connection.environmentId,
-          installationId: connection.installationId,
           repoFullName: connection.repoFullName,
           repoUrl: `https://github.com/${connection.repoFullName}`,
           createdAt: connection.createdAt,
@@ -98,14 +95,13 @@ export function createResolvers(
         const did = requireDid(ctx);
         const connection = await getConnection(db, did, environmentId);
         if (!connection) throw ghError("NOT_CONNECTED");
+        const installationId = await findRepoInstallationId(connection.repoFullName);
+        if (!installationId) throw ghError("APP_NOT_INSTALLED");
+        const repoName = connection.repoFullName.split("/").pop();
         try {
-          const repoName = connection.repoFullName.split("/").pop();
-          return await mintInstallationToken(connection.installationId, repoName);
+          return await mintInstallationToken(installationId, repoName);
         } catch (error) {
-          if (error instanceof ReinstallRequiredError) {
-            await deleteConnection(db, did, environmentId);
-            throw ghError("REINSTALL_REQUIRED");
-          }
+          if (error instanceof ReinstallRequiredError) throw ghError("APP_NOT_INSTALLED");
           throw error;
         }
       },
@@ -144,15 +140,12 @@ export function createResolvers(
         }
         const userAccessToken = exchange.accessToken;
 
-        const installationId = await findInstallationId(userAccessToken);
-        if (!installationId) throw ghError("APP_NOT_INSTALLED");
-
         let repo;
         try {
           repo = await createRepo(userAccessToken, repoName);
         } catch (error) {
           if (error instanceof RepoAlreadyExistsError) {
-            const existing = await findInstallationRepo(installationId, repoName);
+            const existing = await findUserRepo(userAccessToken, repoName);
             if (!existing) throw ghError("REPO_ALREADY_EXISTS");
             repo = existing;
           } else {
@@ -160,13 +153,7 @@ export function createResolvers(
           }
         }
 
-        const connection = await saveConnection(
-          db,
-          did,
-          environmentId,
-          installationId,
-          repo.fullName,
-        );
+        const connection = await saveConnection(db, did, environmentId, repo.fullName);
         return toStatus(connection);
       },
     },

@@ -13,8 +13,10 @@ import type {
   MarkDestroyedAction,
   ReportDeploymentFailedAction,
   ReportDeploymentSucceededAction,
+  SleepEnvironmentAction,
   TerminateEnvironmentAction,
   UnarchiveAction,
+  WakeEnvironmentAction,
 } from "./actions.js";
 
 export interface VetraCloudEnvironmentStatusTransitionsOperations {
@@ -66,6 +68,16 @@ export interface VetraCloudEnvironmentStatusTransitionsOperations {
   unarchiveOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: UnarchiveAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  sleepEnvironmentOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SleepEnvironmentAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  wakeEnvironmentOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: WakeEnvironmentAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

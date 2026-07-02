@@ -1,6 +1,7 @@
-import type { Kysely } from "kysely";
+import type { Kysely, OnConflictBuilder } from "kysely";
 import type { ILogger } from "document-model";
 import { withTracingSuppressed } from "./trace-suppress.js";
+import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-housekeeping/policy.js";
 
 export type ClintServiceTuple = {
   documentId: string;
@@ -33,6 +34,23 @@ const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
 
+// Canonical definition lives in the dependency-free housekeeping policy module
+// (imported above); re-export for the worker's existing consumers + tests.
+export { OBSERVABILITY_PULL_USER_AGENT };
+
+/**
+ * Env statuses whose chart renders `global.disabled=true` — no workload/ingress,
+ * so there's nothing to poll. STOPPED is housekeeping sleep (wakeable); the rest
+ * are teardown. Polling these is wasteful and, for STOPPED, would re-wake the
+ * studio via the activator every tick.
+ */
+const NO_WORKLOAD_STATUSES = new Set([
+  "STOPPED",
+  "TERMINATING",
+  "DESTROYED",
+  "ARCHIVED",
+]);
+
 // Mirrors processors/vetra-cloud-environment/gitops.ts resolveGenericHost:
 // a single DNS label covered by the *.vetra.io wildcard cert.
 function genericHost(subdomain: string, prefix: string, isApex: boolean): string {
@@ -51,10 +69,22 @@ type ParsedService = {
   prefix?: string;
 };
 
+/** Column shape of the observability `clint_runtime_endpoints` table. */
+type ClintRuntimeEndpointRow = {
+  id: string;
+  documentId: string;
+  prefix: string;
+  endpointId: string;
+  type: string;
+  port: string;
+  status: string;
+  lastSeen: string;
+};
+
 function parseClintServices(servicesJson: string | null): ParsedService[] {
   if (!servicesJson) return [];
   try {
-    const parsed = JSON.parse(servicesJson);
+    const parsed: unknown = JSON.parse(servicesJson);
     if (!Array.isArray(parsed)) return [];
     return parsed as ParsedService[];
   } catch {
@@ -141,13 +171,23 @@ export class ClintPullWorker {
   }
 
   private async listClintServices(): Promise<ClintServiceTuple[]> {
-    const rows = await this.config.envDb
+    const rows: {
+      id: string;
+      subdomain: string | null;
+      services: string | null;
+      status: string | null;
+    }[] = await this.config.envDb
       .selectFrom("environments")
-      .select(["id", "subdomain", "services"])
+      .select(["id", "subdomain", "services", "status"])
       .execute();
     const out: ClintServiceTuple[] = [];
     for (const row of rows) {
       if (!row.subdomain) continue;
+      // Skip envs with no running workload — STOPPED (housekeeping sleep) and the
+      // terminal statuses render global.disabled=true, so there's nothing to poll.
+      // Polling a STOPPED studio would also hit the wake activator every tick and
+      // re-wake it, defeating the sleep. See the studio-housekeeping design.
+      if (NO_WORKLOAD_STATUSES.has(row.status ?? "")) continue;
       const all = parseClintServices(row.services);
       // Apex = sole enabled service (mirrors gitops effectiveApexType's
       // single-service default) → a Studio's lone CLINT agent is at the apex.
@@ -171,7 +211,12 @@ export class ClintPullWorker {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
     try {
-      const res = await fetch(url, { signal: ac.signal });
+      // Distinct UA so the housekeeping idle signal + wake activator can exclude
+      // this poll as automation (not a "proper request"). See studio-housekeeping.
+      const res = await fetch(url, {
+        signal: ac.signal,
+        headers: { "user-agent": OBSERVABILITY_PULL_USER_AGENT },
+      });
       if (!res.ok) {
         this.config.logger.warn(
           `[clint-pull-worker] ${svc.documentId} ${svc.prefix} ${res.status} from ${url}`,
@@ -199,15 +244,15 @@ export class ClintPullWorker {
     const presented = new Set(routes.map((r) => r.prefix));
 
     // Delete entries no longer present.
-    const existing = await this.config.obsDb
+    const existing: { id: string; endpointId: string }[] = await this.config.obsDb
       .selectFrom("clint_runtime_endpoints")
       .select(["id", "endpointId"])
       .where("documentId", "=", svc.documentId)
       .where("prefix", "=", svc.prefix)
       .execute();
     const toDelete = existing
-      .filter((r: any) => !presented.has(r.endpointId))
-      .map((r: any) => r.id);
+      .filter((r) => !presented.has(r.endpointId))
+      .map((r) => r.id);
     if (toDelete.length > 0) {
       await this.config.obsDb
         .deleteFrom("clint_runtime_endpoints")
@@ -233,7 +278,7 @@ export class ClintPullWorker {
       await this.config.obsDb
         .insertInto("clint_runtime_endpoints")
         .values(values)
-        .onConflict((oc: any) =>
+        .onConflict((oc: OnConflictBuilder<{ clint_runtime_endpoints: ClintRuntimeEndpointRow }, "clint_runtime_endpoints">) =>
           oc.column("id").doUpdateSet({
             type: values.type,
             port: values.port,

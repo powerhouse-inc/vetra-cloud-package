@@ -3,7 +3,7 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
-import { createResolvers } from "../resolvers.js";
+import { createResolvers, type ResolverConfig } from "../resolvers.js";
 
 let db: Kysely<ObservabilityDB>;
 let resolvers: ReturnType<typeof createResolvers>;
@@ -21,6 +21,9 @@ beforeEach(async () => {
   resolvers = createResolvers(db, {
     prometheusUrl: PROMETHEUS_URL,
     lokiUrl: LOKI_URL,
+    // Not exercised by these tests; minimal stubs to satisfy ResolverConfig.
+    envDb: {} as Kysely<any>,
+    dispatch: (async () => {}) as ResolverConfig["dispatch"],
   });
 });
 

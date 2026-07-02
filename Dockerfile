@@ -173,8 +173,11 @@ RUN cat > tsconfig.controller.json <<'EOF'
   "compilerOptions": {
     "outDir": "./dist-controller",
     "rootDir": ".",
-    "declaration": false,
+    "declaration": true,
     "declarationMap": false,
+    "declarationDir": "./dist-controller/types",
+    "emitDeclarationOnly": false,
+    "incremental": false,
     "noEmit": false
   },
   "include": [
@@ -221,3 +224,86 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:${HEALTH_PORT}/healthz || exit 1
 
 ENTRYPOINT ["node", "dist-controller/secrets-controller/main.js"]
+
+# =============================================================================
+# Housekeeping service builder
+#
+# Standalone pod that sleeps idle studios (idle detector over Loki access logs)
+# and wakes them on demand (HTTP activator behind the catch-all *.vetra.io
+# ingress). Same minimal-runtime rationale as secrets-controller: no Connect/UI,
+# no ph-cli. Compilation is scoped to the service + the two dependency-free
+# shared modules it uses (housekeeping policy + env read-model types).
+# =============================================================================
+FROM node:24-alpine AS housekeeping-service-builder
+
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ git bash \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+RUN pnpm config set @jsr:registry https://npm.jsr.io
+
+COPY package.json pnpm-lock.yaml tsconfig.json ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY housekeeping-service ./housekeeping-service
+COPY subgraphs/vetra-housekeeping/policy.ts ./subgraphs/vetra-housekeeping/policy.ts
+
+# The activator is tiny: it imports only the dependency-free policy module
+# (isAutomationRequest) from the subgraph; everything else (detector, Loki, DB)
+# now lives in-process in the switchboard, not here. Scope compilation tightly.
+RUN cat > tsconfig.housekeeping.json <<'EOF'
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-controller",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": false,
+    "declarationDir": "./dist-controller/types",
+    "emitDeclarationOnly": false,
+    "incremental": false,
+    "noEmit": false
+  },
+  "include": [
+    "housekeeping-service/**/*",
+    "subgraphs/vetra-housekeeping/policy.ts"
+  ],
+  "exclude": [
+    "**/__tests__/**",
+    "**/*.test.ts"
+  ]
+}
+EOF
+RUN pnpm exec tsc -p tsconfig.housekeeping.json
+
+# -----------------------------------------------------------------------------
+# Housekeeping service final stage
+# -----------------------------------------------------------------------------
+FROM node:24-alpine AS housekeeping-service
+
+WORKDIR /app
+
+RUN apk add --no-cache curl
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+
+COPY --from=housekeeping-service-builder /app/dist-controller ./dist-controller
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:${PORT}/healthz || exit 1
+
+ENTRYPOINT ["node", "dist-controller/housekeeping-service/main.js"]

@@ -3,7 +3,9 @@ import { createStudioEnvironmentDoc } from "./create-env.js";
 
 describe("createStudioEnvironmentDoc", () => {
   it("creates a doc, derives subdomain/tenantId, applies the studio batch (no SET_OWNER)", async () => {
-    const execute = vi.fn(async () => {});
+    const execute = vi.fn<
+      (docId: string, branch: string, actions: unknown[]) => Promise<void>
+    >(async () => {});
     const reactor = {
       createDocument: vi.fn(async () => "aaaabbbb-1111-2222-3333-444455556666"),
       execute,

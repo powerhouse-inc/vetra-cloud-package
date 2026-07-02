@@ -7,19 +7,33 @@ const SECRET_NAMES = [
   "VETRA_CLI_ANTHROPIC_API_KEY",
 ];
 
+type ClaimedEnv = {
+  id: string;
+  tenantId: string;
+  subdomain: string;
+  poolState: string;
+};
+type SecretEntry = { key: string; value: string };
+
 function deps(over: Partial<any> = {}) {
   return {
     claimDb: {
-      claimOneAvailable: vi.fn(async () => ({
+      claimOneAvailable: vi.fn<
+        (...args: unknown[]) => Promise<ClaimedEnv | null>
+      >(async () => ({
         id: "doc-1",
         tenantId: "warm-newt-aaaa1111-aaaa1111",
         subdomain: "warm-newt-aaaa1111",
         poolState: "CLAIMED",
       })),
     },
-    getKeyForDid: vi.fn(async () => "sk-ant-real"),
-    setOwner: vi.fn(async () => {}),
-    setSecrets: vi.fn(async () => {}),
+    getKeyForDid: vi.fn<(...args: unknown[]) => Promise<string | null>>(
+      async () => "sk-ant-real",
+    ),
+    setOwner: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
+    setSecrets: vi.fn<(tenantId: string, entries: SecretEntry[]) => Promise<void>>(
+      async () => {},
+    ),
     deleteEnv: vi.fn(async () => {}),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
@@ -38,7 +52,9 @@ describe("claimWarmEnvironment", () => {
 
   it("returns null when no env is available", async () => {
     const d = deps();
-    d.claimDb.claimOneAvailable = vi.fn(async () => null);
+    d.claimDb.claimOneAvailable = vi.fn<
+      (...args: unknown[]) => Promise<ClaimedEnv | null>
+    >(async () => null);
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
   });
 

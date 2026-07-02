@@ -12,6 +12,8 @@ import {
   markDestroyed,
   archive,
   unarchive,
+  sleepEnvironment,
+  wakeEnvironment,
   setLabel,
   enableService,
   addPackage,
@@ -599,5 +601,50 @@ describe("StatusTransitionsOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SLEEP_ENVIRONMENT (READY -> STOPPED) [housekeeping]", () => {
+    it("puts a READY studio to sleep", () => {
+      const document = createReadyDocument();
+      expect(document.state.global.status).toBe("READY");
+
+      const updated = reducer(document, sleepEnvironment({}));
+      const lastOp = updated.operations.global[updated.operations.global.length - 1];
+      expect(lastOp.error).toBeUndefined();
+      expect(updated.state.global.status).toBe("STOPPED");
+    });
+
+    it("errors when not in READY status", () => {
+      const document = createInitializedDocument(); // CHANGES_APPROVED
+      const result = reducer(document, sleepEnvironment({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
+        "SLEEP_ENVIRONMENT can only be called from READY status",
+      );
+      expect(result.state.global.status).toBe("CHANGES_APPROVED");
+    });
+  });
+
+  describe("WAKE_ENVIRONMENT (STOPPED -> CHANGES_APPROVED) [housekeeping]", () => {
+    it("re-approves a sleeping studio so the deploy pipeline re-runs", () => {
+      let document = createReadyDocument();
+      document = reducer(document, sleepEnvironment({}));
+      expect(document.state.global.status).toBe("STOPPED");
+
+      const updated = reducer(document, wakeEnvironment({}));
+      const lastOp = updated.operations.global[updated.operations.global.length - 1];
+      expect(lastOp.error).toBeUndefined();
+      expect(updated.state.global.status).toBe("CHANGES_APPROVED");
+    });
+
+    it("errors when not in STOPPED status", () => {
+      const document = createReadyDocument();
+      const result = reducer(document, wakeEnvironment({}));
+      const lastOp = result.operations.global[result.operations.global.length - 1];
+      expect(lastOp.error).toContain(
+        "WAKE_ENVIRONMENT can only be called from STOPPED status",
+      );
+      expect(result.state.global.status).toBe("READY");
+    });
   });
 });

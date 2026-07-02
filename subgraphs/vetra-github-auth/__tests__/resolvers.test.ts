@@ -5,17 +5,18 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import { getConnection, saveConnection } from "../db/installations.js";
 import type { VetraGithubAuthDB } from "../db/schema.js";
+import type * as GithubApp from "../github-app.js";
 
 // Mock the GitHub network calls but keep the real error classes so the
 // resolver's `instanceof` checks still work.
 vi.mock("../github-app.js", async (importActual) => {
-  const actual = await importActual<typeof import("../github-app.js")>();
+  const actual = await importActual<typeof GithubApp>();
   return {
     ...actual,
     startDeviceFlow: vi.fn(),
     exchangeDeviceCode: vi.fn(),
-    findInstallationId: vi.fn(),
-    findInstallationRepo: vi.fn(),
+    findRepoInstallationId: vi.fn(),
+    findUserRepo: vi.fn(),
     createRepo: vi.fn(),
     mintInstallationToken: vi.fn(),
   };
@@ -24,8 +25,8 @@ vi.mock("../github-app.js", async (importActual) => {
 import {
   createRepo,
   exchangeDeviceCode,
-  findInstallationId,
-  findInstallationRepo,
+  findRepoInstallationId,
+  findUserRepo,
   mintInstallationToken,
   startDeviceFlow,
   ReinstallRequiredError,
@@ -36,8 +37,8 @@ import { createResolvers } from "../resolvers.js";
 
 const startDeviceFlowMock = vi.mocked(startDeviceFlow);
 const exchangeDeviceCodeMock = vi.mocked(exchangeDeviceCode);
-const findInstallationIdMock = vi.mocked(findInstallationId);
-const findInstallationRepoMock = vi.mocked(findInstallationRepo);
+const findRepoInstallationIdMock = vi.mocked(findRepoInstallationId);
+const findUserRepoMock = vi.mocked(findUserRepo);
 const createRepoMock = vi.mocked(createRepo);
 const mintInstallationTokenMock = vi.mocked(mintInstallationToken);
 
@@ -96,12 +97,11 @@ describe("startGithubDeviceFlow", () => {
 });
 
 describe("connectGithub", () => {
-  it("exchanges the device code, discovers the installation, creates the blank repo, and persists the connection for the environment", async () => {
+  it("exchanges the device code, creates the blank repo, and persists the connection — without requiring the app to be installed", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
-    findInstallationIdMock.mockResolvedValue("123");
     createRepoMock.mockResolvedValue({
       fullName: "alice/widget",
       url: "https://github.com/alice/widget",
@@ -115,18 +115,15 @@ describe("connectGithub", () => {
     expect(status.connected).toBe(true);
     expect(status.connection).toMatchObject({
       environmentId: ENV,
-      installationId: "123",
       repoFullName: "alice/widget",
       repoUrl: "https://github.com/alice/widget",
     });
-    expect(exchangeDeviceCodeMock).toHaveBeenCalledWith("dev_code");
     // the user token from the exchange is what creates the blank repo
     expect(createRepoMock).toHaveBeenCalledWith("ghu_token", "widget");
 
     const persisted = await getConnection(db, DID, ENV);
     expect(persisted).toMatchObject({
       environmentId: ENV,
-      installationId: "123",
       repoFullName: "alice/widget",
     });
   });
@@ -150,38 +147,18 @@ describe("connectGithub", () => {
         ),
       ).rejects.toThrow(code);
 
-      expect(findInstallationIdMock).not.toHaveBeenCalled();
       expect(createRepoMock).not.toHaveBeenCalled();
       expect(await getConnection(db, DID, ENV)).toBeNull();
     },
   );
 
-  it("throws APP_NOT_INSTALLED and does not create a repo when discovery finds nothing", async () => {
+  it("maps a name clash to REPO_ALREADY_EXISTS when the user has no matching repo", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
-    findInstallationIdMock.mockResolvedValue(null);
-
-    await expect(
-      connectGithub(
-        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-        ctx,
-      ),
-    ).rejects.toThrow("APP_NOT_INSTALLED");
-
-    expect(createRepoMock).not.toHaveBeenCalled();
-    expect(await getConnection(db, DID, ENV)).toBeNull();
-  });
-
-  it("maps a name clash to REPO_ALREADY_EXISTS when the installation cannot access it", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findInstallationIdMock.mockResolvedValue("123");
     createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
-    findInstallationRepoMock.mockResolvedValue(null);
+    findUserRepoMock.mockResolvedValue(null);
 
     await expect(
       connectGithub(
@@ -193,14 +170,13 @@ describe("connectGithub", () => {
     expect(await getConnection(db, DID, ENV)).toBeNull();
   });
 
-  it("re-binds to the existing repo when the installation can already access it", async () => {
+  it("re-binds to the existing repo when the user already has one with that name", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
-    findInstallationIdMock.mockResolvedValue("123");
     createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
-    findInstallationRepoMock.mockResolvedValue({
+    findUserRepoMock.mockResolvedValue({
       fullName: "alice/widget",
       url: "https://github.com/alice/widget",
     });
@@ -226,13 +202,13 @@ describe("connectGithub", () => {
     ).rejects.toThrow("UNAUTHENTICATED");
 
     expect(exchangeDeviceCodeMock).not.toHaveBeenCalled();
-    expect(findInstallationIdMock).not.toHaveBeenCalled();
   });
 });
 
 describe("getPushToken", () => {
-  it("mints a token for the caller's installation for the environment", async () => {
-    await saveConnection(db, DID, ENV, "123", "alice/widget");
+  it("resolves the repo's installation and mints a scoped token", async () => {
+    await saveConnection(db, DID, ENV, "alice/widget");
+    findRepoInstallationIdMock.mockResolvedValue("123");
     mintInstallationTokenMock.mockResolvedValue({
       token: "ghs_token",
       expiresAt: "2026-01-01T00:00:00Z",
@@ -244,6 +220,7 @@ describe("getPushToken", () => {
       token: "ghs_token",
       expiresAt: "2026-01-01T00:00:00Z",
     });
+    expect(findRepoInstallationIdMock).toHaveBeenCalledWith("alice/widget");
     expect(mintInstallationTokenMock).toHaveBeenCalledWith("123", "widget");
   });
 
@@ -251,20 +228,30 @@ describe("getPushToken", () => {
     await expect(getPushToken({ environmentId: ENV }, ctx)).rejects.toThrow(
       "NOT_CONNECTED",
     );
+    expect(findRepoInstallationIdMock).not.toHaveBeenCalled();
     expect(mintInstallationTokenMock).not.toHaveBeenCalled();
   });
 
-  it("clears the stale connection and throws REINSTALL_REQUIRED when the app was uninstalled", async () => {
-    await saveConnection(db, DID, ENV, "123", "alice/widget");
+  it("throws APP_NOT_INSTALLED when the app is not installed on the repo yet", async () => {
+    await saveConnection(db, DID, ENV, "alice/widget");
+    findRepoInstallationIdMock.mockResolvedValue(null);
+
+    await expect(getPushToken({ environmentId: ENV }, ctx)).rejects.toThrow(
+      "APP_NOT_INSTALLED",
+    );
+    expect(mintInstallationTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("maps a mid-flight uninstall to APP_NOT_INSTALLED", async () => {
+    await saveConnection(db, DID, ENV, "alice/widget");
+    findRepoInstallationIdMock.mockResolvedValue("123");
     mintInstallationTokenMock.mockRejectedValue(
       new ReinstallRequiredError("uninstalled"),
     );
 
     await expect(getPushToken({ environmentId: ENV }, ctx)).rejects.toThrow(
-      "REINSTALL_REQUIRED",
+      "APP_NOT_INSTALLED",
     );
-
-    expect(await getConnection(db, DID, ENV)).toBeNull();
   });
 
   it("requires an authenticated caller", async () => {
@@ -289,14 +276,13 @@ describe("myGithubConnection", () => {
   });
 
   it("reports the connection when one exists", async () => {
-    await saveConnection(db, DID, ENV, "123", "alice/widget");
+    await saveConnection(db, DID, ENV, "alice/widget");
 
     const status = await myGithubConnection({ environmentId: ENV }, ctx);
 
     expect(status.connected).toBe(true);
     expect(status.connection).toMatchObject({
       environmentId: ENV,
-      installationId: "123",
       repoFullName: "alice/widget",
       repoUrl: "https://github.com/alice/widget",
     });

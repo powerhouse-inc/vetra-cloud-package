@@ -38,12 +38,20 @@ export class InvalidRuntimeConfigError extends Error implements ReducerError {
 
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
+
   SetLabel: { NotOwnerError },
+
   SetGenericSubdomain: { NotOwnerError },
+
   SetCustomDomain: { NotOwnerError },
+
   SetDefaultPackageRegistry: { NotOwnerError },
+
   SetDnsRecords: { NotOwnerError },
+
   SetApexService: { NotOwnerError, ServiceNotEnabledError },
+
   SetAutoUpdateChannel: { NotOwnerError },
+
   SetRuntimeConfig: { NotOwnerError, InvalidRuntimeConfigError },
 };

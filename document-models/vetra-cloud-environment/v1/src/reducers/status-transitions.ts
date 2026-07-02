@@ -102,4 +102,31 @@ export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnviron
       }
       state.status = "DESTROYED";
     },
+    sleepEnvironmentOperation(state, action) {
+      // Housekeeping-dispatched (system). No owner gate. Only a live (READY)
+      // studio can be put to sleep; the processor renders global.disabled=true
+      // for STOPPED, removing the workload + ingress while keeping the
+      // namespace/PVC/cert. Eligibility (claimed, not core/allowlisted) is
+      // enforced by the housekeeping subgraph before dispatch.
+      if (state.status !== "READY") {
+        throw new InvalidStatusTransitionError(
+          "SLEEP_ENVIRONMENT can only be called from READY status, current: " +
+            state.status,
+        );
+      }
+      state.status = "STOPPED";
+    },
+    wakeEnvironmentOperation(state, action) {
+      // Housekeeping-dispatched (system). No owner gate. Re-approve the existing
+      // config so the processor re-renders enabled values and the normal deploy
+      // pipeline (CHANGES_APPROVED -> CHANGES_PUSHED -> DEPLOYING -> READY)
+      // brings the studio back.
+      if (state.status !== "STOPPED") {
+        throw new InvalidStatusTransitionError(
+          "WAKE_ENVIRONMENT can only be called from STOPPED status, current: " +
+            state.status,
+        );
+      }
+      state.status = "CHANGES_APPROVED";
+    },
   };

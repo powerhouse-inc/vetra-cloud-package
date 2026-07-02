@@ -9,3 +9,4 @@ node_modules
 .keypair.json
 projects-import.js
 .eslintcache
+tsconfig.tsbuildinfo

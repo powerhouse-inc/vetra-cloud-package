@@ -54,6 +54,10 @@
 		{
 			"id": "vetra-studio-pool",
 			"name": "Vetra Studio Pool"
+		},
+		{
+			"id": "vetra-housekeeping",
+			"name": "Vetra Housekeeping"
 		}
 	],
 	"config": []

@@ -45,7 +45,10 @@ export type Scalars = {
   Amount_Money: { input: number; output: number };
   Amount_Percentage: { input: number; output: number };
   Amount_Tokens: { input: number; output: number };
-  Attachment: { input: string; output: string };
+  AttachmentRef: {
+    input: `attachment://v${number}:${string}`;
+    output: `attachment://v${number}:${string}`;
+  };
   Currency: { input: string; output: string };
   Date: { input: string; output: string };
   DateTime: { input: string; output: string };
@@ -199,6 +202,10 @@ export type SetServiceVersionInput = {
   version: Scalars["String"]["input"];
 };
 
+export type SleepEnvironmentInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type TerminateEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
@@ -329,4 +336,8 @@ export type VetraCustomDomain = {
   dnsRecords: Array<DnsRecord>;
   domain: Maybe<Scalars["String"]["output"]>;
   enabled: Scalars["Boolean"]["output"];
+};
+
+export type WakeEnvironmentInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };

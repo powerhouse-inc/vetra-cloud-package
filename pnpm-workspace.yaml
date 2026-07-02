@@ -11,5 +11,37 @@ allowBuilds:
   protobufjs: true
   utf-8-validate: true
 
+minimumReleaseAgeExclude:
+  - '@powerhousedao/analytics-engine-browser@6.2.0-dev.43'
+  - '@powerhousedao/analytics-engine-core@6.2.0-dev.43'
+  - '@powerhousedao/analytics-engine-graphql@6.2.0-dev.43'
+  - '@powerhousedao/analytics-engine-knex@6.2.0-dev.43'
+  - '@powerhousedao/analytics-engine-pg@6.2.0-dev.43'
+  - '@powerhousedao/builder-tools@6.2.0-dev.43'
+  - '@powerhousedao/codegen@6.2.0-dev.43'
+  - '@powerhousedao/common@6.2.0-dev.43'
+  - '@powerhousedao/config@6.2.0-dev.43'
+  - '@powerhousedao/connect@6.2.0-dev.43'
+  - '@powerhousedao/design-system@6.2.0-dev.43'
+  - '@powerhousedao/opentelemetry-instrumentation-reactor@6.2.0-dev.43'
+  - '@powerhousedao/pglite-fs@6.2.0-dev.43'
+  - '@powerhousedao/ph-cli@6.2.0-dev.43'
+  - '@powerhousedao/powerhouse-vetra-packages@6.2.0-dev.43'
+  - '@powerhousedao/reactor-api@6.2.0-dev.43'
+  - '@powerhousedao/reactor-attachments@6.2.0-dev.43'
+  - '@powerhousedao/reactor-browser@6.2.0-dev.43'
+  - '@powerhousedao/reactor-drive@6.2.0-dev.43'
+  - '@powerhousedao/reactor-mcp@6.2.0-dev.43'
+  - '@powerhousedao/reactor@6.2.0-dev.43'
+  - '@powerhousedao/shared@6.2.0-dev.43'
+  - '@powerhousedao/switchboard@6.2.0-dev.43'
+  - '@powerhousedao/vetra@6.2.0-dev.43'
+  - '@renown/sdk@6.2.0-dev.43'
+  - document-model@6.2.0-dev.43
+
 overrides:
   '@openfeature/core': ^1.9.2
+  # Force a single graphql instance — codegen (graphql-tools) throws
+  # "Cannot use GraphQLObjectType ... from another module or realm" when
+  # multiple 16.x copies resolve. Matches the 6.2.0 migration pin.
+  graphql: 16.13.2

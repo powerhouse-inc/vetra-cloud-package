@@ -103,44 +103,6 @@ function userHeaders(userAccessToken: string): Record<string, string> {
   };
 }
 
-type UserInstallationsResponse = {
-  total_count: number;
-  installations: {
-    id: number;
-    app_id: number;
-    account: { type: string } | null;
-  }[];
-};
-
-/**
- * Find our app's installation on the user's personal account, from the
- * installations the user access token can see (`GET /user/installations`).
- * Returns the installation id, or null if the app is not installed there.
- */
-export async function findInstallationId(
-  userAccessToken: string,
-): Promise<string | null> {
-  const appId = Number(process.env.GITHUB_APP_ID);
-  const perPage = 100;
-  for (let page = 1; ; page++) {
-    const response = await fetch(
-      `${GITHUB_API}/user/installations?per_page=${perPage}&page=${page}`,
-      { headers: userHeaders(userAccessToken) },
-    );
-    if (!response.ok) {
-      throw new Error(
-        `Failed to list user installations: ${response.status} ${response.statusText}`,
-      );
-    }
-    const body = (await response.json()) as UserInstallationsResponse;
-    const match = body.installations.find(
-      (i) => i.app_id === appId && i.account?.type === "User",
-    );
-    if (match) return String(match.id);
-    if (body.installations.length < perPage) return null;
-  }
-}
-
 export type CreatedRepo = {
   fullName: string;
   url: string;
@@ -174,33 +136,61 @@ export async function createRepo(
 }
 
 /**
- * Find a repo named `name` among those the installation can access, returning
- * its full name and URL, or null if the installation has no such repo.
+ * The id of this app's installation on `repoFullName` (`owner/repo`), or null if
+ * the app is not installed on that repo. Resolved from the app's own JWT, so it
+ * needs no user token.
  */
-export async function findInstallationRepo(
-  installationId: string,
+export async function findRepoInstallationId(
+  repoFullName: string,
+): Promise<string | null> {
+  const auth = appAuth();
+  const { token: jwt } = await auth({ type: "app" });
+  const response = await fetch(`${GITHUB_API}/repos/${repoFullName}/installation`, {
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "vetra-cloud",
+    },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(
+      `Failed to look up repo installation: ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as { id: number };
+  return String(body.id);
+}
+
+/**
+ * Find a repo named `name` in the authenticated user's account, returning its
+ * full name and URL, or null if they have no such repo.
+ */
+export async function findUserRepo(
+  userAccessToken: string,
   name: string,
 ): Promise<CreatedRepo | null> {
-  const { token } = await mintInstallationToken(installationId);
-  const perPage = 100;
-  for (let page = 1; ; page++) {
-    const response = await fetch(
-      `${GITHUB_API}/installation/repositories?per_page=${perPage}&page=${page}`,
-      { headers: userHeaders(token) },
+  const userResponse = await fetch(`${GITHUB_API}/user`, {
+    headers: userHeaders(userAccessToken),
+  });
+  if (!userResponse.ok) {
+    throw new Error(
+      `Failed to resolve the authenticated user: ${userResponse.status} ${userResponse.statusText}`,
     );
-    if (!response.ok) {
-      throw new Error(
-        `Failed to list installation repositories: ${response.status} ${response.statusText}`,
-      );
-    }
-    const body = (await response.json()) as {
-      total_count: number;
-      repositories: { name: string; full_name: string; html_url: string }[];
-    };
-    const match = body.repositories.find((r) => r.name === name);
-    if (match) return { fullName: match.full_name, url: match.html_url };
-    if (body.repositories.length < perPage) return null;
   }
+  const { login } = (await userResponse.json()) as { login: string };
+  const repoResponse = await fetch(`${GITHUB_API}/repos/${login}/${name}`, {
+    headers: userHeaders(userAccessToken),
+  });
+  if (repoResponse.status === 404) return null;
+  if (!repoResponse.ok) {
+    throw new Error(
+      `Failed to look up repository: ${repoResponse.status} ${repoResponse.statusText}`,
+    );
+  }
+  const body = (await repoResponse.json()) as { full_name: string; html_url: string };
+  return { fullName: body.full_name, url: body.html_url };
 }
 
 const GITHUB_OAUTH_HOST = "https://github.com";
