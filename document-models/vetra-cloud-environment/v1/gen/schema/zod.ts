@@ -32,6 +32,7 @@ import type {
   SetServiceSizeInput,
   SetServiceStatusInput,
   SetServiceVersionInput,
+  SetStudioInstanceInput,
   SleepEnvironmentInput,
   TerminateEnvironmentInput,
   ToggleServiceInput,
@@ -347,6 +348,14 @@ export function SetServiceVersionInputSchema(): z.ZodObject<
   });
 }
 
+export function SetStudioInstanceInputSchema(): z.ZodObject<
+  Properties<SetStudioInstanceInput>
+> {
+  return z.object({
+    studioInstanceId: z.string().nullish(),
+  });
+}
+
 export function SleepEnvironmentInputSchema(): z.ZodObject<
   Properties<SleepEnvironmentInput>
 > {
@@ -426,6 +435,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     runtimeConfig: z.string().nullish(),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,
+    studioInstanceId: z.string().nullish(),
   });
 }
 

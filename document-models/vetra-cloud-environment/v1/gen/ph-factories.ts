@@ -31,6 +31,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     apexService: null,
     autoUpdateChannel: null,
     runtimeConfig: null,
+    studioInstanceId: null,
   };
 }
 

@@ -1,64 +1,64 @@
 {
-	"name": "@powerhousedao/vetra-cloud-package",
-	"description": "",
-	"category": "",
-	"publisher": {
-		"name": "",
-		"url": ""
-	},
-	"documentModels": [
-		{
-			"id": "powerhouse/vetra-cloud-environment",
-			"name": "Vetra Cloud Environment"
-		}
-	],
-	"apps": [],
-	"editors": [
-		{
-			"id": "vetra-cloud-environment",
-			"name": "vetra-cloud-environment",
-			"documentTypes": [
-				"powerhouse/vetra-cloud-environment"
-			]
-		}
-	],
-	"processors": [
-		{
-			"id": "vetra-cloud-environment",
-			"name": "Vetra Cloud Environment Processor",
-			"documentTypes": [
-				"powerhouse/vetra-cloud-environment",
-				"powerhouse/document-drive"
-			]
-		}
-	],
-	"subgraphs": [
-		{
-			"id": "vetra-cloud-observability",
-			"name": "Vetra Cloud Observability",
-			"documentTypes": [
-				"powerhouse/vetra-cloud-environment"
-			]
-		},
-		{
-			"id": "vetra-cloud-secrets",
-			"name": "Vetra Cloud Secrets",
-			"documentTypes": [
-				"powerhouse/vetra-cloud-environment"
-			]
-		},
-		{
-			"id": "vetra-access-codes",
-			"name": "Vetra Access Codes"
-		},
-		{
-			"id": "vetra-studio-pool",
-			"name": "Vetra Studio Pool"
-		},
-		{
-			"id": "vetra-housekeeping",
-			"name": "Vetra Housekeeping"
-		}
-	],
-	"config": []
+  "name": "@powerhousedao/vetra-cloud-package",
+  "description": "",
+  "category": "",
+  "publisher": {
+    "name": "",
+    "url": ""
+  },
+  "documentModels": [
+    {
+      "id": "powerhouse/vetra-cloud-environment",
+      "name": "Vetra Cloud Environment"
+    }
+  ],
+  "apps": [],
+  "editors": [
+    {
+      "id": "vetra-cloud-environment",
+      "name": "vetra-cloud-environment",
+      "documentTypes": [
+        "powerhouse/vetra-cloud-environment"
+      ]
+    }
+  ],
+  "processors": [
+    {
+      "id": "vetra-cloud-environment",
+      "name": "Vetra Cloud Environment Processor",
+      "documentTypes": [
+        "powerhouse/vetra-cloud-environment",
+        "powerhouse/document-drive"
+      ]
+    }
+  ],
+  "subgraphs": [
+    {
+      "id": "vetra-cloud-observability",
+      "name": "Vetra Cloud Observability",
+      "documentTypes": [
+        "powerhouse/vetra-cloud-environment"
+      ]
+    },
+    {
+      "id": "vetra-cloud-secrets",
+      "name": "Vetra Cloud Secrets",
+      "documentTypes": [
+        "powerhouse/vetra-cloud-environment"
+      ]
+    },
+    {
+      "id": "vetra-access-codes",
+      "name": "Vetra Access Codes"
+    },
+    {
+      "id": "vetra-studio-pool",
+      "name": "Vetra Studio Pool"
+    },
+    {
+      "id": "vetra-housekeeping",
+      "name": "Vetra Housekeeping"
+    }
+  ],
+  "config": []
 }

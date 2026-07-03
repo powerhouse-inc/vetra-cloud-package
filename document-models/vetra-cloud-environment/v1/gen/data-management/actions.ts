@@ -13,6 +13,7 @@ import type {
   SetLabelInput,
   SetOwnerInput,
   SetRuntimeConfigInput,
+  SetStudioInstanceInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {
@@ -51,6 +52,10 @@ export type SetRuntimeConfigAction = Action & {
   type: "SET_RUNTIME_CONFIG";
   input: SetRuntimeConfigInput;
 };
+export type SetStudioInstanceAction = Action & {
+  type: "SET_STUDIO_INSTANCE";
+  input: SetStudioInstanceInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -61,4 +66,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetDnsRecordsAction
   | SetApexServiceAction
   | SetAutoUpdateChannelAction
-  | SetRuntimeConfigAction;
+  | SetRuntimeConfigAction
+  | SetStudioInstanceAction;

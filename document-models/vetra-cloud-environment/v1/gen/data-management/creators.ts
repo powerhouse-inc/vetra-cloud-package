@@ -13,6 +13,7 @@ import {
   SetLabelInputSchema,
   SetOwnerInputSchema,
   SetRuntimeConfigInputSchema,
+  SetStudioInstanceInputSchema,
 } from "../schema/zod.js";
 import type {
   SetApexServiceInput,
@@ -24,6 +25,7 @@ import type {
   SetLabelInput,
   SetOwnerInput,
   SetRuntimeConfigInput,
+  SetStudioInstanceInput,
 } from "../types.js";
 import type {
   SetApexServiceAction,
@@ -35,6 +37,7 @@ import type {
   SetLabelAction,
   SetOwnerAction,
   SetRuntimeConfigAction,
+  SetStudioInstanceAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -117,5 +120,14 @@ export const setRuntimeConfig = (input: SetRuntimeConfigInput) =>
     { ...input },
     undefined,
     SetRuntimeConfigInputSchema,
+    "global",
+  );
+
+export const setStudioInstance = (input: SetStudioInstanceInput) =>
+  createAction<SetStudioInstanceAction>(
+    "SET_STUDIO_INSTANCE",
+    { ...input },
+    undefined,
+    SetStudioInstanceInputSchema,
     "global",
   );

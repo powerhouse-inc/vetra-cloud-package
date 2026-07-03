@@ -36,6 +36,7 @@ import {
   SetServiceSizeInputSchema,
   SetServiceStatusInputSchema,
   SetServiceVersionInputSchema,
+  SetStudioInstanceInputSchema,
   SleepEnvironmentInputSchema,
   TerminateEnvironmentInputSchema,
   ToggleServiceInputSchema,
@@ -153,6 +154,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetRuntimeConfigInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setRuntimeConfigOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_STUDIO_INSTANCE": {
+      SetStudioInstanceInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setStudioInstanceOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,
