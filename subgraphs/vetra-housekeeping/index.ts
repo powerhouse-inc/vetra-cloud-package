@@ -87,30 +87,41 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
       return result(host, row, "WAKING");
     };
 
-    this.resolvers = createResolvers({ powerState, sleep, wake });
+    // In-process idle detector + on-demand classifier (like the studio-pool
+    // keeper). Build the keeper UNCONDITIONALLY so the read-only `studioActivity`
+    // query works even when the auto-sleep loop is off; only START the periodic
+    // loop when HOUSEKEEPING_DETECTOR_ENABLED. Sleeps dispatch SLEEP_ENVIRONMENT
+    // as a system action — no token.
+    const loki = createLokiClient({
+      lokiUrl: (process.env.LOKI_URL ?? "http://loki-gateway.monitoring.svc").replace(/\/$/, ""),
+      selector: process.env.LOKI_SELECTOR ?? '{namespace="traefik"}',
+      logger: console,
+    });
+    const keeper = new HousekeepingKeeper({
+      listStudios: () => listReadyStudios(envDb),
+      loki,
+      sleepEnv: (documentId) => dispatch(documentId, sleepEnvironment({})),
+      config: keeperConfig,
+      logger: console,
+    });
+    this.keeper = keeper;
 
-    // In-process idle detector (like the studio-pool keeper). Opt-in via
-    // HOUSEKEEPING_DETECTOR_ENABLED; dry-run by default. Dispatches
-    // SLEEP_ENVIRONMENT as a system action — no token.
+    this.resolvers = createResolvers({
+      powerState,
+      sleep,
+      wake,
+      studioActivity: () => keeper.classifyAll(),
+    });
+
     if (keeperConfig.enabled) {
-      const loki = createLokiClient({
-        lokiUrl: (process.env.LOKI_URL ?? "http://loki-gateway.monitoring.svc").replace(/\/$/, ""),
-        selector: process.env.LOKI_SELECTOR ?? '{namespace="traefik"}',
-        logger: console,
-      });
-      this.keeper = new HousekeepingKeeper({
-        listStudios: () => listReadyStudios(envDb),
-        loki,
-        sleepEnv: (documentId) => dispatch(documentId, sleepEnvironment({})),
-        config: keeperConfig,
-        logger: console,
-      });
-      this.keeper.start();
+      keeper.start();
       console.info(
         `[vetra-housekeeping] detector keeper started (dryRun=${keeperConfig.dryRun}, idle=${keeperConfig.idleThresholdSeconds}s, scan=${keeperConfig.scanIntervalMs}ms)`,
       );
     } else {
-      console.info("[vetra-housekeeping] detector keeper disabled (HOUSEKEEPING_DETECTOR_ENABLED!=true)");
+      console.info(
+        "[vetra-housekeeping] detector loop disabled (HOUSEKEEPING_DETECTOR_ENABLED!=true); studioActivity query still available",
+      );
     }
   }
 
