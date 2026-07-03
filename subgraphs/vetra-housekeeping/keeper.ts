@@ -93,14 +93,22 @@ export class HousekeepingKeeper {
   async classifyAll(): Promise<StudioActivity[]> {
     const { listStudios, loki, config } = this.deps;
     const studios = await listStudios();
-    const out: StudioActivity[] = [];
-    for (const s of studios) {
+
+    const classifyOne = async (s: StudioRow): Promise<StudioActivity> => {
       const eligible = isEligibleForSleep(s, { allowlist: config.allowlist });
       const host = s.subdomain ? studioHost(s.subdomain, config.baseDomain) : "";
-      const activity: HostActivity = host
-        ? await loki.classifyHostActivity(host, config.idleThresholdSeconds)
-        : "UNKNOWN";
-      out.push({
+      let activity: HostActivity = "UNKNOWN";
+      if (host) {
+        // A single slow/failing Loki query must not sink the whole request —
+        // classifyHostActivity already maps failures to UNKNOWN, but guard here
+        // too so one host can't hang the batch.
+        try {
+          activity = await loki.classifyHostActivity(host, config.idleThresholdSeconds);
+        } catch {
+          activity = "UNKNOWN";
+        }
+      }
+      return {
         host,
         subdomain: s.subdomain ?? null,
         envId: s.envId,
@@ -109,7 +117,18 @@ export class HousekeepingKeeper {
         eligible,
         activity,
         wouldSleep: eligible && activity === "IDLE",
-      });
+      };
+    };
+
+    // Unlike the in-process keeper (no request deadline), this backs a GraphQL
+    // query under an HTTP/gateway timeout — sequential per-host Loki calls over
+    // 40+ studios blow past it. Fan out in bounded batches to stay well under
+    // the timeout without hammering Loki with 40+ simultaneous queries.
+    const CONCURRENCY = 8;
+    const out: StudioActivity[] = [];
+    for (let i = 0; i < studios.length; i += CONCURRENCY) {
+      const batch = studios.slice(i, i + CONCURRENCY);
+      out.push(...(await Promise.all(batch.map(classifyOne))));
     }
     return out;
   }
