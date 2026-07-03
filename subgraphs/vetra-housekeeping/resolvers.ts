@@ -4,7 +4,6 @@ import type { StudioActivity } from "./keeper.js";
 /** Subset of the reactor-api resolver context — mirrors vetra-access-codes. */
 interface AuthContext {
   user?: { address: string; chainId: number; networkId: string };
-  isAdmin?: (address: string) => boolean;
 }
 
 export type StudioPowerStateResult = {
@@ -26,9 +25,20 @@ export interface HousekeepingDeps {
   studioActivity: () => Promise<StudioActivity[]>;
 }
 
+/**
+ * Admin gate. reactor-api verifies the Renown bearer and populates `ctx.user`,
+ * but does NOT inject a `ctx.isAdmin` helper into subgraph resolver context — it
+ * checks admin-ness via `authorizationService.isSupremeAdmin`, which compares the
+ * caller against the `ADMINS` env. We do the same (the old `ctx.isAdmin?.()` was
+ * always undefined → FORBIDDEN for everyone, even valid admins).
+ */
 function requireAdmin(ctx: AuthContext): void {
   const address = ctx.user?.address?.toLowerCase();
-  if (!address || !(ctx.isAdmin?.(address) ?? false)) {
+  const admins = (process.env.ADMINS ?? "")
+    .split(",")
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean);
+  if (!address || !admins.includes(address)) {
     throw new Error("FORBIDDEN");
   }
 }
