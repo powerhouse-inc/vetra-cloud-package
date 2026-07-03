@@ -85,6 +85,19 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Column already exists — expected for fresh installs
   }
 
+  // Add studioInstanceId column — mirrors state's `studioInstanceId`, the
+  // document id of the Vetra Studio that deployed a package into this env.
+  // Read by the observability subgraph's myEnvironments resolver to group
+  // environments under the studio that produced them.
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("studioInstanceId", "varchar(255)")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
+  }
+
   // Warm-pool columns (added 2026-06-15) — see
   // docs/superpowers/specs/2026-06-15-warm-pool-vetra-studio-design.md.
   // Written by the studio-pool-keeper service and the claim subgraph.

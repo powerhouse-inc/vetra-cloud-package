@@ -137,4 +137,10 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       state.runtimeConfig = raw;
       markPendingIfDeployed(state);
     },
+    setStudioInstanceOperation(state, action) {
+      assertOwner(state, action);
+      // Pure metadata linking this env to the studio that produced it. Renders
+      // nothing into the chart/gitops values, so no markPendingIfDeployed.
+      state.studioInstanceId = action.input.studioInstanceId ?? null;
+    },
   };

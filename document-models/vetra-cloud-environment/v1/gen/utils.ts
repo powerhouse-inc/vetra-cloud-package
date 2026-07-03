@@ -41,6 +41,7 @@ export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   apexService: null,
   autoUpdateChannel: null,
   runtimeConfig: null,
+  studioInstanceId: null,
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

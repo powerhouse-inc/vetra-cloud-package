@@ -276,6 +276,24 @@ export const schema: DocumentNode = gql`
     owner: String
     """Lowercased EthereumAddress of the user who first signed an action on this document (legacy; prefer the owner field)."""
     createdBy: String
+    """Document id of the Vetra Studio that produced this env (deployed a package into it), or null for the studio itself / a user-created env. Used to group environments under their studio."""
+    studioInstanceId: String
+    """Installed packages, for the env card's package count + version display."""
+    packages: [VetraCloudEnvPackage!]!
+    """Configured services (type + prefix + enabled), for the env card's service list + Visit link."""
+    services: [VetraCloudEnvServiceSummary!]!
+  }
+
+  type VetraCloudEnvPackage {
+    registry: String
+    name: String!
+    version: String
+  }
+
+  type VetraCloudEnvServiceSummary {
+    type: String!
+    prefix: String
+    enabled: Boolean!
   }
 
   type EnvironmentStatus {

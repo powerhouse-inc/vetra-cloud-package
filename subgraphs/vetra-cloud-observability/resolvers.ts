@@ -272,6 +272,9 @@ export function createResolvers(
             "status",
             "owner",
             "createdBy",
+            "studioInstanceId",
+            "packages",
+            "services",
           ]);
 
         const rows = wantAll && isAdmin
@@ -285,7 +288,14 @@ export function createResolvers(
               )
               .execute();
 
-        return rows;
+        // packages/services are stored as JSON text; parse them into the
+        // arrays the summary type declares so env cards can render package
+        // counts + service lists (mirrors myStudioProducts' parsing).
+        return rows.map((row) => ({
+          ...row,
+          packages: parseEnvSummaryPackages(row.packages),
+          services: parseEnvSummaryServices(row.services),
+        }));
       },
 
       myStudioProducts: async (
@@ -912,6 +922,56 @@ function parseEnvStudioServices(
       prefix: String(s.prefix ?? ""),
       enabled: !!s.enabled,
       packageName: s.config?.package?.name ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Parse the env's `packages` JSON into the full shape `myEnvironments`'
+ * VetraCloudEnvPackage returns (registry + name + version), for the env card's
+ * package count / version display.
+ */
+function parseEnvSummaryPackages(
+  raw: string | null,
+): Array<{ registry: string | null; name: string; version: string | null }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{
+      registry?: string | null;
+      name?: string;
+      version?: string | null;
+    }>;
+    return parsed
+      .filter((p) => !!p.name)
+      .map((p) => ({
+        registry: p.registry ?? null,
+        name: String(p.name),
+        version: p.version ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Parse the env's `services` JSON into the VetraCloudEnvServiceSummary shape
+ * (type + prefix + enabled) `myEnvironments` returns, for the env card's
+ * service list + Visit link.
+ */
+function parseEnvSummaryServices(
+  raw: string | null,
+): Array<{ type: string; prefix: string | null; enabled: boolean }> {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as Array<{
+      type?: string;
+      prefix?: string;
+      enabled?: boolean;
+    }>;
+    return parsed.map((s) => ({
+      type: String(s.type ?? ""),
+      prefix: s.prefix ?? null,
+      enabled: !!s.enabled,
     }));
   } catch {
     return [];

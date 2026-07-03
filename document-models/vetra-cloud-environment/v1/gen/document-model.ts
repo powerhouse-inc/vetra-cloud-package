@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
           examples: [],
           initialValue:
-            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null,\n  "runtimeConfig": null\n}',
+            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null,\n  "runtimeConfig": null,\n  "studioInstanceId": null\n}',
         },
       },
       modules: [
@@ -248,6 +248,29 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "INVALID_RUNTIME_CONFIG",
                   description:
                     "The provided runtime config failed validation against the bundled powerhouse.config.json schema (connect.* subtree and/or packageRegistryUrl)",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-studio-instance",
+              name: "SET_STUDIO_INSTANCE",
+              description:
+                "Link this environment to the Vetra Studio that produced it (its studio environment's document id). Set when a studio deploys a package into this environment; a null input clears the link. Pure metadata \u2014 it renders nothing into the chart/gitops values, so it does not require re-deploy. null = the studio itself or an environment created directly by the user.",
+              schema:
+                "input SetStudioInstanceInput {\n  studioInstanceId: OID\n}",
+              template: "",
+              reducer:
+                "state.studioInstanceId = action.input.studioInstanceId ?? null;",
+              errors: [
+                {
+                  id: "err-not-owner-118",
+                  name: "NotOwnerError",
+                  code: "NOT_OWNER",
+                  description:
+                    "The action signer is not the owner of this environment",
                   template: "",
                 },
               ],

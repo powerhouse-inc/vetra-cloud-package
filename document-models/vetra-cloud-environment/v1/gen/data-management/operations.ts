@@ -14,6 +14,7 @@ import type {
   SetLabelAction,
   SetOwnerAction,
   SetRuntimeConfigAction,
+  SetStudioInstanceAction,
 } from "./actions.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
@@ -60,6 +61,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setRuntimeConfigOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetRuntimeConfigAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setStudioInstanceOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetStudioInstanceAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

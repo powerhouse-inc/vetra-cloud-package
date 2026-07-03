@@ -202,6 +202,10 @@ export type SetServiceVersionInput = {
   version: Scalars["String"]["input"];
 };
 
+export type SetStudioInstanceInput = {
+  studioInstanceId?: InputMaybe<Scalars["OID"]["input"]>;
+};
+
 export type SleepEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
@@ -253,6 +257,7 @@ export type VetraCloudEnvironmentState = {
   runtimeConfig: Maybe<Scalars["String"]["output"]>;
   services: Array<VetraCloudEnvironmentService>;
   status: VetraCloudEnvironmentStatus;
+  studioInstanceId: Maybe<Scalars["OID"]["output"]>;
 };
 
 export type VetraCloudEnvironmentStatus =

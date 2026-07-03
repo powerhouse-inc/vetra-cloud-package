@@ -54,4 +54,6 @@ export const errors = {
   SetAutoUpdateChannel: { NotOwnerError },
 
   SetRuntimeConfig: { NotOwnerError, InvalidRuntimeConfigError },
+
+  SetStudioInstance: { NotOwnerError },
 };
