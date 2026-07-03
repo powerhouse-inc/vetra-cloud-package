@@ -1,6 +1,22 @@
 import type { StudioRow } from "./db.js";
 import { isEligibleForSleep } from "./policy.js";
-import type { LokiClient } from "./loki.js";
+import type { LokiClient, HostActivity } from "./loki.js";
+
+/** Per-studio idle classification, for the read-only `studioActivity` query. */
+export type StudioActivity = {
+  host: string;
+  subdomain: string | null;
+  envId: string;
+  owner: string | null;
+  /** Env-document status (the keeper only inspects claimed READY studios). */
+  status: string;
+  /** Passes the sleep policy (claimed, not allowlisted, …). */
+  eligible: boolean;
+  /** Loki verdict: ACTIVE (real requests), IDLE (automation only), UNKNOWN (no signal). */
+  activity: HostActivity;
+  /** True iff the keeper would sleep it this pass (eligible && IDLE). */
+  wouldSleep: boolean;
+};
 
 /**
  * In-process idle detector — the housekeeping counterpart to the studio-pool
@@ -68,6 +84,35 @@ export class HousekeepingKeeper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   constructor(private readonly deps: KeeperDeps) {}
+
+  /**
+   * Read-only: classify every claimed READY studio (eligibility + Loki idle
+   * verdict) WITHOUT sleeping anything. Backs the `studioActivity` query so ops
+   * can see exactly what the detector sees — including what it WOULD sleep.
+   */
+  async classifyAll(): Promise<StudioActivity[]> {
+    const { listStudios, loki, config } = this.deps;
+    const studios = await listStudios();
+    const out: StudioActivity[] = [];
+    for (const s of studios) {
+      const eligible = isEligibleForSleep(s, { allowlist: config.allowlist });
+      const host = s.subdomain ? studioHost(s.subdomain, config.baseDomain) : "";
+      const activity: HostActivity = host
+        ? await loki.classifyHostActivity(host, config.idleThresholdSeconds)
+        : "UNKNOWN";
+      out.push({
+        host,
+        subdomain: s.subdomain ?? null,
+        envId: s.envId,
+        owner: s.owner ?? null,
+        status: s.status ?? "UNKNOWN",
+        eligible,
+        activity,
+        wouldSleep: eligible && activity === "IDLE",
+      });
+    }
+    return out;
+  }
 
   /** One detection pass. Returns the hosts slept (or that would be, in dry-run). */
   async reconcileOnce(): Promise<string[]> {

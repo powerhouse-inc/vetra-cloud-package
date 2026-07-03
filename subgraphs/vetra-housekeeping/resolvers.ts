@@ -1,4 +1,5 @@
 import type { StudioPowerStatus } from "./policy.js";
+import type { StudioActivity } from "./keeper.js";
 
 /** Subset of the reactor-api resolver context — mirrors vetra-access-codes. */
 interface AuthContext {
@@ -21,6 +22,8 @@ export interface HousekeepingDeps {
   sleep: (host: string) => Promise<StudioPowerStateResult>;
   /** Wake a sleeping studio (idempotent; no-op if already awake/waking). */
   wake: (host: string) => Promise<StudioPowerStateResult>;
+  /** Read-only: classify every claimed READY studio (idle detector's view). */
+  studioActivity: () => Promise<StudioActivity[]>;
 }
 
 function requireAdmin(ctx: AuthContext): void {
@@ -40,6 +43,11 @@ export function createResolvers(deps: HousekeepingDeps): Record<string, any> {
         _p: unknown,
         args: { host: string },
       ) => deps.powerState(args.host),
+      // Read-only ops view of the idle detector — admin only (exposes owners/hosts).
+      studioActivity: (_p: unknown, _a: unknown, ctx: AuthContext) => {
+        requireAdmin(ctx);
+        return deps.studioActivity();
+      },
     },
     Mutation: {
       VetraHousekeeping: () => ({}),
