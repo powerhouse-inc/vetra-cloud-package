@@ -455,7 +455,12 @@ const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
     nodeMaxOldSpaceMb: 3072,
   },
   VETRA_AGENT_XXL: {
-    requests: { cpu: "2", memory: "4Gi" },
+    // Right-sized 2026-07-03 from measured 24h peaks (CPU max 0.55c, mem max
+    // 3.1Gi across 54 agents): CPU request 2->750m (was ~4x the peak and the
+    // sole cause of `Insufficient cpu` autoscaling on claims; still bursts to
+    // the 4-core limit). Memory request 4Gi->8Gi so request==limit=8Gi =>
+    // Guaranteed QoS: no overcommit, no OOM under heavy concurrent load.
+    requests: { cpu: "750m", memory: "8Gi" },
     limits: { cpu: "4", memory: "8Gi" },
     nodeMaxOldSpaceMb: 6144,
   },
