@@ -36,7 +36,13 @@ export function automationUaRegex(): string {
 
 /** Stream selector for a single host's Traefik access logs. */
 function hostStream(selector: string, host: string, fields: LokiFields): string {
-  return `${selector} | json | ${fields.host}=\`${host}\``;
+  // Pre-filter with a line match on the host string BEFORE `| json`: RequestHost
+  // is a *parsed* field, not a stream label, so without this Loki must JSON-parse
+  // every Traefik log line in the window (all of vetra.io's traffic) for every
+  // host — a full 24h scan that reliably times out the query. The literal host
+  // appears verbatim in each of its log lines, so `|= host` prunes ~all
+  // non-matching lines with a cheap substring grep before the expensive parse.
+  return `${selector} |= \`${host}\` | json | ${fields.host}=\`${host}\``;
 }
 
 /**
