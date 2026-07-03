@@ -73,6 +73,44 @@ export function buildTotalRequestCountQuery(
 }
 
 /**
+ * Stream selector for MANY hosts at once. A `|~` line pre-filter on the host
+ * alternation prunes unrelated Traefik traffic (switchboard/connect/apex) before
+ * `| json`, then `RequestHost=~` keeps only the target hosts. Grouping downstream
+ * (`sum by (RequestHost)`) yields a per-host count from a single stream scan.
+ */
+function hostsStream(selector: string, hosts: string[], fields: LokiFields): string {
+  const alt = hosts.map(escapeRe).join("|");
+  return `${selector} |~ \`${alt}\` | json | ${fields.host}=~\`${alt}\``;
+}
+
+/**
+ * Grouped variant of {@link buildProperRequestCountQuery} — one query counting
+ * *proper* (non-automation) requests for every host in `hosts`, grouped by host.
+ */
+export function buildGroupedProperRequestCountQuery(
+  selector: string,
+  hosts: string[],
+  windowSeconds: number,
+  fields: LokiFields = DEFAULT_LOKI_FIELDS,
+): string {
+  const stream =
+    `${hostsStream(selector, hosts, fields)}` +
+    ` | ${fields.path}!~\`${automationPathRegex()}\`` +
+    ` | ${fields.userAgent}!~\`${automationUaRegex()}\``;
+  return `sum by (${fields.host}) (count_over_time((${stream})[${windowSeconds}s]))`;
+}
+
+/** Grouped variant of {@link buildTotalRequestCountQuery} — all requests per host. */
+export function buildGroupedTotalRequestCountQuery(
+  selector: string,
+  hosts: string[],
+  windowSeconds: number,
+  fields: LokiFields = DEFAULT_LOKI_FIELDS,
+): string {
+  return `sum by (${fields.host}) (count_over_time((${hostsStream(selector, hosts, fields)})[${windowSeconds}s]))`;
+}
+
+/**
  * Activity classification for a studio host:
  *  - ACTIVE  — at least one proper (non-automation) request in the window.
  *  - IDLE    — access logs exist for the host but NONE are proper requests.
@@ -87,8 +125,20 @@ export function buildTotalRequestCountQuery(
 export type HostActivity = "ACTIVE" | "IDLE" | "UNKNOWN";
 
 export interface LokiClient {
-  classifyHostActivity(host: string, windowSeconds: number): Promise<HostActivity>;
+  /**
+   * Classify a batch of hosts in as few Loki queries as possible (two grouped
+   * queries per chunk). Returns a verdict for every input host. Preferred over
+   * per-host calls: 40 studios was 80 separate queries that saturated Loki's
+   * query queue (queueTime ≫ execTime) and timed out to all-UNKNOWN.
+   */
+  classifyHosts(hosts: string[], windowSeconds: number): Promise<Map<string, HostActivity>>;
+  /** Single-host convenience wrapper over {@link classifyHosts} (optional; the
+   * keeper only uses the batched form). */
+  classifyHostActivity?(host: string, windowSeconds: number): Promise<HostActivity>;
 }
+
+/** Max hosts per grouped query — keeps the alternation regex + URL bounded. */
+const HOSTS_PER_QUERY = 40;
 
 export function createLokiClient(opts: {
   lokiUrl: string;
@@ -98,9 +148,10 @@ export function createLokiClient(opts: {
   logger?: { warn: (m: string) => void };
 }): LokiClient {
   const fields = opts.fields ?? DEFAULT_LOKI_FIELDS;
-  const timeout = opts.fetchTimeoutMs ?? 10_000;
+  const timeout = opts.fetchTimeoutMs ?? 30_000;
 
-  async function count(query: string): Promise<number> {
+  /** Run a grouped query; return host→count for the hosts that had matches. */
+  async function countByHost(query: string): Promise<Map<string, number>> {
     const url = `${opts.lokiUrl}/loki/api/v1/query?query=${encodeURIComponent(query)}`;
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeout);
@@ -108,30 +159,57 @@ export function createLokiClient(opts: {
       const res = await fetch(url, { signal: ac.signal });
       if (!res.ok) throw new Error(`loki ${res.status}`);
       const body = (await res.json()) as {
-        data?: { result?: Array<{ value?: [number, string] }> };
+        data?: { result?: Array<{ metric?: Record<string, string>; value?: [number, string] }> };
       };
-      return (body.data?.result ?? []).reduce((acc, r) => acc + Number(r.value?.[1] ?? 0), 0);
+      const out = new Map<string, number>();
+      for (const r of body.data?.result ?? []) {
+        const host = r.metric?.[fields.host];
+        if (host) out.set(host, Number(r.value?.[1] ?? 0));
+      }
+      return out;
     } finally {
       clearTimeout(t);
     }
   }
 
-  return {
-    async classifyHostActivity(host, windowSeconds) {
-      try {
-        const proper = await count(buildProperRequestCountQuery(opts.selector, host, windowSeconds, fields));
-        if (proper > 0) return "ACTIVE";
-        // No proper requests — but is that real idle, or just no logs at all?
-        const total = await count(buildTotalRequestCountQuery(opts.selector, host, windowSeconds, fields));
-        if (total === 0) return "UNKNOWN"; // no access logs ⇒ can't measure
-        return "IDLE"; // logs exist, all automation
-      } catch (err) {
-        // Fail-safe: never sleep something we can't measure.
-        opts.logger?.warn(
-          `[loki] query failed for ${host}: ${err instanceof Error ? err.message : String(err)} — UNKNOWN (treated as active)`,
-        );
-        return "UNKNOWN";
+  async function classifyChunk(
+    hosts: string[],
+    windowSeconds: number,
+    out: Map<string, HostActivity>,
+  ): Promise<void> {
+    try {
+      // Proper + total are independent — fire both at once to halve wall-time.
+      const [proper, total] = await Promise.all([
+        countByHost(buildGroupedProperRequestCountQuery(opts.selector, hosts, windowSeconds, fields)),
+        countByHost(buildGroupedTotalRequestCountQuery(opts.selector, hosts, windowSeconds, fields)),
+      ]);
+      for (const host of hosts) {
+        const p = proper.get(host) ?? 0;
+        const tot = total.get(host) ?? 0;
+        // ACTIVE: a proper request exists. IDLE: logs exist but all automation.
+        // UNKNOWN: no logs at all ⇒ can't measure (never slept).
+        out.set(host, p > 0 ? "ACTIVE" : tot > 0 ? "IDLE" : "UNKNOWN");
       }
+    } catch (err) {
+      // Fail-safe: anything we couldn't measure stays UNKNOWN (never slept).
+      opts.logger?.warn(
+        `[loki] grouped query failed for ${hosts.length} host(s): ${err instanceof Error ? err.message : String(err)} — UNKNOWN`,
+      );
+      for (const host of hosts) if (!out.has(host)) out.set(host, "UNKNOWN");
+    }
+  }
+
+  const client: LokiClient = {
+    async classifyHosts(hosts, windowSeconds) {
+      const out = new Map<string, HostActivity>();
+      for (let i = 0; i < hosts.length; i += HOSTS_PER_QUERY) {
+        await classifyChunk(hosts.slice(i, i + HOSTS_PER_QUERY), windowSeconds, out);
+      }
+      return out;
+    },
+    async classifyHostActivity(host, windowSeconds) {
+      return (await client.classifyHosts([host], windowSeconds)).get(host) ?? "UNKNOWN";
     },
   };
+  return client;
 }

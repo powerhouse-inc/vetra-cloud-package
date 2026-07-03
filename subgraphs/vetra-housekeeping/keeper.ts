@@ -94,20 +94,18 @@ export class HousekeepingKeeper {
     const { listStudios, loki, config } = this.deps;
     const studios = await listStudios();
 
-    const classifyOne = async (s: StudioRow): Promise<StudioActivity> => {
+    // One batched Loki call for ALL hosts (two grouped queries), not one per
+    // host: 40 studios × per-host = 80 queries that saturated Loki's queue and
+    // timed out to all-UNKNOWN. classifyHosts fail-safes to UNKNOWN internally.
+    const hosts = studios
+      .map((s) => (s.subdomain ? studioHost(s.subdomain, config.baseDomain) : null))
+      .filter((h): h is string => h !== null);
+    const verdicts = await loki.classifyHosts(hosts, config.idleThresholdSeconds);
+
+    return studios.map((s) => {
       const eligible = isEligibleForSleep(s, { allowlist: config.allowlist });
       const host = s.subdomain ? studioHost(s.subdomain, config.baseDomain) : "";
-      let activity: HostActivity = "UNKNOWN";
-      if (host) {
-        // A single slow/failing Loki query must not sink the whole request —
-        // classifyHostActivity already maps failures to UNKNOWN, but guard here
-        // too so one host can't hang the batch.
-        try {
-          activity = await loki.classifyHostActivity(host, config.idleThresholdSeconds);
-        } catch {
-          activity = "UNKNOWN";
-        }
-      }
+      const activity: HostActivity = host ? verdicts.get(host) ?? "UNKNOWN" : "UNKNOWN";
       return {
         host,
         subdomain: s.subdomain ?? null,
@@ -118,19 +116,7 @@ export class HousekeepingKeeper {
         activity,
         wouldSleep: eligible && activity === "IDLE",
       };
-    };
-
-    // Unlike the in-process keeper (no request deadline), this backs a GraphQL
-    // query under an HTTP/gateway timeout — sequential per-host Loki calls over
-    // 40+ studios blow past it. Fan out in bounded batches to stay well under
-    // the timeout without hammering Loki with 40+ simultaneous queries.
-    const CONCURRENCY = 8;
-    const out: StudioActivity[] = [];
-    for (let i = 0; i < studios.length; i += CONCURRENCY) {
-      const batch = studios.slice(i, i + CONCURRENCY);
-      out.push(...(await Promise.all(batch.map(classifyOne))));
-    }
-    return out;
+    });
   }
 
   /** One detection pass. Returns the hosts slept (or that would be, in dry-run). */
@@ -145,11 +131,18 @@ export class HousekeepingKeeper {
       `[housekeeping-keeper] ${studios.length} READY, ${eligible.length} eligible (dryRun=${config.dryRun})`,
     );
 
+    // Batch all eligible hosts into one classifyHosts call (see classifyAll).
+    const candidates = eligible
+      .map((s) => (s.subdomain ? { s, host: studioHost(s.subdomain, config.baseDomain) } : null))
+      .filter((c): c is { s: StudioRow; host: string } => c !== null);
+    const verdicts = await loki.classifyHosts(
+      candidates.map((c) => c.host),
+      config.idleThresholdSeconds,
+    );
+
     const slept: string[] = [];
-    for (const s of eligible) {
-      if (!s.subdomain) continue;
-      const host = studioHost(s.subdomain, config.baseDomain);
-      const activity = await loki.classifyHostActivity(host, config.idleThresholdSeconds);
+    for (const { s, host } of candidates) {
+      const activity = verdicts.get(host) ?? "UNKNOWN";
       // Sleep ONLY on a positive idle signal (logs exist, none proper). ACTIVE
       // and UNKNOWN (no logs / query failed) are both left running — never sleep
       // something we can't prove is idle.

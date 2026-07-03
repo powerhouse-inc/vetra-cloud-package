@@ -57,7 +57,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     const sleepEnv = vi.fn(async () => {});
     const slept = await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { classifyHostActivity: async () => "IDLE" },
+      loki: { classifyHosts: async (hosts: string[]) => new Map(hosts.map((h) => [h, "IDLE" as const])) },
       sleepEnv,
       config: cfg(),
       logger: silent,
@@ -70,7 +70,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     const sleepEnv = vi.fn(async () => {});
     await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { classifyHostActivity: async () => "ACTIVE" },
+      loki: { classifyHosts: async (hosts: string[]) => new Map(hosts.map((h) => [h, "ACTIVE" as const])) },
       sleepEnv,
       config: cfg(),
       logger: silent,
@@ -82,7 +82,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     const sleepEnv = vi.fn(async () => {});
     const slept = await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { classifyHostActivity: async () => "UNKNOWN" },
+      loki: { classifyHosts: async (hosts: string[]) => new Map(hosts.map((h) => [h, "UNKNOWN" as const])) },
       sleepEnv,
       config: cfg(),
       logger: silent,
@@ -95,7 +95,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
     const sleepEnv = vi.fn(async () => {});
     const slept = await new HousekeepingKeeper({
       listStudios: async () => [studio()],
-      loki: { classifyHostActivity: async () => "IDLE" },
+      loki: { classifyHosts: async (hosts: string[]) => new Map(hosts.map((h) => [h, "IDLE" as const])) },
       sleepEnv,
       config: cfg({ dryRun: true }),
       logger: silent,
@@ -111,7 +111,7 @@ describe("HousekeepingKeeper.reconcileOnce", () => {
         studio({ poolState: "AVAILABLE" }),
         studio({ subdomain: "vip-studio", tenantId: "vip-studio-1" }),
       ],
-      loki: { classifyHostActivity: async () => "IDLE" },
+      loki: { classifyHosts: async (hosts: string[]) => new Map(hosts.map((h) => [h, "IDLE" as const])) },
       sleepEnv,
       config: cfg({ allowlist: ["vip-studio"] }),
       logger: silent,
