@@ -30,6 +30,10 @@ const STUDIO_SECRET_NAMES = [
 const API_KEY = "sk-ant-e2e-SUPERSECRET-0123456789";
 const TENANT = "warm-newt-75-aa726a95";
 const ADDR = "0x" + "a".repeat(40);
+// Admin has its own address (listed in ADMINS); the caller (ADDR) is the
+// redeeming user whose did:pkh must match its redemptions.
+const ADMIN_ADDR = "0x" + "b".repeat(40);
+process.env.ADMINS = ADMIN_ADDR;
 
 let accessDb: Kysely<VetraAccessCodesDB>;
 let secretsDb: Kysely<SecretsDB>;
@@ -73,8 +77,8 @@ afterEach(async () => {
   await secretsDb.destroy();
 });
 
-const admin = { user: { address: ADDR, chainId: 1, networkId: "eip155" }, isAdmin: () => true };
-const caller = { user: { address: ADDR, chainId: 1, networkId: "eip155" }, isAdmin: () => false };
+const admin = { user: { address: ADMIN_ADDR, chainId: 1, networkId: "eip155" } };
+const caller = { user: { address: ADDR, chainId: 1, networkId: "eip155" } };
 const Q = () => resolvers.VetraAccessCodesQueries;
 const M = () => resolvers.VetraAccessCodesMutations;
 

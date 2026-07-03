@@ -39,12 +39,13 @@ export interface ResolverDeps {
 
 /**
  * Subset of the reactor-api resolver context this subgraph relies on. The
- * gateway verifies the Renown bearer token and populates `user`; `isAdmin`
- * checks the address against the deployment's admin allowlist (ADMINS env).
+ * gateway verifies the Renown bearer token and populates `user`. Admin-ness is
+ * checked against the deployment's `ADMINS` env (same source as reactor-api's
+ * authorizationService.isSupremeAdmin) — the gateway does NOT inject an
+ * `isAdmin` helper on the resolver context.
  */
 type AuthContext = {
   user?: { address: string; chainId: number; networkId: string };
-  isAdmin?: (address: string) => boolean;
 };
 
 /** Canonical did:pkh for the authenticated caller, or null if unauthenticated. */
@@ -56,7 +57,11 @@ function callerDid(ctx: AuthContext): string | null {
 
 function requireAdmin(ctx: AuthContext): void {
   const address = ctx.user?.address?.toLowerCase();
-  if (!address || !(ctx.isAdmin?.(address) ?? false)) {
+  const admins = (process.env.ADMINS ?? "")
+    .split(",")
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean);
+  if (!address || !admins.includes(address)) {
     throw new Error("FORBIDDEN");
   }
 }

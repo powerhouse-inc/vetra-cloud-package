@@ -13,6 +13,11 @@ let db: Kysely<VetraAccessCodesDB>;
 
 const ADDR = "0x" + "a".repeat(40);
 const DID = `did:pkh:eip155:1:${ADDR}`;
+// A distinct admin address, listed in ADMINS. The caller (ADDR) is intentionally
+// NOT an admin, and its did:pkh (DID) must match the redemptions below — so the
+// admin gets its own address rather than reusing ADDR.
+const ADMIN_ADDR = "0x" + "b".repeat(40);
+process.env.ADMINS = ADMIN_ADDR;
 
 // Reversible sentinel encryption: ciphertext = `enc:<tenant>:<plaintext>`.
 const mockTransit: OpenBaoTransitClient = {
@@ -31,12 +36,10 @@ const mockSecretsService = {
 let resolvers: ReturnType<typeof createResolvers>;
 
 const adminCtx = {
-  user: { address: ADDR, chainId: 1, networkId: "eip155" },
-  isAdmin: () => true,
+  user: { address: ADMIN_ADDR, chainId: 1, networkId: "eip155" },
 };
 const callerCtx = {
   user: { address: ADDR, chainId: 1, networkId: "eip155" },
-  isAdmin: () => false,
 };
 const anonCtx = {};
 
