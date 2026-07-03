@@ -54,6 +54,7 @@ function envState(
     apexService: null,
     autoUpdateChannel: null,
     runtimeConfig: null,
+    studioInstanceId: null,
     ...overrides,
   };
 }

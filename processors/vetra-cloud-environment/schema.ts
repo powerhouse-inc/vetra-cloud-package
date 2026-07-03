@@ -25,6 +25,14 @@ export interface Environments {
    */
   autoUpdateChannel: string | null;
   /**
+   * Document id of the Vetra Studio that produced this environment (deployed
+   * a package into it). Mirrors doc state's `studioInstanceId`. NULL = the
+   * studio itself, or an environment created directly by the user. Read by the
+   * observability subgraph's `myEnvironments` resolver to group environments
+   * under their studio.
+   */
+  studioInstanceId: string | null;
+  /**
    * Warm-pool tracking (NULL for ordinary, non-pool environments).
    * Written by the studio-pool-keeper service and the claim subgraph.
    * WARMING | AVAILABLE | CLAIMED | FAILED.

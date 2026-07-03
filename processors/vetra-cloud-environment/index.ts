@@ -114,7 +114,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       }
 
       const state = phState.global;
-      const { owner, label: envLabel, genericSubdomain, customDomain, packages, services, status, autoUpdateChannel } = state;
+      const { owner, label: envLabel, genericSubdomain, customDomain, packages, services, status, autoUpdateChannel, studioInstanceId } = state;
       const label = envLabel ?? documentId;
       const tenantId = genericSubdomain
         ? getTenantId(genericSubdomain, documentId)
@@ -144,6 +144,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         status: status ?? null,
         owner: ownerNormalized,
         autoUpdateChannel: autoUpdateChannel ?? null,
+        studioInstanceId: studioInstanceId ?? null,
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
