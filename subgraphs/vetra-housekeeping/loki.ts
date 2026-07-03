@@ -73,14 +73,18 @@ export function buildTotalRequestCountQuery(
 }
 
 /**
- * Stream selector for MANY hosts at once. A `|~` line pre-filter on the host
- * alternation prunes unrelated Traefik traffic (switchboard/connect/apex) before
- * `| json`, then `RequestHost=~` keeps only the target hosts. Grouping downstream
- * (`sum by (RequestHost)`) yields a per-host count from a single stream scan.
+ * Stream selector for MANY hosts at once: `| json` then `RequestHost=~` on the
+ * host alternation. Grouping downstream (`sum by (RequestHost)`) yields a per-host
+ * count from a single stream scan.
+ *
+ * NB: deliberately NO `|~` line pre-filter here. For a single host a `|=` literal
+ * grep is cheap, but a `|~` regex alternation of 30–40 full domains evaluated
+ * against every raw line before `| json` is pathological — it turned a ~6s scan
+ * into a >120s timeout. `| json | RequestHost=~` alone does 32 hosts × 24h in ~6s.
  */
 function hostsStream(selector: string, hosts: string[], fields: LokiFields): string {
   const alt = hosts.map(escapeRe).join("|");
-  return `${selector} |~ \`${alt}\` | json | ${fields.host}=~\`${alt}\``;
+  return `${selector} | json | ${fields.host}=~\`${alt}\``;
 }
 
 /**
