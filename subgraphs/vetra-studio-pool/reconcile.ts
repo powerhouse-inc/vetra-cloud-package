@@ -15,7 +15,19 @@ export interface PoolPlan {
   toCreate: number;
   /** Unclaimed live envs on a stale version → terminate (recycle). */
   toRecycle: string[];
-  /** Pool rows whose env is dead/terminal → clear poolState (zombie cleanup). */
+  /**
+   * The keeper's OWN dead warm envs (unclaimed WARMING/AVAILABLE that died, plus
+   * any legacy FAILED marker) → DELETE them (full teardown). Merely clearing
+   * poolState (the old behavior) left the namespace/pod/cert as an orphan AND
+   * un-counted it, so the keeper endlessly recreated replacements — an unbounded
+   * leak. Deleting removes the row too, so the next tick recreates exactly the
+   * deficit rather than accumulating garbage.
+   */
+  toTerminate: string[];
+  /**
+   * Dead CLAIMED (user-owned) envs → clear poolState only. Their lifecycle
+   * belongs to the owner, so we stop tracking them in the pool but never delete.
+   */
   toClear: string[];
 }
 
@@ -50,10 +62,24 @@ function isDead(status: string | null): boolean {
  * permanently occupying a slot.
  */
 export function computePoolPlan(rows: PoolRow[], target: PoolTarget): PoolPlan {
-  // Clear poolState for dead envs (zombies) and any legacy FAILED markers so
-  // they stop counting and can't be claimed.
+  // The keeper's own dead warm envs — unclaimed WARMING/AVAILABLE that died,
+  // plus any legacy FAILED marker — are garbage the pool created. DELETE them
+  // (full teardown), never merely un-count them: an un-counted-but-undeleted
+  // env orphans a namespace/pod/cert while the keeper recreates a replacement,
+  // which is the runaway leak this fixes.
+  const toTerminate = rows
+    .filter(
+      (r) =>
+        r.poolState === "FAILED" ||
+        ((r.poolState === "WARMING" || r.poolState === "AVAILABLE") &&
+          isDead(r.status)),
+    )
+    .map((r) => r.id);
+
+  // Dead CLAIMED envs are user-owned: stop tracking them in the pool, but never
+  // delete — the owner controls that env's lifecycle.
   const toClear = rows
-    .filter((r) => r.poolState !== null && (isDead(r.status) || r.poolState === "FAILED"))
+    .filter((r) => r.poolState === "CLAIMED" && isDead(r.status))
     .map((r) => r.id);
 
   const liveUnclaimed = rows.filter(
@@ -67,6 +93,7 @@ export function computePoolPlan(rows: PoolRow[], target: PoolTarget): PoolPlan {
   return {
     toCreate: Math.max(0, target.size - currentLive.length),
     toRecycle: staleLive.map((r) => r.id),
+    toTerminate,
     toClear,
   };
 }

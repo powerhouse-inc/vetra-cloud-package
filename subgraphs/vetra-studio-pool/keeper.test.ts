@@ -47,14 +47,24 @@ describe("PoolKeeper.reconcileOnce", () => {
     expect(d.deleteEnv).toHaveBeenCalledWith("old");
   });
 
-  it("clears zombie (dead-status) pool rows", async () => {
+  it("TERMINATES (deletes) a dead unclaimed warm env, not merely clearing it", async () => {
     const d = deps([
       { id: "z", poolState: "AVAILABLE", pinnedVersion: "0.0.1-dev.19", status: "TERMINATING" },
     ]);
     await new PoolKeeper(d as never).reconcileOnce();
-    expect(d.db.clearPoolState).toHaveBeenCalledWith(["z"]);
-    // zombie not counted → still needs to create the full pool
+    expect(d.deleteEnv).toHaveBeenCalledWith("z");
+    expect(d.db.clearPoolState).not.toHaveBeenCalledWith(["z"]);
+    // dead env not counted → still needs to create the full pool
     expect(d.createEnv).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears (never deletes) a dead CLAIMED env — owner controls its lifecycle", async () => {
+    const d = deps([
+      { id: "c", poolState: "CLAIMED", pinnedVersion: "0.0.1-dev.19", status: "DESTROYED" },
+    ]);
+    await new PoolKeeper(d as never).reconcileOnce();
+    expect(d.db.clearPoolState).toHaveBeenCalledWith(["c"]);
+    expect(d.deleteEnv).not.toHaveBeenCalledWith("c");
   });
 
   it("deletes the orphan doc when seeding fails after creation", async () => {
