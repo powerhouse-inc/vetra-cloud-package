@@ -3,6 +3,10 @@ export interface PoolConfig {
   version: string;
   sizeName: string;
   registry: string;
+  /** Cloud switchboard the warm studio's agent talks to when creating/deploying
+   * environments (stamped as VETRA_CLOUD_SWITCHBOARD_URL). Per-tenant so prod
+   * studios target the prod switchboard instead of the staging default. */
+  switchboardUrl: string;
   enabled: boolean;
 }
 
@@ -11,6 +15,7 @@ const DEFAULTS = {
   version: "0.0.1-dev.19",
   sizeName: "VETRA_AGENT_XXL",
   registry: "https://registry.dev.vetra.io",
+  switchboardUrl: "https://switchboard.staging.vetra.io",
 };
 
 /**
@@ -27,6 +32,7 @@ export function loadPoolConfig(env: Record<string, string | undefined>): PoolCon
     version: env.STUDIO_POOL_VERSION ?? DEFAULTS.version,
     sizeName: env.STUDIO_POOL_SIZE_NAME ?? DEFAULTS.sizeName,
     registry: env.STUDIO_POOL_REGISTRY ?? DEFAULTS.registry,
+    switchboardUrl: env.STUDIO_POOL_SWITCHBOARD_URL ?? DEFAULTS.switchboardUrl,
     enabled: explicitValid && parsed > 0,
   };
 }

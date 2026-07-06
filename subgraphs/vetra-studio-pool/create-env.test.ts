@@ -15,6 +15,7 @@ describe("createStudioEnvironmentDoc", () => {
       version: "0.0.1-dev.19",
       sizeName: "VETRA_AGENT_XXL",
       registry: "https://registry.dev.vetra.io",
+      switchboardUrl: "https://switchboard.vetra.io",
     });
 
     expect(reactor.createDocument).toHaveBeenCalledOnce();
@@ -51,6 +52,13 @@ describe("createStudioEnvironmentDoc", () => {
     expect(svc?.input.clintConfig?.env).toContainEqual({
       name: "VETRA_REQUIRE_API_KEY",
       value: "true",
+      isSecret: false,
+    });
+    // The configured switchboard is stamped so the agent creates environments
+    // against it (not vetra-cli's staging default).
+    expect(svc?.input.clintConfig?.env).toContainEqual({
+      name: "VETRA_CLOUD_SWITCHBOARD_URL",
+      value: "https://switchboard.vetra.io",
       isSecret: false,
     });
   });
