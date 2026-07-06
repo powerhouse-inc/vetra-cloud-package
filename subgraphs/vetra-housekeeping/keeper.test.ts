@@ -10,6 +10,7 @@ const cfg = (over: Partial<KeeperConfig> = {}): KeeperConfig => ({
   dryRun: false,
   idleThresholdSeconds: 86400,
   scanIntervalMs: 900000,
+  lokiTimeoutMs: 120000,
   baseDomain: "vetra.io",
   allowlist: [],
   ...over,
@@ -38,6 +39,12 @@ describe("loadKeeperConfig", () => {
     const c = loadKeeperConfig({ HOUSEKEEPING_DETECTOR_ENABLED: "true", HOUSEKEEPING_DRY_RUN: "false" });
     expect(c.enabled).toBe(true);
     expect(c.dryRun).toBe(false);
+  });
+  it("defaults the Loki fetch timeout to 120s (the 24h grouped scan exceeds 30s)", () => {
+    expect(loadKeeperConfig({}).lokiTimeoutMs).toBe(120000);
+  });
+  it("honours HOUSEKEEPING_LOKI_TIMEOUT_MS override", () => {
+    expect(loadKeeperConfig({ HOUSEKEEPING_LOKI_TIMEOUT_MS: "90000" }).lokiTimeoutMs).toBe(90000);
   });
 });
 
