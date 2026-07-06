@@ -75,6 +75,15 @@ export async function createStudioEnvironmentDoc(
             value: cfg.switchboardUrl,
             isSecret: false,
           },
+          // Point the agent's product PUBLISH at the pool's registry. Without
+          // it, vetra-cli's resolveRegistryUrl falls to its hardcoded
+          // registry.dev.vetra.io default, so prod warm studios would publish
+          // products to the dev registry. Mirrors STUDIO_POOL_REGISTRY.
+          {
+            name: "PH_REGISTRY_URL",
+            value: cfg.registry,
+            isSecret: false,
+          },
         ],
         serviceCommand: "vetra",
         selectedRessource: cfg.sizeName as never,
