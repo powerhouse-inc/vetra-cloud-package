@@ -80,6 +80,20 @@ export class PoolKeeper {
       }
     }
 
+    // 3b. Terminate the keeper's OWN dead warm envs by DELETING them (full
+    //     teardown), rather than merely clearing poolState. Clearing alone left
+    //     the namespace/pod/cert as an orphan AND stopped counting it, so the
+    //     keeper endlessly recreated replacements — an unbounded leak. Deleting
+    //     removes the row too, so the next tick recreates exactly the deficit.
+    for (const id of plan.toTerminate) {
+      try {
+        await this.d.deleteEnv(id);
+        this.d.logger.info(`[studio-pool] terminated dead warm env ${id}`);
+      } catch (err) {
+        this.d.logger.warn(`[studio-pool] terminate ${id} failed: ${String(err)}`);
+      }
+    }
+
     // 4. Recycle stale-version unclaimed envs by DELETING them — full teardown
     //    (read-model + gitops + namespace/cert), not a TERMINATING husk that
     //    keeps a pod + TLS cert alive. Deleting also removes the pool row, so

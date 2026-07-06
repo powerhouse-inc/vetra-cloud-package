@@ -8,6 +8,7 @@ describe("loadPoolConfig", () => {
       version: "0.0.1-dev.19",
       sizeName: "VETRA_AGENT_XXL",
       registry: "https://registry.dev.vetra.io",
+      switchboardUrl: "https://switchboard.staging.vetra.io",
       enabled: false,
     });
   });
@@ -19,12 +20,14 @@ describe("loadPoolConfig", () => {
         STUDIO_POOL_VERSION: "0.0.1-dev.20",
         STUDIO_POOL_SIZE_NAME: "VETRA_AGENT_XL",
         STUDIO_POOL_REGISTRY: "https://r",
+        STUDIO_POOL_SWITCHBOARD_URL: "https://sb",
       }),
     ).toEqual({
       size: 3,
       version: "0.0.1-dev.20",
       sizeName: "VETRA_AGENT_XL",
       registry: "https://r",
+      switchboardUrl: "https://sb",
       enabled: true,
     });
   });

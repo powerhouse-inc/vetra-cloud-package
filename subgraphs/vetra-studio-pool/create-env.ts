@@ -20,6 +20,10 @@ export interface CreateEnvConfig {
   version: string;
   sizeName: string;
   registry: string;
+  /** Cloud switchboard base URL stamped as VETRA_CLOUD_SWITCHBOARD_URL so the
+   * warm studio's vetra-cli creates/deploys environments against the right
+   * (per-tenant) switchboard instead of the CLI's staging default. */
+  switchboardUrl: string;
 }
 
 export interface CreatedStudioEnv {
@@ -63,6 +67,14 @@ export async function createStudioEnvironmentDoc(
           // refuses to run until a claim injects the key — so "no key" is the
           // lock, complementing/replacing the network policy.
           { name: "VETRA_REQUIRE_API_KEY", value: "true", isSecret: false },
+          // Point the agent's env-creation/deploy at the right switchboard.
+          // Without this, vetra-cli falls to its staging default, so prod warm
+          // studios would create environments on staging.
+          {
+            name: "VETRA_CLOUD_SWITCHBOARD_URL",
+            value: cfg.switchboardUrl,
+            isSecret: false,
+          },
         ],
         serviceCommand: "vetra",
         selectedRessource: cfg.sizeName as never,

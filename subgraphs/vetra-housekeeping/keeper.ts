@@ -38,6 +38,13 @@ export interface KeeperConfig {
   idleThresholdSeconds: number;
   /** Scan cadence (ms). */
   scanIntervalMs: number;
+  /**
+   * Per-request timeout for the Loki idle query. The grouped 24h `| json` scan
+   * over the whole Traefik stream routinely exceeds the old 30s default under
+   * real log volume (→ "operation aborted" → all-UNKNOWN → nothing slept), so
+   * default 120s. Overridable via HOUSEKEEPING_LOKI_TIMEOUT_MS.
+   */
+  lokiTimeoutMs: number;
   /** Wildcard base domain studios live under. */
   baseDomain: string;
   /** tenantIds/subdomains never to sleep. */
@@ -57,6 +64,7 @@ export function loadKeeperConfig(env: NodeJS.ProcessEnv = process.env): KeeperCo
     dryRun: (env.HOUSEKEEPING_DRY_RUN ?? "true").toLowerCase() !== "false",
     idleThresholdSeconds: int("HOUSEKEEPING_IDLE_THRESHOLD_SECONDS", 24 * 60 * 60),
     scanIntervalMs: int("HOUSEKEEPING_SCAN_INTERVAL_MS", 15 * 60 * 1000),
+    lokiTimeoutMs: int("HOUSEKEEPING_LOKI_TIMEOUT_MS", 120000),
     baseDomain: env.STUDIO_BASE_DOMAIN ?? "vetra.io",
     allowlist: (env.HOUSEKEEPING_ALLOWLIST ?? "")
       .split(",")

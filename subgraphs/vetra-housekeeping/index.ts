@@ -95,6 +95,7 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
     const loki = createLokiClient({
       lokiUrl: (process.env.LOKI_URL ?? "http://loki-gateway.monitoring.svc").replace(/\/$/, ""),
       selector: process.env.LOKI_SELECTOR ?? '{namespace="traefik"}',
+      fetchTimeoutMs: keeperConfig.lokiTimeoutMs,
       logger: console,
     });
     const keeper = new HousekeepingKeeper({

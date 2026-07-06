@@ -150,6 +150,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             version: cfg.version,
             sizeName: cfg.sizeName,
             registry: cfg.registry,
+            switchboardUrl: cfg.switchboardUrl,
           }),
         deleteEnv,
         cfg,
