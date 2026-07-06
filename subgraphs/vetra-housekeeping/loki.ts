@@ -128,6 +128,31 @@ export function buildGroupedTotalRequestCountQuery(
  */
 export type HostActivity = "ACTIVE" | "IDLE" | "UNKNOWN";
 
+/**
+ * Verdict for one host from its request counts + whether the log pipeline is
+ * proven live this scan (a canary host known to always receive traffic had
+ * requests in the window).
+ *
+ *  - proper > 0            → ACTIVE  (real user traffic)
+ *  - total  > 0, proper 0  → IDLE    (logs exist, all automation)
+ *  - total == 0, healthy   → IDLE    (pipeline proven live ⇒ zero requests is
+ *                                     genuine idleness, not a missing signal)
+ *  - total == 0, !healthy  → UNKNOWN (can't tell idle from a broken pipeline —
+ *                                     fail safe, never slept; the dev.140 guard)
+ *
+ * The `pipelineHealthy` canary is what lets us reclaim genuinely-silent studios
+ * (the common case) without risking a fleet-wide sleep when Traefik→Loki breaks.
+ */
+export function classifyActivity(
+  proper: number,
+  total: number,
+  pipelineHealthy: boolean,
+): HostActivity {
+  if (proper > 0) return "ACTIVE";
+  if (total > 0) return "IDLE";
+  return pipelineHealthy ? "IDLE" : "UNKNOWN";
+}
+
 export interface LokiClient {
   /**
    * Classify a batch of hosts in as few Loki queries as possible (two grouped
@@ -149,6 +174,14 @@ export function createLokiClient(opts: {
   selector: string;
   fields?: LokiFields;
   fetchTimeoutMs?: number;
+  /**
+   * A host known to ALWAYS receive Traefik traffic (e.g. the switchboard apex).
+   * Each scan we check it has requests in the window; if so the Traefik→Loki
+   * pipeline is proven live and a studio's `total == 0` is trusted as idle. If
+   * unset (or the canary is silent), we fall back to the conservative
+   * `total == 0 ⇒ UNKNOWN` (never sleep) behaviour.
+   */
+  canaryHost?: string;
   logger?: { warn: (m: string) => void };
 }): LokiClient {
   const fields = opts.fields ?? DEFAULT_LOKI_FIELDS;
@@ -176,9 +209,23 @@ export function createLokiClient(opts: {
     }
   }
 
+  /** True if the canary host had ANY traffic in the window ⇒ pipeline is live. */
+  async function canaryHealthy(windowSeconds: number): Promise<boolean> {
+    if (!opts.canaryHost) return false;
+    try {
+      const counts = await countByHost(
+        buildGroupedTotalRequestCountQuery(opts.selector, [opts.canaryHost], windowSeconds, fields),
+      );
+      return (counts.get(opts.canaryHost) ?? 0) > 0;
+    } catch {
+      return false; // can't confirm the pipeline ⇒ stay conservative
+    }
+  }
+
   async function classifyChunk(
     hosts: string[],
     windowSeconds: number,
+    pipelineHealthy: boolean,
     out: Map<string, HostActivity>,
   ): Promise<void> {
     try {
@@ -190,9 +237,7 @@ export function createLokiClient(opts: {
       for (const host of hosts) {
         const p = proper.get(host) ?? 0;
         const tot = total.get(host) ?? 0;
-        // ACTIVE: a proper request exists. IDLE: logs exist but all automation.
-        // UNKNOWN: no logs at all ⇒ can't measure (never slept).
-        out.set(host, p > 0 ? "ACTIVE" : tot > 0 ? "IDLE" : "UNKNOWN");
+        out.set(host, classifyActivity(p, tot, pipelineHealthy));
       }
     } catch (err) {
       // Fail-safe: anything we couldn't measure stays UNKNOWN (never slept).
@@ -206,8 +251,11 @@ export function createLokiClient(opts: {
   const client: LokiClient = {
     async classifyHosts(hosts, windowSeconds) {
       const out = new Map<string, HostActivity>();
+      // Prove the pipeline is live ONCE per scan via the canary, then trust
+      // `total == 0` as genuine idleness for every host this scan.
+      const healthy = await canaryHealthy(windowSeconds);
       for (let i = 0; i < hosts.length; i += HOSTS_PER_QUERY) {
-        await classifyChunk(hosts.slice(i, i + HOSTS_PER_QUERY), windowSeconds, out);
+        await classifyChunk(hosts.slice(i, i + HOSTS_PER_QUERY), windowSeconds, healthy, out);
       }
       return out;
     },
