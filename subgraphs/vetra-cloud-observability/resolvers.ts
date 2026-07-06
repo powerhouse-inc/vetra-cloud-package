@@ -406,11 +406,34 @@ export function createResolvers(
           }
         }
 
+        // Batch-load cached brands for the matched envs (mirrors the
+        // readiness batch above — no N+1). Studios whose BrandSheet has not
+        // been pulled yet simply have no row → brand stays null.
+        const brandRows =
+          matchedEnvIds.length > 0
+            ? await db
+                .selectFrom("studio_brand")
+                .select(["documentId", "name", "maxim", "concept"])
+                .where("documentId", "in", matchedEnvIds)
+                .execute()
+            : [];
+        const brandByEnv = new Map(brandRows.map((b) => [b.documentId, b]));
+
         return matched.map((m) => ({
           envId: m.id,
           subdomain: m.subdomain,
           prefix: m.prefix,
           label: m.label,
+          brand: (() => {
+            const b = brandByEnv.get(m.id);
+            return b?.name
+              ? {
+                  title: b.name,
+                  tagline: b.maxim ?? null,
+                  description: b.concept ?? null,
+                }
+              : null;
+          })(),
           // STOPPED = housekeeping sleep: surface a distinct 'sleeping' state so
           // the dashboard can show 💤 (and the card opens the host, where the
           // activator shows the wake spinner). Otherwise fall back to the

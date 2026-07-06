@@ -254,6 +254,14 @@ export const schema: DocumentNode = gql`
     label: String!
     """One of "ready" | "booting" | "sleeping" (housekeeping-hibernated)."""
     status: String!
+    """Cached studio identity from the BrandSheet; null when not yet cached."""
+    brand: StudioBrandInfo
+  }
+
+  type StudioBrandInfo {
+    title: String!
+    tagline: String
+    description: String
   }
 
   enum ListScope { MINE, ALL }

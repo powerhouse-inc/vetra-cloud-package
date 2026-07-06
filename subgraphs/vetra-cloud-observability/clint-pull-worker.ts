@@ -26,6 +26,12 @@ export type ClintPullWorkerConfig = {
    * Overridable for tests.
    */
   buildAgentUrl?: (service: ClintServiceTuple) => string;
+  /**
+   * Maps a studio service to its switchboard GraphQL URL (for the BrandSheet
+   * pull). Defaults to `https://<agent-host>/switchboard/graphql`. Overridable
+   * for tests (which serve a mock over http).
+   */
+  buildBrandUrl?: (service: ClintServiceTuple) => string;
   /** Per-fetch timeout. Defaults to 5000ms. */
   fetchTimeoutMs?: number;
 };
@@ -81,6 +87,16 @@ type ClintRuntimeEndpointRow = {
   lastSeen: string;
 };
 
+/** Column shape of the observability `studio_brand` table. */
+type StudioBrandRow = {
+  documentId: string;
+  subdomain: string | null;
+  name: string | null;
+  maxim: string | null;
+  concept: string | null;
+  updatedAt: string;
+};
+
 function parseClintServices(servicesJson: string | null): ParsedService[] {
   if (!servicesJson) return [];
   try {
@@ -129,15 +145,45 @@ function portFromUpstream(upstream: string): string {
   }
 }
 
+/** BrandSheet product identity fetched from a studio's own switchboard. */
+const BRAND_QUERY =
+  "query { BrandSheet { documents { items { state { global { name maxim concept } } } } } }";
+
+type ParsedBrand = { name: string; maxim: string | null; concept: string | null };
+
+/**
+ * Parse a studio switchboard's BrandSheet response. Returns null for anything
+ * that isn't a real, named BrandSheet — an empty `items`, a hibernated studio's
+ * `{"status":"waking"}` body, or a malformed shape — so callers never clobber a
+ * cached brand with a blank.
+ */
+function parseBrand(body: unknown): ParsedBrand | null {
+  const items = (body as { data?: { BrandSheet?: { documents?: { items?: unknown } } } })?.data
+    ?.BrandSheet?.documents?.items;
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const g = (items[0] as { state?: { global?: { name?: unknown; maxim?: unknown; concept?: unknown } } })
+    ?.state?.global;
+  if (!g || typeof g.name !== "string" || g.name.trim() === "") return null;
+  return {
+    name: g.name,
+    maxim: typeof g.maxim === "string" ? g.maxim : null,
+    concept: typeof g.concept === "string" ? g.concept : null,
+  };
+}
+
 export class ClintPullWorker {
   private readonly config: ClintPullWorkerConfig;
   private timer: NodeJS.Timeout | null = null;
   private readonly buildAgentUrl: (svc: ClintServiceTuple) => string;
+  private readonly buildBrandUrl: (svc: ClintServiceTuple) => string;
   private readonly fetchTimeoutMs: number;
 
   constructor(config: ClintPullWorkerConfig) {
     this.config = config;
     this.buildAgentUrl = config.buildAgentUrl ?? defaultBuildAgentUrl;
+    this.buildBrandUrl =
+      config.buildBrandUrl ??
+      ((svc) => `https://${new URL(this.buildAgentUrl(svc)).host}/switchboard/graphql`);
     this.fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   }
 
@@ -166,8 +212,65 @@ export class ClintPullWorker {
     // (volume scales O(tenant-count)). See trace-suppress.ts.
     await withTracingSuppressed(async () => {
       const tuples = await this.listClintServices();
-      await Promise.all(tuples.map((t) => this.pullOne(t)));
+      await Promise.all(
+        tuples.map((t) =>
+          Promise.all([
+            this.pullOne(t),
+            // A Studio's BrandSheet lives on its own (apex) switchboard.
+            t.isApex ? this.pullBrand(t) : Promise.resolve(),
+          ]),
+        ),
+      );
     });
+  }
+
+  /**
+   * Fetch the studio's BrandSheet and cache name/maxim/concept in `studio_brand`
+   * so /user/products shows the real product name even after the studio sleeps.
+   * No-clobber: an empty/waking/failed response leaves the last cached row.
+   */
+  private async pullBrand(svc: ClintServiceTuple): Promise<void> {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
+    try {
+      const res = await fetch(this.buildBrandUrl(svc), {
+        method: "POST",
+        signal: ac.signal,
+        headers: {
+          "content-type": "application/json",
+          "user-agent": OBSERVABILITY_PULL_USER_AGENT,
+        },
+        body: JSON.stringify({ query: BRAND_QUERY }),
+      });
+      if (!res.ok) return; // keep last cached
+      const brand = parseBrand((await res.json()) as unknown);
+      if (!brand) return; // empty / waking / malformed → keep last cached
+      const now = new Date().toISOString();
+      await this.config.obsDb
+        .insertInto("studio_brand")
+        .values({
+          documentId: svc.documentId,
+          subdomain: svc.subdomain,
+          name: brand.name,
+          maxim: brand.maxim,
+          concept: brand.concept,
+          updatedAt: now,
+        })
+        .onConflict((oc: OnConflictBuilder<{ studio_brand: StudioBrandRow }, "studio_brand">) =>
+          oc.column("documentId").doUpdateSet({
+            subdomain: svc.subdomain,
+            name: brand.name,
+            maxim: brand.maxim,
+            concept: brand.concept,
+            updatedAt: now,
+          }),
+        )
+        .execute();
+    } catch {
+      // keep last cached
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   private async listClintServices(): Promise<ClintServiceTuple[]> {
