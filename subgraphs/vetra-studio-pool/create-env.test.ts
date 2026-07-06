@@ -61,5 +61,12 @@ describe("createStudioEnvironmentDoc", () => {
       value: "https://switchboard.vetra.io",
       isSecret: false,
     });
+    // The product PUBLISH target is stamped from cfg.registry so the agent
+    // doesn't fall to vetra-cli's registry.dev.vetra.io default.
+    expect(svc?.input.clintConfig?.env).toContainEqual({
+      name: "PH_REGISTRY_URL",
+      value: "https://registry.dev.vetra.io",
+      isSecret: false,
+    });
   });
 });
