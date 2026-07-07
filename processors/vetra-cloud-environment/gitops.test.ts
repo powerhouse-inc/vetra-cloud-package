@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Kysely } from "kysely";
 import {
   generateValuesYaml,
+} from "./gitops.js";
+import { MANAGED_MARKER, isManagedValues } from "./gc.js";
+import {
   resolveGenericHost,
   effectiveApexType,
   isTypeAtApex,
@@ -58,6 +61,22 @@ function envState(
     ...overrides,
   };
 }
+
+describe("generateValuesYaml — ownership marker", () => {
+  it("stamps the managed-by marker on the first line so the GC can safely own it", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          { type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "ACTIVE", version: null, config: null, selectedRessource: null },
+        ],
+      }),
+      "doc-1",
+    );
+    expect(isManagedValues(yaml)).toBe(true);
+    expect(yaml.split("\n")[0]).toBe(MANAGED_MARKER);
+  });
+});
 
 describe("generateValuesYaml — switchboard / connect resources", () => {
   it("emits S resources by default when service has no selectedRessource", async () => {

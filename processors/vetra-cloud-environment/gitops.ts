@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ import type {
   VetraCloudRessourceSize,
 } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
+import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const execFileAsync = promisify(execFile);
@@ -901,7 +902,8 @@ tenantSecretsController:
 `
     : "";
 
-  return `${tenantSecretsControllerBlock}global:
+  return `${MANAGED_MARKER}
+${tenantSecretsControllerBlock}global:
   disabled: ${disabled}
   subdomain: ${yamlQuote(subdomain)}
   wildcardTls: ${!customDomain}
@@ -1182,6 +1184,68 @@ export async function deleteEnvironmentFromGitops(
       await pushWithRetry(cloneDir, config);
       logger.info(`Successfully removed tenant "${tenantId}" from gitops repo`);
     });
+  } finally {
+    gitMutex.release();
+  }
+}
+
+/** Tenant dirs in the working clone that THIS processor owns (marker present). */
+function listManagedTenantDirs(cloneDir: string): string[] {
+  const tenantsDir = join(cloneDir, "tenants");
+  if (!existsSync(tenantsDir)) return [];
+  return readdirSync(tenantsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .filter((name) => {
+      const vp = join(tenantsDir, name, "powerhouse-values.yaml");
+      if (!existsSync(vp)) return false;
+      try {
+        return isManagedValues(readFileSync(vp, "utf-8"));
+      } catch {
+        return false;
+      }
+    });
+}
+
+/**
+ * Garbage-collect orphaned tenant dirs — managed (marker-stamped) dirs with no
+ * backing env doc. This is the self-healing net for the non-atomic delete: a
+ * gitops-delete that fails leaves an orphan, and this reclaims it on the next
+ * tick. `liveTenantIds` MUST be the COMPLETE set of tenantIds that still have an
+ * env doc — a partial/empty set trips the circuit-breaker in
+ * {@link computeOrphanTenantDirs} and removes nothing (safe failure mode).
+ * Only marker-managed dirs are ever considered, so infra/app tenants
+ * (academy, warm-eel, …) can never be touched. Returns the tenantIds removed.
+ */
+export async function gcOrphanTenantDirs(
+  liveTenantIds: Set<string>,
+): Promise<string[]> {
+  await gitMutex.acquire();
+  try {
+    let removed: string[] = [];
+    await withWorkingClone(async (cloneDir, config) => {
+      const managed = listManagedTenantDirs(cloneDir);
+      const plan = computeOrphanTenantDirs(managed, liveTenantIds);
+      if (plan.skippedForSafety) {
+        logger.warn(
+          `[gc] circuit-breaker tripped: ${managed.length} managed dirs, ` +
+            `${liveTenantIds.size} live env docs — >50% would be removed; skipping`,
+        );
+        return;
+      }
+      if (plan.toRemove.length === 0) return;
+      for (const tenantId of plan.toRemove) {
+        await git(["rm", "-r", `tenants/${tenantId}`], cloneDir);
+      }
+      await git(
+        ["commit", "-m", `chore(gc): remove ${plan.toRemove.length} orphaned tenant dir(s) — no backing env doc`],
+        cloneDir,
+      );
+      await pushWithRetry(cloneDir, config);
+      removed = plan.toRemove;
+      logger.info(`[gc] removed ${removed.length} orphaned tenant dir(s): ${removed.join(", ")}`);
+    });
+    return removed;
   } finally {
     gitMutex.release();
   }
