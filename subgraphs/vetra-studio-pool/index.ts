@@ -14,6 +14,7 @@ import { removeEnvironmentRecord } from "../../processors/vetra-cloud-environmen
 import {
   deleteEnvironmentFromGitops,
   getTenantId,
+  gcOrphanTenantDirs,
 } from "../../processors/vetra-cloud-environment/gitops.js";
 import { setOwner } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
@@ -45,6 +46,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
   additionalContextFields = {};
   private keeper: PoolKeeper | null = null;
   private unsubscribeDocumentDeleted: (() => void) | null = null;
+  private gcTimer: ReturnType<typeof setInterval> | null = null;
 
   async onSetup() {
     const cfg = loadPoolConfig(process.env);
@@ -161,6 +163,34 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         `[studio-pool] keeper started (size=${cfg.size}, version=${cfg.version})`,
       );
     }
+
+    // Orphan-dir GC (self-healing net for non-atomic env deletes): periodically
+    // remove marker-managed tenant dirs whose env doc is gone. Opt-in; guarded
+    // by the ownership marker + the >50% circuit-breaker in gcOrphanTenantDirs,
+    // so infra/app tenants and a failed live-set query can never nuke the fleet.
+    if ((process.env.GITOPS_ORPHAN_GC_ENABLED ?? "false").toLowerCase() === "true") {
+      const intervalMs = Number(process.env.GITOPS_ORPHAN_GC_INTERVAL_MS) || 600_000;
+      const gcTick = async () => {
+        try {
+          const rows = await envDb
+            .selectFrom("environments")
+            .select(["id", "subdomain"])
+            .where("subdomain", "is not", null)
+            .execute();
+          const live = new Set(
+            rows
+              .filter((r) => r.subdomain)
+              .map((r) => getTenantId(r.subdomain as string, r.id)),
+          );
+          await gcOrphanTenantDirs(live);
+        } catch (e) {
+          console.warn(`[studio-pool] orphan-GC tick failed: ${String(e)}`);
+        }
+      };
+      setTimeout(() => void gcTick(), 60_000);
+      this.gcTimer = setInterval(() => void gcTick(), intervalMs);
+      console.info(`[studio-pool] orphan-dir GC enabled (interval=${intervalMs}ms)`);
+    }
   }
 
   /**
@@ -195,5 +225,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     this.unsubscribeDocumentDeleted = null;
     this.keeper?.stop();
     this.keeper = null;
+    if (this.gcTimer) clearInterval(this.gcTimer);
+    this.gcTimer = null;
   }
 }
