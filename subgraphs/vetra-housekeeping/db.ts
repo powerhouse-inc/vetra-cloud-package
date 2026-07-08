@@ -29,7 +29,7 @@ export async function findStudioByHost(
   if (!subdomain) return null;
   const row = await db
     .selectFrom("environments")
-    .select(["id", "subdomain", "status", "owner", "poolState", "tenantId"])
+    .select(["id", "subdomain", "status", "owner", "poolState", "tenantId", "services"])
     .where("subdomain", "=", subdomain)
     .executeTakeFirst();
   if (!row) return null;
@@ -40,6 +40,7 @@ export async function findStudioByHost(
     owner: row.owner,
     poolState: row.poolState,
     tenantId: row.tenantId,
+    services: row.services,
   };
 }
 
@@ -50,7 +51,7 @@ export async function findStudioByHost(
 export async function listReadyStudios(db: Kysely<DB>): Promise<StudioRow[]> {
   const rows = await db
     .selectFrom("environments")
-    .select(["id", "subdomain", "status", "owner", "poolState", "tenantId"])
+    .select(["id", "subdomain", "status", "owner", "poolState", "tenantId", "services"])
     .where("status", "=", "READY")
     .where("owner", "is not", null)
     .execute();
@@ -61,5 +62,6 @@ export async function listReadyStudios(db: Kysely<DB>): Promise<StudioRow[]> {
     owner: row.owner,
     poolState: row.poolState,
     tenantId: row.tenantId,
+    services: row.services,
   }));
 }
