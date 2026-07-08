@@ -1,0 +1,8 @@
+[
+  {
+    "label": "demo-anthropic",
+    "anthropicApiKey": "sk-ant-REPLACE-ME",
+    "count": 10,
+    "maxUses": 1
+  }
+]
