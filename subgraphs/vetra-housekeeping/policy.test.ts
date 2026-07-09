@@ -3,6 +3,7 @@ import {
   deriveStudioPowerState,
   isAutomationRequest,
   isEligibleForSleep,
+  hasClintService,
   OBSERVABILITY_PULL_USER_AGENT,
 } from "./policy.js";
 
@@ -69,6 +70,27 @@ describe("deriveStudioPowerState", () => {
   });
 });
 
+const CLINT_SVC = JSON.stringify([{ type: "CLINT", prefix: "agent", enabled: true }]);
+const APP_SVC = JSON.stringify([
+  { type: "CONNECT", enabled: true },
+  { type: "SWITCHBOARD", enabled: true },
+]);
+
+describe("hasClintService", () => {
+  it("true when a CLINT service is enabled", () => {
+    expect(hasClintService(CLINT_SVC)).toBe(true);
+    expect(hasClintService(JSON.stringify([{ type: "SWITCHBOARD", enabled: true }, { type: "CLINT", enabled: true }]))).toBe(true);
+  });
+  it("false for CONNECT+SWITCHBOARD-only apps (served at connect.*/switchboard.*, not the apex)", () => {
+    expect(hasClintService(APP_SVC)).toBe(false);
+  });
+  it("false for a disabled CLINT, null, or malformed JSON", () => {
+    expect(hasClintService(JSON.stringify([{ type: "CLINT", enabled: false }]))).toBe(false);
+    expect(hasClintService(null)).toBe(false);
+    expect(hasClintService("not json")).toBe(false);
+  });
+});
+
 describe("isEligibleForSleep", () => {
   const base = {
     status: "READY",
@@ -76,11 +98,17 @@ describe("isEligibleForSleep", () => {
     poolState: null,
     tenantId: "tall-duck-ab12cd34-9f8e7d6c",
     subdomain: "tall-duck-ab12cd34",
+    services: CLINT_SVC,
   };
 
-  it("accepts a claimed, ready studio", () => {
+  it("accepts a claimed, ready CLINT studio", () => {
     expect(isEligibleForSleep(base)).toBe(true);
     expect(isEligibleForSleep({ ...base, poolState: "CLAIMED" })).toBe(true);
+  });
+
+  it("rejects non-CLINT envs — CONNECT+SWITCHBOARD apps must NOT be slept (the apex-host bug)", () => {
+    expect(isEligibleForSleep({ ...base, services: APP_SVC })).toBe(false);
+    expect(isEligibleForSleep({ ...base, services: null })).toBe(false);
   });
 
   it("rejects non-READY envs (never re-sleep a stopping/deploying one)", () => {

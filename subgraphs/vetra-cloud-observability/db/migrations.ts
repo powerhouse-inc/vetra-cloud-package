@@ -141,9 +141,24 @@ export async function up(db: Kysely<any>): Promise<void> {
     .on("database_dumps")
     .columns(["tenantId", "requestedAt"])
     .execute();
+
+  // Cached studio product identity (BrandSheet name/maxim/concept), pulled from
+  // each awake studio's switchboard by the clint-pull-worker so /user/products
+  // shows the real name even when the studio is hibernated.
+  await db.schema
+    .createTable("studio_brand")
+    .addColumn("documentId", "varchar(255)", (col) => col.primaryKey())
+    .addColumn("subdomain", "varchar(255)")
+    .addColumn("name", "text")
+    .addColumn("maxim", "text")
+    .addColumn("concept", "text")
+    .addColumn("updatedAt", "varchar(255)")
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("studio_brand").ifExists().execute();
   await db.schema.dropTable("database_dumps").ifExists().execute();
   await db.schema.dropTable("clint_runtime_endpoints").execute();
   await db.schema.dropTable("release_history").execute();

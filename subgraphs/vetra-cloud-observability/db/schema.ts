@@ -128,6 +128,17 @@ export interface DatabaseDumps {
   expiresAt: string;
 }
 
+/** Cached studio product identity from the BrandSheet, pulled by the
+ * clint-pull-worker so /user/products survives studio hibernation. */
+export interface StudioBrand {
+  documentId: string;
+  subdomain: string | null;
+  name: string | null;
+  maxim: string | null;
+  concept: string | null;
+  updatedAt: string;
+}
+
 export interface ObservabilityDB {
   environment_status: EnvironmentStatus;
   environment_pods: EnvironmentPods;
@@ -136,4 +147,5 @@ export interface ObservabilityDB {
   release_history: ReleaseHistory;
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
+  studio_brand: StudioBrand;
 }

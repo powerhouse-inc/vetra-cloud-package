@@ -97,6 +97,25 @@ async function seedWebsiteEndpoint(
     .execute();
 }
 
+async function seedBrand(
+  documentId: string,
+  name: string | null,
+  maxim: string | null = null,
+  concept: string | null = null,
+): Promise<void> {
+  await db
+    .insertInto("studio_brand")
+    .values({
+      documentId,
+      subdomain: null,
+      name,
+      maxim,
+      concept,
+      updatedAt: new Date().toISOString(),
+    })
+    .execute();
+}
+
 function makeResolvers() {
   return createResolvers(db, {
     prometheusUrl: "http://prometheus",
@@ -374,5 +393,77 @@ describe("myStudioProducts", () => {
       out.map((p: { envId: string }) => [p.envId, p]),
     );
     expect(byId["cold"].status).toBe("ready");
+  });
+
+  it("attaches the cached brand when a studio_brand row exists", async () => {
+    await seedEnv({
+      id: "branded",
+      name: "Vetra Studio",
+      subdomain: "branded",
+      owner: ME,
+      services: studioServices("studio"),
+    });
+    await seedBrand(
+      "branded",
+      "Hotel Breakfast App",
+      "Plan the perfect morning service",
+      "A longer concept blurb",
+    );
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["branded"].brand).toEqual({
+      title: "Hotel Breakfast App",
+      tagline: "Plan the perfect morning service",
+      description: "A longer concept blurb",
+    });
+  });
+
+  it("brand is null when no studio_brand row exists", async () => {
+    await seedEnv({
+      id: "unbranded",
+      subdomain: "unbranded",
+      owner: ME,
+      services: studioServices("studio"),
+    });
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["unbranded"].brand).toBeNull();
+  });
+
+  it("brand is null when the cached row has an empty name", async () => {
+    await seedEnv({
+      id: "empty-brand",
+      subdomain: "empty-brand",
+      owner: ME,
+      services: studioServices("studio"),
+    });
+    await seedBrand("empty-brand", null);
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    const byId = Object.fromEntries(
+      out.map((p: { envId: string }) => [p.envId, p]),
+    );
+    expect(byId["empty-brand"].brand).toBeNull();
   });
 });
