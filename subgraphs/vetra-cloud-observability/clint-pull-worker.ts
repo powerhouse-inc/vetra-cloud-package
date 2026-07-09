@@ -9,6 +9,8 @@ export type ClintServiceTuple = {
   subdomain: string;
   /** Served at the env apex (`<subdomain>.vetra.io`) — a sole-CLINT Studio. */
   isApex: boolean;
+  /** Current per-service status from the read-model (e.g. PROVISIONING/ACTIVE). */
+  status?: string | null;
 };
 
 export type ClintPullWorkerConfig = {
@@ -34,6 +36,17 @@ export type ClintPullWorkerConfig = {
   buildBrandUrl?: (service: ClintServiceTuple) => string;
   /** Per-fetch timeout. Defaults to 5000ms. */
   fetchTimeoutMs?: number;
+  /**
+   * Dispatch a document action on an env doc (mirrors the processor's own
+   * `reactorClient.execute` helper). Used to advance a CLINT service
+   * PROVISIONING → ACTIVE once its website endpoint is live. Optional: when
+   * absent (e.g. tests that don't exercise it) the worker only does discovery.
+   */
+  dispatch?: (
+    documentId: string,
+    type: string,
+    input: Record<string, unknown>,
+  ) => Promise<void>;
 };
 
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -73,6 +86,7 @@ type ParsedService = {
   type?: string;
   enabled?: boolean;
   prefix?: string;
+  status?: string;
 };
 
 /** Column shape of the observability `clint_runtime_endpoints` table. */
@@ -302,6 +316,7 @@ export class ClintPullWorker {
             prefix: svc.prefix,
             subdomain: row.subdomain,
             isApex: enabledCount === 1,
+            status: svc.status ?? null,
           });
         }
       }
@@ -330,6 +345,7 @@ export class ClintPullWorker {
       const raw = Array.isArray(body) ? body : [];
       const routes = raw.filter(isProxyRoute);
       await this.upsert(svc, routes);
+      await this.maybeMarkServiceActive(svc, routes);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.config.logger.warn(
@@ -337,6 +353,43 @@ export class ClintPullWorker {
       );
     } finally {
       clearTimeout(t);
+    }
+  }
+
+  /**
+   * Advance a CLINT service PROVISIONING → ACTIVE the first time its live
+   * website endpoint is discovered. The env-doc's per-service status is what the
+   * post-creation "provisioning" screen polls, and nothing else advances it — so
+   * a cold-created (BYOK) studio would otherwise spin on "provisioning" forever
+   * even though its agent is serving (warm-claimed studios sidestep this because
+   * the claim redirects straight in). Guarded on the current status so it fires
+   * exactly once, not on every 15s tick. Never throws: a transient dispatch
+   * failure just retries next tick.
+   */
+  private async maybeMarkServiceActive(
+    svc: ClintServiceTuple,
+    routes: ProxyRoute[],
+  ): Promise<void> {
+    if (!this.config.dispatch) return;
+    if (svc.status === "ACTIVE") return;
+    const hasWebsite = routes.some(
+      (r) => endpointTypeFromPrefix(r.prefix) === "website",
+    );
+    if (!hasWebsite) return;
+    try {
+      await this.config.dispatch(svc.documentId, "SET_SERVICE_STATUS", {
+        type: "CLINT",
+        status: "ACTIVE",
+      });
+      this.config.logger.info(
+        `[clint-pull-worker] ${svc.documentId} ${svc.prefix} CLINT → ACTIVE (website endpoint live)`,
+      );
+    } catch (err) {
+      this.config.logger.warn(
+        `[clint-pull-worker] ${svc.documentId} failed to mark CLINT ACTIVE: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 

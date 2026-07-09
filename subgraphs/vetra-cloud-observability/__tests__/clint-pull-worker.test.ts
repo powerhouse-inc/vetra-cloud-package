@@ -545,3 +545,106 @@ describe('ClintPullWorker.tickOnce', () => {
     expect(rows[0].updatedAt).toBe('2026-07-01T00:00:00Z');
   });
 });
+
+describe('ClintPullWorker CLINT service-status advance', () => {
+  let server: Server | null = null;
+  afterEach(() => {
+    if (server) server.close();
+    server = null;
+  });
+
+  const websiteRoute = {
+    prefix: '/',
+    upstream: 'http://localhost:27370/',
+    ws: false,
+    source: 'studio-announce',
+  };
+
+  it('marks a PROVISIONING CLINT service ACTIVE once its website endpoint is discovered', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-prov',
+      subdomain: 'green-mole-e8',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'PROVISIONING' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).toHaveBeenCalledWith('doc-prov', 'SET_SERVICE_STATUS', {
+      type: 'CLINT',
+      status: 'ACTIVE',
+    });
+  });
+
+  it('does not re-dispatch when the CLINT service is already ACTIVE (idempotent)', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-active',
+      subdomain: 'blue-swan-fa',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'ACTIVE' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not mark ACTIVE when only API endpoints are present (no website yet)', async () => {
+    const mock = await startMockAgent([
+      {
+        prefix: '/switchboard/graphql',
+        upstream: 'http://localhost:35940/graphql',
+        ws: false,
+        source: 'switchboard',
+      },
+    ]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-apionly',
+      subdomain: 'cool-goat-39',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'PROVISIONING' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
