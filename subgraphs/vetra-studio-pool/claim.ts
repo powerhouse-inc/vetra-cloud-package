@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { ClaimDb } from "./pool-db.js";
 
 const SECRET_NAMES = [
@@ -100,6 +101,9 @@ export async function claimWarmEnvironment(
     const secretEntries = [
       ...SECRET_NAMES.map((key) => ({ key, value: apiKey })),
       { key: "ADMINS", value: addr },
+      // Per-env random secret gating vetra-cli's session-export endpoints
+      // (admin-side debugging). Rides this same batched write — no extra bounce.
+      { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },
     ];
     await withRetry(() => d.setSecrets(env.tenantId!, secretEntries), SECRET_RETRIES, sleep);
     // 4. Transfer ownership LAST (system action — env was created owner-null).
