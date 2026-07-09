@@ -42,6 +42,53 @@ function startMockAgent(response: ProxyRoute[] | { status: number }): Promise<{
   });
 }
 
+/** Mock studio switchboard: replies to the BrandSheet POST with `body` (any
+ * JSON), or a bare status when `{ status }` is given. */
+function startMockBrand(
+  body: unknown | { status: number },
+): Promise<{ server: Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = createServer((_req, res) => {
+      if (
+        body &&
+        typeof body === 'object' &&
+        typeof (body as { status?: unknown }).status === 'number'
+      ) {
+        res.statusCode = (body as { status: number }).status;
+        res.end();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(body));
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as { port: number }).port;
+      resolve({ server, port });
+    });
+  });
+}
+
+const BRAND_OK = {
+  data: {
+    BrandSheet: {
+      documents: {
+        items: [
+          {
+            state: {
+              global: {
+                name: 'Hotel Breakfast App',
+                maxim: 'Plan the perfect morning service',
+                concept: 'A longer concept blurb',
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
+};
+
 async function setupDbs(): Promise<{
   envDb: Kysely<any>;
   obsDb: Kysely<any>;
@@ -76,6 +123,15 @@ async function setupDbs(): Promise<{
     .addColumn('port', 'text')
     .addColumn('status', 'text')
     .addColumn('lastSeen', 'text')
+    .execute();
+  await obsDb.schema
+    .createTable('studio_brand')
+    .addColumn('documentId', 'text', (col) => col.primaryKey())
+    .addColumn('subdomain', 'text')
+    .addColumn('name', 'text')
+    .addColumn('maxim', 'text')
+    .addColumn('concept', 'text')
+    .addColumn('updatedAt', 'text')
     .execute();
 
   const insertEnv = async (row: {
@@ -417,5 +473,178 @@ describe('ClintPullWorker.tickOnce', () => {
     rowsAfterFailure.forEach((r: any) => {
       expect(r.lastSeen).toBe(initialLastSeen);
     });
+  });
+
+  it('caches the studio BrandSheet into studio_brand', async () => {
+    const agent = await startMockAgent([]);
+    const brand = await startMockBrand(BRAND_OK);
+    server = agent.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-brand',
+      subdomain: 'clear-yak-548722dc',
+      // Sole enabled CLINT service → isApex → brand is pulled.
+      services: JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'vetra-agent' }]),
+    });
+
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      buildAgentUrl: () => `http://127.0.0.1:${agent.port}/_proxy/routes`,
+      buildBrandUrl: () => `http://127.0.0.1:${brand.port}/switchboard/graphql`,
+    });
+    await worker.tickOnce();
+    brand.server.close();
+
+    const rows: any[] = await obsDb.selectFrom('studio_brand').selectAll().execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].documentId).toBe('doc-brand');
+    expect(rows[0].name).toBe('Hotel Breakfast App');
+    expect(rows[0].maxim).toBe('Plan the perfect morning service');
+    expect(rows[0].concept).toBe('A longer concept blurb');
+  });
+
+  it('does NOT clobber a cached brand on a waking/empty response', async () => {
+    const agent = await startMockAgent([]);
+    // Studio hibernated → switchboard returns the wake proxy, not GraphQL.
+    const brand = await startMockBrand({ status: 'waking', host: 'clear-yak-548722dc.vetra.io' });
+    server = agent.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-brand',
+      subdomain: 'clear-yak-548722dc',
+      services: JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'vetra-agent' }]),
+    });
+    // Seed an existing cached brand.
+    await obsDb
+      .insertInto('studio_brand')
+      .values({
+        documentId: 'doc-brand',
+        subdomain: 'clear-yak-548722dc',
+        name: 'Existing Name',
+        maxim: 'kept',
+        concept: null,
+        updatedAt: '2026-07-01T00:00:00Z',
+      })
+      .execute();
+
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      buildAgentUrl: () => `http://127.0.0.1:${agent.port}/_proxy/routes`,
+      buildBrandUrl: () => `http://127.0.0.1:${brand.port}/switchboard/graphql`,
+    });
+    await worker.tickOnce();
+    brand.server.close();
+
+    const rows: any[] = await obsDb.selectFrom('studio_brand').selectAll().execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Existing Name'); // untouched
+    expect(rows[0].updatedAt).toBe('2026-07-01T00:00:00Z');
+  });
+});
+
+describe('ClintPullWorker CLINT service-status advance', () => {
+  let server: Server | null = null;
+  afterEach(() => {
+    if (server) server.close();
+    server = null;
+  });
+
+  const websiteRoute = {
+    prefix: '/',
+    upstream: 'http://localhost:27370/',
+    ws: false,
+    source: 'studio-announce',
+  };
+
+  it('marks a PROVISIONING CLINT service ACTIVE once its website endpoint is discovered', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-prov',
+      subdomain: 'green-mole-e8',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'PROVISIONING' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).toHaveBeenCalledWith('doc-prov', 'SET_SERVICE_STATUS', {
+      type: 'CLINT',
+      status: 'ACTIVE',
+    });
+  });
+
+  it('does not re-dispatch when the CLINT service is already ACTIVE (idempotent)', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-active',
+      subdomain: 'blue-swan-fa',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'ACTIVE' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not mark ACTIVE when only API endpoints are present (no website yet)', async () => {
+    const mock = await startMockAgent([
+      {
+        prefix: '/switchboard/graphql',
+        upstream: 'http://localhost:35940/graphql',
+        ws: false,
+        source: 'switchboard',
+      },
+    ]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-apionly',
+      subdomain: 'cool-goat-39',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'PROVISIONING' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

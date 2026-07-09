@@ -24,6 +24,7 @@ function studio(over: Partial<StudioRow> = {}): StudioRow {
     owner: "0xabc",
     poolState: null,
     tenantId: "tall-duck-ab12-9f8e",
+    services: JSON.stringify([{ type: "CLINT", prefix: "agent", enabled: true }]),
     ...over,
   };
 }

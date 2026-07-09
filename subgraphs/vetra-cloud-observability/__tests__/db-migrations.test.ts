@@ -39,6 +39,25 @@ describe("db migrations", () => {
     expect(eventRows).toEqual([]);
   });
 
+  it("creates studio_brand and round-trips a row", async () => {
+    await db
+      .insertInto("studio_brand")
+      .values({
+        documentId: "env-1",
+        subdomain: "clear-yak-548722dc",
+        name: "Hotel Breakfast App",
+        maxim: "Plan the perfect morning service",
+        concept: "A longer concept blurb",
+        updatedAt: "2026-07-06T00:00:00Z",
+      })
+      .execute();
+
+    const rows = await db.selectFrom("studio_brand").selectAll().execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Hotel Breakfast App");
+    expect(rows[0].maxim).toBe("Plan the perfect morning service");
+  });
+
   it("inserts and selects environment_status", async () => {
     await db
       .insertInto("environment_status")

@@ -165,6 +165,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           envDb,
           obsDb: db,
           logger: childLogger(["observability", "clint-pull-worker"]),
+          // Advance a CLINT service PROVISIONING → ACTIVE once its website
+          // endpoint is discovered, so the cold-create (BYOK) provisioning UI
+          // completes instead of spinning forever.
+          dispatch,
         });
         this.clintPullWorker.start();
         console.info("[observability] ClintPullWorker started");

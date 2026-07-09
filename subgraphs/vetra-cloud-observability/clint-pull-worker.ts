@@ -9,6 +9,8 @@ export type ClintServiceTuple = {
   subdomain: string;
   /** Served at the env apex (`<subdomain>.vetra.io`) — a sole-CLINT Studio. */
   isApex: boolean;
+  /** Current per-service status from the read-model (e.g. PROVISIONING/ACTIVE). */
+  status?: string | null;
 };
 
 export type ClintPullWorkerConfig = {
@@ -26,8 +28,25 @@ export type ClintPullWorkerConfig = {
    * Overridable for tests.
    */
   buildAgentUrl?: (service: ClintServiceTuple) => string;
+  /**
+   * Maps a studio service to its switchboard GraphQL URL (for the BrandSheet
+   * pull). Defaults to `https://<agent-host>/switchboard/graphql`. Overridable
+   * for tests (which serve a mock over http).
+   */
+  buildBrandUrl?: (service: ClintServiceTuple) => string;
   /** Per-fetch timeout. Defaults to 5000ms. */
   fetchTimeoutMs?: number;
+  /**
+   * Dispatch a document action on an env doc (mirrors the processor's own
+   * `reactorClient.execute` helper). Used to advance a CLINT service
+   * PROVISIONING → ACTIVE once its website endpoint is live. Optional: when
+   * absent (e.g. tests that don't exercise it) the worker only does discovery.
+   */
+  dispatch?: (
+    documentId: string,
+    type: string,
+    input: Record<string, unknown>,
+  ) => Promise<void>;
 };
 
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -67,6 +86,7 @@ type ParsedService = {
   type?: string;
   enabled?: boolean;
   prefix?: string;
+  status?: string;
 };
 
 /** Column shape of the observability `clint_runtime_endpoints` table. */
@@ -79,6 +99,16 @@ type ClintRuntimeEndpointRow = {
   port: string;
   status: string;
   lastSeen: string;
+};
+
+/** Column shape of the observability `studio_brand` table. */
+type StudioBrandRow = {
+  documentId: string;
+  subdomain: string | null;
+  name: string | null;
+  maxim: string | null;
+  concept: string | null;
+  updatedAt: string;
 };
 
 function parseClintServices(servicesJson: string | null): ParsedService[] {
@@ -129,15 +159,45 @@ function portFromUpstream(upstream: string): string {
   }
 }
 
+/** BrandSheet product identity fetched from a studio's own switchboard. */
+const BRAND_QUERY =
+  "query { BrandSheet { documents { items { state { global { name maxim concept } } } } } }";
+
+type ParsedBrand = { name: string; maxim: string | null; concept: string | null };
+
+/**
+ * Parse a studio switchboard's BrandSheet response. Returns null for anything
+ * that isn't a real, named BrandSheet — an empty `items`, a hibernated studio's
+ * `{"status":"waking"}` body, or a malformed shape — so callers never clobber a
+ * cached brand with a blank.
+ */
+function parseBrand(body: unknown): ParsedBrand | null {
+  const items = (body as { data?: { BrandSheet?: { documents?: { items?: unknown } } } })?.data
+    ?.BrandSheet?.documents?.items;
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const g = (items[0] as { state?: { global?: { name?: unknown; maxim?: unknown; concept?: unknown } } })
+    ?.state?.global;
+  if (!g || typeof g.name !== "string" || g.name.trim() === "") return null;
+  return {
+    name: g.name,
+    maxim: typeof g.maxim === "string" ? g.maxim : null,
+    concept: typeof g.concept === "string" ? g.concept : null,
+  };
+}
+
 export class ClintPullWorker {
   private readonly config: ClintPullWorkerConfig;
   private timer: NodeJS.Timeout | null = null;
   private readonly buildAgentUrl: (svc: ClintServiceTuple) => string;
+  private readonly buildBrandUrl: (svc: ClintServiceTuple) => string;
   private readonly fetchTimeoutMs: number;
 
   constructor(config: ClintPullWorkerConfig) {
     this.config = config;
     this.buildAgentUrl = config.buildAgentUrl ?? defaultBuildAgentUrl;
+    this.buildBrandUrl =
+      config.buildBrandUrl ??
+      ((svc) => `https://${new URL(this.buildAgentUrl(svc)).host}/switchboard/graphql`);
     this.fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   }
 
@@ -166,8 +226,65 @@ export class ClintPullWorker {
     // (volume scales O(tenant-count)). See trace-suppress.ts.
     await withTracingSuppressed(async () => {
       const tuples = await this.listClintServices();
-      await Promise.all(tuples.map((t) => this.pullOne(t)));
+      await Promise.all(
+        tuples.map((t) =>
+          Promise.all([
+            this.pullOne(t),
+            // A Studio's BrandSheet lives on its own (apex) switchboard.
+            t.isApex ? this.pullBrand(t) : Promise.resolve(),
+          ]),
+        ),
+      );
     });
+  }
+
+  /**
+   * Fetch the studio's BrandSheet and cache name/maxim/concept in `studio_brand`
+   * so /user/products shows the real product name even after the studio sleeps.
+   * No-clobber: an empty/waking/failed response leaves the last cached row.
+   */
+  private async pullBrand(svc: ClintServiceTuple): Promise<void> {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
+    try {
+      const res = await fetch(this.buildBrandUrl(svc), {
+        method: "POST",
+        signal: ac.signal,
+        headers: {
+          "content-type": "application/json",
+          "user-agent": OBSERVABILITY_PULL_USER_AGENT,
+        },
+        body: JSON.stringify({ query: BRAND_QUERY }),
+      });
+      if (!res.ok) return; // keep last cached
+      const brand = parseBrand((await res.json()) as unknown);
+      if (!brand) return; // empty / waking / malformed → keep last cached
+      const now = new Date().toISOString();
+      await this.config.obsDb
+        .insertInto("studio_brand")
+        .values({
+          documentId: svc.documentId,
+          subdomain: svc.subdomain,
+          name: brand.name,
+          maxim: brand.maxim,
+          concept: brand.concept,
+          updatedAt: now,
+        })
+        .onConflict((oc: OnConflictBuilder<{ studio_brand: StudioBrandRow }, "studio_brand">) =>
+          oc.column("documentId").doUpdateSet({
+            subdomain: svc.subdomain,
+            name: brand.name,
+            maxim: brand.maxim,
+            concept: brand.concept,
+            updatedAt: now,
+          }),
+        )
+        .execute();
+    } catch {
+      // keep last cached
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   private async listClintServices(): Promise<ClintServiceTuple[]> {
@@ -199,6 +316,7 @@ export class ClintPullWorker {
             prefix: svc.prefix,
             subdomain: row.subdomain,
             isApex: enabledCount === 1,
+            status: svc.status ?? null,
           });
         }
       }
@@ -227,6 +345,7 @@ export class ClintPullWorker {
       const raw = Array.isArray(body) ? body : [];
       const routes = raw.filter(isProxyRoute);
       await this.upsert(svc, routes);
+      await this.maybeMarkServiceActive(svc, routes);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.config.logger.warn(
@@ -234,6 +353,43 @@ export class ClintPullWorker {
       );
     } finally {
       clearTimeout(t);
+    }
+  }
+
+  /**
+   * Advance a CLINT service PROVISIONING → ACTIVE the first time its live
+   * website endpoint is discovered. The env-doc's per-service status is what the
+   * post-creation "provisioning" screen polls, and nothing else advances it — so
+   * a cold-created (BYOK) studio would otherwise spin on "provisioning" forever
+   * even though its agent is serving (warm-claimed studios sidestep this because
+   * the claim redirects straight in). Guarded on the current status so it fires
+   * exactly once, not on every 15s tick. Never throws: a transient dispatch
+   * failure just retries next tick.
+   */
+  private async maybeMarkServiceActive(
+    svc: ClintServiceTuple,
+    routes: ProxyRoute[],
+  ): Promise<void> {
+    if (!this.config.dispatch) return;
+    if (svc.status === "ACTIVE") return;
+    const hasWebsite = routes.some(
+      (r) => endpointTypeFromPrefix(r.prefix) === "website",
+    );
+    if (!hasWebsite) return;
+    try {
+      await this.config.dispatch(svc.documentId, "SET_SERVICE_STATUS", {
+        type: "CLINT",
+        status: "ACTIVE",
+      });
+      this.config.logger.info(
+        `[clint-pull-worker] ${svc.documentId} ${svc.prefix} CLINT → ACTIVE (website endpoint live)`,
+      );
+    } catch (err) {
+      this.config.logger.warn(
+        `[clint-pull-worker] ${svc.documentId} failed to mark CLINT ACTIVE: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 

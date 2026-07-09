@@ -98,7 +98,27 @@ export type EnvRow = {
   poolState?: string | null;
   tenantId?: string | null;
   subdomain?: string | null;
+  /** JSON string of the env's services (read-model `environments.services`). */
+  services?: string | null;
 };
+
+/**
+ * True if the env runs an enabled CLINT (studio) agent. Housekeeping only sleeps
+ * CLINT studios, which are served at the apex host `<subdomain>.vetra.io` — the
+ * host the idle detector checks. CONNECT/SWITCHBOARD apps serve at
+ * `connect.*`/`switchboard.*` sub-hosts, so the apex is always empty for them and
+ * the idle signal would (wrongly) read every such env as idle → slept. Scoping
+ * to CLINT is what keeps the detector off non-studio envs.
+ */
+export function hasClintService(services: string | null | undefined): boolean {
+  if (!services) return false;
+  try {
+    const parsed = JSON.parse(services) as Array<{ type?: string; enabled?: boolean }>;
+    return Array.isArray(parsed) && parsed.some((s) => s?.type === "CLINT" && s?.enabled === true);
+  } catch {
+    return false;
+  }
+}
 
 const TRANSITIONAL_STATUSES = new Set([
   "DEPLOYING",
@@ -163,6 +183,10 @@ export function isEligibleForSleep(
   if (!row.owner) return false;
   if (!row.subdomain) return false;
   if (row.poolState != null && row.poolState !== "CLAIMED") return false;
+  // Only sleep CLINT studios (apex-served). CONNECT/SWITCHBOARD apps serve at
+  // sub-hosts, so the apex the detector checks is always empty → they'd be
+  // wrongly slept every scan. See hasClintService.
+  if (!hasClintService(row.services)) return false;
 
   const never = new Set<string>([
     ...(opts.neverSleepTenants ?? DEFAULT_NEVER_SLEEP_TENANTS),
