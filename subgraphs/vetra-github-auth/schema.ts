@@ -93,7 +93,10 @@ export const schema: DocumentNode = gql`
     the caller's account: a user token can only act on what the installation can
     access, so repo creation 403s without one. For selected-repositories
     installs the new repo is added to the installation automatically. Poll until
-    it returns connected.
+    it returns connected. On APP_NOT_INSTALLED, KEEP polling with the same
+    deviceCode: the backend briefly holds the exchanged token in memory
+    (~20 min, never exposed) and completes the connect on the first poll after
+    the installation appears.
     Errors: AUTHORIZATION_PENDING or SLOW_DOWN while the user has not authorized
     yet (keep polling); DEVICE_CODE_EXPIRED if the code timed out; ACCESS_DENIED
     if the user declined; APP_NOT_INSTALLED if the app is not installed on the

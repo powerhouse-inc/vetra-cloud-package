@@ -28,6 +28,45 @@ function ghError(code: string): GraphQLError {
   return new GraphQLError(code, { extensions: { code } });
 }
 
+/**
+ * Device-flow tokens by device code, held briefly so connect polling survives
+ * the app-install wait (device codes are single-use — GitHub yields the token
+ * exactly once). In-process only; never returned to the client or persisted.
+ * Entries die on successful connect or TTL.
+ */
+const DEVICE_TOKEN_TTL_MS = 20 * 60 * 1000;
+const DEVICE_TOKEN_CACHE_MAX = 500;
+const deviceTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function takeValidCachedToken(deviceCode: string): string | null {
+  const entry = deviceTokenCache.get(deviceCode);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    deviceTokenCache.delete(deviceCode);
+    return null;
+  }
+  return entry.token;
+}
+
+function cacheDeviceToken(deviceCode: string, token: string): void {
+  for (const [key, entry] of deviceTokenCache) {
+    if (entry.expiresAt <= Date.now()) deviceTokenCache.delete(key);
+  }
+  if (deviceTokenCache.size >= DEVICE_TOKEN_CACHE_MAX) {
+    const oldest = deviceTokenCache.keys().next().value;
+    if (oldest !== undefined) deviceTokenCache.delete(oldest);
+  }
+  deviceTokenCache.set(deviceCode, {
+    token,
+    expiresAt: Date.now() + DEVICE_TOKEN_TTL_MS,
+  });
+}
+
+/** Test-only: reset the device-token cache between test cases. */
+export function clearDeviceTokenCache(): void {
+  deviceTokenCache.clear();
+}
+
 /** Subset of the reactor-api resolver context this subgraph relies on. */
 type AuthContext = {
   user?: { address: string; chainId: number; networkId: string };
@@ -153,26 +192,34 @@ export function createResolvers(
       ): Promise<ConnectionStatusView> => {
         const did = requireDid(ctx);
 
-        const exchange = await exchangeDeviceCode(deviceCode);
-        if (exchange.status !== "authorized") {
-          const codes = {
-            pending: "AUTHORIZATION_PENDING",
-            slowDown: "SLOW_DOWN",
-            expired: "DEVICE_CODE_EXPIRED",
-            denied: "ACCESS_DENIED",
-          } as const;
-          throw ghError(codes[exchange.status]);
-        }
-        const userAccessToken = exchange.accessToken;
+        // A cached token means an earlier poll of this same deviceCode already
+        // exchanged it (the code is single-use); reuse it so polling can ride
+        // through the APP_NOT_INSTALLED window below.
+        let userAccessToken = takeValidCachedToken(deviceCode);
+        if (!userAccessToken) {
+          const exchange = await exchangeDeviceCode(deviceCode);
+          if (exchange.status !== "authorized") {
+            const codes = {
+              pending: "AUTHORIZATION_PENDING",
+              slowDown: "SLOW_DOWN",
+              expired: "DEVICE_CODE_EXPIRED",
+              denied: "ACCESS_DENIED",
+            } as const;
+            throw ghError(codes[exchange.status]);
+          }
+          userAccessToken = exchange.accessToken;
+          cacheDeviceToken(deviceCode, userAccessToken);
 
-        // Identity link (did → github login): captured here because the device
-        // exchange is the only moment the caller's GitHub identity is visible
-        // to the backend. Best-effort — a failure must not break the connect.
-        try {
-          const ghUser = await fetchGithubUser(userAccessToken);
-          await saveIdentity(db, did, ghUser.login, String(ghUser.id));
-        } catch {
-          /* best-effort */
+          // Identity link (did → github login): captured here because the
+          // device exchange is the only moment the caller's GitHub identity is
+          // visible to the backend. Best-effort — a failure must not break the
+          // connect.
+          try {
+            const ghUser = await fetchGithubUser(userAccessToken);
+            await saveIdentity(db, did, ghUser.login, String(ghUser.id));
+          } catch {
+            /* best-effort */
+          }
         }
 
         // A user token can only act on what the app's installation can access,
@@ -206,6 +253,7 @@ export function createResolvers(
         }
 
         const connection = await saveConnection(db, did, environmentId, repo.fullName);
+        deviceTokenCache.delete(deviceCode);
         return toStatus(connection);
       },
     },

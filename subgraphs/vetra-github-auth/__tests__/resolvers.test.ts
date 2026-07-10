@@ -42,7 +42,7 @@ import {
   type DeviceFlowExchange,
 } from "../github-app.js";
 import { getIdentity, saveIdentity } from "../db/identities.js";
-import { createResolvers } from "../resolvers.js";
+import { clearDeviceTokenCache, createResolvers } from "../resolvers.js";
 
 const startDeviceFlowMock = vi.mocked(startDeviceFlow);
 const exchangeDeviceCodeMock = vi.mocked(exchangeDeviceCode);
@@ -83,6 +83,7 @@ beforeEach(async () => {
   await up(db);
   resolvers = createResolvers(db);
   vi.clearAllMocks();
+  clearDeviceTokenCache();
 });
 
 afterEach(async () => {
@@ -328,6 +329,112 @@ describe("connectGithub", () => {
       githubLogin: "alice",
       githubUserId: "7",
     });
+  });
+
+  it("keeps polling through the install wait using the cached token (exchange runs once)", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
+    findUserInstallationMock.mockResolvedValue(null);
+
+    // First poll: authorized but app not installed — device code is consumed,
+    // token cached.
+    await expect(
+      connectGithub(
+        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+        ctx,
+      ),
+    ).rejects.toThrow("APP_NOT_INSTALLED");
+
+    // User installs; the next poll of the SAME device code must complete
+    // without a second exchange.
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
+    createRepoMock.mockResolvedValue({
+      id: 9001,
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+
+    const status = await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    expect(status.connected).toBe(true);
+    expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(1);
+    expect(findUserInstallationMock.mock.calls.every((c) => c[0] === "ghu_token")).toBe(true);
+  });
+
+  it("drops the cached token after a successful connect", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
+    createRepoMock.mockResolvedValue({
+      id: 9001,
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+
+    await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    // The cache entry is gone: another call with the same code hits the (now
+    // spent) exchange again.
+    exchangeDeviceCodeMock.mockResolvedValue({ status: "expired" });
+    await expect(
+      connectGithub(
+        { deviceCode: "dev_code", repoName: "again", environmentId: ENV },
+        ctx,
+      ),
+    ).rejects.toThrow("DEVICE_CODE_EXPIRED");
+    expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores an expired cache entry", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
+    findUserInstallationMock.mockResolvedValue(null);
+
+    const realNow = Date.now;
+    const t0 = realNow();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(t0);
+    try {
+      await expect(
+        connectGithub(
+          { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+          ctx,
+        ),
+      ).rejects.toThrow("APP_NOT_INSTALLED");
+
+      // 21 minutes later the entry is stale → the resolver exchanges again.
+      nowSpy.mockReturnValue(t0 + 21 * 60 * 1000);
+      exchangeDeviceCodeMock.mockResolvedValue({ status: "expired" });
+      await expect(
+        connectGithub(
+          { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+          ctx,
+        ),
+      ).rejects.toThrow("DEVICE_CODE_EXPIRED");
+      expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("still connects when identity capture fails", async () => {
