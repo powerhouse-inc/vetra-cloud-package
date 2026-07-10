@@ -112,6 +112,43 @@ function toStatus(connection: GithubConnection | null): ConnectionStatusView {
 export function createResolvers(
   db: Kysely<VetraGithubAuthDB>,
 ): Record<string, any> {
+  /**
+   * The user token for a device code: from the in-process cache when an
+   * earlier poll already exchanged it (codes are single-use), else via a
+   * fresh exchange — which also captures the caller's identity link.
+   */
+  async function resolveDeviceToken(
+    did: string,
+    deviceCode: string,
+  ): Promise<string> {
+    const cached = takeValidCachedToken(deviceCode);
+    if (cached) return cached;
+
+    const exchange = await exchangeDeviceCode(deviceCode);
+    if (exchange.status !== "authorized") {
+      const codes = {
+        pending: "AUTHORIZATION_PENDING",
+        slowDown: "SLOW_DOWN",
+        expired: "DEVICE_CODE_EXPIRED",
+        denied: "ACCESS_DENIED",
+      } as const;
+      throw ghError(codes[exchange.status]);
+    }
+    const token = exchange.accessToken;
+    cacheDeviceToken(deviceCode, token);
+
+    // Identity link (did → github login): captured here because the device
+    // exchange is the only moment the caller's GitHub identity is visible to
+    // the backend. Best-effort — a failure must not break the flow.
+    try {
+      const ghUser = await fetchGithubUser(token);
+      await saveIdentity(db, did, ghUser.login, String(ghUser.id));
+    } catch {
+      /* best-effort */
+    }
+    return token;
+  }
+
   return {
     Query: {
       VetraGithubAuth: () => ({}),
@@ -181,6 +218,21 @@ export function createResolvers(
         return startDeviceFlow();
       },
 
+      authorizeGithub: async (
+        _p: unknown,
+        { deviceCode }: { deviceCode: string },
+        ctx: AuthContext,
+      ): Promise<{ githubLogin: string | null; appInstalled: boolean }> => {
+        const did = requireDid(ctx);
+        const userAccessToken = await resolveDeviceToken(did, deviceCode);
+        const installation = await findUserInstallation(userAccessToken);
+        const identity = await getIdentity(db, did);
+        return {
+          githubLogin: identity?.githubLogin ?? null,
+          appInstalled: installation !== null,
+        };
+      },
+
       connectGithub: async (
         _p: unknown,
         {
@@ -191,36 +243,7 @@ export function createResolvers(
         ctx: AuthContext,
       ): Promise<ConnectionStatusView> => {
         const did = requireDid(ctx);
-
-        // A cached token means an earlier poll of this same deviceCode already
-        // exchanged it (the code is single-use); reuse it so polling can ride
-        // through the APP_NOT_INSTALLED window below.
-        let userAccessToken = takeValidCachedToken(deviceCode);
-        if (!userAccessToken) {
-          const exchange = await exchangeDeviceCode(deviceCode);
-          if (exchange.status !== "authorized") {
-            const codes = {
-              pending: "AUTHORIZATION_PENDING",
-              slowDown: "SLOW_DOWN",
-              expired: "DEVICE_CODE_EXPIRED",
-              denied: "ACCESS_DENIED",
-            } as const;
-            throw ghError(codes[exchange.status]);
-          }
-          userAccessToken = exchange.accessToken;
-          cacheDeviceToken(deviceCode, userAccessToken);
-
-          // Identity link (did → github login): captured here because the
-          // device exchange is the only moment the caller's GitHub identity is
-          // visible to the backend. Best-effort — a failure must not break the
-          // connect.
-          try {
-            const ghUser = await fetchGithubUser(userAccessToken);
-            await saveIdentity(db, did, ghUser.login, String(ghUser.id));
-          } catch {
-            /* best-effort */
-          }
-        }
+        const userAccessToken = await resolveDeviceToken(did, deviceCode);
 
         // A user token can only act on what the app's installation can access,
         // so repo creation is impossible until the app is installed somewhere

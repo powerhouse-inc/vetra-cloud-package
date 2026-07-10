@@ -76,6 +76,15 @@ export const schema: DocumentNode = gql`
     getPushToken(environmentId: String!): GithubPushToken!
   }
 
+  """
+  The outcome of one authorizeGithub poll: who the caller is on GitHub (null if
+  the identity lookup failed) and whether the app is installed for them.
+  """
+  type GithubAuthorization {
+    githubLogin: String
+    appInstalled: Boolean!
+  }
+
   type VetraGithubAuthMutations {
     """
     Begin GitHub App device authorization for the authenticated caller. The
@@ -84,6 +93,17 @@ export const schema: DocumentNode = gql`
     with. Errors: UNAUTHENTICATED if no caller.
     """
     startGithubDeviceFlow: GithubDeviceFlow!
+    """
+    One poll of device authorization: exchanges the code on first success (the
+    token is cached in memory, ~20 min), captures the caller's identity link,
+    and reports whether the app is installed for them. Poll until it stops
+    throwing AUTHORIZATION_PENDING; then, while appInstalled is false, keep
+    polling — the install check runs fresh each time. Call connectGithub with
+    the SAME deviceCode afterwards to create the repo. Errors:
+    AUTHORIZATION_PENDING, SLOW_DOWN, DEVICE_CODE_EXPIRED, ACCESS_DENIED,
+    UNAUTHENTICATED.
+    """
+    authorizeGithub(deviceCode: String!): GithubAuthorization!
     """
     Complete onboarding for the authenticated caller from a deviceCode obtained
     via startGithubDeviceFlow, binding the result to environmentId (one repo per
