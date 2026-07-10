@@ -15,7 +15,9 @@ vi.mock("../github-app.js", async (importActual) => {
     ...actual,
     startDeviceFlow: vi.fn(),
     exchangeDeviceCode: vi.fn(),
+    fetchGithubUser: vi.fn(),
     findRepoInstallationId: vi.fn(),
+    findUserAccountInstallation: vi.fn(),
     findUserInstallation: vi.fn(),
     addRepoToInstallation: vi.fn(),
     findUserRepo: vi.fn(),
@@ -28,7 +30,9 @@ import {
   addRepoToInstallation,
   createRepo,
   exchangeDeviceCode,
+  fetchGithubUser,
   findRepoInstallationId,
+  findUserAccountInstallation,
   findUserInstallation,
   findUserRepo,
   mintInstallationToken,
@@ -37,11 +41,14 @@ import {
   RepoAlreadyExistsError,
   type DeviceFlowExchange,
 } from "../github-app.js";
+import { getIdentity, saveIdentity } from "../db/identities.js";
 import { createResolvers } from "../resolvers.js";
 
 const startDeviceFlowMock = vi.mocked(startDeviceFlow);
 const exchangeDeviceCodeMock = vi.mocked(exchangeDeviceCode);
+const fetchGithubUserMock = vi.mocked(fetchGithubUser);
 const findRepoInstallationIdMock = vi.mocked(findRepoInstallationId);
+const findUserAccountInstallationMock = vi.mocked(findUserAccountInstallation);
 const findUserInstallationMock = vi.mocked(findUserInstallation);
 const addRepoToInstallationMock = vi.mocked(addRepoToInstallation);
 const findUserRepoMock = vi.mocked(findUserRepo);
@@ -67,6 +74,8 @@ const getPushToken = (args: { environmentId: string }, c: unknown) =>
   resolvers.VetraGithubAuthQueries.getPushToken(null, args, c);
 const myGithubConnection = (args: { environmentId: string }, c: unknown) =>
   resolvers.VetraGithubAuthQueries.myGithubConnection(null, args, c);
+const myGithubStatus = (args: { environmentId: string }, c: unknown) =>
+  resolvers.VetraGithubAuthQueries.myGithubStatus(null, args, c);
 
 beforeEach(async () => {
   const pglite = new PGlite();
@@ -298,6 +307,106 @@ describe("connectGithub", () => {
     ).rejects.toThrow("UNAUTHENTICATED");
 
     expect(exchangeDeviceCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("persists the caller's GitHub identity on a successful exchange, even when the app is not installed", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
+    findUserInstallationMock.mockResolvedValue(null);
+
+    await expect(
+      connectGithub(
+        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+        ctx,
+      ),
+    ).rejects.toThrow("APP_NOT_INSTALLED");
+
+    expect(await getIdentity(db, DID)).toMatchObject({
+      githubLogin: "alice",
+      githubUserId: "7",
+    });
+  });
+
+  it("still connects when identity capture fails", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockRejectedValue(new Error("github hiccup"));
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
+    createRepoMock.mockResolvedValue({
+      id: 9001,
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+
+    const status = await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    expect(status.connected).toBe(true);
+    expect(await getIdentity(db, DID)).toBeNull();
+  });
+});
+
+describe("myGithubStatus", () => {
+  it("reports nothing for a caller who never authorized", async () => {
+    expect(await myGithubStatus({ environmentId: ENV }, ctx)).toEqual({
+      connected: false,
+      connection: null,
+      githubLogin: null,
+      appInstalled: false,
+    });
+    expect(findUserAccountInstallationMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves install state live from the identity link", async () => {
+    await saveIdentity(db, DID, "alice", "7");
+    findUserAccountInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "selected",
+    });
+
+    const status = await myGithubStatus({ environmentId: ENV }, ctx);
+
+    expect(status).toMatchObject({ githubLogin: "alice", appInstalled: true });
+    expect(findUserAccountInstallationMock).toHaveBeenCalledWith("alice");
+  });
+
+  it("reports not installed when GitHub has no installation for the account", async () => {
+    await saveIdentity(db, DID, "alice", "7");
+    findUserAccountInstallationMock.mockResolvedValue(null);
+
+    const status = await myGithubStatus({ environmentId: ENV }, ctx);
+
+    expect(status).toMatchObject({ githubLogin: "alice", appInstalled: false });
+  });
+
+  it("includes the environment's connection when one exists", async () => {
+    await saveIdentity(db, DID, "alice", "7");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    findUserAccountInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
+
+    const status = await myGithubStatus({ environmentId: ENV }, ctx);
+
+    expect(status.connected).toBe(true);
+    expect(status.connection).toMatchObject({ repoFullName: "alice/widget" });
+  });
+
+  it("requires an authenticated caller", async () => {
+    await expect(myGithubStatus({ environmentId: ENV }, anonCtx)).rejects.toThrow(
+      "UNAUTHENTICATED",
+    );
   });
 });
 

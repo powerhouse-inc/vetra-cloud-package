@@ -22,6 +22,21 @@ export const schema: DocumentNode = gql`
   }
 
   """
+  Everything the deploy UI needs to route the GitHub flow: the environment's
+  connection (if any), the caller's linked GitHub login (captured once during
+  device authorization), and whether the app is currently installed on that
+  account. appInstalled is resolved live from GitHub at query time — never
+  stored — so uninstalls are reflected immediately. githubLogin is null until
+  the caller has authorized at least once; appInstalled is false then too.
+  """
+  type GithubStatus {
+    connected: Boolean!
+    connection: GithubConnection
+    githubLogin: String
+    appInstalled: Boolean!
+  }
+
+  """
   A short-lived installation access token for Git push/pull. ~1h lifetime;
   re-fetch on expiry. Never persisted server-side beyond its in-process cache.
   """
@@ -46,6 +61,12 @@ export const schema: DocumentNode = gql`
   type VetraGithubAuthQueries {
     "The caller's GitHub connection for the given environment."
     myGithubConnection(environmentId: String!): GithubConnectionStatus!
+    """
+    Connection, identity link, and live install state for the caller — lets the
+    UI skip the install step for users who already installed the app.
+    Errors: UNAUTHENTICATED if no caller.
+    """
+    myGithubStatus(environmentId: String!): GithubStatus!
     """
     Mint a push token for the repo bound to environmentId. The app installation
     on the repo is resolved at call time. Errors: NOT_CONNECTED if no connection

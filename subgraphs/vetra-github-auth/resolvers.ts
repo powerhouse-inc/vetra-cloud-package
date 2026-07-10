@@ -6,11 +6,14 @@ import {
   saveConnection,
   type GithubConnection,
 } from "./db/installations.js";
+import { getIdentity, saveIdentity } from "./db/identities.js";
 import {
   addRepoToInstallation,
   createRepo,
   exchangeDeviceCode,
+  fetchGithubUser,
   findRepoInstallationId,
+  findUserAccountInstallation,
   findUserInstallation,
   findUserRepo,
   mintInstallationToken,
@@ -89,6 +92,26 @@ export function createResolvers(
         return toStatus(connection);
       },
 
+      myGithubStatus: async (
+        _p: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AuthContext,
+      ): Promise<
+        ConnectionStatusView & { githubLogin: string | null; appInstalled: boolean }
+      > => {
+        const did = requireDid(ctx);
+        const connection = await getConnection(db, did, environmentId);
+        const identity = await getIdentity(db, did);
+        const appInstalled = identity
+          ? (await findUserAccountInstallation(identity.githubLogin)) !== null
+          : false;
+        return {
+          ...toStatus(connection),
+          githubLogin: identity?.githubLogin ?? null,
+          appInstalled,
+        };
+      },
+
       getPushToken: async (
         _p: unknown,
         { environmentId }: { environmentId: string },
@@ -141,6 +164,16 @@ export function createResolvers(
           throw ghError(codes[exchange.status]);
         }
         const userAccessToken = exchange.accessToken;
+
+        // Identity link (did → github login): captured here because the device
+        // exchange is the only moment the caller's GitHub identity is visible
+        // to the backend. Best-effort — a failure must not break the connect.
+        try {
+          const ghUser = await fetchGithubUser(userAccessToken);
+          await saveIdentity(db, did, ghUser.login, String(ghUser.id));
+        } catch {
+          /* best-effort */
+        }
 
         // A user token can only act on what the app's installation can access,
         // so repo creation is impossible until the app is installed somewhere
