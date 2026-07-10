@@ -68,12 +68,16 @@ export const schema: DocumentNode = gql`
     via startGithubDeviceFlow, binding the result to environmentId (one repo per
     environment). The backend exchanges the code for a user access token
     server-side (never exposed to the client or stored) and creates a blank
-    private repo in the caller's account. The app does not need to be installed
-    yet — that is required later, before pushing. Poll until it returns connected.
+    private repo in the caller's account. The app MUST already be installed on
+    the caller's account: a user token can only act on what the installation can
+    access, so repo creation 403s without one. For selected-repositories
+    installs the new repo is added to the installation automatically. Poll until
+    it returns connected.
     Errors: AUTHORIZATION_PENDING or SLOW_DOWN while the user has not authorized
     yet (keep polling); DEVICE_CODE_EXPIRED if the code timed out; ACCESS_DENIED
-    if the user declined; REPO_ALREADY_EXISTS if the name is taken;
-    UNAUTHENTICATED if no caller.
+    if the user declined; APP_NOT_INSTALLED if the app is not installed on the
+    caller's account; REPO_ALREADY_EXISTS if the name is taken; UNAUTHENTICATED
+    if no caller.
     """
     connectGithub(
       deviceCode: String!
