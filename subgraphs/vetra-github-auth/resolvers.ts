@@ -6,11 +6,14 @@ import {
   saveConnection,
   type GithubConnection,
 } from "./db/installations.js";
+import { getIdentity, saveIdentity } from "./db/identities.js";
 import {
   addRepoToInstallation,
   createRepo,
   exchangeDeviceCode,
+  fetchGithubUser,
   findRepoInstallationId,
+  findUserAccountInstallation,
   findUserInstallation,
   findUserRepo,
   mintInstallationToken,
@@ -23,6 +26,45 @@ import {
 /** A GraphQLError carrying the error code in `extensions.code` and `message`. */
 function ghError(code: string): GraphQLError {
   return new GraphQLError(code, { extensions: { code } });
+}
+
+/**
+ * Device-flow tokens by device code, held briefly so connect polling survives
+ * the app-install wait (device codes are single-use — GitHub yields the token
+ * exactly once). In-process only; never returned to the client or persisted.
+ * Entries die on successful connect or TTL.
+ */
+const DEVICE_TOKEN_TTL_MS = 20 * 60 * 1000;
+const DEVICE_TOKEN_CACHE_MAX = 500;
+const deviceTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function takeValidCachedToken(deviceCode: string): string | null {
+  const entry = deviceTokenCache.get(deviceCode);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    deviceTokenCache.delete(deviceCode);
+    return null;
+  }
+  return entry.token;
+}
+
+function cacheDeviceToken(deviceCode: string, token: string): void {
+  for (const [key, entry] of deviceTokenCache) {
+    if (entry.expiresAt <= Date.now()) deviceTokenCache.delete(key);
+  }
+  if (deviceTokenCache.size >= DEVICE_TOKEN_CACHE_MAX) {
+    const oldest = deviceTokenCache.keys().next().value;
+    if (oldest !== undefined) deviceTokenCache.delete(oldest);
+  }
+  deviceTokenCache.set(deviceCode, {
+    token,
+    expiresAt: Date.now() + DEVICE_TOKEN_TTL_MS,
+  });
+}
+
+/** Test-only: reset the device-token cache between test cases. */
+export function clearDeviceTokenCache(): void {
+  deviceTokenCache.clear();
 }
 
 /** Subset of the reactor-api resolver context this subgraph relies on. */
@@ -70,6 +112,43 @@ function toStatus(connection: GithubConnection | null): ConnectionStatusView {
 export function createResolvers(
   db: Kysely<VetraGithubAuthDB>,
 ): Record<string, any> {
+  /**
+   * The user token for a device code: from the in-process cache when an
+   * earlier poll already exchanged it (codes are single-use), else via a
+   * fresh exchange — which also captures the caller's identity link.
+   */
+  async function resolveDeviceToken(
+    did: string,
+    deviceCode: string,
+  ): Promise<string> {
+    const cached = takeValidCachedToken(deviceCode);
+    if (cached) return cached;
+
+    const exchange = await exchangeDeviceCode(deviceCode);
+    if (exchange.status !== "authorized") {
+      const codes = {
+        pending: "AUTHORIZATION_PENDING",
+        slowDown: "SLOW_DOWN",
+        expired: "DEVICE_CODE_EXPIRED",
+        denied: "ACCESS_DENIED",
+      } as const;
+      throw ghError(codes[exchange.status]);
+    }
+    const token = exchange.accessToken;
+    cacheDeviceToken(deviceCode, token);
+
+    // Identity link (did → github login): captured here because the device
+    // exchange is the only moment the caller's GitHub identity is visible to
+    // the backend. Best-effort — a failure must not break the flow.
+    try {
+      const ghUser = await fetchGithubUser(token);
+      await saveIdentity(db, did, ghUser.login, String(ghUser.id));
+    } catch {
+      /* best-effort */
+    }
+    return token;
+  }
+
   return {
     Query: {
       VetraGithubAuth: () => ({}),
@@ -87,6 +166,26 @@ export function createResolvers(
         const did = requireDid(ctx);
         const connection = await getConnection(db, did, environmentId);
         return toStatus(connection);
+      },
+
+      myGithubStatus: async (
+        _p: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AuthContext,
+      ): Promise<
+        ConnectionStatusView & { githubLogin: string | null; appInstalled: boolean }
+      > => {
+        const did = requireDid(ctx);
+        const connection = await getConnection(db, did, environmentId);
+        const identity = await getIdentity(db, did);
+        const appInstalled = identity
+          ? (await findUserAccountInstallation(identity.githubLogin)) !== null
+          : false;
+        return {
+          ...toStatus(connection),
+          githubLogin: identity?.githubLogin ?? null,
+          appInstalled,
+        };
       },
 
       getPushToken: async (
@@ -119,6 +218,21 @@ export function createResolvers(
         return startDeviceFlow();
       },
 
+      authorizeGithub: async (
+        _p: unknown,
+        { deviceCode }: { deviceCode: string },
+        ctx: AuthContext,
+      ): Promise<{ githubLogin: string | null; appInstalled: boolean }> => {
+        const did = requireDid(ctx);
+        const userAccessToken = await resolveDeviceToken(did, deviceCode);
+        const installation = await findUserInstallation(userAccessToken);
+        const identity = await getIdentity(db, did);
+        return {
+          githubLogin: identity?.githubLogin ?? null,
+          appInstalled: installation !== null,
+        };
+      },
+
       connectGithub: async (
         _p: unknown,
         {
@@ -129,18 +243,7 @@ export function createResolvers(
         ctx: AuthContext,
       ): Promise<ConnectionStatusView> => {
         const did = requireDid(ctx);
-
-        const exchange = await exchangeDeviceCode(deviceCode);
-        if (exchange.status !== "authorized") {
-          const codes = {
-            pending: "AUTHORIZATION_PENDING",
-            slowDown: "SLOW_DOWN",
-            expired: "DEVICE_CODE_EXPIRED",
-            denied: "ACCESS_DENIED",
-          } as const;
-          throw ghError(codes[exchange.status]);
-        }
-        const userAccessToken = exchange.accessToken;
+        const userAccessToken = await resolveDeviceToken(did, deviceCode);
 
         // A user token can only act on what the app's installation can access,
         // so repo creation is impossible until the app is installed somewhere
@@ -173,6 +276,7 @@ export function createResolvers(
         }
 
         const connection = await saveConnection(db, did, environmentId, repo.fullName);
+        deviceTokenCache.delete(deviceCode);
         return toStatus(connection);
       },
     },

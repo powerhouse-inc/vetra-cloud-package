@@ -192,6 +192,60 @@ export async function createRepo(
   return { id: body.id, fullName: body.full_name, url: body.html_url };
 }
 
+/** The authenticated user's GitHub login and id, from their user access token. */
+export async function fetchGithubUser(
+  userAccessToken: string,
+): Promise<{ login: string; id: number }> {
+  const response = await fetch(`${GITHUB_API}/user`, {
+    headers: userHeaders(userAccessToken),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to resolve the authenticated user: ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as { login: string; id: number };
+  return { login: body.login, id: body.id };
+}
+
+/**
+ * The app's installation on `login`'s account, or null if not installed there.
+ * Resolved from the app's own JWT, so it works long after any user token is
+ * gone — this is what makes install state detectable across sessions.
+ */
+export async function findUserAccountInstallation(
+  login: string,
+): Promise<UserInstallation | null> {
+  const auth = appAuth();
+  const { token: jwt } = await auth({ type: "app" });
+  const response = await fetch(
+    `${GITHUB_API}/users/${encodeURIComponent(login)}/installation`,
+    {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "vetra-cloud",
+      },
+    },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(
+      `Failed to look up account installation: ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as {
+    id: number;
+    repository_selection?: string;
+  };
+  return {
+    id: String(body.id),
+    repositorySelection:
+      body.repository_selection === "all" ? "all" : "selected",
+  };
+}
+
 /**
  * The id of this app's installation on `repoFullName` (`owner/repo`), or null if
  * the app is not installed on that repo. Resolved from the app's own JWT, so it
