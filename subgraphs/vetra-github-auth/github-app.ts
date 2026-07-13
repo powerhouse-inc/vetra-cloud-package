@@ -104,9 +104,64 @@ function userHeaders(userAccessToken: string): Record<string, string> {
 }
 
 export type CreatedRepo = {
+  id: number;
   fullName: string;
   url: string;
 };
+
+export type UserInstallation = {
+  id: string;
+  repositorySelection: "all" | "selected";
+};
+
+/**
+ * The caller's installation of this app, from their user token, or null if the
+ * app is not installed anywhere the user can see. A user access token can only
+ * act on resources its installation can access, so repo creation requires this
+ * to be non-null.
+ */
+export async function findUserInstallation(
+  userAccessToken: string,
+): Promise<UserInstallation | null> {
+  const response = await fetch(`${GITHUB_API}/user/installations`, {
+    headers: userHeaders(userAccessToken),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to list app installations: ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as {
+    installations?: { id: number; repository_selection?: string }[];
+  };
+  const installation = body.installations?.[0];
+  if (!installation) return null;
+  return {
+    id: String(installation.id),
+    repositorySelection:
+      installation.repository_selection === "all" ? "all" : "selected",
+  };
+}
+
+/**
+ * Add a repo to a selected-repositories installation so the app (and its
+ * installation tokens) can access it. 204 = added, 304 = already included.
+ */
+export async function addRepoToInstallation(
+  userAccessToken: string,
+  installationId: string,
+  repositoryId: number,
+): Promise<void> {
+  const response = await fetch(
+    `${GITHUB_API}/user/installations/${installationId}/repositories/${repositoryId}`,
+    { method: "PUT", headers: userHeaders(userAccessToken) },
+  );
+  if (response.status === 204 || response.status === 304) return;
+  const detail = await response.text().catch(() => "");
+  throw new Error(
+    `Failed to add repository to installation: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ""}`,
+  );
+}
 
 /** Create a blank private repo in the user's account with their access token. */
 export async function createRepo(
@@ -124,15 +179,17 @@ export async function createRepo(
     );
   }
   if (!response.ok) {
+    const detail = await response.text().catch(() => "");
     throw new Error(
-      `Failed to create repository: ${response.status} ${response.statusText}`,
+      `Failed to create repository: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 500)}` : ""}`,
     );
   }
   const body = (await response.json()) as {
+    id: number;
     full_name: string;
     html_url: string;
   };
-  return { fullName: body.full_name, url: body.html_url };
+  return { id: body.id, fullName: body.full_name, url: body.html_url };
 }
 
 /**
@@ -189,8 +246,12 @@ export async function findUserRepo(
       `Failed to look up repository: ${repoResponse.status} ${repoResponse.statusText}`,
     );
   }
-  const body = (await repoResponse.json()) as { full_name: string; html_url: string };
-  return { fullName: body.full_name, url: body.html_url };
+  const body = (await repoResponse.json()) as {
+    id: number;
+    full_name: string;
+    html_url: string;
+  };
+  return { id: body.id, fullName: body.full_name, url: body.html_url };
 }
 
 const GITHUB_OAUTH_HOST = "https://github.com";

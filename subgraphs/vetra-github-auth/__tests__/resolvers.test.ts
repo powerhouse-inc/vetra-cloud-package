@@ -16,6 +16,8 @@ vi.mock("../github-app.js", async (importActual) => {
     startDeviceFlow: vi.fn(),
     exchangeDeviceCode: vi.fn(),
     findRepoInstallationId: vi.fn(),
+    findUserInstallation: vi.fn(),
+    addRepoToInstallation: vi.fn(),
     findUserRepo: vi.fn(),
     createRepo: vi.fn(),
     mintInstallationToken: vi.fn(),
@@ -23,9 +25,11 @@ vi.mock("../github-app.js", async (importActual) => {
 });
 
 import {
+  addRepoToInstallation,
   createRepo,
   exchangeDeviceCode,
   findRepoInstallationId,
+  findUserInstallation,
   findUserRepo,
   mintInstallationToken,
   startDeviceFlow,
@@ -38,6 +42,8 @@ import { createResolvers } from "../resolvers.js";
 const startDeviceFlowMock = vi.mocked(startDeviceFlow);
 const exchangeDeviceCodeMock = vi.mocked(exchangeDeviceCode);
 const findRepoInstallationIdMock = vi.mocked(findRepoInstallationId);
+const findUserInstallationMock = vi.mocked(findUserInstallation);
+const addRepoToInstallationMock = vi.mocked(addRepoToInstallation);
 const findUserRepoMock = vi.mocked(findUserRepo);
 const createRepoMock = vi.mocked(createRepo);
 const mintInstallationTokenMock = vi.mocked(mintInstallationToken);
@@ -97,12 +103,17 @@ describe("startGithubDeviceFlow", () => {
 });
 
 describe("connectGithub", () => {
-  it("exchanges the device code, creates the blank repo, and persists the connection — without requiring the app to be installed", async () => {
+  it("exchanges the device code, creates the blank repo, and persists the connection when the app is installed", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
     createRepoMock.mockResolvedValue({
+      id: 9001,
       fullName: "alice/widget",
       url: "https://github.com/alice/widget",
     });
@@ -120,10 +131,86 @@ describe("connectGithub", () => {
     });
     // the user token from the exchange is what creates the blank repo
     expect(createRepoMock).toHaveBeenCalledWith("ghu_token", "widget");
+    // an all-repositories install already covers the new repo
+    expect(addRepoToInstallationMock).not.toHaveBeenCalled();
 
     const persisted = await getConnection(db, DID, ENV);
     expect(persisted).toMatchObject({
       environmentId: ENV,
+      repoFullName: "alice/widget",
+    });
+  });
+
+  it("throws APP_NOT_INSTALLED before creating anything when the app is not installed", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    findUserInstallationMock.mockResolvedValue(null);
+
+    await expect(
+      connectGithub(
+        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ extensions: { code: "APP_NOT_INSTALLED" } });
+
+    expect(createRepoMock).not.toHaveBeenCalled();
+    expect(await getConnection(db, DID, ENV)).toBeNull();
+  });
+
+  it("adds the new repo to a selected-repositories installation", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "selected",
+    });
+    createRepoMock.mockResolvedValue({
+      id: 9001,
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+    addRepoToInstallationMock.mockResolvedValue();
+
+    const status = await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    expect(status.connected).toBe(true);
+    expect(addRepoToInstallationMock).toHaveBeenCalledWith(
+      "ghu_token",
+      "55",
+      9001,
+    );
+  });
+
+  it("still connects when adding the repo to the installation fails (push-time check remains)", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "selected",
+    });
+    createRepoMock.mockResolvedValue({
+      id: 9001,
+      fullName: "alice/widget",
+      url: "https://github.com/alice/widget",
+    });
+    addRepoToInstallationMock.mockRejectedValue(new Error("boom"));
+
+    const status = await connectGithub(
+      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+      ctx,
+    );
+
+    expect(status.connected).toBe(true);
+    expect(await getConnection(db, DID, ENV)).toMatchObject({
       repoFullName: "alice/widget",
     });
   });
@@ -157,6 +244,10 @@ describe("connectGithub", () => {
       status: "authorized",
       accessToken: "ghu_token",
     });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
     createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
     findUserRepoMock.mockResolvedValue(null);
 
@@ -175,8 +266,13 @@ describe("connectGithub", () => {
       status: "authorized",
       accessToken: "ghu_token",
     });
+    findUserInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "all",
+    });
     createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
     findUserRepoMock.mockResolvedValue({
+      id: 9001,
       fullName: "alice/widget",
       url: "https://github.com/alice/widget",
     });

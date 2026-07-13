@@ -7,9 +7,11 @@ import {
   type GithubConnection,
 } from "./db/installations.js";
 import {
+  addRepoToInstallation,
   createRepo,
   exchangeDeviceCode,
   findRepoInstallationId,
+  findUserInstallation,
   findUserRepo,
   mintInstallationToken,
   ReinstallRequiredError,
@@ -140,6 +142,12 @@ export function createResolvers(
         }
         const userAccessToken = exchange.accessToken;
 
+        // A user token can only act on what the app's installation can access,
+        // so repo creation is impossible until the app is installed somewhere
+        // the user can see. Surface that as a machine code, not a 500.
+        const installation = await findUserInstallation(userAccessToken);
+        if (!installation) throw ghError("APP_NOT_INSTALLED");
+
         let repo;
         try {
           repo = await createRepo(userAccessToken, repoName);
@@ -151,6 +159,17 @@ export function createResolvers(
           } else {
             throw error;
           }
+        }
+
+        // Selected-repositories installs don't include the new repo; add it so
+        // push tokens resolve. Best-effort: push-time APP_NOT_INSTALLED remains
+        // the enforcement if this fails.
+        if (installation.repositorySelection === "selected") {
+          await addRepoToInstallation(
+            userAccessToken,
+            installation.id,
+            repo.id,
+          ).catch(() => {});
         }
 
         const connection = await saveConnection(db, did, environmentId, repo.fullName);
