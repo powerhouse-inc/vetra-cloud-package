@@ -647,4 +647,36 @@ describe('ClintPullWorker CLINT service-status advance', () => {
 
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it('dispatches SET_SERVICE_STATUS at most once per env across repeated ticks (no storm when the write never commits)', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-storm',
+      subdomain: 'storm-cat-01',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'vetra-agent', status: 'PROVISIONING' },
+      ]),
+    });
+    // A dispatch that never commits — the read-model status stays PROVISIONING
+    // across ticks (simulates the failing/timing-out SET_SERVICE_STATUS mutation
+    // that caused the crash-storm). Without a per-env guard this re-fires every
+    // tick; with the guard it fires exactly once per pod lifetime.
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+    await worker.tickOnce();
+    await worker.tickOnce();
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
 });

@@ -191,6 +191,16 @@ export class ClintPullWorker {
   private readonly buildAgentUrl: (svc: ClintServiceTuple) => string;
   private readonly buildBrandUrl: (svc: ClintServiceTuple) => string;
   private readonly fetchTimeoutMs: number;
+  /**
+   * Envs (`documentId|prefix`) we've already dispatched SET_SERVICE_STATUS→ACTIVE
+   * for this pod lifetime. Attempt-once guard: without it, a mutation that never
+   * commits (times out / a pathological doc whose replay overflows the stack)
+   * leaves the read-model status at PROVISIONING, so the advance re-fired every
+   * tick → reactor job-queue flood → heap OOM → switchboard crashloop. One
+   * attempt per env per lifetime bounds it; a genuinely-transient failure retries
+   * on the next pod restart (rare, acceptable).
+   */
+  private readonly statusAdvanceAttempted = new Set<string>();
 
   constructor(config: ClintPullWorkerConfig) {
     this.config = config;
@@ -376,6 +386,13 @@ export class ClintPullWorker {
       (r) => endpointTypeFromPrefix(r.prefix) === "website",
     );
     if (!hasWebsite) return;
+    // Attempt-once-per-lifetime guard (see statusAdvanceAttempted): the read-model
+    // status only clears this via the `=== "ACTIVE"` check above once the mutation
+    // COMMITS; if it never commits we must not re-dispatch every tick. Mark before
+    // dispatching so a throw/timeout doesn't reopen the storm.
+    const key = `${svc.documentId}|${svc.prefix}`;
+    if (this.statusAdvanceAttempted.has(key)) return;
+    this.statusAdvanceAttempted.add(key);
     try {
       await this.config.dispatch(svc.documentId, "SET_SERVICE_STATUS", {
         type: "CLINT",
