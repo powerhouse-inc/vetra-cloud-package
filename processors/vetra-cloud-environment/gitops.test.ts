@@ -347,7 +347,7 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
-  it("emits CLINT XXL with cpu request 2 and cpu limit 4 (Vetra Studio sizing)", async () => {
+  it("emits CLINT XXL with cpu 750m/4 and memory request 3Gi/limit 6Gi (Vetra Studio sizing)", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
       envState({
@@ -372,8 +372,10 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
       "doc-clint-xxl",
     );
     expect(yaml).toMatch(
-      /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"2",\s*memory:\s*"4Gi"\s*\}[\s\S]*?limits:\s*\{\s*cpu:\s*"4",\s*memory:\s*"8Gi"\s*\}/,
+      /clint:[\s\S]*?requests:\s*\{\s*cpu:\s*"750m",\s*memory:\s*"3Gi"\s*\}[\s\S]*?limits:\s*\{\s*cpu:\s*"4",\s*memory:\s*"6Gi"\s*\}/,
     );
+    // 6Gi limit → V8 heap ~75% = 4608MB (must stay under the cgroup cap).
+    expect(yaml).toMatch(/clint:[\s\S]*?--max-old-space-size=4608/);
   });
 });
 
