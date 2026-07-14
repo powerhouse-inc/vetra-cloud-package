@@ -396,6 +396,11 @@ export class ClintPullWorker {
     try {
       await this.config.dispatch(svc.documentId, "SET_SERVICE_STATUS", {
         type: "CLINT",
+        // Target THIS service by prefix. Without it the reducer advances the
+        // first CLINT by type, so multi-agent envs never advance their other
+        // agents and this dispatch re-fired every tick — the storm that bloated
+        // env docs to ~30k ops. Requires vetra-cloud-package >= this version.
+        prefix: svc.prefix,
         status: "ACTIVE",
       });
       this.config.logger.info(

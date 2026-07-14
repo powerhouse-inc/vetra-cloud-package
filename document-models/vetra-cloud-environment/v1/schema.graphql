@@ -238,6 +238,7 @@ input SetServiceStatusInput {
   type: VetraCloudEnvironmentServiceType!
   status: ServiceStatus!
   url: String
+  prefix: String
 }
 
 input SetServiceVersionInput {

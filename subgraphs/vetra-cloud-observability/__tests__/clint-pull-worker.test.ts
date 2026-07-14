@@ -585,8 +585,50 @@ describe('ClintPullWorker CLINT service-status advance', () => {
 
     expect(dispatch).toHaveBeenCalledWith('doc-prov', 'SET_SERVICE_STATUS', {
       type: 'CLINT',
+      prefix: 'vetra-agent',
       status: 'ACTIVE',
     });
+  });
+
+  it('advances each CLINT by its own prefix in a multi-agent env (storm root-cause fix)', async () => {
+    const mock = await startMockAgent([websiteRoute]);
+    server = mock.server;
+    const { envDb, obsDb, insertEnv } = await setupDbs();
+    await insertEnv({
+      id: 'doc-multi',
+      subdomain: 'multi-fox-77',
+      status: 'READY',
+      services: JSON.stringify([
+        { type: 'CLINT', enabled: true, prefix: 'agent-a', status: 'PROVISIONING' },
+        { type: 'CLINT', enabled: true, prefix: 'agent-b', status: 'PROVISIONING' },
+      ]),
+    });
+    const dispatch = vi.fn(async () => {});
+    const worker = new ClintPullWorker({
+      envDb,
+      obsDb,
+      logger: testLogger,
+      dispatch,
+      buildAgentUrl: () => `http://127.0.0.1:${mock.port}/_proxy/routes`,
+    });
+
+    await worker.tickOnce();
+
+    // Each CLINT is advanced by its OWN prefix. Before the fix the dispatch
+    // omitted prefix, so the reducer advanced only the first CLINT (agent-a),
+    // agent-b's read-model status never reached ACTIVE, and the worker re-fired
+    // for agent-b every tick — the storm.
+    expect(dispatch).toHaveBeenCalledWith('doc-multi', 'SET_SERVICE_STATUS', {
+      type: 'CLINT',
+      prefix: 'agent-a',
+      status: 'ACTIVE',
+    });
+    expect(dispatch).toHaveBeenCalledWith('doc-multi', 'SET_SERVICE_STATUS', {
+      type: 'CLINT',
+      prefix: 'agent-b',
+      status: 'ACTIVE',
+    });
+    expect(dispatch).toHaveBeenCalledTimes(2);
   });
 
   it('does not re-dispatch when the CLINT service is already ACTIVE (idempotent)', async () => {

@@ -333,6 +333,7 @@ export function SetServiceStatusInputSchema(): z.ZodObject<
   Properties<SetServiceStatusInput>
 > {
   return z.object({
+    prefix: z.string().nullish(),
     status: ServiceStatusSchema,
     type: VetraCloudEnvironmentServiceTypeSchema,
     url: z.string().nullish(),

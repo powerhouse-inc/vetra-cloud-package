@@ -440,10 +440,10 @@ export const documentModel: DocumentModelGlobalState = {
               name: "SET_SERVICE_STATUS",
               description: "",
               schema:
-                "input SetServiceStatusInput {\n  type: VetraCloudEnvironmentServiceType!\n  status: ServiceStatus!\n  url: String\n}",
+                "input SetServiceStatusInput {\n  type: VetraCloudEnvironmentServiceType!\n  status: ServiceStatus!\n  url: String\n  prefix: String\n}",
               template: "",
               reducer:
-                'const service = state.services.find((s) => s.type === action.input.type);\nif (!service) {\n  throw new ServiceNotFoundError("Service " + action.input.type + " not found");\n}\nservice.status = action.input.status;\nif (action.input.url) {\n  service.url = action.input.url;\n}',
+                'const { type, prefix } = action.input;\nconst service =\n  type === "CLINT" && prefix\n    ? state.services.find((s) => s.type === type && s.prefix === prefix)\n    : state.services.find((s) => s.type === type);\nif (!service) {\n  throw new ServiceNotFoundError("Service " + type + " not found");\n}\nservice.status = action.input.status;\nif (action.input.url) {\n  service.url = action.input.url;\n}',
               errors: [
                 {
                   id: "err-svc-not-found-3",
