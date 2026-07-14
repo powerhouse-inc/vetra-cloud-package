@@ -309,6 +309,37 @@ describe("ServicesOperations", () => {
     expect(updatedDocument.operations.global[0].index).toEqual(0);
   });
 
+  it("advances the CLINT service matching prefix, not the first CLINT (multi-agent)", () => {
+    const clint = (prefix: string) =>
+      enableService({
+        type: "CLINT" as const,
+        prefix,
+        clintConfig: {
+          package: { registry: "https://r", name: "p", version: null },
+          env: [],
+          serviceCommand: null,
+          selectedRessource: "VETRA_AGENT_S" as const,
+        },
+      });
+    let document = utils.createDocument();
+    document = reducer(document, clint("agent-a"));
+    document = reducer(document, clint("agent-b"));
+
+    document = reducer(
+      document,
+      setServiceStatus({ type: "CLINT", prefix: "agent-b", status: "ACTIVE" }),
+    );
+
+    const a = document.state.global.services.find((s) => s.prefix === "agent-a");
+    const b = document.state.global.services.find((s) => s.prefix === "agent-b");
+    // Only agent-b advances; agent-a (the first CLINT) must stay PROVISIONING.
+    // Regression guard for the SET_SERVICE_STATUS storm: keying by type alone
+    // advanced the first CLINT, so non-first agents never reached ACTIVE and the
+    // pull-worker re-dispatched every tick, bloating env docs to ~30k ops.
+    expect(b?.status).toBe("ACTIVE");
+    expect(a?.status).toBe("PROVISIONING");
+  });
+
   describe("SET_SERVICE_VERSION", () => {
     it("should set version on an existing service", () => {
       let document = utils.createDocument();

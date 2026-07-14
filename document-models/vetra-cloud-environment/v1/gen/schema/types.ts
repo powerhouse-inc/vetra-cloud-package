@@ -192,6 +192,7 @@ export type SetServiceSizeInput = {
 };
 
 export type SetServiceStatusInput = {
+  prefix?: InputMaybe<Scalars["String"]["input"]>;
   status: ServiceStatus;
   type: VetraCloudEnvironmentServiceType;
   url?: InputMaybe<Scalars["String"]["input"]>;

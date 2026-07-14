@@ -130,11 +130,19 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     setServiceStatusOperation(state, action) {
       assertOwner(state, action);
-      const service = state.services.find((s) => s.type === action.input.type);
+      const { type, prefix } = action.input;
+      // CLINT supports multiple services per env keyed by prefix; without a
+      // prefix the lookup would silently advance whichever clint happens to
+      // come first — so non-first CLINT agents could never reach ACTIVE and the
+      // clint-pull-worker re-fired SET_SERVICE_STATUS every tick (the storm that
+      // bloated env docs to 30k ops). When a prefix is provided we filter by
+      // both. Singleton types (CONNECT/SWITCHBOARD/FUSION) ignore prefix.
+      const service =
+        type === "CLINT" && prefix
+          ? state.services.find((s) => s.type === type && s.prefix === prefix)
+          : state.services.find((s) => s.type === type);
       if (!service) {
-        throw new ServiceNotFoundError(
-          "Service " + action.input.type + " not found",
-        );
+        throw new ServiceNotFoundError("Service " + type + " not found");
       }
       service.status = action.input.status;
       if (action.input.url) {
