@@ -173,18 +173,32 @@ export function createResolvers(
         { environmentId }: { environmentId: string },
         ctx: AuthContext,
       ): Promise<
-        ConnectionStatusView & { githubLogin: string | null; appInstalled: boolean }
+        ConnectionStatusView & {
+          githubLogin: string | null;
+          appInstalled: boolean;
+          repoAccessible: boolean | null;
+        }
       > => {
         const did = requireDid(ctx);
         const connection = await getConnection(db, did, environmentId);
         const identity = await getIdentity(db, did);
+        // Live lookups degrade (false / null) instead of failing the whole
+        // status when GitHub is unreachable.
         const appInstalled = identity
-          ? (await findUserAccountInstallation(identity.githubLogin)) !== null
+          ? await findUserAccountInstallation(identity.githubLogin)
+              .then((installation) => installation !== null)
+              .catch(() => false)
           : false;
+        const repoAccessible = connection
+          ? await findRepoInstallationId(connection.repoFullName)
+              .then((id) => id !== null)
+              .catch((): null => null)
+          : null;
         return {
           ...toStatus(connection),
           githubLogin: identity?.githubLogin ?? null,
           appInstalled,
+          repoAccessible,
         };
       },
 

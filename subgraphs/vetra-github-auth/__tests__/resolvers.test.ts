@@ -541,8 +541,10 @@ describe("myGithubStatus", () => {
       connection: null,
       githubLogin: null,
       appInstalled: false,
+      repoAccessible: null,
     });
     expect(findUserAccountInstallationMock).not.toHaveBeenCalled();
+    expect(findRepoInstallationIdMock).not.toHaveBeenCalled();
   });
 
   it("resolves install state live from the identity link", async () => {
@@ -567,18 +569,49 @@ describe("myGithubStatus", () => {
     expect(status).toMatchObject({ githubLogin: "alice", appInstalled: false });
   });
 
-  it("includes the environment's connection when one exists", async () => {
+  it("includes the environment's connection and its live repo access", async () => {
     await saveIdentity(db, DID, "alice", "7");
     await saveConnection(db, DID, ENV, "alice/widget");
     findUserAccountInstallationMock.mockResolvedValue({
       id: "55",
       repositorySelection: "all",
     });
+    findRepoInstallationIdMock.mockResolvedValue("55");
 
     const status = await myGithubStatus({ environmentId: ENV }, ctx);
 
     expect(status.connected).toBe(true);
     expect(status.connection).toMatchObject({ repoFullName: "alice/widget" });
+    expect(status.repoAccessible).toBe(true);
+    expect(findRepoInstallationIdMock).toHaveBeenCalledWith("alice/widget");
+  });
+
+  it("flags a connected repo the installation can no longer reach", async () => {
+    await saveIdentity(db, DID, "alice", "7");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    // App still installed on the account, but the repo fell out of a
+    // selected-repositories installation.
+    findUserAccountInstallationMock.mockResolvedValue({
+      id: "55",
+      repositorySelection: "selected",
+    });
+    findRepoInstallationIdMock.mockResolvedValue(null);
+
+    const status = await myGithubStatus({ environmentId: ENV }, ctx);
+
+    expect(status).toMatchObject({ appInstalled: true, repoAccessible: false });
+  });
+
+  it("degrades live lookups instead of failing when GitHub is unreachable", async () => {
+    await saveIdentity(db, DID, "alice", "7");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    findUserAccountInstallationMock.mockRejectedValue(new Error("github down"));
+    findRepoInstallationIdMock.mockRejectedValue(new Error("github down"));
+
+    const status = await myGithubStatus({ environmentId: ENV }, ctx);
+
+    expect(status.connected).toBe(true);
+    expect(status).toMatchObject({ appInstalled: false, repoAccessible: null });
   });
 
   it("requires an authenticated caller", async () => {

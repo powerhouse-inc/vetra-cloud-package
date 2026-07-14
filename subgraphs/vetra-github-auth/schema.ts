@@ -28,12 +28,18 @@ export const schema: DocumentNode = gql`
   account. appInstalled is resolved live from GitHub at query time — never
   stored — so uninstalls are reflected immediately. githubLogin is null until
   the caller has authorized at least once; appInstalled is false then too.
+  repoAccessible is the push-health signal for a connected environment: whether
+  the app's installation can reach the connected repo, resolved live. Null when
+  no connection exists or GitHub could not be reached; appInstalled true with
+  repoAccessible false means the repo was dropped from a selected-repositories
+  installation (e.g. after an uninstall/reinstall).
   """
   type GithubStatus {
     connected: Boolean!
     connection: GithubConnection
     githubLogin: String
     appInstalled: Boolean!
+    repoAccessible: Boolean
   }
 
   """
