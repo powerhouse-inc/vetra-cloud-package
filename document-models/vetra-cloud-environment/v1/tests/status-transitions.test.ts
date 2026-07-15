@@ -44,6 +44,15 @@ function createReadyDocument() {
   return doc;
 }
 
+/** Helper to advance document to DEPLOYMENt_FAILED (a failed deploy). */
+function createDeploymentFailedDocument() {
+  let doc = createInitializedDocument();
+  doc = reducer(doc, markChangesPushed({}));
+  doc = reducer(doc, markDeploymentStarted({}));
+  doc = reducer(doc, reportDeploymentFailed({ code: "ERR", message: "boot failed" }));
+  return doc;
+}
+
 describe("StatusTransitionsOperations", () => {
   describe("INITIALIZE (DRAFT -> CHANGES_APPROVED)", () => {
     it("should transition from DRAFT to CHANGES_APPROVED", () => {
@@ -614,13 +623,21 @@ describe("StatusTransitionsOperations", () => {
       expect(updated.state.global.status).toBe("STOPPED");
     });
 
-    it("errors when not in READY status", () => {
+    it("puts a DEPLOYMENt_FAILED studio to sleep (so a failed deploy can be stopped, not just terminated)", () => {
+      const document = createDeploymentFailedDocument();
+      expect(document.state.global.status).toBe("DEPLOYMENt_FAILED");
+
+      const updated = reducer(document, sleepEnvironment({}));
+      const lastOp = updated.operations.global[updated.operations.global.length - 1];
+      expect(lastOp.error).toBeUndefined();
+      expect(updated.state.global.status).toBe("STOPPED");
+    });
+
+    it("errors when not in a sleepable status (e.g. CHANGES_APPROVED)", () => {
       const document = createInitializedDocument(); // CHANGES_APPROVED
       const result = reducer(document, sleepEnvironment({}));
       const lastOp = result.operations.global[result.operations.global.length - 1];
-      expect(lastOp.error).toContain(
-        "SLEEP_ENVIRONMENT can only be called from READY status",
-      );
+      expect(lastOp.error).toContain("SLEEP_ENVIRONMENT can only be called from");
       expect(result.state.global.status).toBe("CHANGES_APPROVED");
     });
   });

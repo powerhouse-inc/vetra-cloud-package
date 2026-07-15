@@ -108,9 +108,14 @@ export const vetraCloudEnvironmentStatusTransitionsOperations: VetraCloudEnviron
       // for STOPPED, removing the workload + ingress while keeping the
       // namespace/PVC/cert. Eligibility (claimed, not core/allowlisted) is
       // enforced by the housekeeping subgraph before dispatch.
-      if (state.status !== "READY") {
+      // READY (normal idle-sleep) OR DEPLOYMENt_FAILED: a failed deploy was
+      // previously a dead-end (no sleep, no retry — only terminate), so its
+      // crash-looping workload ran forever because the processor never
+      // re-renders DEPLOYMENt_FAILED. Allowing sleep → STOPPED lets a failed env
+      // be put to rest (processor renders global.disabled=true, workload removed).
+      if (state.status !== "READY" && state.status !== "DEPLOYMENt_FAILED") {
         throw new InvalidStatusTransitionError(
-          "SLEEP_ENVIRONMENT can only be called from READY status, current: " +
+          "SLEEP_ENVIRONMENT can only be called from READY or DEPLOYMENt_FAILED status, current: " +
             state.status,
         );
       }
