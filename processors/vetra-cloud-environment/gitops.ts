@@ -12,6 +12,7 @@ import type {
 } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
+import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const execFileAsync = promisify(execFile);
@@ -614,7 +615,7 @@ async function generateClintBlock(
     // drive is locked to the env owner; other agents and the standalone
     // switchboard are untouched. Inline (not via cfg.env) so they stay in the
     // deterministic YAML and never route through the secrets controller.
-    if (pkg.name === "vetra-cli") {
+    if (isStudioAgentPackage(pkg.name)) {
       for (const e of switchboardAuthEnv(state.owner)) {
         lines.push(
           `        - { name: ${yamlQuote(e.name)}, value: ${yamlQuote(e.value)} }`,
