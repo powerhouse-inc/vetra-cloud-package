@@ -1,4 +1,5 @@
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
+import { STUDIO_AGENT_PACKAGE } from "../../shared/studio-package.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import {
   setLabel,
@@ -55,12 +56,12 @@ export async function createStudioEnvironmentDoc(
       genericBaseDomain: "vetra.io",
       defaultPackageRegistry: cfg.registry,
     }),
-    addPackage({ packageName: "vetra-cli", version: cfg.version }),
+    addPackage({ packageName: STUDIO_AGENT_PACKAGE, version: cfg.version }),
     enableService({
       type: "CLINT",
       prefix: "vetra-agent",
       clintConfig: {
-        package: { registry: cfg.registry, name: "vetra-cli", version: cfg.version },
+        package: { registry: cfg.registry, name: STUDIO_AGENT_PACKAGE, version: cfg.version },
         env: [
           { name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false },
           // Gate agent work on a credential: an unclaimed (key-less) warm pod
