@@ -137,6 +137,11 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
       readyStudios,
     });
 
+    // DEPRECATION: this in-process detector is being extracted to the standalone
+    // tier-aware housekeeping service (see docs/superpowers/specs/2026-07-17-
+    // housekeeping-service-extraction-design.md). Keep it running until the
+    // service's detector is verified on both tiers, then set
+    // HOUSEKEEPING_DETECTOR_ENABLED=false per tier (cutover) and remove.
     if (keeperConfig.enabled) {
       keeper.start();
       console.info(
