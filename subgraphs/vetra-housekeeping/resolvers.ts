@@ -129,9 +129,11 @@ export function createResolvers(deps: HousekeepingDeps): Record<string, any> {
       VetraHousekeeping: () => ({}),
     },
     VetraHousekeepingMutations: {
-      // Manual "sleep now" — admin only.
-      sleepStudio: (_p: unknown, args: { host: string }, ctx: AuthContext) => {
-        requireAdmin(ctx);
+      // Manual "sleep now" — internal-service key or admin.
+      // async: a synchronous throw here would reject the *call* itself rather than
+      // the returned promise, breaking `await expect(...).rejects.toThrow(...)`.
+      sleepStudio: async (_p: unknown, args: { host: string }, ctx: AuthContext) => {
+        requireInternalOrAdmin(ctx);
         return deps.sleep(args.host);
       },
       // Open + idempotent: waking is inherently triggered by "someone wants this

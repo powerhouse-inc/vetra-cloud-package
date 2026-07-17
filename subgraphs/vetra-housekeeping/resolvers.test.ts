@@ -100,3 +100,30 @@ describe("readyStudios", () => {
     expect(out[0].envId).toBe("e1");
   });
 });
+
+describe("sleepStudio", () => {
+  const prevInternalKey = process.env.HOUSEKEEPING_INTERNAL_KEY;
+  const prevAdmins = process.env.ADMINS;
+
+  beforeEach(() => {
+    process.env.HOUSEKEEPING_INTERNAL_KEY = INTERNAL_KEY;
+    process.env.ADMINS = "";
+  });
+
+  afterEach(() => {
+    process.env.HOUSEKEEPING_INTERNAL_KEY = prevInternalKey;
+    process.env.ADMINS = prevAdmins;
+  });
+
+  test("sleepStudio allowed by internal key without admin", async () => {
+    const deps = makeDeps({ sleep: async (h) => ({ host: h, envId: "e", subdomain: "s", owner: "0x1", status: "SLEEPING" }) });
+    const r = createResolvers(deps);
+    const out = await r.VetraHousekeepingMutations.sleepStudio({}, { host: "s.vetra.io" }, ctxWithKey());
+    expect(out.status).toBe("SLEEPING");
+  });
+
+  test("sleepStudio FORBIDDEN with no admin and no key", async () => {
+    const r = createResolvers(makeDeps({}));
+    await expect(r.VetraHousekeepingMutations.sleepStudio({}, { host: "s.vetra.io" }, ctxNoAuth())).rejects.toThrow("FORBIDDEN");
+  });
+});
