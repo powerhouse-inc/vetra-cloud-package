@@ -111,10 +111,15 @@ describe("isEligibleForSleep", () => {
     expect(isEligibleForSleep({ ...base, services: null })).toBe(false);
   });
 
-  it("rejects non-READY envs (never re-sleep a stopping/deploying one)", () => {
+  it("rejects non-READY, non-failed envs (never re-sleep a stopping/deploying one)", () => {
     expect(isEligibleForSleep({ ...base, status: "STOPPED" })).toBe(false);
     expect(isEligibleForSleep({ ...base, status: "DEPLOYING" })).toBe(false);
     expect(isEligibleForSleep({ ...base, status: "TERMINATING" })).toBe(false);
+    expect(isEligibleForSleep({ ...base, status: "CHANGES_PENDING" })).toBe(false);
+  });
+
+  it("accepts a stuck DEPLOYMENt_FAILED studio so housekeeping can reclaim it", () => {
+    expect(isEligibleForSleep({ ...base, status: "DEPLOYMENt_FAILED" })).toBe(true);
   });
 
   it("rejects unclaimed / warm-pool envs", () => {

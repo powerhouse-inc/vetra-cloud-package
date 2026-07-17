@@ -1,6 +1,6 @@
 import type { Kysely } from "kysely";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
-import type { EnvRow } from "./policy.js";
+import { DEPLOYMENT_FAILED_STATUS, type EnvRow } from "./policy.js";
 
 /** Full studio row the housekeeping resolvers/service need to act on a host. */
 export type StudioRow = EnvRow & { envId: string };
@@ -67,12 +67,14 @@ export async function findStudioByHost(
 /**
  * All claimed studios currently READY — the sleep candidates the in-process
  * keeper evaluates (pre-eligibility; `isEligibleForSleep` filters further).
+ * Also surfaces studios stuck in DEPLOYMENt_FAILED so housekeeping can
+ * reclaim failed deploys that never got a chance to run again.
  */
 export async function listReadyStudios(db: Kysely<DB>): Promise<StudioRow[]> {
   const rows = await db
     .selectFrom("environments")
     .select(["id", "subdomain", "status", "owner", "poolState", "tenantId", "services"])
-    .where("status", "=", "READY")
+    .where("status", "in", ["READY", DEPLOYMENT_FAILED_STATUS])
     .where("owner", "is not", null)
     .execute();
   return rows.map((row) => ({

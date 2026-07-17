@@ -148,6 +148,15 @@ export function deriveStudioPowerState(
 // ---------------------------------------------------------------------------
 
 /**
+ * Deploy-failed status string in the environments read-model. Note the
+ * lowercase `t` — a known typo baked into the read-model that must be matched
+ * exactly. The document reducer already permits SLEEP_ENVIRONMENT from this
+ * state (shipped in 0.0.21); this makes housekeeping reclaim stuck failed
+ * deploys instead of leaving them running forever.
+ */
+export const DEPLOYMENT_FAILED_STATUS = "DEPLOYMENt_FAILED";
+
+/**
  * Tenants that must never be slept by housekeeping — the hand-managed core
  * tenants (also excluded from the `powerhouse-tenants` ApplicationSet).
  */
@@ -170,7 +179,8 @@ export type EligibilityOptions = {
 /**
  * Whether an environment is eligible to be put to sleep:
  *  - it's a claimed studio (`owner` set; not a warm-pool WARMING/AVAILABLE/FAILED env),
- *  - it's currently live (`READY` — never re-sleep one already stopping/deploying),
+ *  - it's currently live (`READY`) or stuck in `DEPLOYMENt_FAILED` (never
+ *    re-sleep one already stopping/deploying),
  *  - it has a routable subdomain,
  *  - it's not a core tenant and not on the never-sleep allowlist.
  */
@@ -179,7 +189,7 @@ export function isEligibleForSleep(
   opts: EligibilityOptions = {},
 ): boolean {
   if (!row) return false;
-  if (row.status !== "READY") return false;
+  if (row.status !== "READY" && row.status !== DEPLOYMENT_FAILED_STATUS) return false;
   if (!row.owner) return false;
   if (!row.subdomain) return false;
   if (row.poolState != null && row.poolState !== "CLAIMED") return false;
