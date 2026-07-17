@@ -45,11 +45,28 @@ export const schema: DocumentNode = gql`
     wouldSleep: Boolean!
   }
 
+  "Raw claimed-READY studio row, for an external detector to run eligibility itself (no policy applied here)."
+  type StudioCandidate {
+    "Derived apex host, e.g. tall-duck-ab12cd34.vetra.io."
+    host: String!
+    subdomain: String
+    envId: String!
+    owner: String
+    "Environment-document status (these are all claimed + READY)."
+    status: String!
+    poolState: String
+    tenantId: String
+    "JSON string of the env's services, as stored (read-model environments.services)."
+    services: String
+  }
+
   type VetraHousekeepingQueries {
     "Resolve a studio host to its current power state (used by the wake activator)."
     studioPowerState(host: String!): StudioPowerState!
     "Ops view of the idle detector: classify every claimed READY studio (ACTIVE/IDLE/UNKNOWN) without sleeping. Admin only."
     studioActivity: [StudioActivity!]!
+    "Raw claimed-READY candidate rows for an external detector to run eligibility itself. Internal-service key or admin only."
+    readyStudios: [StudioCandidate!]!
   }
 
   type VetraHousekeepingMutations {
