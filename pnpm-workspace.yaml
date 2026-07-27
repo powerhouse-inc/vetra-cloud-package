@@ -1,47 +1,73 @@
 allowBuilds:
-  '@apollo/protobufjs': true
-  '@datadog/pprof': true
-  '@parcel/watcher': true
-  '@sentry/cli': true
-  '@tailwindcss/oxide': true
+  "@apollo/protobufjs": true
+  "@datadog/pprof": true
+  "@parcel/watcher": true
+  "@reown/appkit": true
+  "@tailwindcss/oxide": true
   better-sqlite3: true
   bufferutil: true
   esbuild: true
-  msw: true
+  keccak: true
   protobufjs: true
   utf-8-validate: true
-
-minimumReleaseAgeExclude:
-  - '@powerhousedao/analytics-engine-browser@6.2.0-dev.43'
-  - '@powerhousedao/analytics-engine-core@6.2.0-dev.43'
-  - '@powerhousedao/analytics-engine-graphql@6.2.0-dev.43'
-  - '@powerhousedao/analytics-engine-knex@6.2.0-dev.43'
-  - '@powerhousedao/analytics-engine-pg@6.2.0-dev.43'
-  - '@powerhousedao/builder-tools@6.2.0-dev.43'
-  - '@powerhousedao/codegen@6.2.0-dev.43'
-  - '@powerhousedao/common@6.2.0-dev.43'
-  - '@powerhousedao/config@6.2.0-dev.43'
-  - '@powerhousedao/connect@6.2.0-dev.43'
-  - '@powerhousedao/design-system@6.2.0-dev.43'
-  - '@powerhousedao/opentelemetry-instrumentation-reactor@6.2.0-dev.43'
-  - '@powerhousedao/pglite-fs@6.2.0-dev.43'
-  - '@powerhousedao/ph-cli@6.2.0-dev.43'
-  - '@powerhousedao/powerhouse-vetra-packages@6.2.0-dev.43'
-  - '@powerhousedao/reactor-api@6.2.0-dev.43'
-  - '@powerhousedao/reactor-attachments@6.2.0-dev.43'
-  - '@powerhousedao/reactor-browser@6.2.0-dev.43'
-  - '@powerhousedao/reactor-drive@6.2.0-dev.43'
-  - '@powerhousedao/reactor-mcp@6.2.0-dev.43'
-  - '@powerhousedao/reactor@6.2.0-dev.43'
-  - '@powerhousedao/shared@6.2.0-dev.43'
-  - '@powerhousedao/switchboard@6.2.0-dev.43'
-  - '@powerhousedao/vetra@6.2.0-dev.43'
-  - '@renown/sdk@6.2.0-dev.43'
-  - document-model@6.2.0-dev.43
-
 overrides:
-  '@openfeature/core': ^1.9.2
-  # Force a single graphql instance — codegen (graphql-tools) throws
-  # "Cannot use GraphQLObjectType ... from another module or realm" when
-  # multiple 16.x copies resolve. Matches the 6.2.0 migration pin.
-  graphql: 16.13.2
+  date-fns: "4.3.0"
+  vite: "8.0.14"
+  rolldown: "1.0.2"
+minimumReleaseAgeExclude:
+  - '@hono/node-server@1.19.17'
+  - '@powerhousedao/analytics-engine-browser@6.2.2-dev.19'
+  - '@powerhousedao/analytics-engine-core@6.2.2-dev.19'
+  - '@powerhousedao/analytics-engine-graphql@6.2.2-dev.19'
+  - '@powerhousedao/analytics-engine-knex@6.2.2-dev.19'
+  - '@powerhousedao/analytics-engine-pg@6.2.2-dev.19'
+  - '@powerhousedao/builder-tools@6.2.2-dev.19'
+  - '@powerhousedao/codegen@6.2.2-dev.19'
+  - '@powerhousedao/common@6.2.2-dev.19'
+  - '@powerhousedao/config@6.2.2-dev.19'
+  - '@powerhousedao/connect@6.2.2-dev.19'
+  - '@powerhousedao/design-system@6.2.2-dev.19'
+  - '@powerhousedao/opentelemetry-instrumentation-reactor@6.2.2-dev.19'
+  - '@powerhousedao/pglite-fs@6.2.2-dev.19'
+  - '@powerhousedao/ph-cli@6.2.2-dev.19'
+  - '@powerhousedao/powerhouse-vetra-packages@6.2.2-dev.19'
+  - '@powerhousedao/reactor-api@6.2.2-dev.19'
+  - '@powerhousedao/reactor-attachments@6.2.2-dev.19'
+  - '@powerhousedao/reactor-browser@6.2.2-dev.19'
+  - '@powerhousedao/reactor-drive@6.2.2-dev.19'
+  - '@powerhousedao/reactor-mcp@6.2.2-dev.19'
+  - '@powerhousedao/reactor@6.2.2-dev.19'
+  - '@powerhousedao/shared@6.2.2-dev.19'
+  - '@powerhousedao/switchboard@6.2.2-dev.19'
+  - '@powerhousedao/vetra@6.2.2-dev.19'
+  - '@renown/sdk@6.2.2-dev.19'
+  - '@rollup/rollup-android-arm-eabi@4.62.3'
+  - '@rollup/rollup-android-arm64@4.62.3'
+  - '@rollup/rollup-darwin-arm64@4.62.3'
+  - '@rollup/rollup-darwin-x64@4.62.3'
+  - '@rollup/rollup-freebsd-arm64@4.62.3'
+  - '@rollup/rollup-freebsd-x64@4.62.3'
+  - '@rollup/rollup-linux-arm-gnueabihf@4.62.3'
+  - '@rollup/rollup-linux-arm-musleabihf@4.62.3'
+  - '@rollup/rollup-linux-arm64-gnu@4.62.3'
+  - '@rollup/rollup-linux-arm64-musl@4.62.3'
+  - '@rollup/rollup-linux-loong64-gnu@4.62.3'
+  - '@rollup/rollup-linux-loong64-musl@4.62.3'
+  - '@rollup/rollup-linux-ppc64-gnu@4.62.3'
+  - '@rollup/rollup-linux-ppc64-musl@4.62.3'
+  - '@rollup/rollup-linux-riscv64-gnu@4.62.3'
+  - '@rollup/rollup-linux-riscv64-musl@4.62.3'
+  - '@rollup/rollup-linux-s390x-gnu@4.62.3'
+  - '@rollup/rollup-linux-x64-gnu@4.62.3'
+  - '@rollup/rollup-linux-x64-musl@4.62.3'
+  - '@rollup/rollup-openbsd-x64@4.62.3'
+  - '@rollup/rollup-openharmony-arm64@4.62.3'
+  - '@rollup/rollup-win32-arm64-msvc@4.62.3'
+  - '@rollup/rollup-win32-ia32-msvc@4.62.3'
+  - '@rollup/rollup-win32-x64-gnu@4.62.3'
+  - '@rollup/rollup-win32-x64-msvc@4.62.3'
+  - 'baseline-browser-mapping@2.11.4'
+  - 'document-model@6.2.2-dev.19'
+  - 'express-rate-limit@8.6.1'
+  - 'rollup@4.62.3'
+  - 'viem@2.55.10'

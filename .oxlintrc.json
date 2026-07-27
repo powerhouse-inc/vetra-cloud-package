@@ -1,7 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "react", "react-hooks"],
-  "categories": { "correctness": "error" },
+  "plugins": [
+    "typescript",
+    "react",
+    "react-hooks"
+  ],
+  "categories": {
+    "correctness": "error"
+  },
   "ignorePatterns": [
     "**/node_modules/**",
     "**/dist/**",
@@ -70,14 +76,20 @@
     "typescript/no-duplicate-type-constituents": "warn",
     "typescript/restrict-template-expressions": [
       "warn",
-      { "allowNumber": true }
+      {
+        "allowNumber": true
+      }
     ],
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn"
   },
   "overrides": [
     {
-      "files": ["**/*.js", "**/*.cjs", "**/*.mjs"],
+      "files": [
+        "**/*.js",
+        "**/*.cjs",
+        "**/*.mjs"
+      ],
       "rules": {
         "typescript/await-thenable": "off",
         "typescript/no-array-delete": "off",
@@ -106,7 +118,10 @@
       }
     },
     {
-      "files": ["**/*.test.ts", "**/__tests__/**/*.ts"],
+      "files": [
+        "**/*.test.ts",
+        "**/__tests__/**/*.ts"
+      ],
       "rules": {
         "typescript/await-thenable": "off",
         "typescript/no-base-to-string": "off",
