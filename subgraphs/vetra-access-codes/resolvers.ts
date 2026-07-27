@@ -17,6 +17,7 @@ import {
 } from "./db/codes.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
+import { randomBytes } from "node:crypto";
 
 /**
  * OpenBao transit pseudo-tenant under which attached invite-code keys are
@@ -150,6 +151,13 @@ export function createResolvers(
         for (const name of secretNames) {
           await secretsService.setSecret(tenantId, name, apiKey);
         }
+        // Per-env random secret gating vetra-cli's session-export endpoints
+        // (admin-side debugging). Written pre-deploy on the cold path — no bounce.
+        await secretsService.setSecret(
+          tenantId,
+          "VETRA_SESSION_EXPORT_SECRET",
+          randomBytes(32).toString("hex"),
+        );
         return { injected: true, secretNames };
       },
 

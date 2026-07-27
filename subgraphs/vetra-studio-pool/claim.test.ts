@@ -90,7 +90,11 @@ describe("claimWarmEnvironment", () => {
     // ...and ADMINS carries the claimant's lowercased address, so the owner is
     // an admin of the embedded switchboard without a gitops re-render.
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
-    expect(entries).toHaveLength(4);
+    // Per-env session-export secret: present with a 64-char lowercase hex value.
+    expect(
+      entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value,
+    ).toMatch(/^[0-9a-f]{64}$/);
+    expect(entries).toHaveLength(5);
   });
 
   it("injects the secrets BEFORE transferring ownership (setOwner)", async () => {

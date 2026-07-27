@@ -61,7 +61,8 @@ Use the token either way:
 
 | Action | Operation |
 | ------ | --------- |
-| Create a code | `createInviteCode(code, label, expiresAt, maxUses)` |
+| Create a code | `createInviteCode(code, label, expiresAt, maxUses, anthropicApiKey)` |
+| Attach/rotate/detach a code's Claude key | `setInviteCodeAnthropicKey(code, anthropicApiKey)` |
 | List codes + redemption counts | `inviteCodes` |
 | See if/what a wallet redeemed | `redemptions(address)` (or `redemptions(code)`) |
 | Stop new redemptions of a code | `setInviteCodeActive(code, false)` |
@@ -74,8 +75,11 @@ Playground, or via curl against `<deployment>/graphql`):
 # create a code
 mutation { VetraAccessCodes { createInviteCode(code: "cohort-2", label: "Cohort 2", maxUses: 200) { code active } } }
 
-# list codes with how many times each was redeemed
-query { VetraAccessCodes { inviteCodes { code label active maxUses redemptions } } }
+# create a single-use demo code carrying a Claude key (only the boolean is ever read back)
+mutation { VetraAccessCodes { createInviteCode(code: "demo-swift-otter", maxUses: 1, anthropicApiKey: "sk-ant-…") { code hasAnthropicKey } } }
+
+# list codes with how many times each was redeemed (and whether a key is attached)
+query { VetraAccessCodes { inviteCodes { code label active maxUses redemptions hasAnthropicKey } } }
 
 # has this wallet used a code? (matches the address on any chain)
 query { VetraAccessCodes { redemptions(address: "0x…") { code redeemedAt accessExpires } } }
@@ -88,6 +92,46 @@ mutation { VetraAccessCodes { revokeAccess(address: "0x…") } }
 ```
 
 `address` must be a full `0x` + 40-hex wallet address.
+
+---
+
+## Admins — seeding demo codes in bulk
+
+To mint many demo codes at once — each optionally carrying a Claude API key — use
+`scripts/seed-access-codes.mts` (run with Node 22.6+/24, which strips the types
+natively). It takes a JSON file listing one or more sets and how many codes to
+create per set, generates memorable-but-unguessable names
+(`vetra-swift-otter-7k2p`), and writes a handout CSV of the codes — never the key
+value, only a `hasAnthropicKey` flag.
+
+```sh
+node scripts/seed-access-codes.mts \
+  --endpoint https://<switchboard>/graphql \
+  --token "$VETRA_ADMIN_TOKEN" \
+  --config keys.json \
+  --out codes.csv
+```
+
+`keys.json` (see `scripts/seed-access-codes.example.json`) — `anthropicApiKey` is
+optional (omit it for a plain code):
+
+```json
+[
+  {
+    "label": "demo-may",
+    "anthropicApiKey": "sk-ant-…",
+    "count": 10,
+    "maxUses": 1
+  }
+]
+```
+
+- `--token` (or the `VETRA_ADMIN_TOKEN` env var) is an admin bearer token, same
+  as for any management action above.
+- Each entry mints `count` single-use codes (default `maxUses: 1`) all carrying
+  the same key, so one key serves `count` demo users.
+- `--prefix` (default `vetra`) sets the code name prefix; `--expires-days` sets a
+  code expiry; `--dry-run` prints the names without calling the API.
 
 ---
 

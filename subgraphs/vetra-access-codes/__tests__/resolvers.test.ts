@@ -149,7 +149,7 @@ describe("applyInviteCodeSecret", () => {
 
     expect(result.injected).toBe(true);
     expect(result.secretNames).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_KEY"]);
-    expect(setSecret).toHaveBeenCalledTimes(2);
+    expect(setSecret).toHaveBeenCalledTimes(3);
     expect(setSecret).toHaveBeenCalledWith(
       "tenant-1",
       "ANTHROPIC_API_KEY",
@@ -159,6 +159,12 @@ describe("applyInviteCodeSecret", () => {
       "tenant-1",
       "CLAUDE_KEY",
       "sk-ant-secret",
+    );
+    // Plus the per-env session-export secret (random 64-char hex value).
+    expect(setSecret).toHaveBeenCalledWith(
+      "tenant-1",
+      "VETRA_SESSION_EXPORT_SECRET",
+      expect.stringMatching(/^[0-9a-f]{64}$/),
     );
   });
 

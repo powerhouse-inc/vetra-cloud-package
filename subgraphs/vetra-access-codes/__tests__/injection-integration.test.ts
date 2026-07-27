@@ -127,8 +127,15 @@ describe("e2e: invite-code Claude key -> tenant secret store", () => {
       .where("tenantId", "=", TENANT)
       .orderBy("key", "asc")
       .execute();
-    expect(secrets.map((s) => s.key).sort()).toEqual([...STUDIO_SECRET_NAMES].sort());
+    expect(secrets.map((s) => s.key).sort()).toEqual(
+      [...STUDIO_SECRET_NAMES, "VETRA_SESSION_EXPORT_SECRET"].sort(),
+    );
     for (const s of secrets) {
+      // The session-export secret is a per-env random hex, not the API key.
+      if (s.key === "VETRA_SESSION_EXPORT_SECRET") {
+        expect(await transit.decrypt(TENANT, s.ciphertext!)).toMatch(/^[0-9a-f]{64}$/);
+        continue;
+      }
       expect(s.ciphertext).toBe(`enc:${TENANT}:${Buffer.from(API_KEY).toString("base64")}`);
       expect(await transit.decrypt(TENANT, s.ciphertext!)).toBe(API_KEY);
     }
