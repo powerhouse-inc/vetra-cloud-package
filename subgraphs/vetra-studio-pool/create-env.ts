@@ -63,6 +63,9 @@ export async function createStudioEnvironmentDoc(
         package: { registry: cfg.registry, name: "vetra-cli", version: cfg.version },
         env: [
           { name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false },
+          // The env's own document id, so the agent (and the studio's Deploy
+          // view via studio.config.json) can scope GitHub connections to it.
+          { name: "VETRA_ENVIRONMENT_ID", value: documentId, isSecret: false },
           // Gate agent work on a credential: an unclaimed (key-less) warm pod
           // refuses to run until a claim injects the key — so "no key" is the
           // lock, complementing/replacing the network policy.
