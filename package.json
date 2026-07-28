@@ -1,7 +1,11 @@
 {
   "name": "@powerhousedao/vetra-cloud-package",
-  "version": "0.0.13-dev.20",
+  "version": "0.0.21-dev.0",
   "license": "AGPL-3.0-only",
+  "author": {
+    "name": "Powerhouse",
+    "url": "https://powerhouse.inc"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/powerhouse-inc/vetra-cloud-package.git"
