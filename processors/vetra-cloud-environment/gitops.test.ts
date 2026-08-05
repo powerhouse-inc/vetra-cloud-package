@@ -103,6 +103,35 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  it("right-sizes the studio CNPG database requests (cpu 250m / mem 1Gi, burst limits unchanged)", async () => {
+    // A SWITCHBOARD service enables the per-studio CNPG cluster. Studio DBs are
+    // tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi mem, so the old
+    // flat 2-core / 2Gi *request* over-reserved ~20-40x and pinned nodes. Cut
+    // the requests to a real-usage floor; keep limits at 8 cores / 8Gi so the DB
+    // still bursts freely under event load (no OOM / throttle risk).
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: null,
+          },
+        ],
+      }),
+      "doc-db-rightsize",
+    );
+    expect(yaml).toMatch(
+      /database:[\s\S]*?cnpg:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?memory:\s*1Gi[\s\S]*?cpu:\s*"250m"[\s\S]*?limits:[\s\S]*?memory:\s*8Gi[\s\S]*?cpu:\s*"8"/,
+    );
+  });
+
   it("emits L resources when switchboard selectedRessource = VETRA_AGENT_L", async () => {
     const yaml = await generateValuesYaml(
       dbStub,

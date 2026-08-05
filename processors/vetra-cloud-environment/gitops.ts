@@ -962,9 +962,16 @@ database:
         schedule: 0 2 * * *
         immediate: true
     resources:
+      # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
+      # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
+      # the single biggest CPU reservation in the cluster (~60 cores across ~30
+      # studio DBs vs ~1.5 cores actually used). Cut requests to a real-usage
+      # floor; limits stay 8 cores / 8Gi so the DB still bursts freely under
+      # event load — this reclaims the idle scheduling floor only, no OOM or
+      # throttle risk. (Right-sized 2026-08-05.)
       requests:
-        memory: 2Gi
-        cpu: "2"
+        memory: 1Gi
+        cpu: "250m"
       limits:
         memory: 8Gi
         cpu: "8"
