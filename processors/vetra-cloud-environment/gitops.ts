@@ -968,10 +968,12 @@ database:
       # studio DBs vs ~1.5 cores actually used). Cut requests to a real-usage
       # floor; limits stay 8 cores / 8Gi so the DB still bursts freely under
       # event load — this reclaims the idle scheduling floor only, no OOM or
-      # throttle risk. (Right-sized 2026-08-05.)
+      # throttle risk. (Right-sized 2026-08-05; trimmed again 2026-08-11 to
+      # 512Mi/100m after live steady-state measured median ~161Mi/40m, p90
+      # ~178Mi over 34 DBs — 1Gi/250m was still ~5-6x over-reserved.)
       requests:
-        memory: 1Gi
-        cpu: "250m"
+        memory: 512Mi
+        cpu: "100m"
       limits:
         memory: 8Gi
         cpu: "8"
