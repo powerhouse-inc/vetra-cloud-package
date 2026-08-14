@@ -16,10 +16,14 @@ function mockRepo(
 }
 
 function mockK8s(): K8sClient & {
+  listNamespaceNames: ReturnType<typeof vi.fn>;
   upsertConfigMap: ReturnType<typeof vi.fn>;
   upsertSecret: ReturnType<typeof vi.fn>;
 } {
   return {
+    // Default: every namespace a test references exists. Tests that exercise
+    // the orphan-skip path override this with an explicit set.
+    listNamespaceNames: vi.fn().mockResolvedValue(new Set<string>()),
     upsertConfigMap: vi.fn().mockResolvedValue("updated"),
     upsertSecret: vi.fn().mockResolvedValue("updated"),
   };
@@ -157,6 +161,7 @@ describe("reconcileAll", () => {
       }),
     });
     const k8s = mockK8s();
+    k8s.listNamespaceNames.mockResolvedValue(new Set(["a", "b", "c"]));
     const r = createReconciler({
       repo,
       k8s,
@@ -176,5 +181,70 @@ describe("reconcileAll", () => {
       expect.objectContaining({ namespace: "c" }),
       {},
     );
+  });
+
+  it("skips tenants whose namespace does not exist — no DB read, no decrypt, no upsert", async () => {
+    const envVarsForTenant = vi.fn().mockResolvedValue([]);
+    // Only the orphan "gone" carries a secret — if it were (wrongly)
+    // reconciled, transit.decrypt would fire. "live" has none, so a clean run
+    // decrypts nothing at all.
+    const secretsForTenant = vi.fn().mockImplementation(async (id: string) =>
+      id === "gone" ? [{ key: "K", ciphertext: "vault:v1:secret" }] : [],
+    );
+    const repo = mockRepo({
+      allTenantIds: vi.fn().mockResolvedValue(["live", "gone"]),
+      envVarsForTenant,
+      secretsForTenant,
+    });
+    const k8s = mockK8s();
+    // Only "live" has a namespace; "gone" is a slept/deleted studio.
+    k8s.listNamespaceNames.mockResolvedValue(new Set(["live"]));
+    const transit = mockTransit();
+    const r = createReconciler({
+      repo,
+      k8s,
+      transit,
+      managedLabelValue: "test",
+    });
+
+    await r.reconcileAll();
+
+    // live reconciled exactly once
+    expect(k8s.upsertConfigMap).toHaveBeenCalledTimes(1);
+    expect(k8s.upsertConfigMap).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "live" }),
+      {},
+    );
+    // gone is skipped entirely — no create attempt, no DB fetch, no OpenBao
+    // decrypt. This is what stops the per-sweep spam + churn for orphans.
+    expect(k8s.upsertConfigMap).not.toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "gone" }),
+      expect.anything(),
+    );
+    expect(envVarsForTenant).not.toHaveBeenCalledWith("gone");
+    expect(secretsForTenant).not.toHaveBeenCalledWith("gone");
+    expect(transit.decrypt).not.toHaveBeenCalled();
+  });
+
+  it("falls back to reconciling all tenants when namespace listing is denied (pre-RBAC)", async () => {
+    const repo = mockRepo({
+      allTenantIds: vi.fn().mockResolvedValue(["a", "b"]),
+    });
+    const k8s = mockK8s();
+    k8s.listNamespaceNames.mockRejectedValue(
+      new Error('namespaces is forbidden: cannot list resource "namespaces"'),
+    );
+    const r = createReconciler({
+      repo,
+      k8s,
+      transit: mockTransit(),
+      managedLabelValue: "test",
+    });
+
+    await r.reconcileAll();
+
+    // Degraded but functional: without the namespace list we reconcile all,
+    // exactly as before this filter existed — no regression on missing RBAC.
+    expect(k8s.upsertConfigMap).toHaveBeenCalledTimes(2);
   });
 });

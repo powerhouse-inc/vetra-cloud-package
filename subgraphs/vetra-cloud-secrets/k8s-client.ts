@@ -13,6 +13,12 @@ export interface K8sResourceSpec {
 }
 
 export interface K8sClient {
+  /**
+   * Names of all namespaces currently in the cluster. Used by the reconciler
+   * to skip tenants whose namespace no longer exists (slept/deleted studios)
+   * instead of issuing per-tenant creates that 404 on every sweep.
+   */
+  listNamespaceNames(): Promise<Set<string>>;
   upsertConfigMap(
     spec: K8sResourceSpec,
     data: Record<string, string>,
@@ -116,6 +122,21 @@ export function createK8sClient(): K8sClient {
   }
 
   return {
+    async listNamespaceNames() {
+      // client-node 1.x returns the V1NamespaceList body directly. Read
+      // defensively so a shape change degrades to "no names" rather than
+      // throwing (the reconciler treats a throw as "fall back to no filter").
+      const res = (await api.listNamespace()) as {
+        items?: Array<{ metadata?: { name?: string } }>;
+      };
+      const names = new Set<string>();
+      for (const ns of res.items ?? []) {
+        const name = ns.metadata?.name;
+        if (name) names.add(name);
+      }
+      return names;
+    },
+
     async upsertConfigMap(spec, data) {
       try {
         const existing = await api.readNamespacedConfigMap({
