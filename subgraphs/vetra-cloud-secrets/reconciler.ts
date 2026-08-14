@@ -88,9 +88,37 @@ export function createReconciler(deps: ReconcilerDeps): Reconciler {
 
   async function reconcileAll(): Promise<void> {
     const tenantIds = (await repo.allTenantIds()).sort();
-    console.info(`[reconciler] full reconcile: ${tenantIds.length} tenant(s)`);
+
+    // Only tenants whose namespace still exists can receive their
+    // ConfigMap/Secret. Slept or deleted studios keep their DB rows but their
+    // namespace is gone; reconciling them decrypts every secret via OpenBao
+    // and issues creates that 404 on every sweep — pure log spam and wasted
+    // work that scales with the orphan backlog. Fetch the live namespace set
+    // once and reconcile only the tenants that have one.
+    //
+    // If we can't list namespaces (older RBAC without the namespaces:list
+    // grant), fall back to reconciling every tenant — degraded but functional,
+    // exactly as before this filter existed. No hard dependency on the RBAC
+    // rollout ordering.
+    let liveTenantIds = tenantIds;
+    let skipped = 0;
+    try {
+      const namespaces = await k8s.listNamespaceNames();
+      liveTenantIds = tenantIds.filter((id) => namespaces.has(id));
+      skipped = tenantIds.length - liveTenantIds.length;
+    } catch (err) {
+      console.warn(
+        `[reconciler] could not list namespaces (${err instanceof Error ? err.message : String(err)}); reconciling all ${tenantIds.length} tenant(s) without namespace pre-filter`,
+      );
+    }
+
+    console.info(
+      `[reconciler] full reconcile: ${liveTenantIds.length} tenant(s)` +
+        (skipped > 0 ? ` (${skipped} skipped: no namespace)` : ""),
+    );
+
     const errors: Array<{ tenantId: string; error: string }> = [];
-    for (const tenantId of tenantIds) {
+    for (const tenantId of liveTenantIds) {
       try {
         await reconcileTenant(tenantId);
       } catch (err) {
