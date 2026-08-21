@@ -13,14 +13,14 @@ const OTHER = "0xdef";
 let db: Kysely<ObservabilityDB>;
 let envDb: Kysely<any>;
 
-/** A CLINT studio service (vetra-cli) at the given prefix. */
-function studioServices(prefix: string) {
+/** A CLINT studio service at the given prefix, under the given package name. */
+function studioServices(prefix: string, pkg = "vetra-cli") {
   return JSON.stringify([
     {
       type: "CLINT",
       prefix,
       enabled: true,
-      config: { package: { name: "vetra-cli" } },
+      config: { package: { name: pkg } },
     },
   ]);
 }
@@ -193,6 +193,23 @@ describe("myStudioProducts", () => {
       { user: { address: ME } },
     );
     expect(out.map((p: { envId: string }) => p.envId)).toEqual(["claimed"]);
+  });
+
+  it("matches a studio under the renamed `vetra` package name", async () => {
+    await seedEnv({
+      id: "renamed",
+      subdomain: "renamed",
+      owner: ME,
+      services: studioServices("studio", "vetra"),
+    });
+
+    const resolvers = makeResolvers();
+    const out = await resolvers.Query.myStudioProducts(
+      null,
+      {},
+      { user: { address: ME } },
+    );
+    expect(out.map((p: { envId: string }) => p.envId)).toEqual(["renamed"]);
   });
 
   it("excludes terminal (TERMINATING) envs", async () => {
