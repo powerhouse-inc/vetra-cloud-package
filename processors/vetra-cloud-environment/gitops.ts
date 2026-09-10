@@ -705,6 +705,68 @@ function defaultAppImageTag(): string {
   return process.env.DEFAULT_APP_IMAGE_TAG ?? "dev";
 }
 
+// Probes must stay OFF /graphql: with REQUIRE_AUTHENTICATED_CALLER=true the
+// require-auth middleware 401s anonymous callers before any subgraph, so a
+// `wget /graphql` probe fails on a perfectly healthy pod and the studio never
+// rolls. reactor-api registers /health and /ready directly on the http adapter
+// ahead of auth, so both answer regardless of the flag.
+//
+// /ready (reactor-api b8966f5a2) first shipped in v6.2.0-dev.4. Studios pinned
+// to anything older 404 on it, and a 404 readiness probe leaves them
+// permanently un-Ready — so those keep readiness on /health until upgraded.
+const READY_ENDPOINT_MIN_VERSION = "6.2.0-dev.4";
+
+type ParsedVersion = { core: [number, number, number]; pre: (string | number)[] };
+
+function parseImageVersion(tag: string): ParsedVersion | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(tag.trim());
+  if (!m) return null;
+  const pre = m[4]
+    ? m[4].split(".").map((p) => (/^\d+$/.test(p) ? Number(p) : p))
+    : [];
+  return { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre };
+}
+
+/** Semver precedence, including prerelease rules (semver spec §11). */
+function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
+  for (let i = 0; i < 3; i++) {
+    if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+  }
+  // A version with no prerelease outranks one that has it.
+  if (a.pre.length === 0 && b.pre.length === 0) return 0;
+  if (a.pre.length === 0) return 1;
+  if (b.pre.length === 0) return -1;
+  const shared = Math.min(a.pre.length, b.pre.length);
+  for (let i = 0; i < shared; i++) {
+    const x = a.pre[i];
+    const y = b.pre[i];
+    const xNum = typeof x === "number";
+    const yNum = typeof y === "number";
+    if (xNum && yNum) {
+      if (x !== y) return x < y ? -1 : 1;
+    } else if (xNum) {
+      return -1; // numeric identifiers rank below alphanumeric ones
+    } else if (yNum) {
+      return 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  // Every shared identifier is equal: the shorter prerelease ranks lower.
+  if (a.pre.length === b.pre.length) return 0;
+  return a.pre.length < b.pre.length ? -1 : 1;
+}
+
+/**
+ * Whether a switchboard image tag serves /ready. Floating tags (`dev`,
+ * `latest`) and anything unparseable are treated as current.
+ */
+export function switchboardHasReadyEndpoint(tag: string): boolean {
+  const parsed = parseImageVersion(tag);
+  if (!parsed) return true;
+  return compareVersions(parsed, parseImageVersion(READY_ENDPOINT_MIN_VERSION)!) >= 0;
+}
+
 export async function generateValuesYaml(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
@@ -739,6 +801,10 @@ export async function generateValuesYaml(
     (s) => s.type === "CONNECT",
   );
   const switchboardTag = switchboardService?.version ?? defaultAppImageTag();
+  // /health is safe on every image; /ready only from v6.2.0-dev.4 (see above).
+  const switchboardReadinessPath = switchboardHasReadyEndpoint(switchboardTag)
+    ? "/ready"
+    : "/health";
   const connectTag = connectService?.version ?? defaultAppImageTag();
   const switchboardResources =
     APP_RESOURCE_MAP[readServiceSize(switchboardService)];
@@ -994,26 +1060,25 @@ switchboard:
     - secretRef:
         name: ${tenantId}-secrets
         optional: true
+  # /health and /ready are registered ahead of auth, so these keep working with
+  # REQUIRE_AUTHENTICATED_CALLER=true. "exec: null" clears the chart's default
+  # exec probe: Helm merges maps, and a probe with two handler types is rejected.
   livenessProbe:
     enabled: true
-    exec:
-      command:
-        - /bin/sh
-        - -c
-        - |
-          wget --post-data='{"query":"{__typename}"}' --header='Content-Type: application/json' -qO- http://localhost:3000/graphql
+    exec: null
+    httpGet:
+      path: /health
+      port: http
     initialDelaySeconds: 120
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 6
   readinessProbe:
     enabled: true
-    exec:
-      command:
-        - /bin/sh
-        - -c
-        - |
-          wget --post-data='{"query":"{__typename}"}' --header='Content-Type: application/json' -qO- http://localhost:3000/graphql
+    exec: null
+    httpGet:
+      path: ${switchboardReadinessPath}
+      port: http
     initialDelaySeconds: 15
     periodSeconds: 5
     timeoutSeconds: 5
