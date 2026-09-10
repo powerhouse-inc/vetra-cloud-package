@@ -104,7 +104,7 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
-  it("right-sizes the studio CNPG database requests (cpu 250m / mem 1Gi, burst limits unchanged)", async () => {
+  it("right-sizes the studio CNPG database requests (cpu 100m / mem 512Mi, burst limits unchanged)", async () => {
     // A SWITCHBOARD service enables the per-studio CNPG cluster. Studio DBs are
     // tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi mem, so the old
     // flat 2-core / 2Gi *request* over-reserved ~20-40x and pinned nodes. Cut
@@ -129,7 +129,7 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
       "doc-db-rightsize",
     );
     expect(yaml).toMatch(
-      /database:[\s\S]*?cnpg:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?memory:\s*1Gi[\s\S]*?cpu:\s*"250m"[\s\S]*?limits:[\s\S]*?memory:\s*8Gi[\s\S]*?cpu:\s*"8"/,
+      /database:[\s\S]*?cnpg:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?memory:\s*512Mi[\s\S]*?cpu:\s*"100m"[\s\S]*?limits:[\s\S]*?memory:\s*8Gi[\s\S]*?cpu:\s*"8"/,
     );
   });
 
