@@ -9,6 +9,7 @@ import {
   effectiveApexType,
   isTypeAtApex,
   assertHostLabelLength,
+  switchboardHasReadyEndpoint,
 } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
@@ -957,4 +958,76 @@ describe("generateValuesYaml — flattened hosts + wildcardTls", () => {
     ).rejects.toThrow(/exceeds 63 chars/);
   });
 });
+});
+
+
+describe("generateValuesYaml — switchboard probes", () => {
+  // A `wget /graphql` probe is anonymous, so REQUIRE_AUTHENTICATED_CALLER=true
+  // makes it 401 on a healthy pod and the studio never rolls (seen on
+  // light-colt). /health and /ready sit ahead of auth on the http adapter.
+  it("never probes /graphql", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [{ type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "ACTIVE", version: "v6.2.3-dev.2", config: null, selectedRessource: null }] }),
+      "doc-1",
+    );
+    expect(yaml).not.toContain("/graphql");
+  });
+
+  it("puts liveness on /health and readiness on /ready for a current image", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [{ type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "ACTIVE", version: "v6.2.3-dev.2", config: null, selectedRessource: null }] }),
+      "doc-1",
+    );
+    expect(yaml).toMatch(
+      /livenessProbe:\s*\n\s*enabled: true\s*\n\s*exec: null\s*\n\s*httpGet:\s*\n\s*path: \/health\s*\n\s*port: http/,
+    );
+    expect(yaml).toMatch(
+      /readinessProbe:\s*\n\s*enabled: true\s*\n\s*exec: null\s*\n\s*httpGet:\s*\n\s*path: \/ready\s*\n\s*port: http/,
+    );
+  });
+
+  // v6.0.0-dev.193 predates /ready and 404s on it; a 404 readiness probe would
+  // leave the studio permanently un-Ready (verified live on glad-kite).
+  it("keeps readiness on /health for an image older than v6.2.0-dev.4", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [{ type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "ACTIVE", version: "v6.0.0-dev.193", config: null, selectedRessource: null }] }),
+      "doc-1",
+    );
+    expect(yaml).toMatch(
+      /readinessProbe:\s*\n\s*enabled: true\s*\n\s*exec: null\s*\n\s*httpGet:\s*\n\s*path: \/health\s*\n\s*port: http/,
+    );
+    expect(yaml).not.toContain("path: /ready");
+  });
+});
+
+describe("switchboardHasReadyEndpoint", () => {
+  // tags observed live in the cluster, with their real /ready behaviour
+  it.each([
+    ["v6.2.3-dev.2", true],
+    ["v6.2.2-dev.0", true],
+    ["v6.2.1", true],
+    ["v6.2.0-rc.8", true],
+    ["v6.2.0-dev.46", true],
+    ["v6.2.0-dev.12", true],
+    ["v6.2.0-dev.4", true],
+    ["v6.2.0-dev.3", false],
+    ["v6.0.0-dev.193", false],
+    ["v6.0.0-dev.192", false],
+    ["v1.3.8", false],
+  ])("%s -> %s", (tag, expected) => {
+    expect(switchboardHasReadyEndpoint(tag as string)).toBe(expected);
+  });
+
+  it("treats floating and unparseable tags as current", () => {
+    expect(switchboardHasReadyEndpoint("dev")).toBe(true);
+    expect(switchboardHasReadyEndpoint("latest")).toBe(true);
+    expect(switchboardHasReadyEndpoint("")).toBe(true);
+  });
+
+  it("ranks a release above its own prereleases", () => {
+    expect(switchboardHasReadyEndpoint("v6.2.0")).toBe(true);
+  });
 });
