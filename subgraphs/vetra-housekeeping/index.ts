@@ -2,7 +2,11 @@ import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
 import { schema } from "./schema.js";
-import { createResolvers, type StudioPowerStateResult } from "./resolvers.js";
+import {
+  createResolvers,
+  type StudioCandidate,
+  type StudioPowerStateResult,
+} from "./resolvers.js";
 import { findStudioByHost, listReadyStudios, type StudioRow } from "./db.js";
 import {
   deriveStudioPowerState,
@@ -10,7 +14,7 @@ import {
   type StudioPowerStatus,
 } from "./policy.js";
 import { createLokiClient } from "./loki.js";
-import { HousekeepingKeeper, loadKeeperConfig } from "./keeper.js";
+import { HousekeepingKeeper, loadKeeperConfig, studioHost } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
 import {
   sleepEnvironment,
@@ -87,6 +91,23 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
       return result(host, row, "WAKING");
     };
 
+    // Raw candidate rows for the external idle detector (Task 1.1): same source
+    // rows as the in-process keeper, just unfiltered/unclassified — the external
+    // service runs its own eligibility instead of trusting `studioActivity`.
+    const readyStudios = async (): Promise<StudioCandidate[]> => {
+      const rows = await listReadyStudios(envDb);
+      return rows.map((row) => ({
+        host: studioHost(row.subdomain ?? "", keeperConfig.baseDomain),
+        subdomain: row.subdomain ?? null,
+        envId: row.envId,
+        owner: row.owner ?? null,
+        status: row.status ?? "",
+        poolState: row.poolState ?? null,
+        tenantId: row.tenantId ?? null,
+        services: row.services ?? null,
+      }));
+    };
+
     // In-process idle detector + on-demand classifier (like the studio-pool
     // keeper). Build the keeper UNCONDITIONALLY so the read-only `studioActivity`
     // query works even when the auto-sleep loop is off; only START the periodic
@@ -113,8 +134,14 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
       sleep,
       wake,
       studioActivity: () => keeper.classifyAll(),
+      readyStudios,
     });
 
+    // DEPRECATION: this in-process detector is being extracted to the standalone
+    // tier-aware housekeeping service (see docs/superpowers/specs/2026-07-17-
+    // housekeeping-service-extraction-design.md). Keep it running until the
+    // service's detector is verified on both tiers, then set
+    // HOUSEKEEPING_DETECTOR_ENABLED=false per tier (cutover) and remove.
     if (keeperConfig.enabled) {
       keeper.start();
       console.info(

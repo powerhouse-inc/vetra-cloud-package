@@ -1,10 +1,37 @@
+import { timingSafeEqual } from "node:crypto";
 import type { StudioPowerStatus } from "./policy.js";
 import type { StudioActivity } from "./keeper.js";
 
-/** Subset of the reactor-api resolver context — mirrors vetra-access-codes. */
+/**
+ * Subset of the reactor-api resolver context — mirrors vetra-access-codes.
+ *
+ * `headers` is the real reactor-api `Context.headers` (IncomingHttpHeaders):
+ * unlike `user` (populated by the gateway's own bearer-verification, and
+ * `additionalContextFields`, which is a static/global merge — neither is a
+ * per-subgraph, per-request hook), raw request headers ARE forwarded to every
+ * resolver call as-is. `internalKey` is the resolved `x-housekeeping-key`
+ * value; resolvers read it via `resolveInternalKey` below, which prefers an
+ * already-set `ctx.internalKey` (what the unit tests provide) and otherwise
+ * derives it from `ctx.headers`.
+ */
 interface AuthContext {
   user?: { address: string; chainId: number; networkId: string };
+  internalKey?: string;
+  headers?: Record<string, string | string[] | undefined>;
 }
+
+/** Every raw field the external idle detector needs to run eligibility itself. */
+export type StudioCandidate = {
+  host: string;
+  subdomain: string | null;
+  envId: string;
+  owner: string | null;
+  status: string;
+  poolState: string | null;
+  tenantId: string | null;
+  /** JSON string of the env's services, as stored (read-model `environments.services`). */
+  services: string | null;
+};
 
 export type StudioPowerStateResult = {
   host: string;
@@ -23,6 +50,8 @@ export interface HousekeepingDeps {
   wake: (host: string) => Promise<StudioPowerStateResult>;
   /** Read-only: classify every claimed READY studio (idle detector's view). */
   studioActivity: () => Promise<StudioActivity[]>;
+  /** Read-only: raw claimed-READY candidate rows for an external detector to run eligibility itself. */
+  readyStudios: () => Promise<StudioCandidate[]>;
 }
 
 /**
@@ -43,6 +72,36 @@ function requireAdmin(ctx: AuthContext): void {
   }
 }
 
+/** Constant-time string compare, guarded against length mismatch (which `timingSafeEqual` throws on). */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/** Prefer an already-resolved `ctx.internalKey` (unit tests); else read the raw request header. */
+function resolveInternalKey(ctx: AuthContext): string | undefined {
+  if (typeof ctx.internalKey === "string") return ctx.internalKey;
+  const raw = ctx.headers?.["x-housekeeping-key"];
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+/**
+ * Gate for the external-detector surface: passes if the caller presents the
+ * shared `HOUSEKEEPING_INTERNAL_KEY` (constant-time compare, non-empty on both
+ * sides) OR is an admin (`requireAdmin`). Used by `readyStudios` here; Task 1.2
+ * reuses this same helper for `sleepStudio`.
+ */
+function requireInternalOrAdmin(ctx: AuthContext): void {
+  const expected = process.env.HOUSEKEEPING_INTERNAL_KEY ?? "";
+  const provided = resolveInternalKey(ctx) ?? "";
+  if (expected.length > 0 && provided.length > 0 && safeEqual(provided, expected)) {
+    return;
+  }
+  requireAdmin(ctx);
+}
+
 export function createResolvers(deps: HousekeepingDeps): Record<string, any> {
   return {
     Query: {
@@ -58,14 +117,23 @@ export function createResolvers(deps: HousekeepingDeps): Record<string, any> {
         requireAdmin(ctx);
         return deps.studioActivity();
       },
+      // Raw candidate rows for an external idle detector — internal-service key or admin.
+      // async: a synchronous throw here would reject the *call* itself rather than
+      // the returned promise, breaking `await expect(...).rejects.toThrow(...)`.
+      readyStudios: async (_p: unknown, _a: unknown, ctx: AuthContext) => {
+        requireInternalOrAdmin(ctx);
+        return deps.readyStudios();
+      },
     },
     Mutation: {
       VetraHousekeeping: () => ({}),
     },
     VetraHousekeepingMutations: {
-      // Manual "sleep now" — admin only.
-      sleepStudio: (_p: unknown, args: { host: string }, ctx: AuthContext) => {
-        requireAdmin(ctx);
+      // Manual "sleep now" — internal-service key or admin.
+      // async: a synchronous throw here would reject the *call* itself rather than
+      // the returned promise, breaking `await expect(...).rejects.toThrow(...)`.
+      sleepStudio: async (_p: unknown, args: { host: string }, ctx: AuthContext) => {
+        requireInternalOrAdmin(ctx);
         return deps.sleep(args.host);
       },
       // Open + idempotent: waking is inherently triggered by "someone wants this

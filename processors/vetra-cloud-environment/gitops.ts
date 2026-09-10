@@ -471,6 +471,23 @@ const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
 };
 
 /**
+ * Connect is a static asset server (serves the built SPA). Measured 7-day peak
+ * across the fleet: ~3m CPU / 35Mi memory, FLAT across all studios and
+ * insensitive to studio activity — event load (e.g. DWeb Camp, ~651 studios)
+ * only adds more connect pods, never more per-pod work. So connect gets its own
+ * tiny, size-independent map instead of sharing the heavy APP_RESOURCE_MAP
+ * (which reserved up to 4 cores / 8Gi for a workload that never exceeds 35Mi).
+ * Requests are ~2x the observed max memory and generous on CPU; limits keep a
+ * large burst ceiling (Node GC / page-load spikes) so nothing ever throttles.
+ * Size selection is intentionally ignored for connect — every tier is identical.
+ */
+const CONNECT_RESOURCES: ResourceSpec = {
+  requests: { cpu: "25m", memory: "64Mi" },
+  limits: { cpu: "500m", memory: "512Mi" },
+  nodeMaxOldSpaceMb: 384,
+};
+
+/**
  * Resolve the effective t-shirt size for a service. Reads the top-level
  * `selectedRessource` first, falls back to the legacy CLINT
  * `config.selectedRessource` (one-release transition), then to S.
@@ -808,7 +825,8 @@ export async function generateValuesYaml(
   const connectTag = connectService?.version ?? defaultAppImageTag();
   const switchboardResources =
     APP_RESOURCE_MAP[readServiceSize(switchboardService)];
-  const connectResources = APP_RESOURCE_MAP[readServiceSize(connectService)];
+  // Connect uses its own flat spec, not APP_RESOURCE_MAP — see CONNECT_RESOURCES.
+  const connectResources = CONNECT_RESOURCES;
   // STOPPED = housekeeping sleep (wakeable): renders global.disabled=true so the
   // workload + ingress are removed, but the namespace/PVC/secrets/cert remain.
   const DISABLED_STATUSES = new Set([
@@ -1010,9 +1028,18 @@ database:
         schedule: 0 2 * * *
         immediate: true
     resources:
+      # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
+      # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
+      # the single biggest CPU reservation in the cluster (~60 cores across ~30
+      # studio DBs vs ~1.5 cores actually used). Cut requests to a real-usage
+      # floor; limits stay 8 cores / 8Gi so the DB still bursts freely under
+      # event load — this reclaims the idle scheduling floor only, no OOM or
+      # throttle risk. (Right-sized 2026-08-05; trimmed again 2026-08-11 to
+      # 512Mi/100m after live steady-state measured median ~161Mi/40m, p90
+      # ~178Mi over 34 DBs — 1Gi/250m was still ~5-6x over-reserved.)
       requests:
-        memory: 2Gi
-        cpu: "2"
+        memory: 512Mi
+        cpu: "100m"
       limits:
         memory: 8Gi
         cpu: "8"

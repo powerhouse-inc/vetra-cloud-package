@@ -104,6 +104,35 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  it("right-sizes the studio CNPG database requests (cpu 250m / mem 1Gi, burst limits unchanged)", async () => {
+    // A SWITCHBOARD service enables the per-studio CNPG cluster. Studio DBs are
+    // tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi mem, so the old
+    // flat 2-core / 2Gi *request* over-reserved ~20-40x and pinned nodes. Cut
+    // the requests to a real-usage floor; keep limits at 8 cores / 8Gi so the DB
+    // still bursts freely under event load (no OOM / throttle risk).
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [
+          {
+            type: "SWITCHBOARD",
+            prefix: "switchboard",
+            enabled: true,
+            url: null,
+            status: "ACTIVE",
+            version: null,
+            config: null,
+            selectedRessource: null,
+          },
+        ],
+      }),
+      "doc-db-rightsize",
+    );
+    expect(yaml).toMatch(
+      /database:[\s\S]*?cnpg:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?memory:\s*1Gi[\s\S]*?cpu:\s*"250m"[\s\S]*?limits:[\s\S]*?memory:\s*8Gi[\s\S]*?cpu:\s*"8"/,
+    );
+  });
+
   it("emits L resources when switchboard selectedRessource = VETRA_AGENT_L", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
@@ -128,28 +157,34 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
-  it("emits XL resources for connect when selectedRessource = VETRA_AGENT_XL", async () => {
-    const yaml = await generateValuesYaml(
-      dbStub,
-      envState({
-        services: [
-          {
-            type: "CONNECT",
-            prefix: "connect",
-            enabled: true,
-            url: null,
-            status: "ACTIVE",
-            version: null,
-            config: null,
-            selectedRessource: "VETRA_AGENT_XL",
-          },
-        ],
-      }),
-      "doc-3",
-    );
-    expect(yaml).toMatch(
-      /connect:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?cpu:\s*"2"[\s\S]*?memory:\s*"4Gi"[\s\S]*?limits:[\s\S]*?cpu:\s*"6"[\s\S]*?memory:\s*"8Gi"/,
-    );
+  it("emits the flat CONNECT_RESOURCE_MAP spec regardless of selectedRessource (static frontend)", async () => {
+    // Connect is a static asset server: measured peak ~3m CPU / 35Mi mem, flat
+    // across all studios and INSENSITIVE to how heavily the studio is used
+    // (event load only adds more studios, not more per-connect work). So it has
+    // its own tiny, size-independent map instead of sharing APP_RESOURCE_MAP.
+    const connectSpec =
+      /connect:[\s\S]*?resources:[\s\S]*?requests:[\s\S]*?cpu:\s*"25m"[\s\S]*?memory:\s*"64Mi"[\s\S]*?limits:[\s\S]*?cpu:\s*"500m"[\s\S]*?memory:\s*"512Mi"/;
+    for (const size of ["VETRA_AGENT_S", "VETRA_AGENT_XL", "VETRA_AGENT_XXL"] as const) {
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({
+          services: [
+            {
+              type: "CONNECT",
+              prefix: "connect",
+              enabled: true,
+              url: null,
+              status: "ACTIVE",
+              version: null,
+              config: null,
+              selectedRessource: size,
+            },
+          ],
+        }),
+        "doc-3",
+      );
+      expect(yaml, `connect spec for ${size}`).toMatch(connectSpec);
+    }
   });
 
   it("emits NODE_OPTIONS sized to ~75% of the pod limit on switchboard", async () => {
@@ -221,9 +256,10 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
       }),
       "doc-node-connect",
     );
-    // L = 4Gi limit → 3072MB
+    // Connect uses its own flat CONNECT_RESOURCES (size-independent): 512Mi
+    // limit → 384MB heap, regardless of the selected t-shirt size.
     expect(yaml).toMatch(
-      /connect:[\s\S]*?env:[\s\S]*?NODE_OPTIONS:\s*"--max-old-space-size=3072"/,
+      /connect:[\s\S]*?env:[\s\S]*?NODE_OPTIONS:\s*"--max-old-space-size=384"/,
     );
   });
 

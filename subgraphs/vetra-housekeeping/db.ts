@@ -1,20 +1,40 @@
 import type { Kysely } from "kysely";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
-import type { EnvRow } from "./policy.js";
+import { DEPLOYMENT_FAILED_STATUS, type EnvRow } from "./policy.js";
 
 /** Full studio row the housekeeping resolvers/service need to act on a host. */
 export type StudioRow = EnvRow & { envId: string };
 
 /**
- * Extract the studio subdomain from a request host. Studios are served at their
- * apex (`<subdomain>.vetra.io`), so the subdomain is the leading DNS label.
- * Strips any port and lowercases.
+ * Service host prefixes/suffixes the gitops renders (see resolveGenericHost).
+ * A CLINT studio is served at its apex (`<sub>.vetra.io`); other services are
+ * `<sub>-<prefix>.vetra.io` (flat) or, on legacy envs, `<prefix>.<sub>.vetra.io`.
+ */
+const SERVICE_TOKENS = ["connect", "switchboard", "vetra-agent"] as const;
+
+/**
+ * Extract the studio/env subdomain from a request host, so the wake activator
+ * can wake an env when ANY of its service hosts is accessed (not just the CLINT
+ * apex). Handles: apex `<sub>.vetra.io`, flat `<sub>-<prefix>.vetra.io`, and
+ * legacy subdomain-style `<prefix>.<sub>.vetra.io`. Strips port and lowercases.
  */
 export function hostToSubdomain(host: string): string | null {
   if (!host) return null;
   const h = host.toLowerCase().split(":")[0].trim();
-  const label = h.split(".")[0];
-  return label || null;
+  const parts = h.split(".");
+  const first = parts[0];
+  if (!first) return null;
+  // Legacy subdomain-style: <prefix>.<sub>.vetra.io — the service prefix is its
+  // own leading label; the subdomain is the next label.
+  if (parts.length >= 3 && (SERVICE_TOKENS as readonly string[]).includes(first)) {
+    return parts[1] || null;
+  }
+  // Flat: <sub>-<prefix>.vetra.io — strip the exact trailing service token.
+  for (const t of SERVICE_TOKENS) {
+    if (first.endsWith(`-${t}`)) return first.slice(0, -(t.length + 1)) || null;
+  }
+  // Apex / anything else: the leading label is the subdomain.
+  return first;
 }
 
 /**
@@ -47,12 +67,14 @@ export async function findStudioByHost(
 /**
  * All claimed studios currently READY — the sleep candidates the in-process
  * keeper evaluates (pre-eligibility; `isEligibleForSleep` filters further).
+ * Also surfaces studios stuck in DEPLOYMENt_FAILED so housekeeping can
+ * reclaim failed deploys that never got a chance to run again.
  */
 export async function listReadyStudios(db: Kysely<DB>): Promise<StudioRow[]> {
   const rows = await db
     .selectFrom("environments")
     .select(["id", "subdomain", "status", "owner", "poolState", "tenantId", "services"])
-    .where("status", "=", "READY")
+    .where("status", "in", ["READY", DEPLOYMENT_FAILED_STATUS])
     .where("owner", "is not", null)
     .execute();
   return rows.map((row) => ({
