@@ -1,4 +1,5 @@
 import { sql, type Kysely } from "kysely";
+import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import type { ObservabilityDB } from "./db/schema.js";
 import { PrometheusClient } from "./prometheus.js";
 import { LokiClient } from "./loki.js";
@@ -349,18 +350,17 @@ export function createResolvers(
           if (!row.subdomain) continue;
 
           const services = parseEnvStudioServices(row.services);
-          // A studio env runs an enabled CLINT service whose package is
-          // vetra-cli — either declared inline on the service config or
-          // recorded in the env's packages array.
-          const hasVetraCliPackage = parseEnvPackages(row.packages).some(
-            (p) => p.name === "vetra-cli",
+          // A studio env runs an enabled studio-agent CLINT service, matched by
+          // inline config package name or the env's packages array.
+          const hasStudioPackage = parseEnvPackages(row.packages).some((p) =>
+            isStudioAgentPackage(p.name),
           );
           const studioService = services.find(
             (s) =>
               s.type === "CLINT" &&
               s.enabled &&
-              (s.packageName === "vetra-cli" ||
-                (s.packageName === null && hasVetraCliPackage)),
+              (isStudioAgentPackage(s.packageName) ||
+                (s.packageName === null && hasStudioPackage)),
           );
           if (!studioService) continue;
 
