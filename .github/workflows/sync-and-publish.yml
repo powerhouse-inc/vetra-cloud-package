@@ -32,6 +32,12 @@ on:
         type: boolean
         default: false
 
+# Serialize releases per ref. Two pushes landing seconds apart both bumped the
+# version and raced on `git push`; the loser died with a non-fast-forward.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   NODE_VERSION: '24'
   PNPM_VERSION: '10'
@@ -45,9 +51,14 @@ jobs:
   prepare:
     name: Prepare Release
     runs-on: ubuntu-latest
-    # Skip commits made by the bot (version bump) to prevent infinite loops
-    if: "!contains(github.event.head_commit.message, '[skip ci]') && github.actor != 'github-actions[bot]'"
+    # Skip the bot's own version-bump push to prevent infinite loops. The
+    # `[skip ci]` opt-out is checked against the commit SUBJECT in the step
+    # below -- `contains()` over the full message matches the squashed bodies
+    # of any PR that carries a bot bump commit, which silently skipped the
+    # release for that merge.
+    if: "github.actor != 'github-actions[bot]'"
     outputs:
+      skip_release: ${{ steps.params.outputs.skip_release }}
       channel: ${{ steps.params.outputs.channel }}
       branch: ${{ steps.params.outputs.branch }}
       project_name: ${{ steps.params.outputs.project_name }}
@@ -56,8 +67,22 @@ jobs:
     steps:
       - name: Determine parameters
         id: params
+        env:
+          # Via env, not inline interpolation: the message is untrusted,
+          # multi-line text.
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           EVENT_NAME="${{ github.event_name }}"
+
+          # Honour [skip ci] only on the subject line of the pushed commit.
+          SKIP_RELEASE="false"
+          if [ "$EVENT_NAME" = "push" ]; then
+            SUBJECT=$(printf '%s\n' "$HEAD_COMMIT_MESSAGE" | head -1)
+            case "$SUBJECT" in
+              *"[skip ci]"*) SKIP_RELEASE="true" ;;
+            esac
+          fi
+          echo "skip_release=$SKIP_RELEASE" >> $GITHUB_OUTPUT
 
           if [ "$EVENT_NAME" = "push" ]; then
             BRANCH_NAME="${GITHUB_REF#refs/heads/}"
@@ -104,6 +129,7 @@ jobs:
   publish:
     name: Publish NPM
     needs: prepare
+    if: needs.prepare.outputs.skip_release != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
