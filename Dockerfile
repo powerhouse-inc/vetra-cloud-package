@@ -159,7 +159,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 RUN pnpm config set @jsr:registry https://npm.jsr.io
 
-COPY package.json pnpm-lock.yaml tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY secrets-controller ./secrets-controller
@@ -210,7 +210,7 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 # Install only the runtime deps the controller actually uses (pg, kysely,
 # @kubernetes/client-node, @powerhousedao/shared, etc.). --ignore-scripts
 # avoids running the package's own postinstall hooks; --prod skips devDeps.
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
 COPY --from=secrets-controller-builder /app/dist-controller ./dist-controller
@@ -246,7 +246,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 RUN pnpm config set @jsr:registry https://npm.jsr.io
 
-COPY package.json pnpm-lock.yaml tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY housekeeping-service ./housekeeping-service
@@ -293,7 +293,7 @@ ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
 COPY --from=housekeeping-service-builder /app/dist-controller ./dist-controller

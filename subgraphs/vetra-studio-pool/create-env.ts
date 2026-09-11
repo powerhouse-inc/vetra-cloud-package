@@ -1,4 +1,5 @@
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
+import { STUDIO_AGENT_PACKAGE } from "../../shared/studio-package.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import {
   setLabel,
@@ -55,14 +56,17 @@ export async function createStudioEnvironmentDoc(
       genericBaseDomain: "vetra.io",
       defaultPackageRegistry: cfg.registry,
     }),
-    addPackage({ packageName: "vetra-cli", version: cfg.version }),
+    addPackage({ packageName: STUDIO_AGENT_PACKAGE, version: cfg.version }),
     enableService({
       type: "CLINT",
       prefix: "vetra-agent",
       clintConfig: {
-        package: { registry: cfg.registry, name: "vetra-cli", version: cfg.version },
+        package: { registry: cfg.registry, name: STUDIO_AGENT_PACKAGE, version: cfg.version },
         env: [
           { name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false },
+          // The env's own document id, so the agent (and the studio's Deploy
+          // view via studio.config.json) can scope GitHub connections to it.
+          { name: "VETRA_ENVIRONMENT_ID", value: documentId, isSecret: false },
           // Gate agent work on a credential: an unclaimed (key-less) warm pod
           // refuses to run until a claim injects the key — so "no key" is the
           // lock, complementing/replacing the network policy.

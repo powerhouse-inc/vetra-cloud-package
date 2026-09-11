@@ -38,6 +38,11 @@ describe("createStudioEnvironmentDoc", () => {
     ]);
     // No ownership action — env stays owner-null until claimed.
     expect((actions as { type: string }[]).some((a) => a.type === "SET_OWNER")).toBe(false);
+    // The studio installs the renamed `vetra` CLI package.
+    const addPkg = (
+      actions as { type: string; input: { packageName?: string } }[]
+    ).find((a) => a.type === "ADD_PACKAGE");
+    expect(addPkg?.input.packageName).toBe("vetra");
     // INITIALIZE carries the derived subdomain.
     const init = (actions as { type: string; input: { genericSubdomain: string } }[]).find(
       (a) => a.type === "INITIALIZE",
@@ -59,6 +64,12 @@ describe("createStudioEnvironmentDoc", () => {
     expect(svc?.input.clintConfig?.env).toContainEqual({
       name: "VETRA_CLOUD_SWITCHBOARD_URL",
       value: "https://switchboard.vetra.io",
+      isSecret: false,
+    });
+    // The env's own document id is stamped so GitHub connections scope to it.
+    expect(svc?.input.clintConfig?.env).toContainEqual({
+      name: "VETRA_ENVIRONMENT_ID",
+      value: res.documentId,
       isSecret: false,
     });
     // The product PUBLISH target is stamped from cfg.registry so the agent
