@@ -12,6 +12,19 @@ export interface GithubInstallations {
   created_at: string;
 }
 
+/**
+ * One row per user: the DID ↔ GitHub identity link, captured during the device
+ * flow exchange (the only moment the caller's GitHub identity is visible).
+ * Enables install-state lookups via the app JWT with no user token.
+ */
+export interface GithubIdentities {
+  user_did: string;
+  github_login: string;
+  github_user_id: string;
+  created_at: string;
+}
+
 export interface VetraGithubAuthDB {
   github_installations: GithubInstallations;
+  github_identities: GithubIdentities;
 }

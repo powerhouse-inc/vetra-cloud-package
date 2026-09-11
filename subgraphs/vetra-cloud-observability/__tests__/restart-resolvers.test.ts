@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   createRestartResolver,
   deploymentSelector,
+  type RestartK8sClient,
   type RestartResolverDeps,
 } from "../restart.js";
 
@@ -20,8 +21,8 @@ function envDbStub(envOwner: string | null) {
   };
 }
 
-let listDeploymentNames: ReturnType<typeof vi.fn>;
-let restartDeployment: ReturnType<typeof vi.fn>;
+let listDeploymentNames: Mock<RestartK8sClient["listDeploymentNames"]>;
+let restartDeployment: Mock<RestartK8sClient["restartDeployment"]>;
 let deps: RestartResolverDeps;
 
 beforeEach(() => {

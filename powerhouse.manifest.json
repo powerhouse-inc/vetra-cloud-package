@@ -58,6 +58,10 @@
     {
       "id": "vetra-housekeeping",
       "name": "Vetra Housekeeping"
+    },
+    {
+      "id": "vetra-github-auth",
+      "name": "Vetra Github Auth"
     }
   ],
   "config": []

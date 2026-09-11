@@ -61,6 +61,12 @@ describe("createStudioEnvironmentDoc", () => {
       value: "https://switchboard.vetra.io",
       isSecret: false,
     });
+    // The env's own document id is stamped so GitHub connections scope to it.
+    expect(svc?.input.clintConfig?.env).toContainEqual({
+      name: "VETRA_ENVIRONMENT_ID",
+      value: res.documentId,
+      isSecret: false,
+    });
     // The product PUBLISH target is stamped from cfg.registry so the agent
     // doesn't fall to vetra-cli's registry.dev.vetra.io default.
     expect(svc?.input.clintConfig?.env).toContainEqual({

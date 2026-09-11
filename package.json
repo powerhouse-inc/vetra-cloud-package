@@ -2,6 +2,10 @@
   "name": "@powerhousedao/vetra-cloud-package",
   "version": "0.0.28",
   "license": "AGPL-3.0-only",
+  "author": {
+    "name": "Powerhouse",
+    "url": "https://powerhouse.inc"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/powerhouse-inc/vetra-cloud-package.git"
@@ -64,6 +68,7 @@
     "build": "ph-cli build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run build",
     "generate": "ph-cli generate",
     "connect": "ph-cli connect",
@@ -124,6 +129,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^3.2.7",
     "better-sqlite3": "^12.9.0",
     "kysely-pglite-dialect": "^1.2.0",
     "oxfmt": "0.55.0",

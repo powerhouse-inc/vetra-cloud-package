@@ -1,12 +1,11 @@
 dist
 coverage
 node_modules
-
 .env.local
-.env
+*.tsbuildinfo
 
 .ph
-.keypair.json
 projects-import.js
+.env
+.keypair.json
 .eslintcache
-tsconfig.tsbuildinfo

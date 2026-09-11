@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -14,9 +14,9 @@ const TENANT = "tenant-1";
 
 let db: Kysely<ObservabilityDB>;
 let repo: DumpsRepo;
-let createJob: ReturnType<typeof vi.fn>;
-let deleteJob: ReturnType<typeof vi.fn>;
-let presign: ReturnType<typeof vi.fn>;
+let createJob: Mock<DumpResolverDeps["createJob"]>;
+let deleteJob: Mock<DumpResolverDeps["deleteJob"]>;
+let presign: Mock<DumpResolverDeps["presign"]>;
 let deps: DumpResolverDeps;
 
 function envDbStub(envOwner: string | null) {

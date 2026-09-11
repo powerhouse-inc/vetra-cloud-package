@@ -1,9 +1,13 @@
-import type { IProcessorHostModule, ProcessorRecord } from "@powerhousedao/reactor-browser";
+import type {
+  IProcessorHostModule,
+  ProcessorFactoryBuilder,
+  ProcessorRecord,
+} from "@powerhousedao/reactor-browser";
 import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
-import { VetraCloudEnvironmentProcessor } from "./index.js";
+import { VetraCloudEnvironmentProcessor } from "./processor.js";
 import { up } from "./migrations.js";
 import { childLogger } from "document-model";
 import type { SecretsDB } from "../../subgraphs/vetra-cloud-secrets/db/schema.js";
@@ -53,7 +57,7 @@ async function createSecretsServiceForProcessor(
   return createSecretsService({ db: secretsDb, transit });
 }
 
-export const vetraCloudEnvironmentProcessorFactory =
+export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
   (module: IProcessorHostModule) =>
   async (driveHeader: PHDocumentHeader): Promise<ProcessorRecord[]> => {
     logger.info(`Creating processor for drive ${driveHeader.id}`);
