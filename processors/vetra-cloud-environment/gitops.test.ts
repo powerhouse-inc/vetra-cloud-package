@@ -133,6 +133,17 @@ describe("generateValuesYaml — switchboard / connect resources", () => {
     );
   });
 
+  // New studio DBs go on longhorn-studio so they can be placed on the Robot
+  // node (hcloud-volumes can't attach there, and the per-node attach cap +
+  // 10Gi floor made it the wrong default). 0.0.26 pinned this on the release
+  // branch; the 0.0.27 reunite with main silently dropped it and 0.0.28 shipped
+  // hcloud-volumes again. Keep the class under test.
+  it("puts new studio CNPG storage on longhorn-studio", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState({}), "doc-db-class");
+    expect(yaml).toMatch(/database:[\s\S]*?cnpg:[\s\S]*?storageClass:\s*longhorn-studio/);
+    expect(yaml).not.toMatch(/database:[\s\S]*?cnpg:[\s\S]*?storageClass:\s*hcloud-volumes/);
+  });
+
   it("emits L resources when switchboard selectedRessource = VETRA_AGENT_L", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
