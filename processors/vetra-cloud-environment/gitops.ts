@@ -1004,7 +1004,7 @@ database:
     enabled: ${databaseEnabled}
     name: ${tenantId}-pg
     instances: 1
-    storageClass: hcloud-volumes
+    storageClass: longhorn-studio
     storageSize: 50Gi
     postgresql:
       maxConnections: "600"
