@@ -8,6 +8,11 @@ import type {
 } from "document-models/vetra-cloud-environment/v1";
 import { actions } from "document-models/vetra-cloud-environment/v1";
 
+// The types this editor offers to enable. DOCLING is deliberately absent: it is
+// a real service type (so it has label/prefix entries below and can be enabled
+// programmatically), but it stays internal-only until its per-tenant cost —
+// ~1 CPU / 2Gi plus a 5Gi model volume — is understood in practice. Add it here
+// to make it self-serve.
 const SERVICE_TYPES: VetraCloudEnvironmentServiceType[] = [
   "CONNECT",
   "SWITCHBOARD",
@@ -20,6 +25,7 @@ const SERVICE_LABELS: Record<VetraCloudEnvironmentServiceType, string> = {
   SWITCHBOARD: "Powerhouse Switchboard",
   FUSION: "Fusion",
   CLINT: "Agent",
+  DOCLING: "Document Conversion",
 };
 
 const DEFAULT_PREFIXES: Record<VetraCloudEnvironmentServiceType, string> = {
@@ -27,6 +33,7 @@ const DEFAULT_PREFIXES: Record<VetraCloudEnvironmentServiceType, string> = {
   SWITCHBOARD: "switchboard",
   FUSION: "fusion",
   CLINT: "agent",
+  DOCLING: "docling",
 };
 
 const SERVICE_STATUS_COLORS: Record<ServiceStatus, { dot: string; label: string }> = {

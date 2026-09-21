@@ -719,6 +719,27 @@ async function generateClintBlock(
 // a changing concrete tag forces a re-pull even on long-lived nodes (kubelet
 // image GC here is disk-pressure-only and never fires). Falls back to the
 // floating `dev` tag when unset. Read per-call so it tracks the live env.
+/**
+ * docling: the tenant's own document-conversion service, rendered by
+ * powerhouse-chart's `docling.*` component.
+ *
+ * Unlike CLINT this is a plain on/off service — no package, no prefix, no
+ * ingress — so the block only ever carries the flag. The chart owns the image,
+ * the model-cache volume, the resource sizing and the CONVERT_SERVICE_URL it
+ * injects into the switchboard, which keeps all of that in one place rather
+ * than duplicated per tenant here.
+ *
+ * Emitted unconditionally (true or false) so the key always exists: a tenant
+ * that turns docling off gets `enabled: false` rather than a vanished block,
+ * which keeps the fleet-wide diff of any future pin bump readable.
+ */
+function generateDoclingBlock(state: VetraCloudEnvironmentState): string {
+  const enabled = (state.services ?? []).some(
+    (s) => s.type === "DOCLING" && s.enabled,
+  );
+  return `docling:\n  enabled: ${enabled}`;
+}
+
 function defaultAppImageTag(): string {
   return process.env.DEFAULT_APP_IMAGE_TAG ?? "dev";
 }
@@ -913,6 +934,7 @@ export async function generateValuesYaml(
   // consumes it to render the agent Deployments/Services/Ingresses.
   // Endpoint discovery is now pull-based (see clint-pull-worker); the
   // chart no longer receives announce env vars.
+  const doclingBlock = generateDoclingBlock(state);
   const clintBlock = await generateClintBlock(
     state,
     documentId,
@@ -1207,6 +1229,7 @@ sentry:
 networkPolicy:
   enabled: false
 ${clintBlock}
+${doclingBlock}
 `;
 }
 

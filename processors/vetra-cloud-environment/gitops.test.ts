@@ -1078,3 +1078,44 @@ describe("switchboardHasReadyEndpoint", () => {
     expect(switchboardHasReadyEndpoint("v6.2.0")).toBe(true);
   });
 });
+
+describe("generateValuesYaml — docling", () => {
+  const doclingService = (enabled: boolean) => ({
+    type: "DOCLING" as const,
+    prefix: "docling",
+    enabled,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  });
+
+  it("emits enabled: false when the tenant has no docling service", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState({}), "doc-docling-none");
+    expect(yaml).toMatch(/docling:\s*\n\s*enabled: false/);
+  });
+
+  it("emits enabled: true when a docling service is enabled", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [doclingService(true)] }),
+      "doc-docling-on",
+    );
+    expect(yaml).toMatch(/docling:\s*\n\s*enabled: true/);
+  });
+
+  it("emits enabled: false when the docling service exists but is switched off", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [doclingService(false)] }),
+      "doc-docling-off",
+    );
+    expect(yaml).toMatch(/docling:\s*\n\s*enabled: false/);
+  });
+
+  it("always emits the key, so a pin bump's fleet-wide diff stays readable", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState({}), "doc-docling-key");
+    expect(yaml).toContain("docling:");
+  });
+});

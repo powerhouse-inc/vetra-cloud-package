@@ -90,6 +90,7 @@ enum VetraCloudEnvironmentServiceType {
   SWITCHBOARD
   FUSION
   CLINT
+  DOCLING
 }
 
 enum ServiceStatus {
