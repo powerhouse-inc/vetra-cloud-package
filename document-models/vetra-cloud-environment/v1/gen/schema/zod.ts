@@ -81,6 +81,7 @@ export const ServiceStatusSchema = z.enum([
 export const VetraCloudEnvironmentServiceTypeSchema = z.enum([
   "CLINT",
   "CONNECT",
+  "DOCLING",
   "FUSION",
   "SWITCHBOARD",
 ]);

@@ -242,6 +242,7 @@ export type VetraCloudEnvironmentService = {
 export type VetraCloudEnvironmentServiceType =
   | "CLINT"
   | "CONNECT"
+  | "DOCLING"
   | "FUSION"
   | "SWITCHBOARD";
 
