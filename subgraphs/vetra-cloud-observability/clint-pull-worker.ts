@@ -2,6 +2,7 @@ import type { Kysely, OnConflictBuilder } from "kysely";
 import type { ILogger } from "document-model";
 import { withTracingSuppressed } from "./trace-suppress.js";
 import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-housekeeping/policy.js";
+import { isApexCapable } from "../../shared/apex.js";
 
 export type ClintServiceTuple = {
   documentId: string;
@@ -316,9 +317,15 @@ export class ClintPullWorker {
       // re-wake it, defeating the sleep. See the studio-housekeeping design.
       if (NO_WORKLOAD_STATUSES.has(row.status ?? "")) continue;
       const all = parseClintServices(row.services);
-      // Apex = sole enabled service (mirrors gitops effectiveApexType's
+      // Apex = sole enabled ROUTABLE service (mirrors gitops effectiveApexType's
       // single-service default) → a Studio's lone CLINT agent is at the apex.
-      const enabledCount = all.filter((s) => s.enabled === true).length;
+      // The isApexCapable filter is shared with gitops on purpose: it excludes
+      // ingress-less types like DOCLING, which otherwise inflate the count and
+      // send us polling `<subdomain>-<prefix>.vetra.io` for an agent that gitops
+      // actually published at the bare `<subdomain>.vetra.io`.
+      const enabledCount = all.filter(
+        (s) => s.enabled === true && isApexCapable(s.type),
+      ).length;
       for (const svc of all) {
         if (svc.type === "CLINT" && svc.enabled === true && svc.prefix) {
           out.push({

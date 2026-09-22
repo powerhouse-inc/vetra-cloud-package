@@ -13,6 +13,7 @@ import type {
 import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
+import { isApexCapable } from "../../shared/apex.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const execFileAsync = promisify(execFile);
@@ -283,15 +284,17 @@ export function resolveGenericHost(
 
 /**
  * The service TYPE served at the env apex (`<subdomain>.vetra.io`). Explicit
- * `apexService` wins; otherwise a lone enabled service auto-claims the apex (so a
- * single-CLINT Studio gets the bare subdomain). Null when ambiguous (multiple
- * enabled services, none pinned).
+ * `apexService` wins; otherwise a lone enabled *routable* service auto-claims the
+ * apex (so a single-CLINT Studio gets the bare subdomain). Null when ambiguous
+ * (multiple enabled services, none pinned) or when nothing routable is enabled.
  */
 export function effectiveApexType(
   state: VetraCloudEnvironmentState,
 ): VetraCloudEnvironmentService["type"] | null {
   if (state.apexService) return state.apexService;
-  const enabled = (state.services ?? []).filter((s) => s.enabled);
+  const enabled = (state.services ?? []).filter(
+    (s) => s.enabled && isApexCapable(s.type),
+  );
   return enabled.length === 1 ? enabled[0].type : null;
 }
 
