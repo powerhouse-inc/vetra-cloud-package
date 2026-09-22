@@ -881,7 +881,7 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
 // ---------------------------------------------------------------------------
 
 const svc = (
-  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION",
+  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION" | "DOCLING",
   prefix: string,
   extra: Record<string, unknown> = {},
 ) =>
@@ -939,6 +939,44 @@ describe("effectiveApexType / isTypeAtApex", () => {
     expect(effectiveApexType(s)).toBe("CONNECT");
     expect(isTypeAtApex(s, "CONNECT")).toBe(true);
     expect(isTypeAtApex(s, "SWITCHBOARD")).toBe(false);
+  });
+
+  // DOCLING renders no ingress at all (generateDoclingBlock emits only a flag),
+  // so it must never participate in the "sole enabled service owns the apex"
+  // default. Before this guard, switching docling on flipped a single-service
+  // env's public host from `<subdomain>.vetra.io` to `<subdomain>-<prefix>.vetra.io`
+  // -- enabling a background converter silently moved the tenant's URL.
+  it("docling does not steal the apex from a lone ingress service", () => {
+    const s = envState({ services: [clintSvc(), svc("DOCLING", "docling")] });
+    expect(effectiveApexType(s)).toBe("CLINT");
+    expect(isTypeAtApex(s, "CLINT")).toBe(true);
+  });
+
+  it("docling never claims the apex even when it is the only enabled service", () => {
+    const s = envState({ services: [svc("DOCLING", "docling")] });
+    expect(effectiveApexType(s)).toBeNull();
+    expect(isTypeAtApex(s, "DOCLING")).toBe(false);
+  });
+
+  it("a disabled docling service is equally inert", () => {
+    const s = envState({
+      services: [svc("SWITCHBOARD", "switchboard"), svc("DOCLING", "docling", { enabled: false })],
+    });
+    expect(effectiveApexType(s)).toBe("SWITCHBOARD");
+    expect(isTypeAtApex(s, "SWITCHBOARD")).toBe(true);
+  });
+
+  it("an explicit apexService is still honoured alongside docling", () => {
+    const s = envState({
+      apexService: "CONNECT",
+      services: [
+        svc("CONNECT", "connect"),
+        svc("SWITCHBOARD", "switchboard"),
+        svc("DOCLING", "docling"),
+      ],
+    });
+    expect(effectiveApexType(s)).toBe("CONNECT");
+    expect(isTypeAtApex(s, "CONNECT")).toBe(true);
   });
 });
 
