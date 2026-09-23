@@ -244,6 +244,7 @@ export type VetraCloudEnvironmentServiceType =
   | "CONNECT"
   | "DOCLING"
   | "FUSION"
+  | "PAPERLESS"
   | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {

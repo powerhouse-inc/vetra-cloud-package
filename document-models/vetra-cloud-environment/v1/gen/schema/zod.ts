@@ -83,6 +83,7 @@ export const VetraCloudEnvironmentServiceTypeSchema = z.enum([
   "CONNECT",
   "DOCLING",
   "FUSION",
+  "PAPERLESS",
   "SWITCHBOARD",
 ]);
 
