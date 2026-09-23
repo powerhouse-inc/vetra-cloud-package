@@ -743,6 +743,19 @@ function generateDoclingBlock(state: VetraCloudEnvironmentState): string {
   return `docling:\n  enabled: ${enabled}`;
 }
 
+/**
+ * Values block for the tenant's Paperless-ngx document archive (vetra.io
+ * add-on "Document Archive"). Like docling it carries only the flag: the chart
+ * owns image, volumes, generated secrets and the PAPERLESS_* env it injects
+ * into switchboard. Emitted unconditionally so the key always exists.
+ */
+function generatePaperlessBlock(state: VetraCloudEnvironmentState): string {
+  const enabled = (state.services ?? []).some(
+    (s) => s.type === "PAPERLESS" && s.enabled,
+  );
+  return `paperless:\n  enabled: ${enabled}`;
+}
+
 function defaultAppImageTag(): string {
   return process.env.DEFAULT_APP_IMAGE_TAG ?? "dev";
 }
@@ -938,6 +951,7 @@ export async function generateValuesYaml(
   // Endpoint discovery is now pull-based (see clint-pull-worker); the
   // chart no longer receives announce env vars.
   const doclingBlock = generateDoclingBlock(state);
+  const paperlessBlock = generatePaperlessBlock(state);
   const clintBlock = await generateClintBlock(
     state,
     documentId,
@@ -1233,6 +1247,7 @@ networkPolicy:
   enabled: false
 ${clintBlock}
 ${doclingBlock}
+${paperlessBlock}
 `;
 }
 

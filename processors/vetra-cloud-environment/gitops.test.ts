@@ -881,7 +881,7 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
 // ---------------------------------------------------------------------------
 
 const svc = (
-  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION" | "DOCLING",
+  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION" | "DOCLING" | "PAPERLESS",
   prefix: string,
   extra: Record<string, unknown> = {},
 ) =>
@@ -964,6 +964,19 @@ describe("effectiveApexType / isTypeAtApex", () => {
     });
     expect(effectiveApexType(s)).toBe("SWITCHBOARD");
     expect(isTypeAtApex(s, "SWITCHBOARD")).toBe(true);
+  });
+
+  // Paperless has no ingress yet (SSO is a separate spec); switching it on
+  // must not move a single-service env's public host.
+  it("paperless does not steal the apex from a lone ingress service", () => {
+    const s = envState({ services: [clintSvc(), svc("PAPERLESS", "paperless")] });
+    expect(effectiveApexType(s)).toBe("CLINT");
+  });
+
+  it("paperless never claims the apex even when it is the only enabled service", () => {
+    const s = envState({ services: [svc("PAPERLESS", "paperless")] });
+    expect(effectiveApexType(s)).toBeNull();
+    expect(isTypeAtApex(s, "PAPERLESS")).toBe(false);
   });
 
   it("an explicit apexService is still honoured alongside docling", () => {
@@ -1164,5 +1177,50 @@ describe("service type enum", () => {
       "../../document-models/vetra-cloud-environment/v1/gen/schema/zod.js"
     );
     expect(VetraCloudEnvironmentServiceTypeSchema.parse("PAPERLESS")).toBe("PAPERLESS");
+  });
+});
+
+describe("generateValuesYaml — paperless", () => {
+  const paperlessService = (enabled: boolean) => ({
+    type: "PAPERLESS" as const,
+    prefix: "paperless",
+    enabled,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  });
+
+  it("emits enabled: false when the tenant has no paperless service", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState({}), "doc-paperless-none");
+    expect(yaml).toMatch(/paperless:\s*\n\s*enabled: false/);
+  });
+
+  it("emits enabled: true when a paperless service is enabled", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [paperlessService(true)] }),
+      "doc-paperless-on",
+    );
+    expect(yaml).toMatch(/paperless:\s*\n\s*enabled: true/);
+  });
+
+  it("emits enabled: false when the paperless service exists but is switched off", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [paperlessService(false)] }),
+      "doc-paperless-off",
+    );
+    expect(yaml).toMatch(/paperless:\s*\n\s*enabled: false/);
+  });
+
+  it("does not touch the docling flag", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [paperlessService(true)] }),
+      "doc-paperless-docling",
+    );
+    expect(yaml).toMatch(/docling:\s*\n\s*enabled: false/);
   });
 });
