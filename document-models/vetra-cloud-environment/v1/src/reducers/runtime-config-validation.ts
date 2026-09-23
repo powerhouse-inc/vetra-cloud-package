@@ -44,6 +44,7 @@ const CONNECT_SUBSCHEMA = {
           default: "info",
         },
         basePath: { type: "string", default: "/" },
+        workflowsEnabled: { type: "boolean", default: false },
       },
     },
     packages: {
