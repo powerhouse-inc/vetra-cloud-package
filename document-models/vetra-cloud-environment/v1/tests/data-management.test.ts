@@ -564,6 +564,45 @@ describe("DataManagementOperations", () => {
       expect(document.operations.global.at(-1)?.error).toBeUndefined();
     });
 
+    it("stores connect.app.workflowsEnabled", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      const config = { connect: { app: { workflowsEnabled: true } } };
+      document = reducer(document, {
+        ...setRuntimeConfig({ config: JSON.stringify(config) }),
+        ...userSigner(ALICE),
+      });
+
+      expect(JSON.parse(document.state.global.runtimeConfig as string)).toEqual(
+        config,
+      );
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+    });
+
+    it("rejects a non-boolean connect.app.workflowsEnabled", () => {
+      let document = utils.createDocument();
+      document = reducer(document, {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+      document = reducer(document, {
+        ...setRuntimeConfig({
+          config: JSON.stringify({
+            connect: { app: { workflowsEnabled: "yes" } },
+          }),
+        }),
+        ...userSigner(ALICE),
+      });
+
+      expect(document.state.global.runtimeConfig).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(
+        /invalid runtime config/i,
+      );
+    });
+
     it("rejects an invalid connect value (bad enum) without mutating state", () => {
       let document = utils.createDocument();
       document = reducer(document, {
