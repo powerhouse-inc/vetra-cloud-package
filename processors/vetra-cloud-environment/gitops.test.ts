@@ -1157,3 +1157,12 @@ describe("generateValuesYaml — docling", () => {
     expect(yaml).toContain("docling:");
   });
 });
+
+describe("service type enum", () => {
+  it("accepts PAPERLESS", async () => {
+    const { VetraCloudEnvironmentServiceTypeSchema } = await import(
+      "../../document-models/vetra-cloud-environment/v1/gen/schema/zod.js"
+    );
+    expect(VetraCloudEnvironmentServiceTypeSchema.parse("PAPERLESS")).toBe("PAPERLESS");
+  });
+});

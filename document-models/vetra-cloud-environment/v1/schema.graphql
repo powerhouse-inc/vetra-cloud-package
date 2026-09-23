@@ -91,6 +91,7 @@ enum VetraCloudEnvironmentServiceType {
   FUSION
   CLINT
   DOCLING
+  PAPERLESS
 }
 
 enum ServiceStatus {
