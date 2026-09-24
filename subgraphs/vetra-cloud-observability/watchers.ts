@@ -1,5 +1,3 @@
-import { resolve4 } from "node:dns/promises";
-import { X509Certificate } from "node:crypto";
 import type { KubeConfig } from "@kubernetes/client-node";
 import type { Kysely } from "kysely";
 import type {
@@ -9,6 +7,7 @@ import type {
   ObservabilityDB,
 } from "./db/schema.js";
 import { withTracingSuppressed } from "./trace-suppress.js";
+import { checkCustomDomain, type DomainCheck } from "./domain-check.js";
 
 // ---------------------------------------------------------------------------
 // Utility
@@ -239,125 +238,35 @@ function watchWithReconnect(
 }
 
 // ---------------------------------------------------------------------------
-// Custom domain validation helpers
+// Custom domain validation (logic + probes live in domain-check.ts)
 // ---------------------------------------------------------------------------
 
-interface DomainCheck {
-  domainResolves: number | null;
-  tlsCertValid: number | null;
-  tlsCertExpiresAt: string | null;
+/** First-rule hosts of every Ingress in the tenant namespace. */
+async function listIngressHosts(
+  kc: Pick<KubeConfig, "makeApiClient">,
+  tenantId: string,
+): Promise<string[]> {
+  const { NetworkingV1Api } = await import("@kubernetes/client-node");
+  const networkingApi = kc.makeApiClient(NetworkingV1Api);
+  const res = (await networkingApi.listNamespacedIngress({ namespace: tenantId })) as {
+    items?: Array<{ spec?: { rules?: Array<{ host?: string }> } }>;
+  };
+  return (res.items ?? [])
+    .map((ing) => ing.spec?.rules?.[0]?.host)
+    .filter((h): h is string => !!h);
 }
 
-/**
- * Report aggregate DNS + TLS status for the env's configured custom domain.
- *
- * Matches every Ingress in the tenant namespace whose host is either exactly
- * `customDomain` (apex mode — e.g. `admin.vetra.io` itself) or ends with
- * `.<customDomain>` (non-apex mode — e.g. `switchboard.admin.vetra.io`). Runs
- * a DNS resolution and TLS secret inspection per matched ingress and
- * aggregates: `tlsCertValid` / `domainResolves` come back green only if every
- * matched ingress is green, red if any fail, null if nothing matches.
- */
-async function checkCustomDomain(
+async function checkTenantCustomDomain(
   kc: Pick<KubeConfig, "makeApiClient">,
-  coreApi: { readNamespacedSecret(params: { name: string; namespace: string }): Promise<unknown> },
   tenantId: string,
   customDomain: string | null,
 ): Promise<DomainCheck> {
-  const result: DomainCheck = {
-    domainResolves: null,
-    tlsCertValid: null,
-    tlsCertExpiresAt: null,
-  };
-
-  if (!customDomain) return result;
-
+  if (!customDomain) return checkCustomDomain([], null);
   try {
-    const { NetworkingV1Api } = await import("@kubernetes/client-node");
-    const networkingApi = kc.makeApiClient(NetworkingV1Api);
-
-    const ingressResponse = await networkingApi.listNamespacedIngress({ namespace: tenantId });
-    const ingresses = ingressResponse as {
-      items?: Array<{
-        metadata?: { name?: string };
-        spec?: {
-          tls?: Array<{ hosts?: string[]; secretName?: string }>;
-          rules?: Array<{ host?: string }>;
-        };
-      }>;
-    };
-
-    const suffix = `.${customDomain}`;
-    const matching = (ingresses.items ?? []).filter((ing) => {
-      const host = ing.spec?.rules?.[0]?.host;
-      return !!host && (host === customDomain || host.endsWith(suffix));
-    });
-    if (matching.length === 0) return result;
-
-    let resolvesAll = true;
-    let certsAllValid = true;
-    let sawAnyCert = false;
-    let earliestExpiry: Date | null = null;
-
-    for (const ing of matching) {
-      const host = ing.spec!.rules![0].host!;
-
-      // DNS check
-      try {
-        const addresses = await resolve4(host);
-        if (addresses.length === 0) resolvesAll = false;
-      } catch {
-        resolvesAll = false;
-      }
-
-      // TLS check — read cert-manager-created Secret
-      const tlsSecretName = ing.spec?.tls?.[0]?.secretName;
-      if (!tlsSecretName) {
-        // Ingress without TLS declared — can't judge cert.
-        continue;
-      }
-      try {
-        const secret = (await coreApi.readNamespacedSecret({
-          name: tlsSecretName,
-          namespace: tenantId,
-        })) as { data?: { "tls.crt"?: string } };
-
-        const certB64 = secret.data?.["tls.crt"];
-        if (!certB64) {
-          certsAllValid = false;
-          continue;
-        }
-        sawAnyCert = true;
-        const pem = Buffer.from(certB64, "base64").toString("utf-8");
-        const expiresAt = extractCertExpiry(pem);
-        if (!expiresAt) continue; // couldn't parse, don't penalise
-        if (expiresAt <= new Date()) certsAllValid = false;
-        if (earliestExpiry === null || expiresAt < earliestExpiry) {
-          earliestExpiry = expiresAt;
-        }
-      } catch {
-        // Secret not found yet (cert-manager still issuing, or was deleted)
-        certsAllValid = false;
-      }
-    }
-
-    result.domainResolves = resolvesAll ? 1 : 0;
-    result.tlsCertValid = sawAnyCert ? (certsAllValid ? 1 : 0) : 0;
-    result.tlsCertExpiresAt = earliestExpiry ? earliestExpiry.toISOString() : null;
+    return await checkCustomDomain(await listIngressHosts(kc, tenantId), customDomain);
   } catch (err) {
     console.warn(`[domain-check] error checking custom domain for ${tenantId}:`, err);
-  }
-
-  return result;
-}
-
-/** Extract the notAfter date from a PEM certificate. */
-function extractCertExpiry(pem: string): Date | null {
-  try {
-    const cert = new X509Certificate(pem);
-    return new Date(cert.validTo);
-  } catch {
-    return null;
+    return checkCustomDomain([], null);
   }
 }
 
@@ -454,7 +363,7 @@ async function reconcile(
         .executeTakeFirst()) as { customDomain: string | null } | undefined;
       const customDomain = envRow?.customDomain ?? null;
 
-      const domainCheck = await checkCustomDomain(kc, coreApi, tenantId, customDomain);
+      const domainCheck = await checkTenantCustomDomain(kc, tenantId, customDomain);
 
       await upsertEnvironmentStatus(db, {
         tenantId,
