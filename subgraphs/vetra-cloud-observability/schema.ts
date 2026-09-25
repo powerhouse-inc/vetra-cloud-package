@@ -200,6 +200,27 @@ export const schema: DocumentNode = gql`
       service: TenantService!
       agentPrefix: String
     ): RestartEnvironmentServiceResult!
+
+    """
+    Owner-or-admin. Set the package registry an environment installs from:
+    https://registry.vetra.io (production) or https://registry.dev.vetra.io
+    (testing). A deployed environment is redeployed so the change reaches the
+    tenant; a slept one picks it up on wake, a DRAFT or CHANGES_PENDING one on
+    its owner's next deploy (approving would ship the owner's other edits).
+
+    Raises UNAUTHENTICATED, FORBIDDEN, ENV_NOT_FOUND, INVALID_REGISTRY.
+    """
+    setDefaultPackageRegistry(
+      tenantId: String!
+      registryUrl: String!
+    ): SetDefaultPackageRegistryResult!
+  }
+
+  type SetDefaultPackageRegistryResult {
+    tenantId: String!
+    defaultPackageRegistry: String!
+    """True when the environment was redeployed with the new registry."""
+    redeployed: Boolean!
   }
 
   type RestartEnvironmentServiceResult {
