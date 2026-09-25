@@ -800,6 +800,64 @@ describe("generateValuesYaml — tenant cluster issuer (ZeroSSL routing)", () =>
   });
 });
 
+describe("generateValuesYaml — fallback package registry", () => {
+  // An environment without its own defaultPackageRegistry falls back to the
+  // switchboard's DEFAULT_PACKAGE_REGISTRY: prod sets registry.vetra.io, so
+  // prod tenants no longer land on the dev registry; unset keeps dev.
+  const registryEnv = "DEFAULT_PACKAGE_REGISTRY";
+  afterEach(() => {
+    delete process.env[registryEnv];
+  });
+
+  const svc = (type: "SWITCHBOARD" | "CONNECT", prefix: string) => ({
+    type,
+    prefix,
+    enabled: true,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  });
+  const withoutRegistry = (): Partial<VetraCloudEnvironmentState> => ({
+    defaultPackageRegistry: null,
+    services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")],
+    // A package's own registry field does not drive the connect payload; the
+    // environment's registry (or the fallback) does.
+    packages: [{ name: "minesweeper", version: "1.0.6", registry: "https://registry.vetra.io" }],
+  });
+  const registryUrls = (yaml: string) =>
+    [...yaml.matchAll(/PH_REGISTRY_URL: "?([^"\n]+)"?/g)].map((m) => m[1]);
+  const connectPayloadRegistry = (yaml: string) => {
+    const m = yaml.match(/PH_CONNECT_CONFIG_JSON: (.+)/);
+    return m ? (JSON.parse(JSON.parse(m[1])) as { packageRegistryUrl?: string }).packageRegistryUrl : undefined;
+  };
+
+  it("falls back to the dev registry when DEFAULT_PACKAGE_REGISTRY is unset", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState(withoutRegistry()), "doc-reg-unset");
+    expect(registryUrls(yaml)).toEqual(["https://registry.dev.vetra.io", "https://registry.dev.vetra.io"]);
+    expect(connectPayloadRegistry(yaml)).toBe("https://registry.dev.vetra.io");
+  });
+
+  it("falls back to DEFAULT_PACKAGE_REGISTRY when set (prod)", async () => {
+    process.env[registryEnv] = "https://registry.vetra.io";
+    const yaml = await generateValuesYaml(dbStub, envState(withoutRegistry()), "doc-reg-prod");
+    expect(registryUrls(yaml)).toEqual(["https://registry.vetra.io", "https://registry.vetra.io"]);
+    expect(connectPayloadRegistry(yaml)).toBe("https://registry.vetra.io");
+    expect(yaml).not.toContain("registry.dev.vetra.io");
+  });
+
+  it("keeps an environment's own registry over the fallback", async () => {
+    process.env[registryEnv] = "https://registry.vetra.io";
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ ...withoutRegistry(), defaultPackageRegistry: "https://registry.dev.vetra.io" }),
+      "doc-reg-explicit",
+    );
+    expect(registryUrls(yaml)).toEqual(["https://registry.dev.vetra.io", "https://registry.dev.vetra.io"]);
+  });
+});
+
 describe("generateValuesYaml — switchboard / connect default image tag", () => {
   function appService(
     type: "SWITCHBOARD" | "CONNECT",
