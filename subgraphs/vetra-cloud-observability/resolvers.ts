@@ -11,6 +11,7 @@ import {
   createRestartResolver,
   type RestartResolverDeps,
 } from "./restart.js";
+import { createPackageRegistryResolver } from "./package-registry.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -108,6 +109,7 @@ export function createResolvers(
   // Always registered; the resolver throws RESTART_NOT_CONFIGURED when the
   // host couldn't build the in-cluster k8s client (restartDeps omitted).
   const restartResolvers = createRestartResolver(config.restartDeps);
+  const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch });
 
   return {
     Query: {
@@ -860,6 +862,8 @@ export function createResolvers(
       cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
       restartEnvironmentService:
         restartResolvers.Mutation.restartEnvironmentService,
+      setDefaultPackageRegistry:
+        packageRegistryResolvers.Mutation.setDefaultPackageRegistry,
     },
 
     ReleaseHistoryEntry: {},
