@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import { callerIsAdmin } from "../../shared/admins.js";
 
 /**
  * The registries an environment may install packages from. Production uses
@@ -71,7 +72,7 @@ export function createPackageRegistryResolver(deps: PackageRegistryResolverDeps)
         if (!env) throw new Error("ENV_NOT_FOUND");
 
         const isOwner = !!env.owner && env.owner.toLowerCase() === caller;
-        const isAdmin = ctx.isAdmin?.(caller) ?? false;
+        const isAdmin = callerIsAdmin(ctx, caller);
         if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
 
         await deps.dispatch(env.id, "SET_DEFAULT_PACKAGE_REGISTRY", {

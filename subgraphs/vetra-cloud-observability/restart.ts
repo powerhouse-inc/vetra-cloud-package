@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import { callerIsAdmin } from "../../shared/admins.js";
 
 /**
  * Minimal Kubernetes surface for service rollout-restarts. Defined as an
@@ -79,7 +80,7 @@ export function createRestartResolver(deps?: RestartResolverDeps) {
 
         const caller = ctx.user?.address?.toLowerCase();
         if (!caller) throw new Error("UNAUTHENTICATED");
-        const isAdmin = ctx.isAdmin?.(caller) ?? false;
+        const isAdmin = callerIsAdmin(ctx, caller);
 
         const envRow = (await deps.envDb
           .selectFrom("environments")
