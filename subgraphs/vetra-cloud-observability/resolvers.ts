@@ -12,6 +12,7 @@ import {
   type RestartResolverDeps,
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
+import { callerIsAdmin } from "../../shared/admins.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -257,7 +258,7 @@ export function createResolvers(
           return [];
         }
 
-        const isAdmin = ctx.isAdmin?.(userAddress) ?? false;
+        const isAdmin = callerIsAdmin(ctx, userAddress);
         const wantAll = scope === "ALL";
 
         // Build the query — admins requesting ALL get everything; everyone else
@@ -451,7 +452,7 @@ export function createResolvers(
 
       viewer: (_parent: unknown, _args: unknown, ctx: AuthAwareContext) => {
         const address = ctx.user?.address?.toLowerCase() ?? null;
-        const isAdmin = address ? (ctx.isAdmin?.(address) ?? false) : false;
+        const isAdmin = callerIsAdmin(ctx, address);
         return { address, isAdmin };
       },
 
@@ -552,7 +553,7 @@ export function createResolvers(
         if (!callerAddress) {
           throw new Error("UNAUTHENTICATED");
         }
-        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+        const isAdmin = callerIsAdmin(ctx, callerAddress);
 
         // `enabled` without a `domain` is a valid intermediate state — the
         // UI toggles the checkbox to reveal the input, then the user types a
@@ -729,7 +730,7 @@ export function createResolvers(
       ) => {
         const callerAddress = ctx.user?.address?.toLowerCase();
         if (!callerAddress) throw new Error("UNAUTHENTICATED");
-        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+        const isAdmin = callerIsAdmin(ctx, callerAddress);
 
         const envRow = (await envDb
           .selectFrom("environments")
@@ -800,7 +801,7 @@ export function createResolvers(
       ) => {
         const callerAddress = ctx.user?.address?.toLowerCase();
         if (!callerAddress) throw new Error("UNAUTHENTICATED");
-        const isAdmin = ctx.isAdmin?.(callerAddress) ?? false;
+        const isAdmin = callerIsAdmin(ctx, callerAddress);
 
         const envRow = (await envDb
           .selectFrom("environments")

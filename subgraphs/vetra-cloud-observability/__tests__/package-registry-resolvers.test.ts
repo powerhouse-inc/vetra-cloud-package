@@ -61,6 +61,16 @@ describe("setDefaultPackageRegistry", () => {
     expect(res.redeployed).toBe(true);
   });
 
+  it("recognises an admin from the ADMINS env, as reactor-api provides no ctx.isAdmin", async () => {
+    process.env.ADMINS = "0xOTHER,0xEnvAdmin";
+    try {
+      const res = await resolver()(null, { tenantId: TENANT, registryUrl: PROD }, { user: { address: "0xenvadmin" } });
+      expect(res.redeployed).toBe(true);
+    } finally {
+      delete process.env.ADMINS;
+    }
+  });
+
   it("drops a trailing slash", async () => {
     await resolver()(null, { tenantId: TENANT, registryUrl: `${PROD}/` }, owner);
     expect(dispatch.mock.calls[0][2]).toEqual({ defaultPackageRegistry: PROD });
