@@ -209,6 +209,16 @@ function tenantClusterIssuer(): string {
   return process.env.TENANT_CLUSTER_ISSUER ?? "letsencrypt-prod";
 }
 
+/**
+ * Registry for an environment that has no defaultPackageRegistry of its own.
+ * Per switchboard: prod sets DEFAULT_PACKAGE_REGISTRY=https://registry.vetra.io
+ * so its tenants never fall onto the dev registry, which is for testing; unset
+ * keeps the dev registry (staging). Read lazily, like tenantClusterIssuer.
+ */
+function fallbackPackageRegistry(): string {
+  return process.env.DEFAULT_PACKAGE_REGISTRY || "https://registry.dev.vetra.io";
+}
+
 // ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
@@ -588,7 +598,7 @@ async function generateClintBlock(
     const registry =
       pkg.registry ||
       state.defaultPackageRegistry ||
-      "https://registry.dev.vetra.io/";
+      `${fallbackPackageRegistry()}/`;
     // Resolve dist-tags (latest/dev) to a concrete version so the image tag
     // matches a prebuilt clint-agent tag.
     const agentVersion = await resolveConcreteVersion(
@@ -1008,7 +1018,7 @@ export async function generateValuesYaml(
     connectConfigPayload.packages = connectPackages;
     if (typeof connectConfigPayload.packageRegistryUrl !== "string") {
       connectConfigPayload.packageRegistryUrl =
-        state.defaultPackageRegistry || "https://registry.dev.vetra.io";
+        state.defaultPackageRegistry || fallbackPackageRegistry();
     }
   }
   const connectConfigEnvLine =
@@ -1112,7 +1122,7 @@ switchboard:
     PORT: "3000"
     NODE_ENV: production
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${switchboardResources.nodeMaxOldSpaceMb}`)}
-    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || "https://registry.dev.vetra.io")}
+    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || fallbackPackageRegistry())}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     OPENBAO_ADDR: https://openbao.vetra.io
     PROMETHEUS_URL: http://prometheus-server.monitoring.svc
@@ -1187,7 +1197,7 @@ connect:
     PORT: "3001"
     NODE_ENV: production
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${connectResources.nodeMaxOldSpaceMb}`)}
-    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || "https://registry.dev.vetra.io")}
+    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || fallbackPackageRegistry())}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}${connectConfigEnvLine}
   envConfigMap:
     TENANT_ID: ${tenantId}
