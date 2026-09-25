@@ -193,26 +193,59 @@ jobs:
           git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }} [skip ci]" || echo "No changes to commit"
           git push
 
-      - name: Setup npm for publishing
+      - name: Build and pack
         if: needs.prepare.outputs.dry_run != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: 'https://registry.dev.vetra.io'
+        id: pack
+        run: |
+          # Rebuild after the version bump (what prepublishOnly did), then pack
+          # once: every registry gets the byte-identical tarball.
+          pnpm run build
+          TARBALL=$(npm pack --ignore-scripts --silent | tail -1)
+          echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
+          echo "Packed $TARBALL ($(sha1sum "$TARBALL" | cut -c1-40))"
 
-      - name: Publish to Vetra registry
+      - name: Publish to Vetra registries
         if: needs.prepare.outputs.dry_run != 'true'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.VETRA_REGISTRY_TOKEN }}
+          # CI identity: a Renown key whose DID is delegated by RENOWN_ADDRESS and
+          # is an owner of this package on both registries. Tokens are minted per
+          # run (10 min, audience-bound), so nothing here expires.
+          PH_RENOWN_PRIVATE_KEY: ${{ secrets.VETRA_REGISTRY_RENOWN_KEY }}
+          RENOWN_ADDRESS: ${{ secrets.VETRA_REGISTRY_RENOWN_ADDRESS }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          VERSION: ${{ steps.version.outputs.new_version }}
         run: |
-          # ph-cli publish is a thin wrapper over `npm publish` that resolves the
-          # registry URL and verifies auth via `npm whoami` before forwarding the
-          # remaining flags. --no-git-checks is pnpm-only and intentionally omitted.
-          CHANNEL="${{ needs.prepare.outputs.channel }}"
-          pnpm exec ph-cli publish \
-            --registry https://registry.dev.vetra.io \
-            --access public \
-            --tag "$CHANNEL"
+          set -euo pipefail
+          for s in PH_RENOWN_PRIVATE_KEY RENOWN_ADDRESS; do
+            [ -n "${!s}" ] || { echo "::error::secret for $s is not set"; exit 1; }
+          done
+          # Every channel goes to the dev registry (testing). Only stable releases
+          # (main -> latest) go to the prod registry, which production loads from.
+          REGISTRIES="https://registry.dev.vetra.io"
+          if [ "$CHANNEL" = "latest" ]; then
+            REGISTRIES="$REGISTRIES https://registry.vetra.io"
+          fi
+          PKG=$(node -p "require('./package.json').name")
+          for reg in $REGISTRIES; do
+            TOKEN=$(node scripts/ci/mint-renown-token.mjs "$reg")
+            echo "::add-mask::$TOKEN"
+            echo "//${reg#https://}/:_authToken=$TOKEN" > "$RUNNER_TEMP/.npmrc"
+            WHO=$(curl -sf -H "Authorization: Bearer $TOKEN" "$reg/-/whoami" || true)
+            case "$WHO" in
+              *did:*) ;;
+              *) echo "::error::Renown auth failed on $reg for $RENOWN_ADDRESS"; exit 1 ;;
+            esac
+            # A rerun must not fail on a version it already published.
+            if npm view "$PKG@$VERSION" version --registry "$reg" --userconfig "$RUNNER_TEMP/.npmrc" >/dev/null 2>&1; then
+              echo "$PKG@$VERSION already on $reg, skipping"
+              continue
+            fi
+            npm publish "$TARBALL" --registry "$reg" --userconfig "$RUNNER_TEMP/.npmrc" \
+              --access public --tag "$CHANNEL"
+            echo "Published $PKG@$VERSION to $reg with tag $CHANNEL"
+          done
+          rm -f "$RUNNER_TEMP/.npmrc"
 
       - name: Create git tag
         if: needs.prepare.outputs.dry_run != 'true'
