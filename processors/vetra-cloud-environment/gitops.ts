@@ -786,7 +786,7 @@ function isSpeckleEnabled(state: VetraCloudEnvironmentState): boolean {
  * override per processor with the SPECKLE_ADDON_PACKAGE env (`name@version`,
  * or a bare name for latest).
  */
-export const SPECKLE_ADDON_PACKAGE_DEFAULT = "speckle-package@1.0.0";
+export const SPECKLE_ADDON_PACKAGE_DEFAULT = "speckle-package@1.0.1";
 
 function speckleAddonPackageSpec(): string {
   const fromEnv =
