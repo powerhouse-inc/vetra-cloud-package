@@ -1384,6 +1384,37 @@ describe("generateValuesYaml — speckle", () => {
     expect(yaml).toMatch(/^speckle:$/m);
   });
 
+  it("emits the oidc allowedSubjects block when the tenant has an owner", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: "0xAbC0000000000000000000000000000000000001", services: [speckleService(true)] }),
+      "doc-speckle-oidc-owner",
+    );
+    expect(yaml).toMatch(
+      /speckle:\s*\n\s*enabled: true\s*\n\s*oidc:\s*\n\s*allowedSubjects:\s*\n\s*- "0xabc0000000000000000000000000000000000001"/,
+    );
+  });
+
+  it("omits the oidc block when the tenant has no owner", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: null, services: [speckleService(true)] }),
+      "doc-speckle-oidc-no-owner",
+    );
+    expect(yaml).toMatch(/speckle:\s*\n\s*enabled: true$/m);
+    expect(yaml).not.toContain("oidc:");
+  });
+
+  it("omits the oidc block when speckle is disabled, even with an owner set", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ owner: "0xAbC0000000000000000000000000000000000001", services: [speckleService(false)] }),
+      "doc-speckle-oidc-disabled",
+    );
+    expect(yaml).toMatch(/speckle:\s*\n\s*enabled: false$/m);
+    expect(yaml).not.toContain("oidc:");
+  });
+
   it("does not touch the docling or paperless flags", async () => {
     const yaml = await generateValuesYaml(
       dbStub,

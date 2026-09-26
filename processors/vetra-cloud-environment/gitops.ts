@@ -771,9 +771,20 @@ function generatePaperlessBlock(state: VetraCloudEnvironmentState): string {
  * "3D Models"). Carries only the flag: the chart owns images, datastores,
  * generated secrets, the dedicated host and the SPECKLE_* env it injects into
  * switchboard. Emitted unconditionally so the key always exists.
+ *
+ * When enabled and the environment has a claimed owner, also emits
+ * `oidc.allowedSubjects: [<owner lowercased>]` so the chart can register (and
+ * gate) Speckle's "Sign in with Renown" OIDC client for that address. No
+ * owner yet (unclaimed env) → no oidc block, and the chart's Speckle server
+ * falls back to local email/password auth until one is set.
  */
 function generateSpeckleBlock(state: VetraCloudEnvironmentState): string {
-  return `speckle:\n  enabled: ${isSpeckleEnabled(state)}`;
+  const enabled = isSpeckleEnabled(state);
+  let block = `speckle:\n  enabled: ${enabled}`;
+  if (enabled && state.owner) {
+    block += `\n  oidc:\n    allowedSubjects:\n      - "${state.owner.toLowerCase()}"`;
+  }
+  return block;
 }
 
 function isSpeckleEnabled(state: VetraCloudEnvironmentState): boolean {
