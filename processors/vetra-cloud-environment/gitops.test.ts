@@ -1410,7 +1410,7 @@ describe("generateValuesYaml — speckle", () => {
     }
     expect(connectPackages(yaml)).toEqual([
       { packageName: "minesweeper", version: "1.0.6" },
-      { packageName: "speckle-package", version: "1.0.0" },
+      { packageName: "speckle-package", version: "1.0.1" },
     ]);
   });
 
