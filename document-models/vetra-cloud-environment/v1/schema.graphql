@@ -92,6 +92,7 @@ enum VetraCloudEnvironmentServiceType {
   CLINT
   DOCLING
   PAPERLESS
+  SPECKLE
 }
 
 enum ServiceStatus {

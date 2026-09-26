@@ -8,8 +8,8 @@ import type {
 } from "document-models/vetra-cloud-environment/v1";
 import { actions } from "document-models/vetra-cloud-environment/v1";
 
-// The types this editor offers to enable. DOCLING and PAPERLESS are deliberately
-// absent (both are add-ons toggled from vetra.io). DOCLING is
+// The types this editor offers to enable. DOCLING, PAPERLESS and SPECKLE are
+// deliberately absent (all are add-ons toggled from vetra.io). DOCLING is
 // a real service type (so it has label/prefix entries below and can be enabled
 // programmatically), but it stays internal-only until its per-tenant cost —
 // ~1 CPU / 2Gi plus a 5Gi model volume — is understood in practice. Add it here
@@ -28,6 +28,7 @@ const SERVICE_LABELS: Record<VetraCloudEnvironmentServiceType, string> = {
   CLINT: "Agent",
   DOCLING: "Document Conversion",
   PAPERLESS: "Document Archive",
+  SPECKLE: "3D Models",
 };
 
 const DEFAULT_PREFIXES: Record<VetraCloudEnvironmentServiceType, string> = {
@@ -37,6 +38,7 @@ const DEFAULT_PREFIXES: Record<VetraCloudEnvironmentServiceType, string> = {
   CLINT: "agent",
   DOCLING: "docling",
   PAPERLESS: "paperless",
+  SPECKLE: "speckle",
 };
 
 const SERVICE_STATUS_COLORS: Record<ServiceStatus, { dot: string; label: string }> = {
