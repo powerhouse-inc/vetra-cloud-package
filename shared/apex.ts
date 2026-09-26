@@ -8,8 +8,10 @@
  * host it POLLS. When they disagree the worker polls a URL that was never
  * rendered, and agent endpoint discovery goes dark with no error.
  *
- * DOCLING and PAPERLESS are deliberately absent (neither renders an Ingress;
- * PAPERLESS's web UI waits for SSO). DOCLING renders no Ingress at all -- its gitops
+ * DOCLING, PAPERLESS and SPECKLE are deliberately absent. Neither DOCLING nor
+ * PAPERLESS renders an Ingress (PAPERLESS's web UI waits for SSO); SPECKLE does
+ * serve a UI, but on its own dedicated host, so it must never claim or move the
+ * env apex. DOCLING renders no Ingress at all -- its gitops
  * block is a bare `enabled` flag -- so it can neither serve the apex nor make
  * the apex ambiguous by existing. Counting it would mean that switching the
  * converter on flipped a single-service env's public host from

@@ -10,6 +10,8 @@ import {
   isTypeAtApex,
   assertHostLabelLength,
   switchboardHasReadyEndpoint,
+  effectivePackages,
+  SPECKLE_ADDON_PACKAGE_DEFAULT,
 } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
@@ -939,7 +941,14 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
 // ---------------------------------------------------------------------------
 
 const svc = (
-  type: "CLINT" | "CONNECT" | "SWITCHBOARD" | "FUSION" | "DOCLING" | "PAPERLESS",
+  type:
+    | "CLINT"
+    | "CONNECT"
+    | "SWITCHBOARD"
+    | "FUSION"
+    | "DOCLING"
+    | "PAPERLESS"
+    | "SPECKLE",
   prefix: string,
   extra: Record<string, unknown> = {},
 ) =>
@@ -1035,6 +1044,20 @@ describe("effectiveApexType / isTypeAtApex", () => {
     const s = envState({ services: [svc("PAPERLESS", "paperless")] });
     expect(effectiveApexType(s)).toBeNull();
     expect(isTypeAtApex(s, "PAPERLESS")).toBe(false);
+  });
+
+  // Speckle serves its UI on its own dedicated host; switching it on must
+  // never move the env's public URL.
+  it("speckle does not steal the apex from a lone ingress service", () => {
+    const s = envState({ services: [clintSvc(), svc("SPECKLE", "speckle")] });
+    expect(effectiveApexType(s)).toBe("CLINT");
+    expect(isTypeAtApex(s, "CLINT")).toBe(true);
+  });
+
+  it("speckle never claims the apex even when it is the only enabled service", () => {
+    const s = envState({ services: [svc("SPECKLE", "speckle")] });
+    expect(effectiveApexType(s)).toBeNull();
+    expect(isTypeAtApex(s, "SPECKLE")).toBe(false);
   });
 
   it("an explicit apexService is still honoured alongside docling", () => {
@@ -1287,5 +1310,174 @@ describe("generateValuesYaml — paperless", () => {
       "doc-paperless-docling",
     );
     expect(yaml).toMatch(/docling:\s*\n\s*enabled: false/);
+  });
+});
+
+describe("generateValuesYaml — speckle", () => {
+  const speckleService = (enabled: boolean) => ({
+    type: "SPECKLE" as const,
+    prefix: "speckle",
+    enabled,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  });
+  const appServices = () =>
+    (["SWITCHBOARD", "CONNECT"] as const).map((type) => ({
+      ...speckleService(true),
+      type,
+      prefix: type.toLowerCase(),
+    }));
+
+  // Every PH_REGISTRY_PACKAGES value in the rendered YAML (switchboard + connect).
+  function registryPackages(yaml: string): string[] {
+    return [...yaml.matchAll(/PH_REGISTRY_PACKAGES: "([^"]*)"/g)].map((m) => m[1]);
+  }
+
+  function connectPackages(yaml: string): unknown {
+    const match = /PH_CONNECT_CONFIG_JSON: "((?:[^"\\]|\\.)*)"/.exec(yaml);
+    if (!match) return undefined;
+    const unquoted = match[1].replace(/\\(["\\])/g, "$1");
+    return (JSON.parse(unquoted) as { packages?: unknown }).packages;
+  }
+
+  const originalEnv = process.env.SPECKLE_ADDON_PACKAGE;
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.SPECKLE_ADDON_PACKAGE;
+    else process.env.SPECKLE_ADDON_PACKAGE = originalEnv;
+  });
+  beforeEach(() => {
+    delete process.env.SPECKLE_ADDON_PACKAGE;
+  });
+
+  it("emits enabled: false when the tenant has no speckle service", async () => {
+    const yaml = await generateValuesYaml(dbStub, envState({}), "doc-speckle-none");
+    expect(yaml).toMatch(/speckle:\s*\n\s*enabled: false/);
+  });
+
+  it("emits enabled: true when a speckle service is enabled", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [speckleService(true)] }),
+      "doc-speckle-on",
+    );
+    expect(yaml).toMatch(/speckle:\s*\n\s*enabled: true/);
+  });
+
+  it("emits enabled: false when the speckle service exists but is switched off", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [speckleService(false)] }),
+      "doc-speckle-off",
+    );
+    expect(yaml).toMatch(/speckle:\s*\n\s*enabled: false/);
+  });
+
+  it("always emits the speckle key", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: appServices() }),
+      "doc-speckle-always",
+    );
+    expect(yaml).toMatch(/^speckle:$/m);
+  });
+
+  it("does not touch the docling or paperless flags", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [speckleService(true)] }),
+      "doc-speckle-others",
+    );
+    expect(yaml).toMatch(/docling:\s*\n\s*enabled: false/);
+    expect(yaml).toMatch(/paperless:\s*\n\s*enabled: false/);
+  });
+
+  it("appends the add-on package to switchboard, connect and connect.packages when enabled", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [...appServices(), speckleService(true)],
+        packages: [{ name: "minesweeper", version: "1.0.6", registry: "https://registry.vetra.io" }],
+      }),
+      "doc-speckle-pkg-on",
+    );
+    const lists = registryPackages(yaml);
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect(list).toBe(`minesweeper@1.0.6,${SPECKLE_ADDON_PACKAGE_DEFAULT}`);
+    }
+    expect(connectPackages(yaml)).toEqual([
+      { packageName: "minesweeper", version: "1.0.6" },
+      { packageName: "speckle-package", version: "1.0.0" },
+    ]);
+  });
+
+  it("leaves the package out when speckle is switched off", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [...appServices(), speckleService(false)],
+        packages: [{ name: "minesweeper", version: "1.0.6", registry: "https://registry.vetra.io" }],
+      }),
+      "doc-speckle-pkg-off",
+    );
+    const lists = registryPackages(yaml);
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect(list).toBe("minesweeper@1.0.6");
+    }
+    expect(yaml).not.toContain("speckle-package");
+    expect(connectPackages(yaml)).toEqual([
+      { packageName: "minesweeper", version: "1.0.6" },
+    ]);
+  });
+
+  it("does not duplicate a speckle-package the user installed; the user's version wins", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        services: [...appServices(), speckleService(true)],
+        packages: [{ name: "speckle-package", version: "2.3.4", registry: "https://registry.vetra.io" }],
+      }),
+      "doc-speckle-pkg-user",
+    );
+    const lists = registryPackages(yaml);
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect(list).toBe("speckle-package@2.3.4");
+    }
+    expect(connectPackages(yaml)).toEqual([
+      { packageName: "speckle-package", version: "2.3.4" },
+    ]);
+  });
+
+  it("honours the SPECKLE_ADDON_PACKAGE override, including scoped names", async () => {
+    process.env.SPECKLE_ADDON_PACKAGE = "@powerhousedao/speckle@0.2.0-dev.1";
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ services: [...appServices(), speckleService(true)] }),
+      "doc-speckle-pkg-env",
+    );
+    const lists = registryPackages(yaml);
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect(list).toBe("@powerhousedao/speckle@0.2.0-dev.1");
+    }
+    expect(connectPackages(yaml)).toEqual([
+      { packageName: "@powerhousedao/speckle", version: "0.2.0-dev.1" },
+    ]);
+  });
+
+  it("effectivePackages matches a user package by scoped name from the override", () => {
+    process.env.SPECKLE_ADDON_PACKAGE = "@powerhousedao/speckle@0.2.0";
+    const pkgs = effectivePackages(
+      envState({
+        services: [speckleService(true)],
+        packages: [{ name: "@powerhousedao/speckle", version: null, registry: "https://registry.vetra.io" }],
+      }),
+    );
+    expect(pkgs).toEqual([{ name: "@powerhousedao/speckle", version: null }]);
   });
 });

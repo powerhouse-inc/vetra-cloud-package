@@ -766,6 +766,67 @@ function generatePaperlessBlock(state: VetraCloudEnvironmentState): string {
   return `paperless:\n  enabled: ${enabled}`;
 }
 
+/**
+ * Values block for the tenant's Speckle 3D-model server (vetra.io add-on
+ * "3D Models"). Carries only the flag: the chart owns images, datastores,
+ * generated secrets, the dedicated host and the SPECKLE_* env it injects into
+ * switchboard. Emitted unconditionally so the key always exists.
+ */
+function generateSpeckleBlock(state: VetraCloudEnvironmentState): string {
+  return `speckle:\n  enabled: ${isSpeckleEnabled(state)}`;
+}
+
+function isSpeckleEnabled(state: VetraCloudEnvironmentState): boolean {
+  return (state.services ?? []).some((s) => s.type === "SPECKLE" && s.enabled);
+}
+
+/**
+ * The Powerhouse package that brings the Speckle document model and editor
+ * into switchboard and Connect. Auto-installed while the SPECKLE add-on is on;
+ * override per processor with the SPECKLE_ADDON_PACKAGE env (`name@version`,
+ * or a bare name for latest).
+ */
+export const SPECKLE_ADDON_PACKAGE_DEFAULT = "speckle-package@1.0.0";
+
+function speckleAddonPackageSpec(): string {
+  const fromEnv =
+    typeof process !== "undefined" ? process.env.SPECKLE_ADDON_PACKAGE : undefined;
+  return fromEnv || SPECKLE_ADDON_PACKAGE_DEFAULT;
+}
+
+/**
+ * Split `name@version` at the last "@" that is not the leading scope marker,
+ * so `@scope/pkg@1.2.3` → { name: "@scope/pkg", version: "1.2.3" } and a bare
+ * name has no version.
+ */
+function parsePackageSpec(spec: string): { name: string; version: string | null } {
+  const at = spec.lastIndexOf("@");
+  if (at <= 0) return { name: spec, version: null };
+  return { name: spec.slice(0, at), version: spec.slice(at + 1) || null };
+}
+
+/**
+ * The package list every consumer renders from — switchboard's and Connect's
+ * PH_REGISTRY_PACKAGES and Connect's runtime `packages` array — so they can
+ * never diverge. It is `state.packages` plus any add-on-derived packages
+ * (currently Speckle's), which are computed, never stored: switching the
+ * add-on off drops them again. A package the user added under the same name
+ * wins over the add-on default.
+ */
+export function effectivePackages(
+  state: VetraCloudEnvironmentState,
+): { name: string; version: string | null }[] {
+  const packages = (state.packages ?? []).map((p) => ({
+    name: p.name,
+    version: p.version ?? null,
+  }));
+  if (isSpeckleEnabled(state)) {
+    const speckle = parsePackageSpec(speckleAddonPackageSpec());
+    if (!packages.some((p) => p.name === speckle.name)) packages.push(speckle);
+  }
+  return packages;
+}
+
 function defaultAppImageTag(): string {
   return process.env.DEFAULT_APP_IMAGE_TAG ?? "dev";
 }
@@ -890,10 +951,10 @@ export async function generateValuesYaml(
   // flips this back to true and CNPG comes up then.
   const databaseEnabled = switchboardEnabled;
 
-  const phPackages =
-    state.packages
-      ?.map((p) => `${p.name}@${p.version ?? "latest"}`)
-      .join(",") ?? "";
+  const packages = effectivePackages(state);
+  const phPackages = packages
+    .map((p) => `${p.name}@${p.version ?? "latest"}`)
+    .join(",");
 
   const customDomain = state.customDomain?.enabled ? state.customDomain.domain ?? null : null;
   const apexService = readApexService(state);
@@ -962,6 +1023,7 @@ export async function generateValuesYaml(
   // chart no longer receives announce env vars.
   const doclingBlock = generateDoclingBlock(state);
   const paperlessBlock = generatePaperlessBlock(state);
+  const speckleBlock = generateSpeckleBlock(state);
   const clintBlock = await generateClintBlock(
     state,
     documentId,
@@ -1009,8 +1071,8 @@ export async function generateValuesYaml(
       // Corrupt stored JSON — skip the overrides rather than emit invalid config.
     }
   }
-  delete connectConfigPayload.packages; // state.packages is the source of truth
-  const connectPackages = (state.packages ?? []).map((p) => ({
+  delete connectConfigPayload.packages; // effectivePackages(state) is the source of truth
+  const connectPackages = packages.map((p) => ({
     packageName: p.name,
     ...(p.version ? { version: p.version } : {}),
   }));
@@ -1258,6 +1320,7 @@ networkPolicy:
 ${clintBlock}
 ${doclingBlock}
 ${paperlessBlock}
+${speckleBlock}
 `;
 }
 
