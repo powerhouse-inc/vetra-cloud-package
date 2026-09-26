@@ -245,6 +245,7 @@ export type VetraCloudEnvironmentServiceType =
   | "DOCLING"
   | "FUSION"
   | "PAPERLESS"
+  | "SPECKLE"
   | "SWITCHBOARD";
 
 export type VetraCloudEnvironmentState = {
