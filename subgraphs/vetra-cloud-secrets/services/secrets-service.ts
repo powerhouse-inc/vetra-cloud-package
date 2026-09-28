@@ -36,6 +36,24 @@ export class InvalidSecretsKeyError extends Error {
  */
 const RESERVED_KEYS = new Set<string>(["PH_CONNECT_CONFIG_JSON"]);
 
+/** Encrypts a switchboard's workflow secrets; generated once per tenant. */
+export const WORKFLOWS_MASTER_KEY = "PH_WORKFLOWS_SECRETS_MASTER_KEY";
+
+/**
+ * Secrets written only by ensureSecret. Replacing or deleting one makes the
+ * data encrypted under it unreadable, so the user-facing paths refuse them.
+ */
+const MANAGED_SECRET_KEYS = new Set<string>([WORKFLOWS_MASTER_KEY]);
+
+export class ManagedSecretKeyError extends Error {
+  constructor(key: string) {
+    super(
+      `"${key}" is generated and managed by Vetra Cloud; it cannot be set or deleted`,
+    );
+    this.name = "ManagedSecretKeyError";
+  }
+}
+
 function validateKey(key: string): void {
   if (!KEY_PATTERN.test(key)) {
     throw new InvalidSecretsKeyError(key);
@@ -45,6 +63,7 @@ function validateKey(key: string): void {
       `Reserved key "${key}" cannot be set via setEnvVar; set it through the vetra-cloud-environment document's SET_RUNTIME_CONFIG operation instead`,
     );
   }
+  if (MANAGED_SECRET_KEYS.has(key)) throw new ManagedSecretKeyError(key);
 }
 
 export interface SecretsService {
@@ -81,6 +100,15 @@ export interface SecretsService {
   ): Promise<void>;
   /** Remove a secret. Returns true if a row was deleted. */
   deleteSecret(tenantId: string, key: string): Promise<boolean>;
+  /**
+   * Write a managed secret only if the tenant has none under this key; never
+   * overwrites. Notifies only when it writes. Returns whether it wrote.
+   */
+  ensureSecret(
+    tenantId: string,
+    key: string,
+    generate: () => string,
+  ): Promise<boolean>;
 }
 
 export interface CreateSecretsServiceArgs {
@@ -200,6 +228,7 @@ export function createSecretsService({
     },
 
     async deleteSecret(tenantId, key) {
+      if (MANAGED_SECRET_KEYS.has(key)) throw new ManagedSecretKeyError(key);
       return await db.transaction().execute(async (trx) => {
         const result = await trx
           .deleteFrom("tenant_secrets")
@@ -213,6 +242,32 @@ export function createSecretsService({
           );
         }
         return deleted;
+      });
+    },
+
+    async ensureSecret(tenantId, key, generate) {
+      if (!KEY_PATTERN.test(key)) throw new InvalidSecretsKeyError(key);
+      const existing = await db
+        .selectFrom("tenant_secrets")
+        .select("key")
+        .where("tenantId", "=", tenantId)
+        .where("key", "=", key)
+        .executeTakeFirst();
+      if (existing) return false;
+      await transit.ensureTenantKey(tenantId);
+      const ciphertext = await transit.encrypt(tenantId, generate());
+      const now = new Date().toISOString();
+      return await db.transaction().execute(async (trx) => {
+        // A concurrent writer may have inserted since the check above.
+        const inserted = await trx
+          .insertInto("tenant_secrets")
+          .values({ tenantId, key, updatedAt: now, ciphertext })
+          .onConflict((oc) => oc.columns(["tenantId", "key"]).doNothing())
+          .returning("key")
+          .executeTakeFirst();
+        if (!inserted) return false;
+        await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
+        return true;
       });
     },
   };

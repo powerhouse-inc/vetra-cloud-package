@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { childLogger } from "document-model";
@@ -14,7 +15,10 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
-import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
+import {
+  WORKFLOWS_MASTER_KEY,
+  type SecretsService,
+} from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -922,6 +926,19 @@ export async function generateValuesYaml(
   const clintEnabled = state.services.some(
     (s) => s.type === "CLINT" && s.enabled,
   );
+  // Created once so the key exists before switchboard stores a workflow
+  // secret; the chart's envFrom secretRef delivers it.
+  if (switchboardEnabled && secretsService) {
+    try {
+      await secretsService.ensureSecret(tenantId, WORKFLOWS_MASTER_KEY, () =>
+        randomBytes(32).toString("hex"),
+      );
+    } catch (err) {
+      logger.warn(
+        `Failed to ensure ${WORKFLOWS_MASTER_KEY} for tenant ${tenantId}: ${String(err)}`,
+      );
+    }
+  }
   // Activate the tenantSecretsController flag whenever switchboard or
   // clint are enabled. Switchboard hosts the GraphQL writes (and needs
   // the per-tenant Vault encrypt policy + KubernetesAuthEngineRole the
