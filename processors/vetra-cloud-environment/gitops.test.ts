@@ -15,6 +15,17 @@ import {
 } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
+import { PGlite } from "@electric-sql/pglite";
+import { Kysely as KyselyImpl } from "kysely";
+import { PGliteDialect } from "kysely-pglite-dialect";
+import { up as upSecrets } from "../../subgraphs/vetra-cloud-secrets/db/migrations.js";
+import type { SecretsDB } from "../../subgraphs/vetra-cloud-secrets/db/schema.js";
+import type { OpenBaoTransitClient } from "../../subgraphs/vetra-cloud-secrets/openbao-transit.js";
+import {
+  createSecretsService,
+  WORKFLOWS_MASTER_KEY,
+  type SecretsService,
+} from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 // generateClintBlock resolves dist-tags -> concrete versions via a registry
 // fetch. Stub fetch so the emit tests are deterministic and offline.
@@ -1510,5 +1521,63 @@ describe("generateValuesYaml — speckle", () => {
       }),
     );
     expect(pkgs).toEqual([{ name: "@powerhousedao/speckle", version: null }]);
+  });
+});
+
+describe("generateValuesYaml — workflows master key", () => {
+  const SWITCHBOARD = {
+    type: "SWITCHBOARD" as const,
+    prefix: "switchboard",
+    enabled: true,
+    url: null,
+    status: "ACTIVE" as const,
+    version: null,
+    config: null,
+    selectedRessource: null,
+  };
+  const transit = {
+    authenticate: vi.fn(),
+    ensureTenantKey: vi.fn().mockResolvedValue(undefined),
+    keyFor: vi.fn(),
+    encrypt: vi.fn(async (tenantId: string, plaintext: string) => `vault:v1:${tenantId}:${plaintext}`),
+    decrypt: vi.fn(),
+  } as unknown as OpenBaoTransitClient;
+  let secretsDb: Kysely<SecretsDB>;
+  let secrets: SecretsService;
+
+  beforeEach(async () => {
+    secretsDb = new KyselyImpl<SecretsDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await upSecrets(secretsDb);
+    secrets = createSecretsService({ db: secretsDb, transit });
+  });
+  afterEach(async () => {
+    await secretsDb.destroy();
+  });
+
+  async function masterKeyRows() {
+    return secretsDb
+      .selectFrom("tenant_secrets")
+      .select(["tenantId", "ciphertext"])
+      .where("key", "=", WORKFLOWS_MASTER_KEY)
+      .execute();
+  }
+
+  it("generates one 32-byte key per switchboard tenant and keeps it across renders", async () => {
+    const state = envState({ services: [SWITCHBOARD] });
+    const first = await generateValuesYaml(dbStub, state, "doc-mk", secrets);
+    const [row] = await masterKeyRows();
+    const key = (row.ciphertext ?? "").split(":").pop()!;
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    // The value reaches the pod through the tenant Secret, never values.yaml.
+    expect(first).not.toContain(key);
+
+    await generateValuesYaml(dbStub, state, "doc-mk", secrets);
+    expect(await masterKeyRows()).toEqual([row]);
+  });
+
+  it("generates none for an environment without a switchboard", async () => {
+    const connect = { ...SWITCHBOARD, type: "CONNECT" as const, prefix: "connect" };
+    await generateValuesYaml(dbStub, envState({ services: [connect] }), "doc-mk", secrets);
+    expect(await masterKeyRows()).toEqual([]);
   });
 });
