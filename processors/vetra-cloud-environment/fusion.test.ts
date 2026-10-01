@@ -6,12 +6,16 @@ import type { DB } from "./schema.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
 beforeEach(() => {
+  vi.stubEnv("FUSION_IMAGE_PROJECTS", "achra,other");
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => ({ ok: true, json: async () => ({ "dist-tags": {} }) })),
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 const dbStub = {
   selectFrom: () => ({
@@ -90,12 +94,12 @@ describe("generateValuesYaml — FUSION", () => {
     expect(app).toContain(`    tag: "sha-abc1234def56"`);
     expect(app).toContain(`    host: "${SUB}-fusion.vetra.io"`);
     expect(app).toContain(
-      `    NEXT_PUBLIC_SWITCHBOARD_URL: "https://${SUB}-switchboard.vetra.io/graphql"`,
+      `    "NEXT_PUBLIC_SWITCHBOARD_URL": "https://${SUB}-switchboard.vetra.io/graphql"`,
     );
-    expect(app).toContain(`    NEXT_PUBLIC_CONNECT_URL: "https://${SUB}-connect.vetra.io"`);
-    expect(app).toContain(`    NEXT_PUBLIC_BASE_URL: "https://${SUB}-fusion.vetra.io"`);
-    expect(app).toContain(`    NEXT_PUBLIC_RENOWN_URL: "https://www.renown.id"`);
-    expect(app).toContain(`        name: ${TENANT}-secrets`);
+    expect(app).toContain(`    "NEXT_PUBLIC_CONNECT_URL": "https://${SUB}-connect.vetra.io"`);
+    expect(app).toContain(`    "NEXT_PUBLIC_BASE_URL": "https://${SUB}-fusion.vetra.io"`);
+    expect(app).toContain(`    "NEXT_PUBLIC_RENOWN_URL": "https://www.renown.id"`);
+    expect(app).not.toContain("envFrom");
     expect(app).toContain(`    powerhouse.io/service: fusion`);
   });
 
@@ -124,8 +128,8 @@ describe("generateValuesYaml — FUSION", () => {
         }),
       ),
     );
-    expect(app).toContain(`    NEXT_PUBLIC_SHOW_WHITELIST_OVERLAY: "false"`);
-    expect(app).toContain(`    NEXT_PUBLIC_RENOWN_URL: "https://renown.example"`);
+    expect(app).toContain(`    "NEXT_PUBLIC_SHOW_WHITELIST_OVERLAY": "false"`);
+    expect(app).toContain(`    "NEXT_PUBLIC_RENOWN_URL": "https://renown.example"`);
     expect(app).not.toContain("https://www.renown.id");
   });
 
@@ -140,8 +144,10 @@ describe("generateValuesYaml — FUSION", () => {
         },
       }),
     );
-    expect(yaml).not.toContain("MAILCHIMP_API_KEY");
     expect(yaml).not.toContain("leak-me");
+    // the name is only referenced by key (secretEnv), never as an inline env entry
+    expect(appBlock(yaml)).not.toContain(`    "MAILCHIMP_API_KEY":`);
+    expect(appBlock(yaml)).toContain(`    - name: "MAILCHIMP_API_KEY"`);
     // the secret reaches the pod via the tenant Secret, so the controller must be on
     expect(yaml).toContain("tenantSecretsController:\n  enabled: true");
   });
@@ -181,6 +187,56 @@ describe("generateValuesYaml — FUSION", () => {
     );
     expect(app).toContain(`    host: "achra.com"`);
     expect(app).toContain(`      secretName: fusion-achra-com-tls`);
-    expect(app).toContain(`    NEXT_PUBLIC_BASE_URL: "https://achra.com"`);
+    expect(app).toContain(`    "NEXT_PUBLIC_BASE_URL": "https://achra.com"`);
+  });
+
+  it("passes only the declared secrets, by key, from the tenant Secret", async () => {
+    const app = appBlock(
+      await render(
+        envState({
+          fusion: {
+            image: FUSION_IMAGE,
+            env: [{ name: "MAILCHIMP_API_KEY", value: null, isSecret: true }],
+            autoUpdate: false,
+            autoUpdateTagPattern: null,
+          },
+        }),
+      ),
+    );
+    expect(app).toContain("  secretEnv:");
+    expect(app).toContain(`    - name: "MAILCHIMP_API_KEY"`);
+    expect(app).toContain(`      secretName: ${TENANT}-secrets`);
+    expect(app).toContain(`      key: "MAILCHIMP_API_KEY"`);
+    expect(app).not.toContain("envFrom");
+  });
+
+  it("skips env entries whose name is not a plain identifier", async () => {
+    const yaml = await render(
+      envState({
+        fusion: {
+          image: FUSION_IMAGE,
+          env: [{ name: 'X: "1"\n  image:', value: "y", isSecret: false }],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+    );
+    expect(yaml).not.toContain('X: "1"');
+  });
+
+  it("does not render images from Harbor projects outside FUSION_IMAGE_PROJECTS", async () => {
+    const app = appBlock(
+      await render(
+        envState({
+          fusion: { image: "cr.vetra.io/vetra/vetra-to", env: [], autoUpdate: false, autoUpdateTagPattern: null },
+        }),
+      ),
+    );
+    expect(app).toBe("app:\n  enabled: false");
+  });
+
+  it("denies every image when FUSION_IMAGE_PROJECTS is unset", async () => {
+    vi.stubEnv("FUSION_IMAGE_PROJECTS", "");
+    expect(appBlock(await render(envState()))).toBe("app:\n  enabled: false");
   });
 });

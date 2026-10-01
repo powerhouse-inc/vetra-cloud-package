@@ -915,9 +915,11 @@ export function switchboardHasReadyEndpoint(tag: string): boolean {
  * (powerhouse-k8s-hosting docs/fusion) swaps them for the env vars rendered
  * here, so one image serves any environment. Plain service env is rendered
  * inline (overriding platform defaults); secret entries live only in the
- * tenant secrets store and reach the pod through envFrom <tenant>-secrets.
+ * tenant secrets store and reach the pod one key at a time (app.secretEnv).
  * Not renderable (disabled, no image, no version) → `app.enabled: false`.
  */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function generateFusionBlock(
   state: VetraCloudEnvironmentState,
   opts: {
@@ -936,6 +938,19 @@ export function generateFusionBlock(
   const image = state.fusion?.image ?? null;
   const tag = service?.version ?? null;
   if (!service || !image || !tag) {
+    return `app:\n  enabled: false`;
+  }
+  // Pulls use the namespace's broad Harbor credentials, so only Harbor
+  // projects the platform assigned to Fusion apps may be referenced.
+  const allowedProjects = (process.env.FUSION_IMAGE_PROJECTS ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const project = image.split("/")[1] ?? "";
+  if (!allowedProjects.includes(project)) {
+    logger.warn(
+      `FUSION image ${image} for tenant ${opts.tenantId}: Harbor project '${project}' is not in FUSION_IMAGE_PROJECTS — not rendering`,
+    );
     return `app:\n  enabled: false`;
   }
   const apexDomain =
@@ -964,15 +979,31 @@ export function generateFusionBlock(
     env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
   env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
   env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  const secretNames: string[] = [];
   for (const e of state.fusion?.env ?? []) {
-    if (classifyEnv(e) === "secret") continue; // never inline — see doc above
+    if (!ENV_NAME.test(e.name)) continue; // names become YAML keys
+    if (classifyEnv(e) === "secret") {
+      secretNames.push(e.name); // never inline — referenced by key below
+      continue;
+    }
     env.set(e.name, e.value ?? "");
   }
 
   const resources = APP_RESOURCE_MAP[readServiceSize(service)];
   const envLines = [...env.entries()]
-    .map(([k, v]) => `    ${k}: ${yamlQuote(v)}`)
+    .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
     .join("\n");
+  // Only the declared secrets, by key — the tenant Secret also holds other
+  // services' secrets (e.g. CLINT API keys) that a front-end must not see.
+  const secretEnvBlock =
+    secretNames.length > 0
+      ? `  secretEnv:\n${secretNames
+          .map(
+            (n) =>
+              `    - name: ${yamlQuote(n)}\n      secretName: ${opts.tenantId}-secrets\n      key: ${yamlQuote(n)}`,
+          )
+          .join("\n")}`
+      : `  secretEnv: []`;
   return `app:
   enabled: true
   name: fusion
@@ -999,10 +1030,7 @@ export function generateFusionBlock(
 ${envLines}
   envConfigMap: {}
   envSecret: {}
-  envFrom:
-    - secretRef:
-        name: ${opts.tenantId}-secrets
-        optional: true
+${secretEnvBlock}
   podLabels:
     powerhouse.io/service: fusion
   resources:

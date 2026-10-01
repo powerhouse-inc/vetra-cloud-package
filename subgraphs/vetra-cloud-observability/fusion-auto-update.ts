@@ -8,8 +8,12 @@
 export const DEFAULT_FUSION_TAG_PATTERN = "^sha-[0-9a-f]{7,40}$";
 export const FUSION_AUTO_UPDATE_INTERVAL_MS = 120_000;
 
-/** Sleeping or released envs are left alone (a woken env catches up next tick). */
-const SKIP_STATUSES = new Set(["STOPPED", "TERMINATING", "DESTROYED", "ARCHIVED"]);
+/**
+ * Only settled envs are bumped: bumping approves, and approving a DRAFT or
+ * CHANGES_PENDING env would ship the owner's unapproved edits. In-flight
+ * deploys and sleeping/released envs catch up on a later tick.
+ */
+const BUMPABLE_STATUSES = new Set(["READY", "DEPLOYMENt_FAILED"]);
 
 export type HarborArtifact = {
   push_time: string;
@@ -84,7 +88,7 @@ export async function runFusionAutoUpdateOnce(deps: {
 }): Promise<string[]> {
   const bumped: string[] = [];
   for (const env of await deps.listEnvs()) {
-    if (env.status && SKIP_STATUSES.has(env.status)) continue;
+    if (!env.status || !BUMPABLE_STATUSES.has(env.status)) continue;
     const fusion = parseJson<FusionConfig>(env.fusion);
     if (!fusion?.autoUpdate || !fusion.image) continue;
     const service = (

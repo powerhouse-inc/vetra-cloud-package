@@ -65,4 +65,34 @@ describe("SET_FUSION_CONFIG", () => {
     expect(doc.state.global.fusion?.env).toStrictEqual([]);
     expect(doc.state.global.fusion?.autoUpdate).toBe(false);
   });
+
+  it("rejects env names that are not plain identifiers (YAML injection)", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      setFusionConfig({
+        ...base,
+        env: [{ name: 'X: "1"\n  image:\n    repository: "docker.io/evil/x"', value: "y", isSecret: false }],
+      }),
+    );
+    expect(doc.operations.global.at(-1)?.error).toMatch(/env name/i);
+    expect(doc.state.global.fusion ?? null).toBeNull();
+  });
+
+  it("rejects secrets with a NEXT_PUBLIC_ name (they would land in browser JS)", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      setFusionConfig({
+        ...base,
+        env: [{ name: "NEXT_PUBLIC_API_KEY", value: "k", isSecret: true }],
+      }),
+    );
+    expect(doc.operations.global.at(-1)?.error).toMatch(/NEXT_PUBLIC_/);
+  });
+
+  it("rejects catastrophic or oversized tag patterns", () => {
+    for (const autoUpdateTagPattern of ["^(a+)+$", "(x*)*", "^" + "a".repeat(120) + "$"]) {
+      const doc = reducer(utils.createDocument(), setFusionConfig({ ...base, autoUpdateTagPattern }));
+      expect(doc.operations.global.at(-1)?.error).toMatch(/pattern/i);
+    }
+  });
 });

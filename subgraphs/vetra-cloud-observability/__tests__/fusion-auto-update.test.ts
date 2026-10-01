@@ -100,6 +100,9 @@ describe("runFusionAutoUpdateOnce", () => {
         env({ id: "noimage", fusion: JSON.stringify({ image: null, env: [], autoUpdate: true, autoUpdateTagPattern: null }) }),
         env({ id: "stopped", status: "STOPPED" }),
         env({ id: "gone", status: "DESTROYED" }),
+        env({ id: "draft", status: "DRAFT" }),
+        env({ id: "pending", status: "CHANGES_PENDING" }),
+        env({ id: "deploying", status: "DEPLOYING" }),
         env({ id: "nofusion", fusion: null }),
       ],
       listArtifacts: list,
@@ -135,5 +138,15 @@ describe("runFusionAutoUpdateOnce", () => {
       bump,
     });
     expect(bumped).toEqual(["ok"]);
+  });
+
+  it("retries an env whose last deploy failed", async () => {
+    const bump = vi.fn(async () => true);
+    await runFusionAutoUpdateOnce({
+      listEnvs: async () => [env({ status: "DEPLOYMENt_FAILED" })],
+      listArtifacts: async () => newest,
+      bump,
+    });
+    expect(bump).toHaveBeenCalled();
   });
 });
