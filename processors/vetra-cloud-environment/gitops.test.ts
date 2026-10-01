@@ -66,6 +66,7 @@ function envState(
     customDomain: { enabled: false, domain: null, dnsRecords: [] },
     defaultPackageRegistry: "https://registry.dev.vetra.io",
     services: [],
+    fusion: null,
     packages: [],
     status: "READY",
     apexService: null,

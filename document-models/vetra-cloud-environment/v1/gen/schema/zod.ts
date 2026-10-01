@@ -23,6 +23,7 @@ import type {
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
+  SetFusionConfigInput,
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
@@ -42,6 +43,7 @@ import type {
   VetraCloudEnvironmentServiceType,
   VetraCloudEnvironmentState,
   VetraCloudEnvironmentStatus,
+  VetraCloudFusionConfig,
   VetraCloudPackage,
   VetraCloudPackageConfigInput,
   VetraCloudPackageInput,
@@ -273,6 +275,17 @@ export function SetDnsRecordsInputSchema(): z.ZodObject<
   });
 }
 
+export function SetFusionConfigInputSchema(): z.ZodObject<
+  Properties<SetFusionConfigInput>
+> {
+  return z.object({
+    autoUpdate: z.boolean(),
+    autoUpdateTagPattern: z.string().nullish(),
+    env: z.array(z.lazy(() => VetraCloudServiceEnvConfigInputSchema())),
+    image: z.string().nullish(),
+  });
+}
+
 export function SetGenericSubdomainInputSchema(): z.ZodObject<
   Properties<SetGenericSubdomainInput>
 > {
@@ -426,6 +439,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     autoUpdateChannel: AutoUpdateChannelSchema.nullish(),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
+    fusion: z.lazy(() => VetraCloudFusionConfigSchema().nullish()),
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),
     label: z.string().nullish(),
@@ -440,6 +454,18 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),
     status: VetraCloudEnvironmentStatusSchema,
     studioInstanceId: z.string().nullish(),
+  });
+}
+
+export function VetraCloudFusionConfigSchema(): z.ZodObject<
+  Properties<VetraCloudFusionConfig>
+> {
+  return z.object({
+    __typename: z.literal("VetraCloudFusionConfig").optional(),
+    autoUpdate: z.boolean(),
+    autoUpdateTagPattern: z.string().nullish(),
+    env: z.array(z.lazy(() => VetraCloudServiceEnvSchema())),
+    image: z.string().nullish(),
   });
 }
 

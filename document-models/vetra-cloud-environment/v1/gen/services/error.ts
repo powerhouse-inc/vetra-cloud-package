@@ -3,7 +3,8 @@ export type ErrorCode =
   | "ClintConfigRequiredError"
   | "PrefixInUseError"
   | "ServiceNotFoundError"
-  | "NotClintServiceError";
+  | "NotClintServiceError"
+  | "InvalidFusionConfigError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -44,6 +45,13 @@ export class NotClintServiceError extends Error implements ReducerError {
   }
 }
 
+export class InvalidFusionConfigError extends Error implements ReducerError {
+  errorCode = "InvalidFusionConfigError" as ErrorCode;
+  constructor(message = "InvalidFusionConfigError") {
+    super(message);
+  }
+}
+
 export const errors = {
   EnableService: { NotOwnerError, ClintConfigRequiredError, PrefixInUseError },
 
@@ -60,4 +68,6 @@ export const errors = {
   SetServiceVersion: { ServiceNotFoundError, NotOwnerError },
 
   SetServiceSize: { ServiceNotFoundError, NotOwnerError },
+
+  SetFusionConfig: { InvalidFusionConfigError },
 };

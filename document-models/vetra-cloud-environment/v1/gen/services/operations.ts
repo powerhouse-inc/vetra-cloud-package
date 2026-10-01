@@ -7,6 +7,7 @@ import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
   DisableServiceAction,
   EnableServiceAction,
+  SetFusionConfigAction,
   SetServiceConfigAction,
   SetServiceSizeAction,
   SetServiceStatusAction,
@@ -54,6 +55,11 @@ export interface VetraCloudEnvironmentServicesOperations {
   setServiceSizeOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetServiceSizeAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setFusionConfigOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetFusionConfigAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

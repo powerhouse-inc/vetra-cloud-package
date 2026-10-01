@@ -6,6 +6,7 @@ import { createAction } from "document-model";
 import {
   DisableServiceInputSchema,
   EnableServiceInputSchema,
+  SetFusionConfigInputSchema,
   SetServiceConfigInputSchema,
   SetServiceSizeInputSchema,
   SetServiceStatusInputSchema,
@@ -16,6 +17,7 @@ import {
 import type {
   DisableServiceInput,
   EnableServiceInput,
+  SetFusionConfigInput,
   SetServiceConfigInput,
   SetServiceSizeInput,
   SetServiceStatusInput,
@@ -26,6 +28,7 @@ import type {
 import type {
   DisableServiceAction,
   EnableServiceAction,
+  SetFusionConfigAction,
   SetServiceConfigAction,
   SetServiceSizeAction,
   SetServiceStatusAction,
@@ -103,5 +106,14 @@ export const setServiceSize = (input: SetServiceSizeInput) =>
     { ...input },
     undefined,
     SetServiceSizeInputSchema,
+    "global",
+  );
+
+export const setFusionConfig = (input: SetFusionConfigInput) =>
+  createAction<SetFusionConfigAction>(
+    "SET_FUSION_CONFIG",
+    { ...input },
+    undefined,
+    SetFusionConfigInputSchema,
     "global",
   );
