@@ -160,6 +160,13 @@ export type SetDnsRecordsInput = {
   records: Array<DnsRecordInput>;
 };
 
+export type SetFusionConfigInput = {
+  autoUpdate: Scalars["Boolean"]["input"];
+  autoUpdateTagPattern?: InputMaybe<Scalars["String"]["input"]>;
+  env: Array<VetraCloudServiceEnvConfigInput>;
+  image?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type SetGenericSubdomainInput = {
   genericSubdomain: Scalars["String"]["input"];
 };
@@ -253,6 +260,7 @@ export type VetraCloudEnvironmentState = {
   autoUpdateChannel: Maybe<AutoUpdateChannel>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
+  fusion: Maybe<VetraCloudFusionConfig>;
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
   label: Maybe<Scalars["String"]["output"]>;
@@ -276,6 +284,13 @@ export type VetraCloudEnvironmentStatus =
   | "READY"
   | "STOPPED"
   | "TERMINATING";
+
+export type VetraCloudFusionConfig = {
+  autoUpdate: Scalars["Boolean"]["output"];
+  autoUpdateTagPattern: Maybe<Scalars["String"]["output"]>;
+  env: Array<VetraCloudServiceEnv>;
+  image: Maybe<Scalars["String"]["output"]>;
+};
 
 export type VetraCloudPackage = {
   name: Scalars["String"]["output"];

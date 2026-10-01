@@ -27,6 +27,7 @@ import {
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
+  SetFusionConfigInputSchema,
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
   SetOwnerInputSchema,
@@ -262,6 +263,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetServiceSizeInputSchema().parse(action.input);
 
       vetraCloudEnvironmentServicesOperations.setServiceSizeOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_FUSION_CONFIG": {
+      SetFusionConfigInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentServicesOperations.setFusionConfigOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

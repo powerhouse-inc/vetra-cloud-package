@@ -33,6 +33,7 @@ type VetraCloudEnvironmentState {
   autoUpdateChannel: AutoUpdateChannel
   runtimeConfig: String
   studioInstanceId: OID
+  fusion: VetraCloudFusionConfig
 }
 
 enum AutoUpdateChannel {
@@ -120,6 +121,13 @@ type VetraCloudPackage {
   registry: URL!
   name: String!
   version: String
+}
+
+type VetraCloudFusionConfig {
+  image: String
+  env: [VetraCloudServiceEnv!]!
+  autoUpdate: Boolean!
+  autoUpdateTagPattern: String
 }
 
 # data_management
@@ -252,6 +260,13 @@ input SetServiceVersionInput {
 input SetServiceSizeInput {
   prefix: String!
   size: VetraCloudRessourceSize!
+}
+
+input SetFusionConfigInput {
+  image: String
+  env: [VetraCloudServiceEnvConfigInput!]!
+  autoUpdate: Boolean!
+  autoUpdateTagPattern: String
 }
 
 # packages

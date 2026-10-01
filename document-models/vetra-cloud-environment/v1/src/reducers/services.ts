@@ -1,6 +1,7 @@
 import type { VetraCloudEnvironmentServicesOperations } from "document-models/vetra-cloud-environment/v1";
 import {
   ClintConfigRequiredError,
+  InvalidFusionConfigError,
   NotClintServiceError,
   PrefixInUseError,
   ServiceNotFoundError,
@@ -211,6 +212,58 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       if (service.type === "CLINT" && service.config) {
         service.config.selectedRessource = action.input.size;
       }
+      markPendingIfDeployed(state);
+    },
+    setFusionConfigOperation(state, action) {
+      const { image, env, autoUpdate, autoUpdateTagPattern } = action.input;
+      const repo = image?.trim() || null;
+      if (repo !== null) {
+        if (!/^cr\.vetra\.io\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$/.test(repo)) {
+          throw new InvalidFusionConfigError(
+            repo.includes(":") || repo.includes("@")
+              ? `Image '${repo}' must not carry a tag or digest — the version picks the tag`
+              : `Image '${repo}' must be a repository on cr.vetra.io (e.g. cr.vetra.io/<project>/<app>)`,
+          );
+        }
+      }
+      const pattern = autoUpdateTagPattern?.trim() || null;
+      if (pattern !== null) {
+        // The poller runs this on the shared switchboard: keep it short and
+        // free of nested quantifiers (catastrophic backtracking).
+        if (pattern.length > 100 || /\([^()]*[+*{][^()]*\)\s*[+*{]/.test(pattern)) {
+          throw new InvalidFusionConfigError(
+            `Auto-update tag pattern '${pattern}' is too long or has nested quantifiers`,
+          );
+        }
+        try {
+          new RegExp(pattern);
+        } catch {
+          throw new InvalidFusionConfigError(`Invalid auto-update tag pattern '${pattern}'`);
+        }
+      }
+      for (const e of env ?? []) {
+        // Names become YAML keys and env var names in the rendered values.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.name)) {
+          throw new InvalidFusionConfigError(`Invalid env name '${e.name}'`);
+        }
+        if (e.isSecret === true && e.name.startsWith("NEXT_PUBLIC_")) {
+          throw new InvalidFusionConfigError(
+            `'${e.name}' cannot be a secret: NEXT_PUBLIC_ values are inlined into browser JS`,
+          );
+        }
+      }
+      state.fusion = {
+        image: repo,
+        // Secret values never live in the document — the UI writes them to the
+        // tenant secrets store; the pod gets them via envFrom <tenant>-secrets.
+        env: (env ?? []).map((e) => ({
+          name: e.name,
+          value: e.isSecret === true ? null : (e.value ?? null),
+          isSecret: e.isSecret ?? null,
+        })),
+        autoUpdate,
+        autoUpdateTagPattern: pattern,
+      };
       markPendingIfDeployed(state);
     },
   };

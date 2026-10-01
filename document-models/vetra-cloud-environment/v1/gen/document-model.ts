@@ -19,10 +19,10 @@ export const documentModel: DocumentModelGlobalState = {
         },
         global: {
           schema:
-            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}",
+            "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n  fusion: VetraCloudFusionConfig\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ntype VetraCloudFusionConfig {\n  image: String\n  env: [VetraCloudServiceEnv!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}",
           examples: [],
           initialValue:
-            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null,\n  "runtimeConfig": null,\n  "studioInstanceId": null\n}',
+            '{\n  "owner": null,\n  "label": null,\n  "genericSubdomain": null,\n  "genericBaseDomain": null,\n  "customDomain": {\n    "enabled": false,\n    "domain": null,\n    "dnsRecords": []\n  },\n  "defaultPackageRegistry": null,\n  "services": [],\n  "packages": [],\n  "status": "DRAFT",\n  "apexService": null,\n  "autoUpdateChannel": null,\n  "runtimeConfig": null,\n  "studioInstanceId": null,\n  "fusion": null\n}',
         },
       },
       modules: [
@@ -520,6 +520,28 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "NOT_OWNER",
                   description:
                     "The action signer is not the owner of this environment",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-fusion-config",
+              name: "SET_FUSION_CONFIG",
+              description:
+                "Configure the FUSION app: image repository (cr.vetra.io, no tag), env (secret values are never stored), auto-update",
+              schema:
+                "input SetFusionConfigInput {\n  image: String\n  env: [VetraCloudServiceEnvConfigInput!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}",
+              template: "",
+              reducer: "// see src/reducers/services.ts",
+              errors: [
+                {
+                  id: "err-invalid-fusion-config",
+                  name: "InvalidFusionConfigError",
+                  code: "INVALID_FUSION_CONFIG",
+                  description:
+                    "Image must be a cr.vetra.io repository without tag; tag pattern must be a valid regex",
                   template: "",
                 },
               ],

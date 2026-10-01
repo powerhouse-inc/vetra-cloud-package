@@ -42,6 +42,7 @@ export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   autoUpdateChannel: null,
   runtimeConfig: null,
   studioInstanceId: null,
+  fusion: null,
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

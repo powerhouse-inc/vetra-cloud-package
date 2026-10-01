@@ -6,6 +6,7 @@ import type { Action } from "document-model";
 import type {
   DisableServiceInput,
   EnableServiceInput,
+  SetFusionConfigInput,
   SetServiceConfigInput,
   SetServiceSizeInput,
   SetServiceStatusInput,
@@ -46,6 +47,10 @@ export type SetServiceSizeAction = Action & {
   type: "SET_SERVICE_SIZE";
   input: SetServiceSizeInput;
 };
+export type SetFusionConfigAction = Action & {
+  type: "SET_FUSION_CONFIG";
+  input: SetFusionConfigInput;
+};
 
 export type VetraCloudEnvironmentServicesAction =
   | EnableServiceAction
@@ -55,4 +60,5 @@ export type VetraCloudEnvironmentServicesAction =
   | UpdateServicePrefixAction
   | SetServiceStatusAction
   | SetServiceVersionAction
-  | SetServiceSizeAction;
+  | SetServiceSizeAction
+  | SetFusionConfigAction;
