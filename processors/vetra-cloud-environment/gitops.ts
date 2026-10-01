@@ -1033,6 +1033,9 @@ ${envLines}
 ${secretEnvBlock}
   podLabels:
     powerhouse.io/service: fusion
+  # Chunks keep their names but change content when NEXT_PUBLIC_* change
+  # (placeholder swap at start) — override Next's 1-year immutable caching.
+  staticCacheMaxAge: 3600
   resources:
     requests:
       cpu: ${yamlQuote(resources.requests.cpu)}

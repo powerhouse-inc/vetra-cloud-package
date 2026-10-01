@@ -101,6 +101,9 @@ describe("generateValuesYaml — FUSION", () => {
     expect(app).toContain(`    "NEXT_PUBLIC_RENOWN_URL": "https://www.renown.id"`);
     expect(app).not.toContain("envFrom");
     expect(app).toContain(`    powerhouse.io/service: fusion`);
+    // chunks change content when NEXT_PUBLIC_* change (placeholder swap), so
+    // /_next/static must not be cached as immutable for a year
+    expect(app).toContain(`  staticCacheMaxAge: 3600`);
   });
 
   it("omits platform URLs for services the env does not run", async () => {
