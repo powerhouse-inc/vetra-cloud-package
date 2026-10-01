@@ -251,7 +251,7 @@ function generateCustomDomainIngress(
 /**
  * Narrow `state.apexService` to the service types the processor actually
  * renders apex routing for. Returns null when no apex is requested or when
- * the pinned type is one we don't emit (e.g. FUSION — no chart ingress).
+ * the pinned type is one we don't route (FUSION apex is handled in generateFusionBlock).
  */
 function readApexService(
   state: VetraCloudEnvironmentState,
@@ -909,6 +909,134 @@ export function switchboardHasReadyEndpoint(tag: string): boolean {
   return compareVersions(parsed, parseImageVersion(READY_ENDPOINT_MIN_VERSION)!) >= 0;
 }
 
+/**
+ * FUSION service → the chart's generic `app:` component. The image is built by
+ * the app repo with `__NEXT_PUBLIC_<NAME>__` placeholders; its entrypoint
+ * (powerhouse-k8s-hosting docs/fusion) swaps them for the env vars rendered
+ * here, so one image serves any environment. Plain service env is rendered
+ * inline (overriding platform defaults); secret entries live only in the
+ * tenant secrets store and reach the pod through envFrom <tenant>-secrets.
+ * Not renderable (disabled, no image, no version) → `app.enabled: false`.
+ */
+export function generateFusionBlock(
+  state: VetraCloudEnvironmentState,
+  opts: {
+    tenantId: string;
+    subdomain: string;
+    baseDomain: string;
+    customDomain: string | null;
+    apexService: VetraCloudEnvironmentService["type"] | null;
+    switchboardHost: string | null;
+    connectHost: string | null;
+  },
+): string {
+  const service = (state.services ?? []).find(
+    (s) => s.type === "FUSION" && s.enabled,
+  );
+  const image = state.fusion?.image ?? null;
+  const tag = service?.version ?? null;
+  if (!service || !image || !tag) {
+    return `app:\n  enabled: false`;
+  }
+  const apexDomain =
+    opts.customDomain && opts.apexService === "FUSION" ? opts.customDomain : null;
+  const host =
+    apexDomain ??
+    resolveGenericHost(
+      opts.subdomain,
+      service.prefix || "fusion",
+      isTypeAtApex(state, "FUSION"),
+      opts.baseDomain,
+    );
+  if (!apexDomain) assertHostLabelLength(host);
+  const tlsSecret = apexDomain
+    ? `fusion-${apexDomain.replace(/\./g, "-")}-tls`
+    : `fusion-${opts.subdomain}-tls`;
+
+  const env = new Map<string, string>([
+    ["PORT", "3000"],
+    ["HOSTNAME", "0.0.0.0"],
+    ["NODE_ENV", "production"],
+  ]);
+  if (opts.switchboardHost)
+    env.set("NEXT_PUBLIC_SWITCHBOARD_URL", `https://${opts.switchboardHost}/graphql`);
+  if (opts.connectHost)
+    env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
+  env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
+  env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  for (const e of state.fusion?.env ?? []) {
+    if (classifyEnv(e) === "secret") continue; // never inline — see doc above
+    env.set(e.name, e.value ?? "");
+  }
+
+  const resources = APP_RESOURCE_MAP[readServiceSize(service)];
+  const envLines = [...env.entries()]
+    .map(([k, v]) => `    ${k}: ${yamlQuote(v)}`)
+    .join("\n");
+  return `app:
+  enabled: true
+  name: fusion
+  replicaCount: 1
+  image:
+    repository: ${yamlQuote(image)}
+    tag: ${yamlQuote(tag)}
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+  ingress:
+    enabled: true
+    className: traefik
+    host: ${yamlQuote(host)}
+    additionalHosts: []
+    tls:
+      enabled: true
+      secretName: ${tlsSecret}
+    annotations:
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}
+  env:
+${envLines}
+  envConfigMap: {}
+  envSecret: {}
+  envFrom:
+    - secretRef:
+        name: ${opts.tenantId}-secrets
+        optional: true
+  podLabels:
+    powerhouse.io/service: fusion
+  resources:
+    requests:
+      cpu: ${yamlQuote(resources.requests.cpu)}
+      memory: ${yamlQuote(resources.requests.memory)}
+    limits:
+      cpu: ${yamlQuote(resources.limits.cpu)}
+      memory: ${yamlQuote(resources.limits.memory)}
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  autoscaling:
+    enabled: false`;
+}
+
 export async function generateValuesYaml(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
@@ -948,7 +1076,11 @@ export async function generateValuesYaml(
   // unconditionally with `optional: true`, but the flag also drives
   // the Reloader-friendly flow). Connect-only envs without either get
   // skipped — no reconcile target to wire up.
-  const tenantSecretsControllerEnabled = switchboardEnabled || clintEnabled;
+  const fusionHasSecrets =
+    state.services.some((s) => s.type === "FUSION" && s.enabled) &&
+    (state.fusion?.env ?? []).some((e) => classifyEnv(e) === "secret");
+  const tenantSecretsControllerEnabled =
+    switchboardEnabled || clintEnabled || fusionHasSecrets;
   const switchboardService = state.services.find(
     (s) => s.type === "SWITCHBOARD",
   );
@@ -1042,6 +1174,18 @@ export async function generateValuesYaml(
     subdomain,
     connectApexDomain,
   );
+
+  const fusionBlock = generateFusionBlock(state, {
+    tenantId,
+    subdomain,
+    baseDomain: state.genericBaseDomain ?? "vetra.io",
+    customDomain,
+    apexService,
+    switchboardHost: switchboardEnabled
+      ? (switchboardApexDomain ?? switchboardGenericHost)
+      : null,
+    connectHost: connectEnabled ? (connectApexDomain ?? connectGenericHost) : null,
+  });
 
   const tenantName = yamlQuote(state.label ?? name);
   const dbName = tenantId.replace(/-/g, "_");
@@ -1346,6 +1490,7 @@ sentry:
   environment: ${tenantId}
 networkPolicy:
   enabled: false
+${fusionBlock}
 ${clintBlock}
 ${doclingBlock}
 ${paperlessBlock}
