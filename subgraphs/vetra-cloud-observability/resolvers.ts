@@ -875,7 +875,7 @@ export function createResolvers(
 }
 
 /** Shape of environments-table row the bump helpers read. */
-type EnvForBump = {
+export type EnvForBump = {
   id: string;
   name: string | null;
   tenantId: string | null;
@@ -1026,7 +1026,7 @@ function parseEnvPackages(raw: string | null): Array<{ name: string }> {
  *
  * Returns true iff at least one dispatch was issued.
  */
-async function bumpEnvToTag(
+export async function bumpEnvToTag(
   ctx: {
     db: Kysely<ObservabilityDB>;
     envDb: Kysely<any>;

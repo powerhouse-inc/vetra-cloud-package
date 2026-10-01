@@ -33,6 +33,11 @@ export interface Environments {
    */
   studioInstanceId: string | null;
   /**
+   * JSON of doc state's `fusion` ({ image, env, autoUpdate, autoUpdateTagPattern })
+   * or NULL. Read by the observability subgraph's FUSION auto-update poller.
+   */
+  fusion: string | null;
+  /**
    * Warm-pool tracking (NULL for ordinary, non-pool environments).
    * Written by the studio-pool-keeper service and the claim subgraph.
    * WARMING | AVAILABLE | CLAIMED | FAILED.

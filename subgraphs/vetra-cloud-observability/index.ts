@@ -4,7 +4,13 @@ import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
 import { childLogger, createAction } from "document-model";
 import { schema } from "./schema.js";
-import { createResolvers } from "./resolvers.js";
+import { bumpEnvToTag, createResolvers } from "./resolvers.js";
+import {
+  createHarborArtifactLister,
+  FUSION_AUTO_UPDATE_INTERVAL_MS,
+  runFusionAutoUpdateOnce,
+  type FusionEnvRow,
+} from "./fusion-auto-update.js";
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
@@ -35,6 +41,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
   private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
+  private fusionAutoUpdate: ReturnType<typeof setInterval> | null = null;
   private clintPullWorker: ClintPullWorker | null = null;
   private dumpJobWatcher: ReturnType<typeof setInterval> | null = null;
   private dumpRowPruner: ReturnType<typeof setInterval> | null = null;
@@ -92,6 +99,45 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       dumpDeps: dumpDeps ?? undefined,
       restartDeps,
     });
+
+    // FUSION auto-deploy: follow the newest matching Harbor tag per env.
+    // Needs a Harbor reader robot; without it the feature is simply off.
+    const harborUser = process.env.HARBOR_FUSION_READER_USERNAME;
+    const harborPass = process.env.HARBOR_FUSION_READER_PASSWORD;
+    if (harborUser && harborPass) {
+      const listArtifacts = createHarborArtifactLister({
+        username: harborUser,
+        password: harborPass,
+      });
+      const tick = async () => {
+        try {
+          const bumped = await runFusionAutoUpdateOnce({
+            listEnvs: async () =>
+              (await envDb
+                .selectFrom("environments")
+                .select(["id", "name", "tenantId", "status", "services", "fusion"])
+                .where("fusion", "is not", null)
+                .execute()) as FusionEnvRow[],
+            listArtifacts,
+            bump: (env, tag) =>
+              bumpEnvToTag(
+                { db, envDb, dispatch },
+                env,
+                new Set(["FUSION"]),
+                tag,
+                "AUTO",
+                "FUSION",
+                "",
+              ),
+          });
+          if (bumped.length > 0)
+            console.info(`[fusion-auto-update] bumped ${bumped.join(", ")}`);
+        } catch (err) {
+          console.warn(`[fusion-auto-update] tick failed: ${String(err)}`);
+        }
+      };
+      this.fusionAutoUpdate = setInterval(() => void tick(), FUSION_AUTO_UPDATE_INTERVAL_MS);
+    }
 
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
       this.startDumpJobWatcher();
@@ -196,6 +242,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.challengeReconciler) {
       clearInterval(this.challengeReconciler);
       this.challengeReconciler = null;
+    }
+    if (this.fusionAutoUpdate) {
+      clearInterval(this.fusionAutoUpdate);
+      this.fusionAutoUpdate = null;
     }
     if (this.releaseIndexBackfill) {
       clearInterval(this.releaseIndexBackfill);

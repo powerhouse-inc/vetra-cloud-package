@@ -140,6 +140,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         owner: ownerNormalized,
         autoUpdateChannel: autoUpdateChannel ?? null,
         studioInstanceId: studioInstanceId ?? null,
+        fusion: state.fusion ? JSON.stringify(state.fusion) : null,
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.

@@ -117,6 +117,17 @@ export async function up(db: Kysely<any>): Promise<void> {
     }
   }
 
+  // Add fusion column — JSON mirror of state's `fusion` config, read by the
+  // observability subgraph's FUSION auto-update poller.
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("fusion", "text")
+      .execute();
+  } catch {
+    // Column already exists
+  }
+
   // Fast claim selection: index only the rows the atomic claim query scans.
   try {
     await db.schema
