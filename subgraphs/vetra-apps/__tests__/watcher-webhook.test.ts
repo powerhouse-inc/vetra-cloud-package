@@ -17,6 +17,7 @@ import {
   githubEnvironmentName,
   reportDeploymentToGithub,
   runDeploymentWatcherOnce,
+  runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
 } from "../watcher.js";
 import { handleGithubWebhook, verifyGithubSignature } from "../webhook.js";
@@ -150,6 +151,36 @@ describe("preview TTL sweeper", () => {
     ).toStrictEqual([2]);
     expect(h.envs.deleted).toStrictEqual([old.environment_id]);
     expect((await getDeployment(h.db, old.id))?.status).toBe("SUPERSEDED");
+  });
+});
+
+describe("identity expiry sweeper", () => {
+  it("moves ACTIVE Apps whose delegation expired to PENDING_IDENTITY", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: "2026-10-02T11:00:00.000Z" })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(1);
+    expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
+  });
+
+  it("leaves unexpired, unknown-expiry and non-ACTIVE Apps alone", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: "2027-01-01T00:00:00.000Z" })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    await h.db.updateTable("apps").set({ identity_expires_at: null }).execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    await h.db
+      .updateTable("apps")
+      .set({
+        identity_expires_at: "2020-01-01T00:00:00.000Z",
+        status: "DISCONNECTED",
+      })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    expect((await getApp(h.db, app.id))?.status).toBe("DISCONNECTED");
   });
 });
 
