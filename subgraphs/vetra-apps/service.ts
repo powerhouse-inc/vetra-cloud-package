@@ -445,10 +445,8 @@ export async function createApp(
       const wasReady = attachEnvState!.status === "READY";
       // The link widens the FUSION allowlist, so it re-renders; re-approve only
       // a settled env (never ship an owner's unapproved pending edits).
-      await deps.envs.execute(
-        envId,
-        wasReady ? [link, approveChanges({})] : [link],
-      );
+      await deps.envs.execute(envId, [link]);
+      if (wasReady) await deps.envs.execute(envId, [approveChanges({})]);
     } else {
       await deps.envs.execute(envId, [
         setLabel({ label: name }),
@@ -461,8 +459,8 @@ export async function createApp(
         link,
         enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
         enableService({ type: "CONNECT", prefix: "connect" }),
-        approveChanges({}),
       ]);
+      await deps.envs.execute(envId, [approveChanges({})]);
     }
   } catch (err) {
     await deps.db.deleteFrom("apps").where("id", "=", appId).execute();
@@ -608,11 +606,14 @@ export async function deletePreviewsOfApp(
   deps: AppsDeps,
   app: AppRow,
   reason: string,
+  opts: { strict?: boolean } = {},
 ) {
   for (const p of await listPreviews(deps.db, app.id)) {
     try {
       await deletePreview(deps, app, p, reason);
     } catch (err) {
+      // strict: stop and let the caller keep its state (never orphan envs)
+      if (opts.strict) throw err;
       deps.logger.warn(
         `[vetra-apps] deleting preview ${p.environment_id} failed: ${String(err)}`,
       );
@@ -627,7 +628,7 @@ export async function deleteApp(
   deleteEnvironments: boolean,
 ): Promise<boolean> {
   const app = await loadAppForOwner(deps, caller, appId);
-  await deletePreviewsOfApp(deps, app, "app deleted");
+  await deletePreviewsOfApp(deps, app, "app deleted", { strict: true });
   const prod = await deps.envs.getState(app.production_environment_id);
   if (prod?.app?.appId === app.id) {
     if (deleteEnvironments)
@@ -1258,15 +1259,17 @@ async function performDeploy(
     const content = contentActions(state, req, registry, fusionEnvTemplate);
     actions.push(...content);
     const settled = state?.status ?? "DRAFT";
+    // Content first, APPROVE in its own call: a rejected action throws here
+    // and the half-applied batch is never approved/shipped.
+    if (actions.length > 0) await deps.envs.execute(envId, actions);
     if (
       createActions.length > 0 ||
       content.length > 0 ||
       settled === "DRAFT" ||
       settled === "CHANGES_PENDING"
     ) {
-      actions.push(approveChanges({}));
+      await deps.envs.execute(envId, [approveChanges({})]);
     }
-    if (actions.length > 0) await deps.envs.execute(envId, actions);
     await updateDeployment(
       deps.db,
       id,

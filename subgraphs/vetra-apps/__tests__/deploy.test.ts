@@ -252,7 +252,8 @@ describe("deployApp PRODUCTION", () => {
     h.envs.setStatus(app.production_environment_id, "STOPPED");
     const d = await deployApp(h.deps, owner, prod());
     expect(d.status).toBe("DEPLOYING");
-    expect(h.envs.executed.at(-1)?.types[0]).toBe("WAKE_ENVIRONMENT");
+    expect(h.envs.executed.at(-2)?.types[0]).toBe("WAKE_ENVIRONMENT");
+    expect(h.envs.executed.at(-1)?.types).toStrictEqual(["APPROVE_CHANGES"]);
     expect((await h.envs.getState(app.production_environment_id))?.status).toBe(
       "CHANGES_APPROVED",
     );

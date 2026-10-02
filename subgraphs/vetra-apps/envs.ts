@@ -30,44 +30,100 @@ type ReactorClientLike = {
   createEmpty(type: string, options: object): Promise<{ header: unknown }>;
   execute(id: string, branch: string, actions: Action[]): Promise<unknown>;
   get(id: string): Promise<unknown>;
+  getOperations(
+    id: string,
+    view?: { branch?: string; scopes?: string[] },
+    filter?: { sinceRevision?: number },
+    paging?: { cursor: string; limit: number },
+  ): Promise<{ results: unknown[]; nextCursor?: string }>;
   deleteDocument(id: string): Promise<unknown>;
 };
 
 type DocLike = {
+  header?: { revision?: Record<string, number> };
   state?: { global?: VetraCloudEnvironmentState };
-  operations?: { global?: { error?: string; action?: { type?: string } }[] };
 };
 
+type OpLike = {
+  index?: number;
+  error?: string;
+  action?: { id?: string; type?: string };
+};
+
+/**
+ * The reactor's "this document does not exist (any more)" errors:
+ * DocumentNotFoundError / DocumentDeletedError, or the document view's
+ * plain "Document not found: <id>" when resolving an id.
+ */
+export function isDocumentNotFound(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (
+    err.name === "DocumentNotFoundError" ||
+    err.name === "DocumentDeletedError"
+  )
+    return true;
+  return /^Document not found: |^Document \S+ (not found|has been deleted|was deleted at)/.test(
+    err.message,
+  );
+}
+
 export function createReactorEnvGateway(client: ReactorClientLike): EnvGateway {
+  async function getDoc(documentId: string): Promise<DocLike | null> {
+    try {
+      return (await client.get(documentId)) as DocLike;
+    } catch (err) {
+      if (isDocumentNotFound(err)) return null;
+      throw err;
+    }
+  }
+
   return {
     async create() {
       const doc = await client.createEmpty(ENV_DOC_TYPE, {});
       return (doc.header as { id: string }).id;
     },
     async execute(documentId, actions) {
-      const doc = (await client.execute(
-        documentId,
-        "main",
-        actions,
-      )) as DocLike;
-      const ops = doc.operations?.global ?? [];
-      const failed = ops.slice(-actions.length).find((op) => op.error);
+      const before = await getDoc(documentId);
+      if (!before) throw new Error(`environment ${documentId} not found`);
+      const sinceRevision = before.header?.revision?.global ?? 0;
+      // execute() returns a view without operations: reducer rejections are
+      // only visible in the appended operations themselves.
+      await client.execute(documentId, "main", actions);
+      const ids = new Set(actions.map((a) => a.id).filter(Boolean));
+      const appended: OpLike[] = [];
+      let cursor = "0";
+      for (let page = 0; page < 20; page++) {
+        const res = await client.getOperations(
+          documentId,
+          { branch: "main", scopes: ["global"] },
+          { sinceRevision },
+          { cursor, limit: 200 },
+        );
+        appended.push(...(res.results as OpLike[]));
+        if (!res.nextCursor || res.results.length === 0) break;
+        cursor = res.nextCursor;
+      }
+      const mine = appended.filter(
+        (op) => op.action?.id && ids.has(op.action.id),
+      );
+      const failed = mine.find((op) => op.error);
       if (failed) {
         throw new Error(
           `${failed.action?.type ?? "action"} rejected: ${failed.error}`,
         );
       }
-      const state = doc.state?.global;
+      if (ids.size > 0 && mine.length < ids.size) {
+        throw new Error(
+          `only ${mine.length} of ${ids.size} actions were applied to ${documentId}`,
+        );
+      }
+      const after = await getDoc(documentId);
+      const state = after?.state?.global;
       if (!state) throw new Error(`environment ${documentId} has no state`);
       return state;
     },
     async getState(documentId) {
-      try {
-        const doc = (await client.get(documentId)) as DocLike;
-        return doc.state?.global ?? null;
-      } catch {
-        return null;
-      }
+      return (await getDoc(documentId))?.state?.global ?? null;
     },
     async delete(documentId) {
       await client.deleteDocument(documentId);
