@@ -260,6 +260,21 @@ describe("GitHub deploy client", () => {
     );
   });
 
+  it("reads a pull request's state with the installation token", async () => {
+    const f = fakeFetch({
+      "GET /repos/acme/shop/pulls/7": () =>
+        Response.json({ state: "closed", merged: true }),
+      "GET /repos/acme/shop/pulls/8": () => Response.json({ state: "open" }),
+    });
+    const gh = createGithubDeployApi(cfg, f.impl as never);
+    expect(await gh.getPullRequestState("5", "acme/shop", 7)).toBe("closed");
+    expect(await gh.getPullRequestState("5", "acme/shop", 8)).toBe("open");
+    expect(f.calls[0].auth).toBe("token ghs_installation");
+    await expect(
+      gh.getPullRequestState("5", "acme/shop", 9),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it("raises GithubHttpError with the status on failures", async () => {
     const f = fakeFetch({});
     const gh = createGithubDeployApi(cfg, f.impl as never);

@@ -145,7 +145,10 @@ export class FakeEnvs implements EnvGateway {
 
 export function fakeGithub(): GithubDeployApi & {
   calls: Record<string, unknown[][]>;
+  /** PR number → state; "error" simulates GitHub being unreachable. Default open. */
+  prStates: Map<number, "open" | "closed" | "error">;
 } {
+  const prStates = new Map<number, "open" | "closed" | "error">();
   const calls: Record<string, unknown[][]> = {};
   const rec =
     <T>(name: string, result: (...args: any[]) => T) =>
@@ -198,6 +201,15 @@ export function fakeGithub(): GithubDeployApi & {
         defaultBranch: "main",
       },
     ]),
+    prStates,
+    getPullRequestState: rec(
+      "getPullRequestState",
+      (_i: string, _r: string, n: number) => {
+        const st = prStates.get(n) ?? "open";
+        if (st === "error") throw new Error("GitHub unreachable");
+        return st;
+      },
+    ),
     createDeployment: rec("createDeployment", () => String(++deploymentSeq)),
     createDeploymentStatus: rec("createDeploymentStatus", () => undefined),
     upsertPrComment: rec("upsertPrComment", () => undefined),

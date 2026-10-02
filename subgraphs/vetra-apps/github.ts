@@ -52,6 +52,12 @@ export interface GithubDeployApi {
     userToken: string,
     installationId: string,
   ): Promise<GithubRepo[]>;
+  /** "open" or "closed" (merged counts as closed), read with the installation token. */
+  getPullRequestState(
+    installationId: string,
+    repoFullName: string,
+    prNumber: number,
+  ): Promise<"open" | "closed">;
   createDeployment(
     installationId: string,
     repoFullName: string,
@@ -301,6 +307,15 @@ export function createGithubDeployApi(
         if (data.repositories.length < 100) break;
       }
       return out;
+    },
+
+    async getPullRequestState(installationId, fullName, prNumber) {
+      const { data } = await inst<{ state?: string }>(
+        installationId,
+        "GET",
+        `/repos/${repoPath(fullName)}/pulls/${prNumber}`,
+      );
+      return data.state === "open" ? "open" : "closed";
     },
 
     async createDeployment(installationId, fullName, input) {
