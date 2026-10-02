@@ -311,6 +311,12 @@ export const schema: DocumentNode = gql`
     packages: [VetraCloudEnvPackage!]!
     """Configured services (type + prefix + enabled), for the env card's service list + Visit link."""
     services: [VetraCloudEnvServiceSummary!]!
+    """Vetra App this env belongs to (production or PR preview); null for standalone environments."""
+    appId: String
+    """PRODUCTION | PREVIEW for App environments, null for standalone environments."""
+    appRole: String
+    """PR number of an App preview environment."""
+    prNumber: Int
   }
 
   type VetraCloudEnvPackage {

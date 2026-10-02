@@ -1,7 +1,7 @@
 import type { IProcessor, IProcessorHostModule, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
-import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord } from "./cleanup.js";
 import type { DB } from "./schema.js";
@@ -141,6 +141,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         autoUpdateChannel: autoUpdateChannel ?? null,
         studioInstanceId: studioInstanceId ?? null,
         fusion: state.fusion ? JSON.stringify(state.fusion) : null,
+        ...appLinkColumns(state),
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
@@ -261,4 +262,16 @@ function extractUserSignerAddress(
   if (typeof userAddress !== "string" || userAddress.length === 0) return null;
 
   return userAddress.toLowerCase();
+}
+
+/** Read-model columns mirroring the system-only App link (state.app). */
+export function appLinkColumns(state: {
+  app?: VetraCloudAppLink | null;
+}): { appId: string | null; appRole: string | null; prNumber: number | null } {
+  const app = state.app ?? null;
+  return {
+    appId: app?.appId ?? null,
+    appRole: app?.role ?? null,
+    prNumber: app?.prNumber ?? null,
+  };
 }

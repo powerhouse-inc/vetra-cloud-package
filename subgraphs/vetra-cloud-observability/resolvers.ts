@@ -279,6 +279,9 @@ export function createResolvers(
             "studioInstanceId",
             "packages",
             "services",
+            "appId",
+            "appRole",
+            "prNumber",
           ]);
 
         const rows = wantAll && isAdmin
