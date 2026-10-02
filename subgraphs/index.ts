@@ -4,3 +4,4 @@ export * as VetraCloudSecretsSubgraph from "./vetra-cloud-secrets/index.js";
 export * as VetraGithubAuthSubgraph from "./vetra-github-auth/index.js";
 export * as VetraHousekeepingSubgraph from "./vetra-housekeeping/index.js";
 export * as VetraStudioPoolSubgraph from "./vetra-studio-pool/index.js";
+export * as VetraAppsSubgraph from "./vetra-apps/index.js";

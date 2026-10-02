@@ -62,6 +62,10 @@
     {
       "id": "vetra-github-auth",
       "name": "Vetra Github Auth"
+    },
+    {
+      "id": "vetra-apps",
+      "name": "Vetra Apps"
     }
   ],
   "config": []
