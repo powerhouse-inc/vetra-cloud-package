@@ -1613,6 +1613,25 @@ export async function syncEnvironment(
 }
 
 /**
+ * Gitops roots. PR preview envs (state.app.role === PREVIEW) live under
+ * `previews/` so a dedicated ApplicationSet (preserveResourcesOnDeletion:
+ * false) cascade-deletes their resources when the dir goes away; every other
+ * env stays under `tenants/` (whose ApplicationSet deliberately preserves
+ * resources on deletion).
+ */
+export const TENANTS_ROOT = "tenants";
+export const PREVIEWS_ROOT = "previews";
+const GITOPS_ROOTS = [TENANTS_ROOT, PREVIEWS_ROOT] as const;
+
+/** Repo-relative directory of an env's values: `<root>/<tenantId>`. */
+export function gitopsTenantDir(
+  state: Pick<VetraCloudEnvironmentState, "app"> | { app?: VetraCloudEnvironmentState["app"] },
+  tenantId: string,
+): string {
+  return `${state.app?.role === "PREVIEW" ? PREVIEWS_ROOT : TENANTS_ROOT}/${tenantId}`;
+}
+
+/**
  * Remove a tenant's directory from the gitops repo.
  *
  * Called when an environment document is deleted. Removes the tenant
@@ -1624,14 +1643,17 @@ export async function deleteEnvironmentFromGitops(
   await gitMutex.acquire();
   try {
     await withWorkingClone(async (cloneDir, config) => {
-      const tenantDir = join(cloneDir, "tenants", tenantId);
-
-      if (!existsSync(tenantDir)) {
-        logger.info(`Tenant directory "tenants/${tenantId}" does not exist in gitops repo, nothing to remove`);
+      // Look in every root: the env's role may have changed, or a legacy
+      // preview may still sit under tenants/.
+      const dirs = GITOPS_ROOTS.map((root) => `${root}/${tenantId}`).filter((d) =>
+        existsSync(join(cloneDir, d)),
+      );
+      if (dirs.length === 0) {
+        logger.info(`Tenant directory for "${tenantId}" does not exist in gitops repo, nothing to remove`);
         return;
       }
 
-      await git(["rm", "-r", `tenants/${tenantId}`], cloneDir);
+      for (const dir of dirs) await git(["rm", "-r", dir], cloneDir);
 
       const commitMsg = `chore(${tenantId}): remove tenant — environment deleted`;
       logger.info(`Committing: ${commitMsg}`);
@@ -1645,9 +1667,9 @@ export async function deleteEnvironmentFromGitops(
   }
 }
 
-/** Tenant dirs in the working clone that THIS processor owns (marker present). */
-function listManagedTenantDirs(cloneDir: string): string[] {
-  const tenantsDir = join(cloneDir, "tenants");
+/** Tenant dirs under `root` in the working clone that THIS processor owns (marker present). */
+function listManagedTenantDirs(cloneDir: string, root: string): string[] {
+  const tenantsDir = join(cloneDir, root);
   if (!existsSync(tenantsDir)) return [];
   return readdirSync(tenantsDir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
@@ -1680,25 +1702,31 @@ export async function gcOrphanTenantDirs(
   try {
     let removed: string[] = [];
     await withWorkingClone(async (cloneDir, config) => {
-      const managed = listManagedTenantDirs(cloneDir);
-      const plan = computeOrphanTenantDirs(managed, liveTenantIds);
-      if (plan.skippedForSafety) {
-        logger.warn(
-          `[gc] circuit-breaker tripped: ${managed.length} managed dirs, ` +
-            `${liveTenantIds.size} live env docs — >50% would be removed; skipping`,
-        );
-        return;
+      const toRemove: string[] = [];
+      // Same live-set for both roots; the circuit breaker is computed per root
+      // so a skewed previews/ (few, short-lived dirs) never blocks tenants/.
+      for (const root of GITOPS_ROOTS) {
+        const managed = listManagedTenantDirs(cloneDir, root);
+        const plan = computeOrphanTenantDirs(managed, liveTenantIds);
+        if (plan.skippedForSafety) {
+          logger.warn(
+            `[gc] circuit-breaker tripped for ${root}/: ${managed.length} managed dirs, ` +
+              `${liveTenantIds.size} live env docs — >50% would be removed; skipping`,
+          );
+          continue;
+        }
+        for (const tenantId of plan.toRemove) {
+          await git(["rm", "-r", `${root}/${tenantId}`], cloneDir);
+          toRemove.push(tenantId);
+        }
       }
-      if (plan.toRemove.length === 0) return;
-      for (const tenantId of plan.toRemove) {
-        await git(["rm", "-r", `tenants/${tenantId}`], cloneDir);
-      }
+      if (toRemove.length === 0) return;
       await git(
-        ["commit", "-m", `chore(gc): remove ${plan.toRemove.length} orphaned tenant dir(s) — no backing env doc`],
+        ["commit", "-m", `chore(gc): remove ${toRemove.length} orphaned tenant dir(s) — no backing env doc`],
         cloneDir,
       );
       await pushWithRetry(cloneDir, config);
-      removed = plan.toRemove;
+      removed = toRemove;
       logger.info(`[gc] removed ${removed.length} orphaned tenant dir(s): ${removed.join(", ")}`);
     });
     return removed;
@@ -1728,8 +1756,9 @@ async function syncEnvironmentEphemeral(
   );
 
   await withWorkingClone(async (cloneDir, config) => {
-    // Create tenant directory
-    const tenantDir = join(cloneDir, "tenants", tenantId);
+    // Create tenant directory (previews/ for PR previews, tenants/ otherwise)
+    const relDir = gitopsTenantDir(state, tenantId);
+    const tenantDir = join(cloneDir, relDir);
     mkdirSync(tenantDir, { recursive: true });
 
     // Write values file
@@ -1745,7 +1774,15 @@ async function syncEnvironmentEphemeral(
     logger.info(`Wrote values file to ${valuesPath}`);
 
     // Stage
-    await git(["add", `tenants/${tenantId}/powerhouse-values.yaml`], cloneDir);
+    await git(["add", `${relDir}/powerhouse-values.yaml`], cloneDir);
+    // An env must live in exactly one root: drop a copy left in the other one
+    // (role change, or a preview written before the previews/ split).
+    for (const root of GITOPS_ROOTS) {
+      const other = `${root}/${tenantId}`;
+      if (other !== relDir && existsSync(join(cloneDir, other))) {
+        await git(["rm", "-r", "--quiet", other], cloneDir);
+      }
+    }
 
     const hasChanges = await git(["diff", "--cached", "--name-only"], cloneDir);
     if (!hasChanges) {
