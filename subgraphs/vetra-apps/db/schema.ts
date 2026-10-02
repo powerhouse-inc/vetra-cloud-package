@@ -79,6 +79,11 @@ export interface GithubDeployConnectionsTable {
   account_login: string;
   account_type: string;
   created_at: string;
+  /** GitHub App user token (AES-256-GCM, VETRA_APPS_ENCRYPTION_KEY) + expiry. */
+  user_token_enc: string | null;
+  user_token_expires_at: string | null;
+  refresh_token_enc: string | null;
+  refresh_token_expires_at: string | null;
 }
 
 export interface VetraAppsDB {

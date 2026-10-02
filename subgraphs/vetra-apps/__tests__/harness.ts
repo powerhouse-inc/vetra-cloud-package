@@ -158,7 +158,21 @@ export function fakeGithub(): GithubDeployApi & {
     calls,
     exchangeOAuthCode: rec("exchangeOAuthCode", (code: string) => {
       if (code === "bad") throw new Error("bad_verification_code");
-      return "user-token";
+      return {
+        accessToken: "user-token",
+        expiresInSec: 8 * 3600,
+        refreshToken: "refresh-1",
+        refreshTokenExpiresInSec: 184 * 86400,
+      };
+    }),
+    refreshUserToken: rec("refreshUserToken", (refreshToken: string) => {
+      if (refreshToken !== "refresh-1") throw new Error("bad_refresh_token");
+      return {
+        accessToken: "user-token-2",
+        expiresInSec: 8 * 3600,
+        refreshToken: "refresh-2",
+        refreshTokenExpiresInSec: 184 * 86400,
+      };
     }),
     listUserInstallations: rec("listUserInstallations", () => [
       {
@@ -174,7 +188,8 @@ export function fakeGithub(): GithubDeployApi & {
         accountType: "User",
       },
     ]),
-    listInstallationRepos: rec("listInstallationRepos", () => [
+    // What the USER can see in the installation (not every installation repo).
+    listUserInstallationRepos: rec("listUserInstallationRepos", () => [
       { id: REPO_ID, fullName: REPO, private: true, defaultBranch: "main" },
       {
         id: "4343",

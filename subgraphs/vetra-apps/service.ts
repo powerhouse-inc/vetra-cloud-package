@@ -1,3 +1,4 @@
+import { GraphQLError } from "graphql";
 import type { Kysely } from "kysely";
 import type { Action } from "document-model";
 import {
@@ -18,7 +19,12 @@ import type { VetraAppsConfig } from "./config.js";
 import type { AppDeploymentKind, VetraAppsDB } from "./db/schema.js";
 import type { EnvGateway } from "./envs.js";
 import { classifyEnv } from "../../processors/vetra-cloud-environment/gitops.js";
-import type { GithubDeployApi, GithubRepo } from "./github.js";
+import {
+  GithubHttpError,
+  type GithubDeployApi,
+  type GithubRepo,
+  type GithubUserTokens,
+} from "./github.js";
 import type { HarborApi } from "./harbor.js";
 import type { RenownApi } from "./renown.js";
 import type { Caller, VetraClaim } from "./auth.js";
@@ -190,6 +196,23 @@ export function githubDeployAppInfo(deps: AppsDeps) {
   };
 }
 
+/** Encrypted token columns for a set of GitHub user tokens. */
+function sealUserTokens(deps: AppsDeps, key: Buffer, t: GithubUserTokens) {
+  const now = deps.now().getTime();
+  const at = (sec: number | null) =>
+    sec === null ? null : new Date(now + sec * 1000).toISOString();
+  return {
+    user_token_enc: encryptSecret(key, t.accessToken),
+    user_token_expires_at: at(t.expiresInSec),
+    refresh_token_enc: t.refreshToken
+      ? encryptSecret(key, t.refreshToken)
+      : null,
+    refresh_token_expires_at: t.refreshToken
+      ? at(t.refreshTokenExpiresInSec)
+      : null,
+  };
+}
+
 export async function connectGithubDeploy(
   deps: AppsDeps,
   caller: Caller,
@@ -197,20 +220,24 @@ export async function connectGithubDeploy(
 ) {
   await assertNotWorkload(deps, caller);
   const github = requireGithub(deps);
+  // The user token is kept (encrypted) to list repos AS THE USER later.
+  const key = deps.cfg.encryptionKey;
+  if (!key) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
   if (!code.trim()) throw appsError("BAD_USER_INPUT", "Missing OAuth code");
-  let userToken: string;
+  let tokens: GithubUserTokens;
   try {
-    userToken = await github.exchangeOAuthCode(code.trim());
+    tokens = await github.exchangeOAuthCode(code.trim());
   } catch (err) {
     throw appsError(
       "BAD_USER_INPUT",
       `GitHub authorization failed: ${String(err)}`,
     );
   }
-  const ours = (await github.listUserInstallations(userToken)).filter(
+  const ours = (await github.listUserInstallations(tokens.accessToken)).filter(
     (i) => i.appId === deps.cfg.github!.appId,
   );
   const nowIso = deps.now().toISOString();
+  const sealed = sealUserTokens(deps, key, tokens);
   for (const i of ours) {
     await deps.db
       .insertInto("github_deploy_connections")
@@ -220,11 +247,13 @@ export async function connectGithubDeploy(
         account_login: i.accountLogin,
         account_type: i.accountType,
         created_at: nowIso,
+        ...sealed,
       })
       .onConflict((oc) =>
         oc.columns(["owner_address", "installation_id"]).doUpdateSet({
           account_login: i.accountLogin,
           account_type: i.accountType,
+          ...sealed,
         }),
       )
       .execute();
@@ -249,22 +278,98 @@ export async function myGithubDeployInstallations(
   }));
 }
 
-async function requireConnection(
+const notConnected = () =>
+  appsError(
+    "GITHUB_NOT_CONNECTED",
+    "Connect GitHub (Vetra Deploy) again to continue",
+  );
+
+/**
+ * The caller's GitHub user token for `installationId`, refreshed when it has
+ * expired (GitHub App user tokens live 8h; the refresh token rotates). No
+ * connection, no stored token, or a failed refresh → GITHUB_NOT_CONNECTED so
+ * the UI re-runs the OAuth flow.
+ */
+async function userTokenFor(
+  deps: AppsDeps,
+  caller: Caller,
+  installationId: string,
+): Promise<string> {
+  const github = requireGithub(deps);
+  const key = deps.cfg.encryptionKey;
+  if (!key) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
+  const row = await deps.db
+    .selectFrom("github_deploy_connections")
+    .selectAll()
+    .where("owner_address", "=", caller.address)
+    .where("installation_id", "=", installationId)
+    .executeTakeFirst();
+  if (!row?.user_token_enc) throw notConnected();
+  const now = deps.now().getTime();
+  const fresh = (exp: string | null) =>
+    exp === null || Date.parse(exp) > now + 60_000;
+  try {
+    if (fresh(row.user_token_expires_at))
+      return decryptSecret(key, row.user_token_enc);
+    if (!row.refresh_token_enc || !fresh(row.refresh_token_expires_at))
+      throw notConnected();
+    const oldRefresh = decryptSecret(key, row.refresh_token_enc);
+    const tokens = await github.refreshUserToken(oldRefresh);
+    const sealed = sealUserTokens(deps, key, tokens);
+    // The same authorization backs every installation row of this caller
+    // that stored this refresh token: rotate them all.
+    const rows = await deps.db
+      .selectFrom("github_deploy_connections")
+      .select(["installation_id", "refresh_token_enc"])
+      .where("owner_address", "=", caller.address)
+      .execute();
+    for (const r of rows) {
+      let same = false;
+      try {
+        same =
+          !!r.refresh_token_enc &&
+          decryptSecret(key, r.refresh_token_enc) === oldRefresh;
+      } catch {
+        same = false;
+      }
+      if (same || r.installation_id === installationId) {
+        await deps.db
+          .updateTable("github_deploy_connections")
+          .set(sealed)
+          .where("owner_address", "=", caller.address)
+          .where("installation_id", "=", r.installation_id)
+          .execute();
+      }
+    }
+    return tokens.accessToken;
+  } catch (err) {
+    if (err instanceof GraphQLError) throw err;
+    deps.logger.warn(
+      `[vetra-apps] GitHub user token refresh failed: ${String(err)}`,
+    );
+    throw notConnected();
+  }
+}
+
+/** Repos of the installation the caller can access on GitHub (user token). */
+async function userRepos(
   deps: AppsDeps,
   caller: Caller,
   installationId: string,
 ) {
-  const row = await deps.db
-    .selectFrom("github_deploy_connections")
-    .select("installation_id")
-    .where("owner_address", "=", caller.address)
-    .where("installation_id", "=", installationId)
-    .executeTakeFirst();
-  if (!row)
-    throw appsError(
-      "GITHUB_NOT_CONNECTED",
-      "Connect this GitHub installation first",
-    );
+  const github = requireGithub(deps);
+  const token = await userTokenFor(deps, caller, installationId);
+  try {
+    return await github.listUserInstallationRepos(token, installationId);
+  } catch (err) {
+    if (
+      err instanceof GithubHttpError &&
+      (err.status === 401 || err.status === 403)
+    ) {
+      throw notConnected();
+    }
+    throw err;
+  }
 }
 
 export async function githubDeployRepositories(
@@ -273,9 +378,7 @@ export async function githubDeployRepositories(
   installationId: string,
 ): Promise<GithubRepo[]> {
   await assertNotWorkload(deps, caller);
-  const github = requireGithub(deps);
-  await requireConnection(deps, caller, installationId);
-  return github.listInstallationRepos(installationId);
+  return userRepos(deps, caller, installationId);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,16 +464,16 @@ export async function createApp(
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   if (!deps.renown) throw notConfigured("Renown workload identities");
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
-  await requireConnection(deps, caller, input.installationId);
-
-  const repo = (await github.listInstallationRepos(input.installationId)).find(
+  // Only a repo the USER can access on GitHub (not merely the installation).
+  const repo = (await userRepos(deps, caller, input.installationId)).find(
     (r) => r.id === String(input.repositoryId),
   );
-  if (!repo)
+  if (!repo) {
     throw appsError(
-      "BAD_USER_INPUT",
-      "Repository is not part of this installation",
+      "FORBIDDEN",
+      "You do not have access to this repository on GitHub",
     );
+  }
   const existing = await deps.db
     .selectFrom("apps")
     .select("id")

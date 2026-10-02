@@ -106,6 +106,25 @@ export async function up(db: Kysely<any>): Promise<void> {
     ])
     .ifNotExists()
     .execute();
+  await addConnectionTokenColumns(db);
+}
+
+async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
+  for (const [column, type] of [
+    ["user_token_enc", "text"],
+    ["user_token_expires_at", "varchar(64)"],
+    ["refresh_token_enc", "text"],
+    ["refresh_token_expires_at", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("github_deploy_connections")
+        .addColumn(column, type)
+        .execute();
+    } catch {
+      // Column already exists
+    }
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {

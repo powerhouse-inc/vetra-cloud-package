@@ -28,12 +28,30 @@ export type GithubDeploymentState =
   | "error"
   | "inactive";
 
+/** GitHub App user-to-server tokens (access tokens expire after 8h). */
+export interface GithubUserTokens {
+  accessToken: string;
+  expiresInSec: number | null;
+  refreshToken: string | null;
+  refreshTokenExpiresInSec: number | null;
+}
+
 export interface GithubDeployApi {
-  /** Exchange an OAuth `code` (GitHub App user authorization) for a user token. */
-  exchangeOAuthCode(code: string): Promise<string>;
+  /** Exchange an OAuth `code` (GitHub App user authorization) for user tokens. */
+  exchangeOAuthCode(code: string): Promise<GithubUserTokens>;
+  /** Trade a refresh token for new user tokens (GitHub rotates the refresh token). */
+  refreshUserToken(refreshToken: string): Promise<GithubUserTokens>;
   /** Installations the user token can see (any app). */
   listUserInstallations(userToken: string): Promise<GithubInstallation[]>;
-  listInstallationRepos(installationId: string): Promise<GithubRepo[]>;
+  /**
+   * Repositories of `installationId` the USER can access
+   * (GET /user/installations/{id}/repositories), not every repo the
+   * installation covers.
+   */
+  listUserInstallationRepos(
+    userToken: string,
+    installationId: string,
+  ): Promise<GithubRepo[]>;
   createDeployment(
     installationId: string,
     repoFullName: string,
@@ -172,6 +190,53 @@ export function createGithubDeployApi(
       okStatuses,
     );
 
+  async function tokenRequest(
+    params: Record<string, string>,
+  ): Promise<GithubUserTokens> {
+    const res = await fetchImpl("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "vetra-deploy",
+      },
+      body: JSON.stringify({
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+        ...params,
+      }),
+    });
+    if (!res.ok) {
+      throw new GithubHttpError(
+        res.status,
+        `OAuth token request failed: ${res.status}`,
+      );
+    }
+    const body = (await res.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      refresh_token?: string;
+      refresh_token_expires_in?: number;
+      error?: string;
+    };
+    if (!body.access_token) {
+      throw new GithubHttpError(
+        400,
+        `OAuth token request failed: ${body.error ?? "no token"}`,
+      );
+    }
+    return {
+      accessToken: body.access_token,
+      expiresInSec:
+        typeof body.expires_in === "number" ? body.expires_in : null,
+      refreshToken: body.refresh_token ?? null,
+      refreshTokenExpiresInSec:
+        typeof body.refresh_token_expires_in === "number"
+          ? body.refresh_token_expires_in
+          : null,
+    };
+  }
+
   const repoPath = (fullName: string) =>
     fullName
       .split("/")
@@ -179,40 +244,12 @@ export function createGithubDeployApi(
       .join("/");
 
   return {
-    async exchangeOAuthCode(code) {
-      const res = await fetchImpl(
-        "https://github.com/login/oauth/access_token",
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "vetra-deploy",
-          },
-          body: JSON.stringify({
-            client_id: cfg.clientId,
-            client_secret: cfg.clientSecret,
-            code,
-          }),
-        },
-      );
-      if (!res.ok)
-        throw new GithubHttpError(
-          res.status,
-          `OAuth exchange failed: ${res.status}`,
-        );
-      const body = (await res.json()) as {
-        access_token?: string;
-        error?: string;
-      };
-      if (!body.access_token) {
-        throw new GithubHttpError(
-          400,
-          `OAuth exchange failed: ${body.error ?? "no token"}`,
-        );
-      }
-      return body.access_token;
-    },
+    exchangeOAuthCode: (code) => tokenRequest({ code }),
+    refreshUserToken: (refreshToken) =>
+      tokenRequest({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
 
     async listUserInstallations(userToken) {
       const out: GithubInstallation[] = [];
@@ -237,8 +274,8 @@ export function createGithubDeployApi(
       return out;
     },
 
-    async listInstallationRepos(installationId) {
-      const token = await installationToken(installationId);
+    async listUserInstallationRepos(userToken, installationId) {
+      const token = userToken;
       const out: GithubRepo[] = [];
       for (let page = 1; page <= 20; page++) {
         const { data } = await call<{
@@ -251,7 +288,7 @@ export function createGithubDeployApi(
         }>(
           token,
           "GET",
-          `/installation/repositories?per_page=100&page=${page}`,
+          `/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=100&page=${page}`,
         );
         for (const r of data.repositories) {
           out.push({

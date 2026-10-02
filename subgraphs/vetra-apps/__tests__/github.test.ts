@@ -44,10 +44,20 @@ describe("GitHub deploy client", () => {
   it("exchanges the OAuth code with client id + secret", async () => {
     const f = fakeFetch({});
     f.impl.mockImplementationOnce(async () =>
-      Response.json({ access_token: "ghu_user" }),
+      Response.json({
+        access_token: "ghu_user",
+        expires_in: 28800,
+        refresh_token: "ghr_refresh",
+        refresh_token_expires_in: 15897600,
+      }),
     );
     const gh = createGithubDeployApi(cfg, f.impl as never);
-    expect(await gh.exchangeOAuthCode("abc")).toBe("ghu_user");
+    expect(await gh.exchangeOAuthCode("abc")).toStrictEqual({
+      accessToken: "ghu_user",
+      expiresInSec: 28800,
+      refreshToken: "ghr_refresh",
+      refreshTokenExpiresInSec: 15897600,
+    });
     expect(f.impl.mock.calls[0][0]).toBe(
       "https://github.com/login/oauth/access_token",
     );
@@ -62,21 +72,24 @@ describe("GitHub deploy client", () => {
     await expect(gh.exchangeOAuthCode("x")).rejects.toThrow(
       /bad_verification_code/,
     );
+    f.impl.mockImplementationOnce(async () =>
+      Response.json({ access_token: "ghu_2" }),
+    );
+    expect(await gh.refreshUserToken("ghr_refresh")).toMatchObject({
+      accessToken: "ghu_2",
+      refreshToken: null,
+    });
+    expect(JSON.parse(String(f.impl.mock.calls[2][1]?.body))).toStrictEqual({
+      client_id: "cid",
+      client_secret: "csecret",
+      grant_type: "refresh_token",
+      refresh_token: "ghr_refresh",
+    });
   });
 
-  it("lists user installations and installation repositories", async () => {
+  it("lists user installations and the repos the USER can access in one", async () => {
     const f = fakeFetch({
-      "GET /user/installations": () =>
-        Response.json({
-          installations: [
-            {
-              id: 5,
-              app_id: 1,
-              account: { login: "acme", type: "Organization" },
-            },
-          ],
-        }),
-      "GET /installation/repositories": () =>
+      "GET /user/installations/5/repositories": () =>
         Response.json({
           repositories: [
             {
@@ -84,6 +97,16 @@ describe("GitHub deploy client", () => {
               full_name: "acme/shop",
               private: true,
               default_branch: "main",
+            },
+          ],
+        }),
+      "GET /user/installations": () =>
+        Response.json({
+          installations: [
+            {
+              id: 5,
+              app_id: 1,
+              account: { login: "acme", type: "Organization" },
             },
           ],
         }),
@@ -98,10 +121,11 @@ describe("GitHub deploy client", () => {
       },
     ]);
     expect(f.calls[0].auth).toBe("token ghu_user");
-    expect(await gh.listInstallationRepos("5")).toStrictEqual([
+    expect(await gh.listUserInstallationRepos("ghu_user", "5")).toStrictEqual([
       { id: "9", fullName: "acme/shop", private: true, defaultBranch: "main" },
     ]);
-    expect(f.calls[1].auth).toBe("token ghs_installation");
+    // the user's token, not an installation token
+    expect(f.calls[1].auth).toBe("token ghu_user");
   });
 
   it("creates deployments and statuses with the Deployments API shape", async () => {
@@ -239,7 +263,7 @@ describe("GitHub deploy client", () => {
   it("raises GithubHttpError with the status on failures", async () => {
     const f = fakeFetch({});
     const gh = createGithubDeployApi(cfg, f.impl as never);
-    await expect(gh.listInstallationRepos("5")).rejects.toMatchObject({
+    await expect(gh.listUserInstallationRepos("t", "5")).rejects.toMatchObject({
       status: 404,
     });
   });

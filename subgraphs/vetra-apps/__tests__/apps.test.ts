@@ -88,6 +88,49 @@ describe("GitHub connection", () => {
     ).toBe("GITHUB_NOT_CONNECTED");
   });
 
+  it("lists repositories with the USER's token, never the installation's (I5)", async () => {
+    await connectGithubDeploy(h.deps, owner, "code");
+    const repos = await githubDeployRepositories(h.deps, owner, INSTALLATION);
+    expect(repos.map((r) => r.id)).toStrictEqual([REPO_ID, "4343"]);
+    expect(h.github.calls.listUserInstallationRepos?.[0]).toStrictEqual([
+      "user-token",
+      INSTALLATION,
+    ]);
+  });
+
+  it("stores the user token encrypted, refreshes it when expired, and asks to reconnect when refresh fails", async () => {
+    await connectGithubDeploy(h.deps, owner, "code");
+    const row = await h.db
+      .selectFrom("github_deploy_connections")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(JSON.stringify(row)).not.toContain("user-token");
+    expect(JSON.stringify(row)).not.toContain("refresh-1");
+    h.clock.now = new Date(h.clock.now.getTime() + 9 * 3600_000);
+    await githubDeployRepositories(h.deps, owner, INSTALLATION);
+    expect(h.github.calls.refreshUserToken?.[0]).toStrictEqual(["refresh-1"]);
+    expect(h.github.calls.listUserInstallationRepos?.at(-1)?.[0]).toBe(
+      "user-token-2",
+    );
+    // the rotated refresh token was stored: a second expiry refreshes with refresh-2 (fails here)
+    h.clock.now = new Date(h.clock.now.getTime() + 9 * 3600_000);
+    expect(
+      await code(githubDeployRepositories(h.deps, owner, INSTALLATION)),
+    ).toBe("GITHUB_NOT_CONNECTED");
+  });
+
+  it("connecting needs VETRA_APPS_ENCRYPTION_KEY (the user token is stored)", async () => {
+    expect(
+      await code(
+        connectGithubDeploy(
+          { ...h.deps, cfg: testConfig({ encryptionKey: null }) },
+          owner,
+          "code",
+        ),
+      ),
+    ).toBe("SERVICE_NOT_CONFIGURED");
+  });
+
   it("describes the GitHub App (install + authorize URLs)", () => {
     expect(githubDeployAppInfo(h.deps)).toStrictEqual({
       slug: "vetra-deploy",
@@ -216,6 +259,21 @@ describe("createApp", () => {
     expect(second.harbor_project).toBe("app-shop-2");
   });
 
+  it("refuses a repo the installation can reach but the user cannot (I5)", async () => {
+    await connectGithubDeploy(h.deps, owner, "code");
+    // "9999" exists in the org installation but is not in the user's list
+    expect(
+      await code(
+        createApp(h.deps, owner, {
+          name: "squat",
+          installationId: INSTALLATION,
+          repositoryId: "9999",
+        }),
+      ),
+    ).toBe("FORBIDDEN");
+    expect(h.harbor.projects).toStrictEqual([]);
+  });
+
   it("refuses a second App on the same repository, a foreign repo and an unconnected installation", async () => {
     await seedActiveApp(h);
     expect(
@@ -235,7 +293,7 @@ describe("createApp", () => {
           repositoryId: "1",
         }),
       ),
-    ).toBe("BAD_USER_INPUT");
+    ).toBe("FORBIDDEN");
     expect(
       await code(
         createApp(h.deps, stranger, {
