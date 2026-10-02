@@ -27,6 +27,8 @@ export type FusionEnvRow = {
   status: string | null;
   services: string | null;
   fusion: string | null;
+  /** Set for Vetra App envs (state.app): those deploy only via deployApp. */
+  appId?: string | null;
 };
 
 type FusionConfig = {
@@ -89,6 +91,7 @@ export async function runFusionAutoUpdateOnce(deps: {
   const bumped: string[] = [];
   for (const env of await deps.listEnvs()) {
     if (!env.status || !BUMPABLE_STATUSES.has(env.status)) continue;
+    if (env.appId) continue; // App envs deploy explicitly (deployApp)
     const fusion = parseJson<FusionConfig>(env.fusion);
     if (!fusion?.autoUpdate || !fusion.image) continue;
     const service = (

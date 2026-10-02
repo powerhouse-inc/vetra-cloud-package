@@ -78,6 +78,19 @@ describe("runFusionAutoUpdateOnce", () => {
     expect(bumped).toEqual(["doc-1"]);
   });
 
+  it("skips App environments (their deploys are explicit via deployApp)", async () => {
+    const bump = vi.fn(async () => true);
+    const listArtifacts = vi.fn(async () => newest);
+    const bumped = await runFusionAutoUpdateOnce({
+      listEnvs: async () => [env({ appId: "app-1" })],
+      listArtifacts,
+      bump,
+    });
+    expect(bump).not.toHaveBeenCalled();
+    expect(listArtifacts).not.toHaveBeenCalled();
+    expect(bumped).toEqual([]);
+  });
+
   it("does nothing when already on the newest tag", async () => {
     const bump = vi.fn(async () => true);
     await runFusionAutoUpdateOnce({
