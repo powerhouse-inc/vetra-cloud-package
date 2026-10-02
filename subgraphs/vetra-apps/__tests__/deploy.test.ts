@@ -379,6 +379,53 @@ describe("deployApp PREVIEW", () => {
     expect(JSON.stringify(env)).not.toContain("sk_live_leak");
   });
 
+  it("does not deploy a preview for a closed PR (CI finished after merge): SUPERSEDED, no env", async () => {
+    h.github.prStates.set(12, "closed");
+    const envsBefore = h.envs.docs.size;
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/12/merge"),
+      preview(12),
+    );
+    expect(d).toMatchObject({
+      status: "SUPERSEDED",
+      error: "pull request #12 is closed",
+      kind: "PREVIEW",
+    });
+    expect(await getPreview(h.db, app.id, 12)).toBeNull();
+    expect(h.envs.docs.size).toBe(envsBefore);
+    expect(h.github.calls.getPullRequestState?.[0]).toStrictEqual([
+      app.installation_id,
+      app.repository_full_name,
+      12,
+    ]);
+  });
+
+  it("does not update an existing preview once its PR is closed", async () => {
+    const d1 = await deployApp(h.deps, owner, preview(13));
+    h.envs.setStatus(d1.environment_id!, "READY");
+    h.github.prStates.set(13, "closed");
+    const d2 = await deployApp(
+      h.deps,
+      owner,
+      preview(13, { packages: [{ name: "@acme/shop", version: "2.0.0" }] }),
+    );
+    expect(d2.status).toBe("SUPERSEDED");
+    expect(
+      (await h.envs.getState(d1.environment_id!))?.packages[0]?.version,
+    ).toBe("1.2.0-pr.13.abcdef1");
+  });
+
+  it("still deploys when GitHub is unreachable or not configured (no outage coupling)", async () => {
+    h.github.prStates.set(14, "error");
+    expect((await deployApp(h.deps, owner, preview(14))).status).toBe(
+      "DEPLOYING",
+    );
+    expect(
+      (await deployApp({ ...h.deps, github: null }, owner, preview(15))).status,
+    ).toBe("DEPLOYING");
+  });
+
   it("fails with PREVIEWS_DISABLED when previews are off", async () => {
     await updateApp(h.deps, owner, app.id, { previewsEnabled: false });
     expect(

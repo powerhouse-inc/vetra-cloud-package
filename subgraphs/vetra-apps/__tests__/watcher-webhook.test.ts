@@ -155,6 +155,41 @@ describe("preview TTL sweeper", () => {
   });
 });
 
+describe("closed-PR preview sweeper", () => {
+  it("deletes previews whose PR is closed (Removed comment), keeps open and unknown ones", async () => {
+    h.deps.onPreviewRemoved = (a, p, reason) =>
+      reportPreviewRemovedToGithub(h.deps, a, p, reason);
+    const closedD = await deployApp(h.deps, owner, preview(21));
+    await deployApp(h.deps, owner, preview(22));
+    await deployApp(h.deps, owner, preview(23));
+    h.github.prStates.set(21, "closed");
+    h.github.prStates.set(23, "error"); // GitHub unreachable for this one
+    expect(await runPreviewSweepOnce(h.deps)).toBe(1);
+    expect(
+      (await listPreviews(h.db, app.id)).map((p) => p.pr_number),
+    ).toStrictEqual([22, 23]);
+    expect(h.envs.deleted).toStrictEqual([closedD.environment_id]);
+    expect((await getDeployment(h.db, closedD.id))?.status).toBe("SUPERSEDED");
+    const comment = h.github.calls.upsertPrComment.at(-1) as [
+      string,
+      string,
+      number,
+      string,
+      string,
+    ];
+    expect(comment[2]).toBe(21);
+    expect(comment[4]).toContain("### Vetra preview: Removed");
+    expect(comment[4]).toContain("pull request #21 is closed");
+  });
+
+  it("does nothing without GitHub config", async () => {
+    await deployApp(h.deps, owner, preview(24));
+    h.github.prStates.set(24, "closed");
+    expect(await runPreviewSweepOnce({ ...h.deps, github: null })).toBe(0);
+    expect(await listPreviews(h.db, app.id)).toHaveLength(1);
+  });
+});
+
 describe("identity expiry sweeper", () => {
   it("moves ACTIVE Apps whose delegation expired to PENDING_IDENTITY", async () => {
     await h.db

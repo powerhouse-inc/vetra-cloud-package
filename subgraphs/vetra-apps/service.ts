@@ -1090,6 +1090,82 @@ function normalizePrNumber(input: DeployAppInput): number | null {
   return n;
 }
 
+/**
+ * True only when GitHub definitely says the PR is not open. GitHub not
+ * configured or unreachable → false: deploys are never blocked on a GitHub
+ * outage (the sweeper catches a missed close later).
+ */
+export async function isPullRequestClosed(
+  deps: AppsDeps,
+  app: AppRow,
+  prNumber: number,
+): Promise<boolean> {
+  if (!deps.github) return false;
+  try {
+    const state = await deps.github.getPullRequestState(
+      app.installation_id,
+      app.repository_full_name,
+      prNumber,
+    );
+    return state !== "open";
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] PR state of ${app.repository_full_name}#${prNumber} unavailable: ${String(err)}`,
+    );
+    return false;
+  }
+}
+
+/** A PREVIEW deploy that is not applied (closed PR): an audit row, SUPERSEDED. */
+async function recordSkippedDeployment(
+  deps: AppsDeps,
+  app: AppRow,
+  req: {
+    prNumber: number | null;
+    gitRef: string;
+    sha: string;
+    runUrl: string | null;
+    actorGithub: string | null;
+    actorDid: string | null;
+    packages: { name: string; version: string }[];
+    imageTag: string | null;
+    reason: string;
+  },
+): Promise<DeploymentRow> {
+  const id = deps.newId();
+  const nowIso = deps.now().toISOString();
+  const preview =
+    req.prNumber !== null
+      ? await getPreview(deps.db, app.id, req.prNumber)
+      : null;
+  await deps.db
+    .insertInto("app_deployments")
+    .values({
+      id,
+      app_id: app.id,
+      environment_id: preview?.environment_id ?? null,
+      kind: "PREVIEW",
+      pr_number: req.prNumber,
+      git_ref: req.gitRef,
+      sha: req.sha,
+      packages: JSON.stringify(req.packages),
+      image_tag: req.imageTag,
+      status: "SUPERSEDED",
+      actor_did: req.actorDid,
+      actor_github: req.actorGithub,
+      run_url: req.runUrl,
+      error: req.reason,
+      github_deployment_id: null,
+      created_at: nowIso,
+      updated_at: nowIso,
+    })
+    .execute();
+  deps.logger.info(
+    `[vetra-apps] skipped preview deploy for ${app.slug}: ${req.reason}`,
+  );
+  return (await getDeployment(deps.db, id))!;
+}
+
 async function deployChecked(
   deps: AppsDeps,
   app: AppRow,
@@ -1118,6 +1194,28 @@ async function deployChecked(
     app.production_environment_id,
   );
   const image = resolveImage(app, input.imageTag, productionState);
+  // A PR's CI run can finish after the PR was merged/closed (and after the
+  // pull_request.closed webhook removed its preview): never (re)create or
+  // update a preview for a closed PR. Record the run as SUPERSEDED instead.
+  if (
+    input.kind === "PREVIEW" &&
+    (await isPullRequestClosed(deps, app, prNumber!))
+  ) {
+    return recordSkippedDeployment(deps, app, {
+      prNumber,
+      gitRef: actor.gitRef,
+      sha: input.sha.toLowerCase(),
+      runUrl,
+      actorGithub: actor.github,
+      actorDid: actor.did,
+      packages: input.packages.map((p) => ({
+        name: p.name,
+        version: p.version,
+      })),
+      imageTag: image ? `${image.repository}:${image.tag}` : null,
+      reason: `pull request #${prNumber} is closed`,
+    });
+  }
   return performDeploy(deps, app, productionState, {
     kind: input.kind,
     prNumber,
