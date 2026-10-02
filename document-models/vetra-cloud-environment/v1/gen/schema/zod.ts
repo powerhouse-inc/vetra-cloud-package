@@ -3,9 +3,11 @@
 import * as z from "zod";
 import type {
   AddPackageInput,
+  AppEnvironmentRole,
   ApproveChangesInput,
   ArchiveInput,
   AutoUpdateChannel,
+  ClearAppLinkInput,
   DisableServiceInput,
   DnsRecord,
   DnsRecordInput,
@@ -19,6 +21,7 @@ import type {
   ReportDeploymentSucceededInput,
   ServiceStatus,
   SetApexServiceInput,
+  SetAppLinkInput,
   SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
@@ -39,6 +42,7 @@ import type {
   ToggleServiceInput,
   UnarchiveInput,
   UpdateServicePrefixInput,
+  VetraCloudAppLink,
   VetraCloudEnvironmentService,
   VetraCloudEnvironmentServiceType,
   VetraCloudEnvironmentState,
@@ -70,6 +74,8 @@ export const isDefinedNonNullAny = (v: any): v is definedNonNullAny =>
 export const definedNonNullAnySchema = z
   .any()
   .refine((v) => isDefinedNonNullAny(v));
+
+export const AppEnvironmentRoleSchema = z.enum(["PREVIEW", "PRODUCTION"]);
 
 export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
 
@@ -131,6 +137,14 @@ export function ApproveChangesInputSchema(): z.ZodObject<
 }
 
 export function ArchiveInputSchema(): z.ZodObject<Properties<ArchiveInput>> {
+  return z.object({
+    _placeholder: z.string().nullish(),
+  });
+}
+
+export function ClearAppLinkInputSchema(): z.ZodObject<
+  Properties<ClearAppLinkInput>
+> {
   return z.object({
     _placeholder: z.string().nullish(),
   });
@@ -239,6 +253,18 @@ export function SetApexServiceInputSchema(): z.ZodObject<
 > {
   return z.object({
     type: VetraCloudEnvironmentServiceTypeSchema.nullish(),
+  });
+}
+
+export function SetAppLinkInputSchema(): z.ZodObject<
+  Properties<SetAppLinkInput>
+> {
+  return z.object({
+    appId: z.string(),
+    gitRef: z.string().nullish(),
+    imageProject: z.string().nullish(),
+    prNumber: z.number().nullish(),
+    role: AppEnvironmentRoleSchema,
   });
 }
 
@@ -414,6 +440,19 @@ export function UpdateServicePrefixInputSchema(): z.ZodObject<
   });
 }
 
+export function VetraCloudAppLinkSchema(): z.ZodObject<
+  Properties<VetraCloudAppLink>
+> {
+  return z.object({
+    __typename: z.literal("VetraCloudAppLink").optional(),
+    appId: z.string(),
+    gitRef: z.string().nullish(),
+    imageProject: z.string().nullish(),
+    prNumber: z.number().nullish(),
+    role: AppEnvironmentRoleSchema,
+  });
+}
+
 export function VetraCloudEnvironmentServiceSchema(): z.ZodObject<
   Properties<VetraCloudEnvironmentService>
 > {
@@ -436,6 +475,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
   return z.object({
     __typename: z.literal("VetraCloudEnvironmentState").optional(),
     apexService: VetraCloudEnvironmentServiceTypeSchema.nullish(),
+    app: z.lazy(() => VetraCloudAppLinkSchema().nullish()),
     autoUpdateChannel: AutoUpdateChannelSchema.nullish(),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),

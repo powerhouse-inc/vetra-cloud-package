@@ -16,9 +16,9 @@
           "initialValue": ""
         },
         "global": {
-          "schema": "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n  fusion: VetraCloudFusionConfig\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ntype VetraCloudFusionConfig {\n  image: String\n  env: [VetraCloudServiceEnv!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}",
+          "schema": "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n  fusion: VetraCloudFusionConfig\n  app: VetraCloudAppLink\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ntype VetraCloudFusionConfig {\n  image: String\n  env: [VetraCloudServiceEnv!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}\n\ntype VetraCloudAppLink {\n  appId: String!\n  role: AppEnvironmentRole!\n  prNumber: Int\n  gitRef: String\n  imageProject: String\n}\n\nenum AppEnvironmentRole {\n  PRODUCTION\n  PREVIEW\n}",
           "examples": [],
-          "initialValue": "{\n  \"owner\": null,\n  \"label\": null,\n  \"genericSubdomain\": null,\n  \"genericBaseDomain\": null,\n  \"customDomain\": {\n    \"enabled\": false,\n    \"domain\": null,\n    \"dnsRecords\": []\n  },\n  \"defaultPackageRegistry\": null,\n  \"services\": [],\n  \"packages\": [],\n  \"status\": \"DRAFT\",\n  \"apexService\": null,\n  \"autoUpdateChannel\": null,\n  \"runtimeConfig\": null,\n  \"studioInstanceId\": null,\n  \"fusion\": null\n}"
+          "initialValue": "{\n  \"owner\": null,\n  \"label\": null,\n  \"genericSubdomain\": null,\n  \"genericBaseDomain\": null,\n  \"customDomain\": {\n    \"enabled\": false,\n    \"domain\": null,\n    \"dnsRecords\": []\n  },\n  \"defaultPackageRegistry\": null,\n  \"services\": [],\n  \"packages\": [],\n  \"status\": \"DRAFT\",\n  \"apexService\": null,\n  \"autoUpdateChannel\": null,\n  \"runtimeConfig\": null,\n  \"studioInstanceId\": null,\n  \"fusion\": null,\n  \"app\": null\n}"
         }
       },
       "modules": [
@@ -232,6 +232,44 @@
                   "name": "NotOwnerError",
                   "code": "NOT_OWNER",
                   "description": "The action signer is not the owner of this environment",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-set-app-link",
+              "name": "SET_APP_LINK",
+              "description": "Link this environment to a Vetra App (production or a PR preview). System-only: rejected unless the action is system-signed (no user signer). imageProject is the App's Harbor project, accepted by the gitops FUSION allowlist.",
+              "schema": "input SetAppLinkInput {\n  appId: String!\n  role: AppEnvironmentRole!\n  prNumber: Int\n  gitRef: String\n  imageProject: String\n}",
+              "template": "",
+              "reducer": "// see src/reducers/data-management.ts",
+              "errors": [
+                {
+                  "id": "err-app-link-system-only",
+                  "name": "AppLinkSystemOnlyError",
+                  "code": "APP_LINK_SYSTEM_ONLY",
+                  "description": "AppLinkSystemOnly: the App link can only be set or cleared by a system-signed action (the vetra-apps subgraph)",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-clear-app-link",
+              "name": "CLEAR_APP_LINK",
+              "description": "Remove the Vetra App link (environment becomes standalone). System-only.",
+              "schema": "input ClearAppLinkInput {\n  _placeholder: String\n}",
+              "template": "",
+              "reducer": "// see src/reducers/data-management.ts",
+              "errors": [
+                {
+                  "id": "err-app-link-system-only-clear",
+                  "name": "AppLinkSystemOnlyError",
+                  "code": "APP_LINK_SYSTEM_ONLY",
+                  "description": "AppLinkSystemOnly: the App link can only be set or cleared by a system-signed action (the vetra-apps subgraph)",
                   "template": ""
                 }
               ],

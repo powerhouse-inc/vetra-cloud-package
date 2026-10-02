@@ -43,6 +43,7 @@ export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   runtimeConfig: null,
   studioInstanceId: null,
   fusion: null,
+  app: null,
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

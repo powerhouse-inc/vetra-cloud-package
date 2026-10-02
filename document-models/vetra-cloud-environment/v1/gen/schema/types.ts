@@ -68,6 +68,8 @@ export type AddPackageInput = {
   version?: InputMaybe<Scalars["String"]["input"]>;
 };
 
+export type AppEnvironmentRole = "PREVIEW" | "PRODUCTION";
+
 export type ApproveChangesInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
@@ -77,6 +79,10 @@ export type ArchiveInput = {
 };
 
 export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
+
+export type ClearAppLinkInput = {
+  _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
 
 export type DisableServiceInput = {
   prefix?: InputMaybe<Scalars["String"]["input"]>;
@@ -141,6 +147,14 @@ export type ServiceStatus =
 
 export type SetApexServiceInput = {
   type?: InputMaybe<VetraCloudEnvironmentServiceType>;
+};
+
+export type SetAppLinkInput = {
+  appId: Scalars["String"]["input"];
+  gitRef?: InputMaybe<Scalars["String"]["input"]>;
+  imageProject?: InputMaybe<Scalars["String"]["input"]>;
+  prNumber?: InputMaybe<Scalars["Int"]["input"]>;
+  role: AppEnvironmentRole;
 };
 
 export type SetAutoUpdateChannelInput = {
@@ -235,6 +249,14 @@ export type UpdateServicePrefixInput = {
   type: VetraCloudEnvironmentServiceType;
 };
 
+export type VetraCloudAppLink = {
+  appId: Scalars["String"]["output"];
+  gitRef: Maybe<Scalars["String"]["output"]>;
+  imageProject: Maybe<Scalars["String"]["output"]>;
+  prNumber: Maybe<Scalars["Int"]["output"]>;
+  role: AppEnvironmentRole;
+};
+
 export type VetraCloudEnvironmentService = {
   config: Maybe<VetraCloudServiceClint>;
   enabled: Scalars["Boolean"]["output"];
@@ -257,6 +279,7 @@ export type VetraCloudEnvironmentServiceType =
 
 export type VetraCloudEnvironmentState = {
   apexService: Maybe<VetraCloudEnvironmentServiceType>;
+  app: Maybe<VetraCloudAppLink>;
   autoUpdateChannel: Maybe<AutoUpdateChannel>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;

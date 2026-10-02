@@ -34,6 +34,7 @@ type VetraCloudEnvironmentState {
   runtimeConfig: String
   studioInstanceId: OID
   fusion: VetraCloudFusionConfig
+  app: VetraCloudAppLink
 }
 
 enum AutoUpdateChannel {
@@ -130,6 +131,19 @@ type VetraCloudFusionConfig {
   autoUpdateTagPattern: String
 }
 
+type VetraCloudAppLink {
+  appId: String!
+  role: AppEnvironmentRole!
+  prNumber: Int
+  gitRef: String
+  imageProject: String
+}
+
+enum AppEnvironmentRole {
+  PRODUCTION
+  PREVIEW
+}
+
 # data_management
 
 input SetOwnerInput {
@@ -177,6 +191,18 @@ input SetRuntimeConfigInput {
 
 input SetStudioInstanceInput {
   studioInstanceId: OID
+}
+
+input SetAppLinkInput {
+  appId: String!
+  role: AppEnvironmentRole!
+  prNumber: Int
+  gitRef: String
+  imageProject: String
+}
+
+input ClearAppLinkInput {
+  _placeholder: String
 }
 
 # services

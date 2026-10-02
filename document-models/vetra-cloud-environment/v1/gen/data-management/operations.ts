@@ -5,7 +5,9 @@
 import { type SignalDispatch } from "document-model";
 import type { VetraCloudEnvironmentGlobalState } from "../types.js";
 import type {
+  ClearAppLinkAction,
   SetApexServiceAction,
+  SetAppLinkAction,
   SetAutoUpdateChannelAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
@@ -66,6 +68,16 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setStudioInstanceOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetStudioInstanceAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setAppLinkOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetAppLinkAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  clearAppLinkOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: ClearAppLinkAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

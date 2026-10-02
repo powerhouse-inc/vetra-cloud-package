@@ -4,7 +4,9 @@
  */
 import { createAction } from "document-model";
 import {
+  ClearAppLinkInputSchema,
   SetApexServiceInputSchema,
+  SetAppLinkInputSchema,
   SetAutoUpdateChannelInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
@@ -16,7 +18,9 @@ import {
   SetStudioInstanceInputSchema,
 } from "../schema/zod.js";
 import type {
+  ClearAppLinkInput,
   SetApexServiceInput,
+  SetAppLinkInput,
   SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
@@ -28,7 +32,9 @@ import type {
   SetStudioInstanceInput,
 } from "../types.js";
 import type {
+  ClearAppLinkAction,
   SetApexServiceAction,
+  SetAppLinkAction,
   SetAutoUpdateChannelAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
@@ -129,5 +135,23 @@ export const setStudioInstance = (input: SetStudioInstanceInput) =>
     { ...input },
     undefined,
     SetStudioInstanceInputSchema,
+    "global",
+  );
+
+export const setAppLink = (input: SetAppLinkInput) =>
+  createAction<SetAppLinkAction>(
+    "SET_APP_LINK",
+    { ...input },
+    undefined,
+    SetAppLinkInputSchema,
+    "global",
+  );
+
+export const clearAppLink = (input: ClearAppLinkInput) =>
+  createAction<ClearAppLinkAction>(
+    "CLEAR_APP_LINK",
+    { ...input },
+    undefined,
+    ClearAppLinkInputSchema,
     "global",
   );

@@ -33,6 +33,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     runtimeConfig: null,
     studioInstanceId: null,
     fusion: null,
+    app: null,
   };
 }
 

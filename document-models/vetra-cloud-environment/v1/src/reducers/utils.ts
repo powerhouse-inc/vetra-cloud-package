@@ -1,4 +1,7 @@
-import { NotOwnerError } from "../../gen/data-management/error.js";
+import {
+  AppLinkSystemOnlyError,
+  NotOwnerError,
+} from "../../gen/data-management/error.js";
 
 type MaybeSigner = {
   context?: {
@@ -42,6 +45,21 @@ export function assertOwner(
   if (userAddr !== state.owner) {
     throw new NotOwnerError(
       `Signer ${userAddr} is not the owner of this environment`,
+    );
+  }
+}
+
+/**
+ * System-only gate (SET_APP_LINK / CLEAR_APP_LINK). Same notion of "system"
+ * as assertOwner: an action with no user address in its signer was
+ * dispatched in-process by the switchboard (subgraph / processor). Any
+ * user-signed action is rejected, regardless of ownership.
+ */
+export function assertSystemOnly(action: MaybeSigner, opName: string) {
+  const userAddr = action.context?.signer?.user?.address;
+  if (userAddr) {
+    throw new AppLinkSystemOnlyError(
+      `AppLinkSystemOnly: ${opName} can only be dispatched by the system, not by ${userAddr.toLowerCase()}`,
     );
   }
 }
