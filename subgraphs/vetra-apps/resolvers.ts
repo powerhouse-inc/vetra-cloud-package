@@ -162,7 +162,10 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "app", async () => {
           const caller = requireCaller(ctx);
           try {
-            return mapApp(deps, await appForOwner(deps, caller, id));
+            return mapApp(
+              deps,
+              await appForOwner(deps, caller, id, { includeDeleted: true }),
+            );
           } catch (err) {
             if (
               err instanceof GraphQLError &&

@@ -76,6 +76,19 @@ describe("createAppImageProjectResolver", () => {
     expect(await resolve(linked("app-1"), "preview-env")).toBe("app-shop");
   });
 
+  it("keeps allowing the production env of a DELETED App (kept site stays up), not its previews", async () => {
+    await seed();
+    await db
+      .updateTable("apps")
+      .set({ status: "DELETED" })
+      .where("id", "=", "app-1")
+      .execute();
+    await db.deleteFrom("app_previews").execute();
+    const resolve = createAppImageProjectResolver(db);
+    expect(await resolve(linked("app-1"), "prod-env")).toBe("app-shop");
+    expect(await resolve(linked("app-1"), "preview-env")).toBeNull();
+  });
+
   it("returns null for forged links: unknown App, another App's id, or an env the App does not own", async () => {
     await seed();
     const resolve = createAppImageProjectResolver(db);

@@ -7,6 +7,7 @@ export const schema: DocumentNode = gql`
     PENDING_IDENTITY
     ACTIVE
     DISCONNECTED
+    DELETED
   }
 
   enum AppDeploymentKind {

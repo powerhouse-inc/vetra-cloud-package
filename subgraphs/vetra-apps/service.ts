@@ -3,7 +3,6 @@ import type { Action } from "document-model";
 import {
   addPackage,
   approveChanges,
-  clearAppLink,
   enableService,
   initialize,
   setAppLink,
@@ -65,6 +64,7 @@ export const DEFAULT_PREVIEW_TTL_DAYS = 7;
 export const PREVIEW_COMMENT_MARKER = "<!-- vetra-preview -->";
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 const HARBOR_HOST = "cr.vetra.io";
+const MAX_SLUG_ATTEMPTS = 10;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -111,10 +111,15 @@ async function loadAppForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
+  opts: { includeDeleted?: boolean } = {},
 ): Promise<AppRow> {
   await assertNotWorkload(deps, caller);
   const app = await getApp(deps.db, appId);
   if (!app) throw appsError("NOT_FOUND", "App not found");
+  // Soft-deleted Apps are gone for everyone except an admin read.
+  if (app.status === "DELETED" && !(opts.includeDeleted && caller.isAdmin)) {
+    throw appsError("NOT_FOUND", "App not found");
+  }
   if (app.owner_address !== caller.address && !caller.isAdmin) {
     throw appsError("FORBIDDEN", "Not the owner of this App");
   }
@@ -150,7 +155,8 @@ async function authorizeCi(
   appId: string,
 ): Promise<AppRow> {
   const app = await getApp(deps.db, appId);
-  if (!app) throw appsError("NOT_FOUND", "App not found");
+  if (!app || app.status === "DELETED")
+    throw appsError("NOT_FOUND", "App not found");
   if (ci.appDid !== app.identity_did) {
     throw appsError("FORBIDDEN", "Token was not issued by this App's identity");
   }
@@ -284,6 +290,7 @@ export async function myApps(
     .selectFrom("apps")
     .selectAll()
     .where("owner_address", "=", caller.address)
+    .where("status", "!=", "DELETED")
     .orderBy("created_at", "desc")
     .execute();
   return rows.map(normalizeApp);
@@ -293,11 +300,20 @@ export async function appForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
+  opts: { includeDeleted?: boolean } = {},
 ) {
-  return loadAppForOwner(deps, caller, appId);
+  return loadAppForOwner(deps, caller, appId, opts);
 }
 
-async function uniqueSlug(deps: AppsDeps, name: string): Promise<string> {
+/**
+ * First free slug for `name`. Every row counts, DELETED ones included, so a
+ * slug (and its Harbor project app-<slug>) is never handed out twice.
+ */
+async function uniqueSlug(
+  deps: AppsDeps,
+  name: string,
+  alsoTaken: Set<string> = new Set(),
+): Promise<string> {
   const base = slugify(name);
   const taken = new Set(
     (
@@ -310,6 +326,7 @@ async function uniqueSlug(deps: AppsDeps, name: string): Promise<string> {
         .execute()
     ).map((r) => r.slug),
   );
+  for (const t of alsoTaken) taken.add(t);
   if (!taken.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
@@ -357,6 +374,7 @@ export async function createApp(
     .selectFrom("apps")
     .select("id")
     .where("repository_id", "=", repo.id)
+    .where("status", "!=", "DELETED")
     .executeTakeFirst();
   if (existing)
     throw appsError(
@@ -385,9 +403,24 @@ export async function createApp(
     }
   }
 
-  const slug = await uniqueSlug(deps, name);
+  // Harbor 409 = someone else's project: never reuse it, take the next suffix.
+  let slug: string | null = null;
+  const conflicts = new Set<string>();
+  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
+    const candidate = await uniqueSlug(deps, name, conflicts);
+    if (await deps.harbor.createProject(`app-${candidate}`)) {
+      slug = candidate;
+      break;
+    }
+    conflicts.add(candidate);
+  }
+  if (!slug) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Could not reserve a Harbor project for this name; pick another name",
+    );
+  }
   const harborProject = `app-${slug}`;
-  await deps.harbor.ensureProject(harborProject);
   const robot = await deps.harbor.createPushRobot(harborProject);
   const { did } = await deps.renown.registerWorkloadIdentity({
     repositoryId: repo.id,
@@ -431,6 +464,7 @@ export async function createApp(
       preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
       harbor_project: harborProject,
       harbor_robot_name: robot.name,
+      harbor_robot_id: robot.id,
       harbor_robot_secret_enc: encryptSecret(
         deps.cfg.encryptionKey,
         robot.secret,
@@ -621,6 +655,14 @@ export async function deletePreviewsOfApp(
   }
 }
 
+/**
+ * Soft delete. The row stays (status DELETED) so its slug and Harbor project
+ * are never reused. Previews are deleted first (any failure aborts with the
+ * App untouched — no orphans); the production env is deleted on request,
+ * otherwise kept WITH its link so its FUSION image stays allowed and the site
+ * stays up. CI is cut off: the Harbor robot and the Renown workload identity
+ * are deleted.
+ */
 export async function deleteApp(
   deps: AppsDeps,
   caller: Caller,
@@ -629,30 +671,36 @@ export async function deleteApp(
 ): Promise<boolean> {
   const app = await loadAppForOwner(deps, caller, appId);
   await deletePreviewsOfApp(deps, app, "app deleted", { strict: true });
-  const prod = await deps.envs.getState(app.production_environment_id);
-  if (prod?.app?.appId === app.id) {
-    if (deleteEnvironments)
+  if (deleteEnvironments) {
+    const prod = await deps.envs.getState(app.production_environment_id);
+    if (prod?.app?.appId === app.id)
       await deps.envs.delete(app.production_environment_id);
-    else
-      await deps.envs.execute(app.production_environment_id, [
-        clearAppLink({}),
-      ]);
   }
-  if (deps.renown) {
-    try {
-      await deps.renown.deleteWorkloadIdentity(app.identity_did);
-    } catch (err) {
-      deps.logger.warn(
-        `[vetra-apps] renown delete ${app.identity_did} failed: ${String(err)}`,
-      );
-    }
+  if (app.harbor_robot_id !== null) {
+    if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
+    await deps.harbor.deleteRobot(app.harbor_robot_id);
   }
+  if (!deps.renown) throw notConfigured("Renown workload identities");
+  try {
+    await deps.renown.deleteWorkloadIdentity(app.identity_did);
+  } catch (err) {
+    if (!/NOT_FOUND/.test(String(err))) throw err;
+  }
+  const nowIso = deps.now().toISOString();
   await deps.db
-    .deleteFrom("app_deployments")
+    .updateTable("app_deployments")
+    .set({ status: "SUPERSEDED", updated_at: nowIso, error: "app deleted" })
     .where("app_id", "=", app.id)
+    .where("status", "in", ACTIVE_DEPLOYMENT_STATUSES)
     .execute();
-  await deps.db.deleteFrom("apps").where("id", "=", app.id).execute();
-  deps.logger.info(`[vetra-apps] deleted App ${app.slug} (${app.id})`);
+  await deps.db
+    .updateTable("apps")
+    .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
+    .where("id", "=", app.id)
+    .execute();
+  deps.logger.info(
+    `[vetra-apps] deleted App ${app.slug} (${app.id}); slug stays reserved`,
+  );
   return true;
 }
 

@@ -193,15 +193,34 @@ export function fakeGithub(): GithubDeployApi & {
   };
 }
 
-export function fakeHarbor(): HarborApi & { projects: string[] } {
+export function fakeHarbor(): HarborApi & {
+  projects: string[];
+  existing: Set<string>;
+  deletedRobots: number[];
+} {
   const projects: string[] = [];
+  const existing = new Set<string>();
+  const deletedRobots: number[] = [];
+  let robotSeq = 0;
   return {
     projects,
-    async ensureProject(p) {
+    existing,
+    deletedRobots,
+    async createProject(p) {
+      if (existing.has(p)) return false;
+      existing.add(p);
       projects.push(p);
+      return true;
     },
     async createPushRobot(p) {
-      return { name: `robot$${p}+vetra-deploy-abc123`, secret: "robot-secret" };
+      return {
+        id: ++robotSeq,
+        name: `robot$${p}+vetra-deploy-abc123`,
+        secret: "robot-secret",
+      };
+    },
+    async deleteRobot(id) {
+      deletedRobots.push(id);
     },
   };
 }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   appRegistryCredentials,
+  appForOwner,
   ciRegistryCredentials,
   confirmAppIdentity,
   connectGithubDeploy,
@@ -424,20 +425,82 @@ describe("App identity + settings", () => {
   });
 });
 
-describe("deleteApp", () => {
-  it("clears the production link and keeps the env unless asked to delete it", async () => {
+describe("deleteApp (C1/C2: soft delete)", () => {
+  it("keeps the row as DELETED, hides it, and keeps the production link so the site stays up", async () => {
     const app = await seedActiveApp(h);
     await deleteApp(h.deps, owner, app.id, false);
-    expect(await getApp(h.deps.db, app.id)).toBeNull();
+    const row = await getApp(h.deps.db, app.id);
+    expect(row?.status).toBe("DELETED");
+    expect(row?.harbor_robot_secret_enc).toBe("");
+    // production env keeps its link (FUSION image project stays allowed)
     const env = await h.envs.getState(app.production_environment_id);
-    expect(env?.app ?? null).toBeNull();
+    expect(env?.app).toMatchObject({ appId: app.id, role: "PRODUCTION" });
+    expect(h.envs.deleted).toStrictEqual([]);
+    // CI is cut off: robot and workload identity deleted
+    expect(h.harbor.deletedRobots).toStrictEqual([row?.harbor_robot_id]);
     expect(h.renown.deleted).toStrictEqual([APP_DID]);
+    // hidden from the owner, visible to admins
+    expect(await myApps(h.deps, owner)).toStrictEqual([]);
+    expect(await code(appForOwner(h.deps, owner, app.id))).toBe("NOT_FOUND");
+    expect(
+      (await appForOwner(h.deps, admin, app.id, { includeDeleted: true }))
+        .status,
+    ).toBe("DELETED");
+    expect(await code(updateApp(h.deps, owner, app.id, { name: "x" }))).toBe(
+      "NOT_FOUND",
+    );
+    expect(await code(deleteApp(h.deps, owner, app.id, false))).toBe(
+      "NOT_FOUND",
+    );
+    expect(await code(appRegistryCredentials(h.deps, owner, app.id))).toBe(
+      "NOT_FOUND",
+    );
+    expect(
+      await code(ciRegistryCredentials(h.deps, ciIdentity(null), app.id)),
+    ).toBe("NOT_FOUND");
   });
 
   it("deletes the production env when deleteEnvironments is true", async () => {
     const app = await seedActiveApp(h);
     await deleteApp(h.deps, owner, app.id, true);
     expect(h.envs.deleted).toStrictEqual([app.production_environment_id]);
+    expect((await getApp(h.deps.db, app.id))?.status).toBe("DELETED");
+  });
+
+  it("create → delete → create with the same name gets a new slug and Harbor project", async () => {
+    const first = await seedActiveApp(h, "Shop");
+    await deleteApp(h.deps, owner, first.id, false);
+    const second = await createApp(h.deps, owner, {
+      name: "Shop",
+      installationId: INSTALLATION,
+      repositoryId: REPO_ID,
+    });
+    expect(second.slug).toBe("shop-2");
+    expect(second.harbor_project).toBe("app-shop-2");
+    expect(h.harbor.projects).toStrictEqual(["app-shop", "app-shop-2"]);
+  });
+
+  it("a pre-existing Harbor project app-<slug> is never reused: next suffix", async () => {
+    h.harbor.existing.add("app-shop");
+    h.harbor.existing.add("app-shop-2");
+    const app = await seedActiveApp(h, "Shop");
+    expect(app.slug).toBe("shop-3");
+    expect(app.harbor_project).toBe("app-shop-3");
+  });
+
+  it("gives up after a bounded number of Harbor conflicts", async () => {
+    h.harbor.existing.add("app-shop");
+    for (let i = 2; i <= 30; i++) h.harbor.existing.add(`app-shop-${i}`);
+    await connectGithubDeploy(h.deps, owner, "code");
+    expect(
+      await code(
+        createApp(h.deps, owner, {
+          name: "Shop",
+          installationId: INSTALLATION,
+          repositoryId: REPO_ID,
+        }),
+      ),
+    ).toBe("BAD_USER_INPUT");
   });
 });
 

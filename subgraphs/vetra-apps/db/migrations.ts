@@ -19,12 +19,21 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("preview_ttl_days", "integer", (c) => c.notNull())
     .addColumn("harbor_project", "varchar(255)", (c) => c.notNull())
     .addColumn("harbor_robot_name", "varchar(255)", (c) => c.notNull())
+    .addColumn("harbor_robot_id", "integer")
     .addColumn("harbor_robot_secret_enc", "text", (c) => c.notNull())
     .addColumn("identity_did", "varchar(255)", (c) => c.notNull())
     .addColumn("created_at", "varchar(64)", (c) => c.notNull())
     .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
     .ifNotExists()
     .execute();
+  try {
+    await db.schema
+      .alterTable("apps")
+      .addColumn("harbor_robot_id", "integer")
+      .execute();
+  } catch {
+    // Column already exists
+  }
   await db.schema
     .createIndex("apps_owner_idx")
     .on("apps")

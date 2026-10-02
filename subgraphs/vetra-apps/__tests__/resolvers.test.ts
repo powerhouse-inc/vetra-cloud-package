@@ -305,14 +305,20 @@ describe("workflow template", () => {
 });
 
 describe("HTTP clients", () => {
-  it("Harbor: creates a private project (409 ok) and a project push robot", async () => {
-    const calls: { url: string; body: any }[] = [];
+  it("Harbor: project create reports 409 as taken; push robot; robot delete (404 ok)", async () => {
+    const calls: { url: string; method?: string; body: any }[] = [];
     const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
-      calls.push({ url, body: JSON.parse(String(init.body)) });
+      calls.push({
+        url,
+        method: init.method,
+        body: init.body ? JSON.parse(String(init.body)) : undefined,
+      });
       if (url.endsWith("/projects"))
         return new Response(null, { status: calls.length === 1 ? 201 : 409 });
+      if (init.method === "DELETE")
+        return new Response(null, { status: url.endsWith("/7") ? 200 : 404 });
       return Response.json(
-        { name: "robot$app-x+vetra-deploy-1", secret: "s" },
+        { id: 7, name: "robot$app-x+vetra-deploy-1", secret: "s" },
         { status: 201 },
       );
     });
@@ -320,14 +326,16 @@ describe("HTTP clients", () => {
       { url: "https://cr.vetra.io", username: "u", password: "p" },
       fetchImpl as never,
     );
-    await harbor.ensureProject("app-x");
-    await harbor.ensureProject("app-x");
+    expect(await harbor.createProject("app-x")).toBe(true);
+    expect(await harbor.createProject("app-x")).toBe(false);
     expect(await harbor.createPushRobot("app-x")).toStrictEqual({
+      id: 7,
       name: "robot$app-x+vetra-deploy-1",
       secret: "s",
     });
     expect(calls[0]).toStrictEqual({
       url: "https://cr.vetra.io/api/v2.0/projects",
+      method: "POST",
       body: { project_name: "app-x", metadata: { public: "false" } },
     });
     expect(calls[2].body).toMatchObject({
@@ -344,6 +352,12 @@ describe("HTTP clients", () => {
         },
       ],
     });
+    await harbor.deleteRobot(7);
+    await harbor.deleteRobot(8);
+    expect(calls.slice(-2).map((c) => [c.method, c.url])).toStrictEqual([
+      ["DELETE", "https://cr.vetra.io/api/v2.0/robots/7"],
+      ["DELETE", "https://cr.vetra.io/api/v2.0/robots/8"],
+    ]);
   });
 
   it("Renown: sends the registration token and checks the delegation credential", async () => {

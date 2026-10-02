@@ -47,6 +47,7 @@ async function appsByRepository(
       .selectFrom("apps")
       .selectAll()
       .where("repository_id", "=", repositoryId)
+      .where("status", "!=", "DELETED")
       .execute()
   ).map(normalizeApp);
 }
@@ -125,6 +126,7 @@ export async function handleGithubWebhook(
         .selectFrom("apps")
         .selectAll()
         .where("installation_id", "=", installationId)
+        .where("status", "!=", "DELETED")
         .execute()
     ).map(normalizeApp);
     await disconnect(deps, apps, "GitHub App uninstalled");

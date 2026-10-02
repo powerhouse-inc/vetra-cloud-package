@@ -106,7 +106,11 @@ async function nextStatus(
 
 /** Delete previews whose last deployment is older than the App's TTL. */
 export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
-  const apps = await deps.db.selectFrom("apps").selectAll().execute();
+  const apps = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("status", "!=", "DELETED")
+    .execute();
   let removed = 0;
   for (const raw of apps) {
     const app = { ...raw, previews_enabled: Boolean(raw.previews_enabled) };
@@ -224,7 +228,7 @@ export async function reportDeploymentToGithub(
   const state = GITHUB_STATE[d.status];
   if (!state) return;
   const app = await getApp(deps.db, d.app_id);
-  if (!app || app.status === "DISCONNECTED") return;
+  if (!app || app.status === "DISCONNECTED" || app.status === "DELETED") return;
   if (d.status === "SUPERSEDED" && !d.github_deployment_id) return;
 
   const envState = d.environment_id

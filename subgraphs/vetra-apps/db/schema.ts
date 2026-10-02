@@ -1,6 +1,11 @@
 /** Relational tables of the vetra-apps subgraph (namespace "vetra-apps"). */
 
-export type AppStatus = "PENDING_IDENTITY" | "ACTIVE" | "DISCONNECTED";
+/** DELETED = soft-deleted: the row (and so its slug + Harbor project name) is kept forever. */
+export type AppStatus =
+  | "PENDING_IDENTITY"
+  | "ACTIVE"
+  | "DISCONNECTED"
+  | "DELETED";
 export type AppDeploymentKind = "PRODUCTION" | "PREVIEW";
 export type AppDeploymentStatus =
   | "PENDING"
@@ -27,6 +32,8 @@ export interface AppsTable {
   preview_ttl_days: number;
   harbor_project: string;
   harbor_robot_name: string;
+  /** Harbor robot id (deleted with the App); NULL for rows created before it was recorded. */
+  harbor_robot_id: number | null;
   /** AES-256-GCM ciphertext (VETRA_APPS_ENCRYPTION_KEY) of the robot secret. */
   harbor_robot_secret_enc: string;
   /** The App's Renown workload identity (did:key). */

@@ -3,10 +3,17 @@ import type { HarborAppsConfig } from "./config.js";
 
 /** Harbor v2.0 admin calls for Vetra Apps: one private project + push robot per App. */
 export interface HarborApi {
-  /** Create the private project; an existing project (409) is fine. */
-  ensureProject(project: string): Promise<void>;
+  /**
+   * Create the private project. true = created by us; false = it already
+   * exists (409) — the caller must pick another name, never reuse it.
+   */
+  createProject(project: string): Promise<boolean>;
   /** A never-expiring project-scoped robot with push + pull. */
-  createPushRobot(project: string): Promise<{ name: string; secret: string }>;
+  createPushRobot(
+    project: string,
+  ): Promise<{ id: number; name: string; secret: string }>;
+  /** Delete a robot (CI loses push access); an already-gone robot is fine. */
+  deleteRobot(id: number): Promise<void>;
 }
 
 type FetchLike = typeof fetch;
@@ -28,12 +35,13 @@ export function createHarborApi(
     });
 
   return {
-    async ensureProject(project) {
+    async createProject(project) {
       const res = await post("/projects", {
         project_name: project,
         metadata: { public: "false" },
       });
-      if (res.ok || res.status === 409) return;
+      if (res.ok) return true;
+      if (res.status === 409) return false;
       throw new Error(`harbor: create project ${project} → ${res.status}`);
     },
 
@@ -59,8 +67,21 @@ export function createHarborApi(
       });
       if (!res.ok)
         throw new Error(`harbor: create robot for ${project} → ${res.status}`);
-      const body = (await res.json()) as { name: string; secret: string };
-      return { name: body.name, secret: body.secret };
+      const body = (await res.json()) as {
+        id: number;
+        name: string;
+        secret: string;
+      };
+      return { id: body.id, name: body.name, secret: body.secret };
+    },
+
+    async deleteRobot(id) {
+      const res = await fetchImpl(`${cfg.url}/api/v2.0/robots/${id}`, {
+        method: "DELETE",
+        headers: { authorization: auth, accept: "application/json" },
+      });
+      if (res.ok || res.status === 404) return;
+      throw new Error(`harbor: delete robot ${id} → ${res.status}`);
     },
   };
 }
