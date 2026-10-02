@@ -26,13 +26,15 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
     .ifNotExists()
     .execute();
-  try {
-    await db.schema
-      .alterTable("apps")
-      .addColumn("harbor_robot_id", "integer")
-      .execute();
-  } catch {
-    // Column already exists
+  for (const [column, type] of [
+    ["harbor_robot_id", "integer"],
+    ["identity_expires_at", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema.alterTable("apps").addColumn(column, type).execute();
+    } catch {
+      // Column already exists
+    }
   }
   await db.schema
     .createIndex("apps_owner_idx")

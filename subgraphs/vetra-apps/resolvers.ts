@@ -125,6 +125,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     previewTtlDays: app.preview_ttl_days,
     harborProject: app.harbor_project,
     identityDid: app.identity_did,
+    identityExpiresAt: app.identity_expires_at ?? null,
     renownAuthorizeUrl: renownAuthorizeUrl(deps, app),
     createdAt: app.created_at,
     updatedAt: app.updated_at,

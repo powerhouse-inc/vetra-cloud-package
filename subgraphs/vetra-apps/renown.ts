@@ -15,12 +15,15 @@ export interface RenownApi {
     patch: { repository?: string; productionBranch?: string },
   ): Promise<void>;
   deleteWorkloadIdentity(did: string): Promise<void>;
-  /** Has the owner signed the delegation credential for the App's did:key? */
-  hasDelegation(input: {
+  /**
+   * The owner's newest valid (signed, unexpired, unrevoked) delegation
+   * credential for the App's did:key, or null when there is none.
+   */
+  getDelegation(input: {
     address: string;
     chainId: number;
     did: string;
-  }): Promise<boolean>;
+  }): Promise<{ expiresAt: string | null } | null>;
 }
 
 type FetchLike = typeof fetch;
@@ -88,7 +91,7 @@ export function createRenownApi(
       );
     },
 
-    async hasDelegation({ address, chainId, did }) {
+    async getDelegation({ address, chainId, did }) {
       // REST lookup on the Renown app (no switchboard discovery), then the
       // SDK re-verifies the credential's EIP-712 proof against the issuer.
       const credential = await fetchDelegation({
@@ -99,7 +102,8 @@ export function createRenownApi(
         discover: false,
         verifySignature: true,
       });
-      return credential !== undefined;
+      if (!credential) return null;
+      return { expiresAt: credential.expirationDate ?? null };
     },
   };
 }
