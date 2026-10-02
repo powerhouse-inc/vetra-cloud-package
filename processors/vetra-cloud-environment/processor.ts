@@ -5,6 +5,7 @@ import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnv
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord } from "./cleanup.js";
 import type { DB } from "./schema.js";
+import type { AppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
@@ -21,13 +22,16 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
    * tenant_secrets table so they never land in values.yaml plaintext.
    */
   private secretsService: SecretsService | null;
+  private resolveAppImageProject: AppImageProjectResolver | null;
 
   constructor(
     relationalDb: Kysely<DB>,
     dispatch: IProcessorHostModule["dispatch"],
     documentView: IDocumentView,
     secretsService: SecretsService | null = null,
+    resolveAppImageProject: AppImageProjectResolver | null = null,
   ) {
+    this.resolveAppImageProject = resolveAppImageProject;
     this.relationalDb = relationalDb;
     this.dispatch = dispatch;
     this.documentView = documentView;
@@ -164,7 +168,13 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
       if (status === "CHANGES_APPROVED") {
         logger.info(`Triggering gitops sync for "${label}"`);
         try {
-          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
+          await syncEnvironment(
+            this.relationalDb,
+            state,
+            documentId,
+            this.secretsService,
+            this.resolveAppImageProject,
+          );
           logger.info(`Gitops sync completed for "${label}"`);
 
           // Re-check status before dispatching to avoid duplicate transitions
@@ -187,7 +197,13 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         // branch above and runs the normal deploy pipeline.)
         logger.info(`Triggering gitops sync for "${label}" (sleep → disabled)`);
         try {
-          await syncEnvironment(this.relationalDb, state, documentId, this.secretsService);
+          await syncEnvironment(
+            this.relationalDb,
+            state,
+            documentId,
+            this.secretsService,
+            this.resolveAppImageProject,
+          );
           logger.info(`Gitops sleep sync completed for "${label}"`);
         } catch (error) {
           logger.error(`Gitops sleep sync failed for "${label}": ${String(error)}`);

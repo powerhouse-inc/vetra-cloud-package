@@ -15,6 +15,7 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
+import type { AppImageProjectResolver } from "./app-image-project.js";
 import {
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
@@ -943,6 +944,8 @@ export function generateFusionBlock(
     apexService: VetraCloudEnvironmentService["type"] | null;
     switchboardHost: string | null;
     connectHost: string | null;
+    /** Harbor project of the env's App, confirmed by vetra-apps (never the doc's own claim). */
+    appImageProject?: string | null;
   },
 ): string {
   const service = (state.services ?? []).find(
@@ -960,9 +963,10 @@ export function generateFusionBlock(
     .map((p) => p.trim())
     .filter(Boolean);
   const project = image.split("/")[1] ?? "";
-  // An App-linked env may also pull from its own App's Harbor project. The
-  // link is system-only (SET_APP_LINK), so a user cannot widen this.
-  const appProject = state.app?.imageProject ?? null;
+  // An App-linked env may also pull from its own App's Harbor project, as
+  // resolved from the vetra-apps tables by the caller (state.app.imageProject
+  // is NOT trusted: an unsigned SET_APP_LINK could forge it).
+  const appProject = opts.appImageProject ?? null;
   if (!allowedProjects.includes(project) && project !== appProject) {
     logger.warn(
       `FUSION image ${image} for tenant ${opts.tenantId}: Harbor project '${project}' is not in FUSION_IMAGE_PROJECTS — not rendering`,
@@ -1101,6 +1105,7 @@ export async function generateValuesYaml(
   state: VetraCloudEnvironmentState,
   documentId: string,
   secretsService: SecretsService | null = null,
+  resolveAppImageProject: AppImageProjectResolver | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1246,6 +1251,10 @@ export async function generateValuesYaml(
       ? (switchboardApexDomain ?? switchboardGenericHost)
       : null,
     connectHost: connectEnabled ? (connectApexDomain ?? connectGenericHost) : null,
+    appImageProject:
+      state.app && resolveAppImageProject
+        ? await resolveAppImageProject(state, documentId)
+        : null,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
@@ -1576,6 +1585,7 @@ export async function syncEnvironment(
   state: VetraCloudEnvironmentState,
   documentId: string,
   secretsService: SecretsService | null = null,
+  resolveAppImageProject: AppImageProjectResolver | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -1590,7 +1600,13 @@ export async function syncEnvironment(
 
   await gitMutex.acquire();
   try {
-    await syncEnvironmentEphemeral(db, state, documentId, secretsService);
+    await syncEnvironmentEphemeral(
+      db,
+      state,
+      documentId,
+      secretsService,
+      resolveAppImageProject,
+    );
   } finally {
     gitMutex.release();
   }
@@ -1696,6 +1712,7 @@ async function syncEnvironmentEphemeral(
   state: VetraCloudEnvironmentState,
   documentId: string,
   secretsService: SecretsService | null,
+  resolveAppImageProject: AppImageProjectResolver | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1717,7 +1734,13 @@ async function syncEnvironmentEphemeral(
 
     // Write values file
     const valuesPath = join(tenantDir, "powerhouse-values.yaml");
-    const yaml = await generateValuesYaml(db, state, documentId, secretsService);
+    const yaml = await generateValuesYaml(
+      db,
+      state,
+      documentId,
+      secretsService,
+      resolveAppImageProject,
+    );
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
 

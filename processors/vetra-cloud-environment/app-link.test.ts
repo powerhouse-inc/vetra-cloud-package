@@ -165,31 +165,56 @@ describe("gitops — PREVIEW profile", () => {
   });
 });
 
-describe("gitops — FUSION allowlist accepts the App's Harbor project", () => {
+describe("gitops — FUSION allowlist accepts the App's Harbor project (from vetra-apps, not the doc)", () => {
   const appImage = {
     image: "cr.vetra.io/app-achra/app",
     env: [],
     autoUpdate: false,
     autoUpdateTagPattern: null,
   };
+  // Stands in for the vetra-apps lookup: only DOC_ID belongs to App app-1.
+  const resolver = async (state: VetraCloudEnvironmentState, documentId: string) =>
+    state.app?.appId === "app-1" && documentId === DOC_ID ? "app-achra" : null;
+  const renderWith = (state: VetraCloudEnvironmentState) =>
+    generateValuesYaml(dbStub, state, DOC_ID, null, resolver);
 
-  it("renders an image from state.app.imageProject even when not in FUSION_IMAGE_PROJECTS", async () => {
-    const app = block(
-      await render(envState({ fusion: appImage, app: PREVIEW_LINK })),
-      "app",
-    );
+  it("renders the App's project when vetra-apps confirms the link", async () => {
+    const app = block(await renderWith(envState({ fusion: appImage, app: PREVIEW_LINK })), "app");
     expect(app).toContain("  enabled: true");
     expect(app).toContain('    repository: "cr.vetra.io/app-achra/app"');
   });
 
+  it("ignores state.app.imageProject: a forged link is rejected", async () => {
+    // Without a resolver (or when vetra-apps does not know the link) the doc's
+    // own imageProject never widens the allowlist.
+    expect(block(await render(envState({ fusion: appImage, app: PREVIEW_LINK })), "app")).toBe(
+      "app:\n  enabled: false",
+    );
+    const forged = { ...PREVIEW_LINK, appId: "app-2" };
+    expect(block(await renderWith(envState({ fusion: appImage, app: forged })), "app")).toBe(
+      "app:\n  enabled: false",
+    );
+  });
+
+  it("refuses the project for an env that is not the App's (other document id)", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ fusion: appImage, app: PREVIEW_LINK }),
+      "another-doc-id",
+      null,
+      resolver,
+    );
+    expect(block(yaml, "app")).toBe("app:\n  enabled: false");
+  });
+
   it("still refuses that project for a standalone env", async () => {
-    const app = block(await render(envState({ fusion: appImage })), "app");
+    const app = block(await renderWith(envState({ fusion: appImage })), "app");
     expect(app).toBe("app:\n  enabled: false");
   });
 
   it("refuses another App's project", async () => {
     const app = block(
-      await render(
+      await renderWith(
         envState({
           fusion: { ...appImage, image: "cr.vetra.io/app-other/app" },
           app: PREVIEW_LINK,
