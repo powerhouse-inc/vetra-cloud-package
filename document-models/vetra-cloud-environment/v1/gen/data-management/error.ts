@@ -2,7 +2,8 @@ export type ErrorCode =
   | "NotOwnerError"
   | "SelfClaimRequiredError"
   | "ServiceNotEnabledError"
-  | "InvalidRuntimeConfigError";
+  | "InvalidRuntimeConfigError"
+  | "AppLinkSystemOnlyError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -36,6 +37,13 @@ export class InvalidRuntimeConfigError extends Error implements ReducerError {
   }
 }
 
+export class AppLinkSystemOnlyError extends Error implements ReducerError {
+  errorCode = "AppLinkSystemOnlyError" as ErrorCode;
+  constructor(message = "AppLinkSystemOnlyError") {
+    super(message);
+  }
+}
+
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
 
@@ -56,4 +64,8 @@ export const errors = {
   SetRuntimeConfig: { NotOwnerError, InvalidRuntimeConfigError },
 
   SetStudioInstance: { NotOwnerError },
+
+  SetAppLink: { AppLinkSystemOnlyError },
+
+  ClearAppLink: { AppLinkSystemOnlyError },
 };

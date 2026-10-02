@@ -26,6 +26,9 @@ async function createEnvTable(database: Kysely<any>): Promise<void> {
     .addColumn("owner", "varchar(255)")
     .addColumn("createdBy", "varchar(255)")
     .addColumn("studioInstanceId", "varchar(255)")
+    .addColumn("appId", "varchar(255)")
+    .addColumn("appRole", "varchar(32)")
+    .addColumn("prNumber", "integer")
     .ifNotExists()
     .execute();
 }
@@ -37,6 +40,9 @@ type EnvSeed = {
   studioInstanceId?: string | null;
   packages?: string | null;
   services?: string | null;
+  appId?: string | null;
+  appRole?: string | null;
+  prNumber?: number | null;
 };
 
 async function seedEnv(env: EnvSeed): Promise<void> {
@@ -54,6 +60,9 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       owner: env.owner ?? null,
       createdBy: null,
       studioInstanceId: env.studioInstanceId ?? null,
+      appId: env.appId ?? null,
+      appRole: env.appRole ?? null,
+      prNumber: env.prNumber ?? null,
     })
     .execute();
 }
@@ -83,6 +92,22 @@ afterEach(async () => {
 });
 
 describe("myEnvironments", () => {
+  it("exposes the App link (appId / appRole / prNumber), null for standalone envs", async () => {
+    await seedEnv({ id: "standalone", owner: ME });
+    await seedEnv({ id: "prod", owner: ME, appId: "app-1", appRole: "PRODUCTION" });
+    await seedEnv({ id: "pr", owner: ME, appId: "app-1", appRole: "PREVIEW", prNumber: 42 });
+    const resolvers = makeResolvers();
+    const out = (await resolvers.Query.myEnvironments(
+      null,
+      { scope: "MINE" },
+      { user: { address: ME } },
+    )) as Array<{ id: string; appId: string | null; appRole: string | null; prNumber: number | null }>;
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+    expect(byId.standalone).toMatchObject({ appId: null, appRole: null, prNumber: null });
+    expect(byId.prod).toMatchObject({ appId: "app-1", appRole: "PRODUCTION", prNumber: null });
+    expect(byId.pr).toMatchObject({ appId: "app-1", appRole: "PREVIEW", prNumber: 42 });
+  });
+
   it("returns [] when unauthenticated", async () => {
     const resolvers = makeResolvers();
     const out = await resolvers.Query.myEnvironments(null, { scope: "MINE" }, {});

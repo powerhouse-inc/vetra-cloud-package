@@ -4,7 +4,9 @@
  */
 import type { Action } from "document-model";
 import type {
+  ClearAppLinkInput,
   SetApexServiceInput,
+  SetAppLinkInput,
   SetAutoUpdateChannelInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
@@ -56,6 +58,14 @@ export type SetStudioInstanceAction = Action & {
   type: "SET_STUDIO_INSTANCE";
   input: SetStudioInstanceInput;
 };
+export type SetAppLinkAction = Action & {
+  type: "SET_APP_LINK";
+  input: SetAppLinkInput;
+};
+export type ClearAppLinkAction = Action & {
+  type: "CLEAR_APP_LINK";
+  input: ClearAppLinkInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -67,4 +77,6 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetApexServiceAction
   | SetAutoUpdateChannelAction
   | SetRuntimeConfigAction
-  | SetStudioInstanceAction;
+  | SetStudioInstanceAction
+  | SetAppLinkAction
+  | ClearAppLinkAction;

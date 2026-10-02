@@ -13,6 +13,7 @@ import {
   AddPackageInputSchema,
   ApproveChangesInputSchema,
   ArchiveInputSchema,
+  ClearAppLinkInputSchema,
   DisableServiceInputSchema,
   EnableServiceInputSchema,
   InitializeInputSchema,
@@ -23,6 +24,7 @@ import {
   ReportDeploymentFailedInputSchema,
   ReportDeploymentSucceededInputSchema,
   SetApexServiceInputSchema,
+  SetAppLinkInputSchema,
   SetAutoUpdateChannelInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
@@ -167,6 +169,30 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetStudioInstanceInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setStudioInstanceOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_APP_LINK": {
+      SetAppLinkInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setAppLinkOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "CLEAR_APP_LINK": {
+      ClearAppLinkInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.clearAppLinkOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

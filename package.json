@@ -99,6 +99,7 @@
     "@powerhousedao/design-system": "6.2.3-dev.2",
     "@powerhousedao/document-engineering": "^1.34.0",
     "@powerhousedao/shared": "6.2.3-dev.2",
+    "@renown/sdk": "6.2.3-dev.2",
     "@types/pg": "^8.20.0",
     "ajv": "^8.20.0",
     "cmd-ts": "^0.15.0",

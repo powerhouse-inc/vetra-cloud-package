@@ -70,6 +70,7 @@ function envState(
     autoUpdateChannel: null,
     runtimeConfig: null,
     studioInstanceId: null,
+    app: null,
     ...overrides,
   };
 }

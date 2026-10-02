@@ -8,6 +8,7 @@ import {
 import { validateRuntimeConfig } from "./runtime-config-validation.js";
 import {
   assertOwner,
+  assertSystemOnly,
   markPendingIfDeployed,
   regenerateDnsRecords,
 } from "./utils.js";
@@ -142,5 +143,25 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       // Pure metadata linking this env to the studio that produced it. Renders
       // nothing into the chart/gitops values, so no markPendingIfDeployed.
       state.studioInstanceId = action.input.studioInstanceId ?? null;
+    },
+    setAppLinkOperation(state, action) {
+      // Written only by the vetra-apps subgraph: the link drives the preview
+      // gitops profile and widens the FUSION image allowlist to the App's
+      // Harbor project, so no user (not even the owner) may set it.
+      assertSystemOnly(action, "SET_APP_LINK");
+      const { appId, role, prNumber, gitRef, imageProject } = action.input;
+      state.app = {
+        appId,
+        role,
+        prNumber: prNumber ?? null,
+        gitRef: gitRef ?? null,
+        imageProject: imageProject ?? null,
+      };
+      markPendingIfDeployed(state);
+    },
+    clearAppLinkOperation(state, action) {
+      assertSystemOnly(action, "CLEAR_APP_LINK");
+      state.app = null;
+      markPendingIfDeployed(state);
     },
   };

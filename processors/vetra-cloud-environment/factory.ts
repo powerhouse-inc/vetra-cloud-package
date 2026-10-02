@@ -9,6 +9,7 @@ import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
 import { VetraCloudEnvironmentProcessor } from "./processor.js";
 import { up } from "./migrations.js";
+import { createAppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsDB } from "../../subgraphs/vetra-cloud-secrets/db/schema.js";
 import { up as upSecrets } from "../../subgraphs/vetra-cloud-secrets/db/migrations.js";
@@ -68,11 +69,17 @@ export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
 
     const documentView = module.getReadModel<IDocumentView>("document-view");
     const secretsService = await createSecretsServiceForProcessor(module);
+    // Vetra Apps: the FUSION allowlist trusts an App's Harbor project only as
+    // recorded in the vetra-apps tables (the resolver tolerates them missing).
+    const appsDb = (await module.relationalDb.createNamespace(
+      "vetra-apps",
+    )) as unknown as Kysely<any>;
     const processor = new VetraCloudEnvironmentProcessor(
       db,
       module.dispatch,
       documentView,
       secretsService,
+      createAppImageProjectResolver(appsDb),
     );
 
     return [

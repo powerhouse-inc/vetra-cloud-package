@@ -37,6 +37,12 @@ export interface Environments {
    * or NULL. Read by the observability subgraph's FUSION auto-update poller.
    */
   fusion: string | null;
+  /** Vetra App id when the env is linked to an App (state.app), else NULL. */
+  appId: string | null;
+  /** PRODUCTION | PREVIEW for App-linked envs, else NULL. */
+  appRole: string | null;
+  /** PR number of a PREVIEW env, else NULL. */
+  prNumber: number | null;
   /**
    * Warm-pool tracking (NULL for ordinary, non-pool environments).
    * Written by the studio-pool-keeper service and the claim subgraph.

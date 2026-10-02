@@ -128,6 +128,20 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Column already exists
   }
 
+  // Vetra Apps link (state.app) — lets myEnvironments / the vetra-apps
+  // subgraph tell standalone envs from App production/preview envs.
+  for (const [column, type] of [
+    ["appId", "varchar(255)"],
+    ["appRole", "varchar(32)"],
+    ["prNumber", "integer"],
+  ] as const) {
+    try {
+      await db.schema.alterTable("environments").addColumn(column, type).execute();
+    } catch {
+      // Column already exists
+    }
+  }
+
   // Fast claim selection: index only the rows the atomic claim query scans.
   try {
     await db.schema
