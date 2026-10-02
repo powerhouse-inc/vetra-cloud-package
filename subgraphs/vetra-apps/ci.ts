@@ -1,5 +1,8 @@
 import { GraphQLError } from "graphql";
-import { verifyAuthCredential } from "@renown/sdk/node";
+import {
+  fetchDelegationCredential,
+  verifyAuthBearerToken,
+} from "@renown/sdk/node";
 import { decodeJwtPayloadUnverified, parseVetraClaim } from "./auth.js";
 import { envUrls } from "./envs.js";
 import type { DeploymentRow } from "./repo.js";
@@ -31,7 +34,20 @@ export const DEFAULT_CI_AUDIENCE =
   "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps";
 
 /** Verified CI caller for a bearer, or null (→ 401). */
-export type CiTokenVerifier = (token: string) => Promise<CiIdentity | null>;
+/**
+ * Result of verifying a CI bearer:
+ *  - CiIdentity: valid token with a valid delegation credential;
+ *  - { identityExpired }: the token itself is valid (signature, audience,
+ *    expiry) but the owner's delegation of its did:key is missing, expired or
+ *    revoked — the App needs re-authorizing;
+ *  - null: not a valid token (→ 401 UNAUTHENTICATED).
+ */
+export type CiVerification =
+  | CiIdentity
+  | { identityExpired: { appDid: string; address: string } }
+  | null;
+
+export type CiTokenVerifier = (token: string) => Promise<CiVerification>;
 
 export function createRenownCiVerifier(opts: {
   audience: string;
@@ -40,26 +56,66 @@ export function createRenownCiVerifier(opts: {
   /** Re-verify the credential's EIP-712 proof. Only tests turn this off. */
   verifySignature?: boolean;
 }): CiTokenVerifier {
+  // The two halves of @renown/sdk verifyAuthCredential, split so a valid
+  // token without a delegation can be told apart from an invalid token.
   return async (token) => {
+    let address: string;
+    let chainId: number;
+    let appDid: string;
     try {
-      const verified = await verifyAuthCredential(token, {
+      const verified = await verifyAuthBearerToken(token, {
         audience: opts.audience,
-        ...(opts.renownUrl ? { renownUrl: opts.renownUrl } : {}),
-        verifySignature: opts.verifySignature ?? true,
       });
       if (!verified) return null;
-      // Signature checked above: the payload is the verified token's.
-      const payload = decodeJwtPayloadUnverified(token);
-      return {
-        address: verified.address.toLowerCase(),
-        chainId: verified.chainId,
-        appDid: verified.appDid,
-        claim: parseVetraClaim(payload?.vetra),
-      };
+      const subject = verified.verifiableCredential.credentialSubject;
+      address = String(subject.address).toLowerCase();
+      chainId = Number(subject.chainId);
+      appDid = verified.issuer;
     } catch {
       return null;
     }
+    const credential = await fetchDelegationCredential({
+      address,
+      chainId,
+      appDid,
+      ...(opts.renownUrl ? { baseUrl: opts.renownUrl } : {}),
+      verifySignature: opts.verifySignature ?? true,
+    }).catch(() => undefined);
+    if (!credential) return { identityExpired: { appDid, address } };
+    // Signature checked above: the payload is the verified token's.
+    const payload = decodeJwtPayloadUnverified(token);
+    return { address, chainId, appDid, claim: parseVetraClaim(payload?.vetra) };
   };
+}
+
+export const IDENTITY_EXPIRED_MESSAGE =
+  "The App's deploy identity authorization expired — re-authorize it on vetra.io";
+
+/**
+ * The App(s) of this identity go PENDING_IDENTITY — but only when the stored
+ * expiry is unknown or already past: a lookup miss before the known expiry may
+ * be a revocation or a Renown outage, and flipping on an outage would block
+ * every deploy until the owner re-confirms.
+ */
+async function markIdentityExpired(
+  deps: AppsDeps,
+  appDid: string,
+  address: string,
+) {
+  const nowIso = deps.now().toISOString();
+  await deps.db
+    .updateTable("apps")
+    .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
+    .where("identity_did", "=", appDid)
+    .where("owner_address", "=", address)
+    .where("status", "=", "ACTIVE")
+    .where((eb) =>
+      eb.or([
+        eb("identity_expires_at", "is", null),
+        eb("identity_expires_at", "<=", nowIso),
+      ]),
+    )
+    .execute();
 }
 
 const STATUS: Record<string, number> = {
@@ -124,6 +180,14 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       const ci = await verify(bearerToken(request));
       if (!ci)
         throw new HttpError("UNAUTHENTICATED", "Invalid or expired token");
+      if ("identityExpired" in ci) {
+        await markIdentityExpired(
+          deps,
+          ci.identityExpired.appDid,
+          ci.identityExpired.address,
+        );
+        return errorResponse("IDENTITY_EXPIRED", IDENTITY_EXPIRED_MESSAGE, 401);
+      }
       return Response.json(await handler(ci), { status: 200 });
     } catch (err) {
       if (err instanceof HttpError) return errorResponse(err.code, err.message);
