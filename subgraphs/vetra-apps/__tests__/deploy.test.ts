@@ -352,6 +352,33 @@ describe("deployApp PREVIEW", () => {
     expect(d.image_tag).toBe("cr.vetra.io/app-shop/web:sha-222222222222");
   });
 
+  it("never copies legacy secret-looking entries (isSecret null) into the preview template (M6)", async () => {
+    const { setFusionConfig } =
+      await import("../../../document-models/vetra-cloud-environment/v1/index.js");
+    await h.envs.execute(app.production_environment_id, [
+      setFusionConfig({
+        image: "cr.vetra.io/app-shop/web",
+        env: [
+          { name: "NEXT_PUBLIC_FLAG", value: "1", isSecret: null },
+          { name: "STRIPE_API_KEY", value: "sk_live_leak", isSecret: null },
+          { name: "DB_PASSWORD", value: "pw", isSecret: null },
+        ],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      }),
+    ]);
+    const d = await deployApp(
+      h.deps,
+      owner,
+      preview(11, { imageTag: "sha-333333333333" }),
+    );
+    const env = await h.envs.getState(d.environment_id!);
+    expect(env?.fusion?.env).toStrictEqual([
+      { name: "NEXT_PUBLIC_FLAG", value: "1", isSecret: false },
+    ]);
+    expect(JSON.stringify(env)).not.toContain("sk_live_leak");
+  });
+
   it("fails with PREVIEWS_DISABLED when previews are off", async () => {
     await updateApp(h.deps, owner, app.id, { previewsEnabled: false });
     expect(

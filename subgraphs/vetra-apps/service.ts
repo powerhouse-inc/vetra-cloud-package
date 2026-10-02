@@ -17,6 +17,7 @@ import type { VetraCloudEnvironmentState } from "../../document-models/vetra-clo
 import type { VetraAppsConfig } from "./config.js";
 import type { AppDeploymentKind, VetraAppsDB } from "./db/schema.js";
 import type { EnvGateway } from "./envs.js";
+import { classifyEnv } from "../../processors/vetra-cloud-environment/gitops.js";
 import type { GithubDeployApi, GithubRepo } from "./github.js";
 import type { HarborApi } from "./harbor.js";
 import type { RenownApi } from "./renown.js";
@@ -1121,7 +1122,9 @@ async function ensurePreview(
   const fusionEnvTemplate: FusionEnvInput[] = (
     productionState?.fusion?.env ?? []
   )
-    .filter((e) => e.isSecret !== true)
+    // Same rule as the gitops render: explicit isSecret, else the legacy
+    // secret-name heuristic (…_API_KEY, …_PASSWORD, …). Previews get no secrets.
+    .filter((e) => classifyEnv(e) !== "secret")
     .map((e) => ({ name: e.name, value: e.value ?? null, isSecret: false }));
   const createActions: Action[] = [
     setLabel({ label: `${app.name} PR #${prNumber}` }),

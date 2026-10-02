@@ -548,7 +548,7 @@ function effectiveAppSize(
  */
 const LEGACY_SECRET_NAME_PATTERN = /(_API_KEY|_SECRET|_PASSWORD|_TOKEN|_PRIVATE_KEY)$/;
 
-function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolean | null }): "secret" | "plain" {
+export function classifyEnv(e: { name: string; value?: string | null; isSecret?: boolean | null }): "secret" | "plain" {
   if (e.isSecret === true) return "secret";
   if (e.isSecret === false) return "plain";
   // No explicit flag: fall back to name pattern. Used for legacy data
