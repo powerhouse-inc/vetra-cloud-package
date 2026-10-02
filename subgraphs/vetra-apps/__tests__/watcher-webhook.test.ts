@@ -290,7 +290,10 @@ describe("GitHub webhook (Review Focus 3)", () => {
   it("ignores soft-deleted Apps (status stays DELETED)", async () => {
     const { deleteApp } = await import("../service.js");
     await deleteApp(h.deps, owner, app.id, false);
-    const body = JSON.stringify({ action: "deleted", installation: { id: Number(INSTALLATION) } });
+    const body = JSON.stringify({
+      action: "deleted",
+      installation: { id: Number(INSTALLATION) },
+    });
     const res = await handleGithubWebhook(h.deps, {
       rawBody: Buffer.from(body),
       signature: sign("whsec", body),
