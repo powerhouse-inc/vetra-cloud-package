@@ -1,0 +1,187 @@
+import { GraphQLError } from "graphql";
+import { verifyAuthCredential } from "@renown/sdk/node";
+import { decodeJwtPayloadUnverified, parseVetraClaim } from "./auth.js";
+import { envUrls } from "./envs.js";
+import type { DeploymentRow } from "./repo.js";
+import { deploymentFields } from "./resolvers.js";
+import {
+  ciDeployApp,
+  ciDeployment,
+  ciRegistryCredentials,
+  type AppsDeps,
+  type CiIdentity,
+  type DeployAppInput,
+} from "./service.js";
+
+/**
+ * CI-facing HTTP routes of vetra-apps, mounted under
+ * /api/@powerhousedao/vetra-cloud-package/:
+ *
+ *   POST apps/ci/registry-credentials  {appId}
+ *   POST apps/ci/deploy                DeployAppInput
+ *   GET  apps/ci/deployments/:id
+ *
+ * Renown issues CI (workload) tokens only for VETRA_APPS_CI_AUDIENCE, so the
+ * general GraphQL gateway (which verifies another audience) rejects them; the
+ * token is verified here instead, with the delegation credential and its
+ * EIP-712 proof.
+ */
+
+export const DEFAULT_CI_AUDIENCE =
+  "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps";
+
+/** Verified CI caller for a bearer, or null (→ 401). */
+export type CiTokenVerifier = (token: string) => Promise<CiIdentity | null>;
+
+export function createRenownCiVerifier(opts: {
+  audience: string;
+  /** Renown web app for the credential lookup (SDK default www.renown.id). */
+  renownUrl?: string;
+  /** Re-verify the credential's EIP-712 proof. Only tests turn this off. */
+  verifySignature?: boolean;
+}): CiTokenVerifier {
+  return async (token) => {
+    try {
+      const verified = await verifyAuthCredential(token, {
+        audience: opts.audience,
+        ...(opts.renownUrl ? { renownUrl: opts.renownUrl } : {}),
+        verifySignature: opts.verifySignature ?? true,
+      });
+      if (!verified) return null;
+      // Signature checked above: the payload is the verified token's.
+      const payload = decodeJwtPayloadUnverified(token);
+      return {
+        address: verified.address.toLowerCase(),
+        chainId: verified.chainId,
+        appDid: verified.appDid,
+        claim: parseVetraClaim(payload?.vetra),
+      };
+    } catch {
+      return null;
+    }
+  };
+}
+
+const STATUS: Record<string, number> = {
+  UNAUTHENTICATED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  BAD_USER_INPUT: 400,
+  PREVIEWS_DISABLED: 400,
+  APP_NOT_ACTIVE: 400,
+  GITHUB_NOT_CONNECTED: 400,
+  SERVICE_NOT_CONFIGURED: 503,
+};
+
+const errorResponse = (
+  code: string,
+  message: string,
+  status = STATUS[code] ?? 500,
+) => Response.json({ error: code, message }, { status });
+
+class HttpError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function bearerToken(request: Request): string {
+  const header = request.headers.get("authorization") ?? "";
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  if (!match) throw new HttpError("UNAUTHENTICATED", "Missing bearer token");
+  return match[1];
+}
+
+async function jsonBody(request: Request): Promise<Record<string, unknown>> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    throw new HttpError("BAD_USER_INPUT", "Body must be JSON");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError("BAD_USER_INPUT", "Body must be a JSON object");
+  }
+  return body as Record<string, unknown>;
+}
+
+function requireString(body: Record<string, unknown>, key: string): string {
+  const v = body[key];
+  if (typeof v !== "string" || !v)
+    throw new HttpError("BAD_USER_INPUT", `${key} is required`);
+  return v;
+}
+
+export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
+  async function run(
+    request: Request,
+    handler: (ci: CiIdentity) => Promise<unknown>,
+  ): Promise<Response> {
+    try {
+      const ci = await verify(bearerToken(request));
+      if (!ci)
+        throw new HttpError("UNAUTHENTICATED", "Invalid or expired token");
+      return Response.json(await handler(ci), { status: 200 });
+    } catch (err) {
+      if (err instanceof HttpError) return errorResponse(err.code, err.message);
+      if (err instanceof GraphQLError) {
+        const raw = err.extensions.code;
+        const code = typeof raw === "string" ? raw : "INTERNAL_SERVER_ERROR";
+        return errorResponse(code, err.message);
+      }
+      deps.logger.warn(`[vetra-apps] CI route failed: ${String(err)}`);
+      return errorResponse("INTERNAL_SERVER_ERROR", "Internal error", 500);
+    }
+  }
+
+  const deploymentJson = async (d: DeploymentRow) => ({
+    ...deploymentFields(d),
+    urls: envUrls(
+      d.environment_id ? await deps.envs.getState(d.environment_id) : null,
+    ),
+  });
+
+  return {
+    registryCredentials: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        return ciRegistryCredentials(deps, ci, requireString(body, "appId"));
+      }),
+
+    deploy: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        const input: DeployAppInput = {
+          appId: requireString(body, "appId"),
+          kind: body.kind as DeployAppInput["kind"],
+          prNumber: typeof body.prNumber === "number" ? body.prNumber : null,
+          gitRef: typeof body.gitRef === "string" ? body.gitRef : "",
+          sha: typeof body.sha === "string" ? body.sha : "",
+          runUrl: typeof body.runUrl === "string" ? body.runUrl : null,
+          actorGithub:
+            typeof body.actorGithub === "string" ? body.actorGithub : null,
+          packages: Array.isArray(body.packages)
+            ? (body.packages as unknown[]).map((p) => {
+                const o = (p ?? {}) as { name?: unknown; version?: unknown };
+                return {
+                  name: typeof o.name === "string" ? o.name : "",
+                  version: typeof o.version === "string" ? o.version : "",
+                };
+              })
+            : (null as never),
+          imageTag: typeof body.imageTag === "string" ? body.imageTag : null,
+        };
+        return deploymentJson(await ciDeployApp(deps, ci, input));
+      }),
+
+    deployment: (request: Request, id: string) =>
+      run(request, async (ci) => {
+        const d = await ciDeployment(deps, ci, id);
+        if (!d) throw new HttpError("NOT_FOUND", "Deployment not found");
+        return deploymentJson(d);
+      }),
+  };
+}

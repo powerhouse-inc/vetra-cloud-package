@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   appRegistryCredentials,
+  ciRegistryCredentials,
   confirmAppIdentity,
   connectGithubDeploy,
   createApp,
@@ -23,6 +24,7 @@ import {
   REPO_ID,
   admin,
   appIdentity,
+  ciIdentity,
   makeHarness,
   owner,
   seedActiveApp,
@@ -366,27 +368,32 @@ describe("App identity + settings", () => {
     expect(await myApps(h.deps, stranger)).toStrictEqual([]);
   });
 
-  it("appRegistryCredentials returns the decrypted robot for owner and App identity only", async () => {
+  it("appRegistryCredentials: owner via GraphQL, App identity only via the CI path", async () => {
     const app = await seedActiveApp(h);
-    const creds = await appRegistryCredentials(h.deps, appIdentity, app.id);
-    expect(creds).toStrictEqual({
+    const expected = {
       registry: "cr.vetra.io",
       project: "app-shop",
       username: "robot$app-shop+vetra-deploy-abc123",
       password: "robot-secret",
-    });
-    expect(await code(appRegistryCredentials(h.deps, owner, app.id))).toBe(
-      "OK",
+    };
+    expect(await appRegistryCredentials(h.deps, owner, app.id)).toStrictEqual(
+      expected,
     );
+    expect(
+      await ciRegistryCredentials(h.deps, ciIdentity(null), app.id),
+    ).toStrictEqual(expected);
+    expect(
+      await code(appRegistryCredentials(h.deps, appIdentity, app.id)),
+    ).toBe("FORBIDDEN");
     expect(await code(appRegistryCredentials(h.deps, stranger, app.id))).toBe(
       "FORBIDDEN",
     );
     expect(
       await code(
-        appRegistryCredentials(
+        ciRegistryCredentials(
           h.deps,
           {
-            ...appIdentity,
+            ...ciIdentity(null),
             address: "0x1111111111111111111111111111111111111111",
           },
           app.id,

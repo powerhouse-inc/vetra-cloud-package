@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   appDeploymentFor,
+  ciDeployApp,
+  ciDeployment,
   deletePreview,
   deployApp,
   resolveImage,
@@ -20,6 +22,8 @@ import {
   admin,
   appIdentity,
   claim,
+  deployAsCi,
+  ciIdentity,
   makeHarness,
   owner,
   seedActiveApp,
@@ -68,12 +72,7 @@ const preview = (
 
 describe("deployApp authorization (Review Focus 1)", () => {
   it("App identity with the production-branch claim deploys PRODUCTION", async () => {
-    const d = await deployApp(
-      h.deps,
-      appIdentity,
-      claim("refs/heads/main"),
-      prod(),
-    );
+    const d = await deployAsCi(h.deps, claim("refs/heads/main"), prod());
     expect(d).toMatchObject({
       status: "DEPLOYING",
       kind: "PRODUCTION",
@@ -87,20 +86,14 @@ describe("deployApp authorization (Review Focus 1)", () => {
   it("a PR-branch token can never deploy PRODUCTION", async () => {
     expect(
       await code(
-        deployApp(
-          h.deps,
-          appIdentity,
-          claim("refs/pull/7/merge", { prNumber: 7 }),
-          prod(),
-        ),
+        deployAsCi(h.deps, claim("refs/pull/7/merge", { prNumber: 7 }), prod()),
       ),
     ).toBe("FORBIDDEN");
     // even when it lies about gitRef in the input
     expect(
       await code(
-        deployApp(
+        deployAsCi(
           h.deps,
-          appIdentity,
           claim("refs/pull/7/merge"),
           prod({ gitRef: "refs/heads/main" }),
         ),
@@ -108,14 +101,10 @@ describe("deployApp authorization (Review Focus 1)", () => {
     ).toBe("FORBIDDEN");
     // and a tag / other branch token is refused too
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/tags/v1.0.0"), prod()),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/tags/v1.0.0"), prod())),
     ).toBe("FORBIDDEN");
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/heads/dev"), prod()),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/heads/dev"), prod())),
     ).toBe("FORBIDDEN");
     const env = await h.envs.getState(app.production_environment_id);
     expect(env?.packages).toStrictEqual([]);
@@ -126,32 +115,23 @@ describe("deployApp authorization (Review Focus 1)", () => {
 
   it("a PR token deploys only its own PR's preview", async () => {
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/pull/7/merge"), preview(7)),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/pull/7/merge"), preview(7))),
     ).toBe("OK");
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/pull/7/merge"), preview(8)),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/pull/7/merge"), preview(8))),
     ).toBe("FORBIDDEN");
     // a production token cannot deploy a PR preview either
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/heads/main"), preview(9)),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/heads/main"), preview(9))),
     ).toBe("FORBIDDEN");
   });
 
   it("App identity without a vetra claim, or minted for another repo, is refused", async () => {
-    expect(await code(deployApp(h.deps, appIdentity, null, prod()))).toBe(
-      "FORBIDDEN",
-    );
+    expect(await code(deployAsCi(h.deps, null, prod()))).toBe("FORBIDDEN");
     expect(
       await code(
-        deployApp(
+        deployAsCi(
           h.deps,
-          appIdentity,
           claim("refs/heads/main", { repositoryId: "1" }),
           prod(),
         ),
@@ -162,10 +142,12 @@ describe("deployApp authorization (Review Focus 1)", () => {
   it("an App identity acting for someone else is refused", async () => {
     expect(
       await code(
-        deployApp(
+        ciDeployApp(
           h.deps,
-          { ...appIdentity, address: stranger.address },
-          claim("refs/heads/main"),
+          {
+            ...ciIdentity(claim("refs/heads/main")),
+            address: stranger.address,
+          },
           prod(),
         ),
       ),
@@ -173,13 +155,11 @@ describe("deployApp authorization (Review Focus 1)", () => {
   });
 
   it("the owner (manual redeploy) and admins may deploy without claims; strangers may not", async () => {
-    expect(await code(deployApp(h.deps, owner, null, prod()))).toBe("OK");
-    expect(await code(deployApp(h.deps, admin, null, prod()))).toBe("OK");
-    expect(await code(deployApp(h.deps, stranger, null, prod()))).toBe(
-      "FORBIDDEN",
-    );
+    expect(await code(deployApp(h.deps, owner, prod()))).toBe("OK");
+    expect(await code(deployApp(h.deps, admin, prod()))).toBe("OK");
+    expect(await code(deployApp(h.deps, stranger, prod()))).toBe("FORBIDDEN");
     expect(
-      await code(deployApp(h.deps, owner, null, prod({ appId: "missing" }))),
+      await code(deployApp(h.deps, owner, prod({ appId: "missing" }))),
     ).toBe("NOT_FOUND");
   });
 
@@ -188,21 +168,18 @@ describe("deployApp authorization (Review Focus 1)", () => {
       .updateTable("apps")
       .set({ status: "PENDING_IDENTITY" })
       .execute();
-    expect(await code(deployApp(h.deps, owner, null, prod()))).toBe(
-      "APP_NOT_ACTIVE",
-    );
+    expect(await code(deployApp(h.deps, owner, prod()))).toBe("APP_NOT_ACTIVE");
   });
 
   it("validates input", async () => {
-    expect(
-      await code(deployApp(h.deps, owner, null, prod({ sha: "nope" }))),
-    ).toBe("BAD_USER_INPUT");
+    expect(await code(deployApp(h.deps, owner, prod({ sha: "nope" })))).toBe(
+      "BAD_USER_INPUT",
+    );
     expect(
       await code(
         deployApp(
           h.deps,
           owner,
-          null,
           prod({ packages: [{ name: "Bad Name", version: "1" }] }),
         ),
       ),
@@ -212,7 +189,6 @@ describe("deployApp authorization (Review Focus 1)", () => {
         deployApp(
           h.deps,
           owner,
-          null,
           prod({ packages: [{ name: "a", version: "1 2" }] }),
         ),
       ),
@@ -222,7 +198,6 @@ describe("deployApp authorization (Review Focus 1)", () => {
         deployApp(
           h.deps,
           owner,
-          null,
           prod({
             packages: [
               { name: "a", version: "1" },
@@ -232,7 +207,7 @@ describe("deployApp authorization (Review Focus 1)", () => {
         ),
       ),
     ).toBe("BAD_USER_INPUT");
-    expect(await code(deployApp(h.deps, owner, null, preview(0)))).toBe(
+    expect(await code(deployApp(h.deps, owner, preview(0)))).toBe(
       "BAD_USER_INPUT",
     );
     expect(
@@ -240,7 +215,6 @@ describe("deployApp authorization (Review Focus 1)", () => {
         deployApp(
           h.deps,
           owner,
-          null,
           prod({ imageTag: "cr.vetra.io/other-project/app:sha-1" }),
         ),
       ),
@@ -253,7 +227,6 @@ describe("deployApp PRODUCTION", () => {
     const d = await deployApp(
       h.deps,
       owner,
-      null,
       prod({ imageTag: "sha-abcdef123456" }),
     );
     expect(d.image_tag).toBe("cr.vetra.io/app-shop/app:sha-abcdef123456");
@@ -277,7 +250,7 @@ describe("deployApp PRODUCTION", () => {
 
   it("wakes a sleeping env before deploying", async () => {
     h.envs.setStatus(app.production_environment_id, "STOPPED");
-    const d = await deployApp(h.deps, owner, null, prod());
+    const d = await deployApp(h.deps, owner, prod());
     expect(d.status).toBe("DEPLOYING");
     expect(h.envs.executed.at(-1)?.types[0]).toBe("WAKE_ENVIRONMENT");
     expect((await h.envs.getState(app.production_environment_id))?.status).toBe(
@@ -287,17 +260,16 @@ describe("deployApp PRODUCTION", () => {
 
   it("records FAILED when the environment is terminated", async () => {
     h.envs.setStatus(app.production_environment_id, "TERMINATING");
-    const d = await deployApp(h.deps, owner, null, prod());
+    const d = await deployApp(h.deps, owner, prod());
     expect(d.status).toBe("FAILED");
     expect(d.error).toMatch(/TERMINATING/);
   });
 
   it("a newer deployment supersedes older pending/deploying ones of the same env", async () => {
-    const first = await deployApp(h.deps, owner, null, prod());
+    const first = await deployApp(h.deps, owner, prod());
     const second = await deployApp(
       h.deps,
       owner,
-      null,
       prod({ packages: [{ name: "@acme/shop", version: "1.2.1" }] }),
     );
     expect((await getDeployment(h.db, first.id))?.status).toBe("SUPERSEDED");
@@ -310,20 +282,13 @@ describe("deployApp PRODUCTION", () => {
         await import("../../../document-models/vetra-cloud-environment/v1/index.js")
       ).clearAppLink({}),
     ]);
-    expect(await code(deployApp(h.deps, owner, null, prod()))).toBe(
-      "BAD_USER_INPUT",
-    );
+    expect(await code(deployApp(h.deps, owner, prod()))).toBe("BAD_USER_INPUT");
   });
 });
 
 describe("deployApp PREVIEW", () => {
   it("creates a slim preview env on the first deploy and reuses it afterwards", async () => {
-    const d1 = await deployApp(
-      h.deps,
-      appIdentity,
-      claim("refs/pull/7/merge"),
-      preview(7),
-    );
+    const d1 = await deployAsCi(h.deps, claim("refs/pull/7/merge"), preview(7));
     const p = await getPreview(h.db, app.id, 7);
     expect(p?.environment_id).toBe(d1.environment_id);
     const env = await h.envs.getState(p!.environment_id);
@@ -348,9 +313,8 @@ describe("deployApp PREVIEW", () => {
       ],
     });
     h.envs.setStatus(p!.environment_id, "READY");
-    const d2 = await deployApp(
+    const d2 = await deployAsCi(
       h.deps,
-      appIdentity,
       claim("refs/pull/7/merge"),
       preview(7, { imageTag: "sha-111111111111" }),
     );
@@ -375,7 +339,6 @@ describe("deployApp PREVIEW", () => {
     const d = await deployApp(
       h.deps,
       owner,
-      null,
       preview(3, { imageTag: "sha-222222222222" }),
     );
     const env = await h.envs.getState(d.environment_id!);
@@ -391,18 +354,16 @@ describe("deployApp PREVIEW", () => {
   it("fails with PREVIEWS_DISABLED when previews are off", async () => {
     await updateApp(h.deps, owner, app.id, { previewsEnabled: false });
     expect(
-      await code(
-        deployApp(h.deps, appIdentity, claim("refs/pull/7/merge"), preview(7)),
-      ),
+      await code(deployAsCi(h.deps, claim("refs/pull/7/merge"), preview(7))),
     ).toBe("PREVIEWS_DISABLED");
   });
 
   it("evicts the least recently deployed preview at the limit", async () => {
     await updateApp(h.deps, owner, app.id, { previewLimit: 2 });
-    const d1 = await deployApp(h.deps, owner, null, preview(1));
-    await deployApp(h.deps, owner, null, preview(2));
-    await deployApp(h.deps, owner, null, preview(1)); // PR 1 is now the most recent
-    const d3 = await deployApp(h.deps, owner, null, preview(3));
+    const d1 = await deployApp(h.deps, owner, preview(1));
+    await deployApp(h.deps, owner, preview(2));
+    await deployApp(h.deps, owner, preview(1)); // PR 1 is now the most recent
+    const d3 = await deployApp(h.deps, owner, preview(3));
     const prs = (await listPreviews(h.db, app.id)).map((p) => p.pr_number);
     expect(prs).toStrictEqual([1, 3]);
     expect(h.envs.deleted).toHaveLength(1);
@@ -412,9 +373,9 @@ describe("deployApp PREVIEW", () => {
   });
 
   it("recreates a preview whose env document disappeared", async () => {
-    const d1 = await deployApp(h.deps, owner, null, preview(4));
+    const d1 = await deployApp(h.deps, owner, preview(4));
     await h.envs.delete(d1.environment_id!);
-    const d2 = await deployApp(h.deps, owner, null, preview(4));
+    const d2 = await deployApp(h.deps, owner, preview(4));
     expect(d2.environment_id).not.toBe(d1.environment_id);
     expect(d2.status).toBe("DEPLOYING");
   });
@@ -472,7 +433,7 @@ describe("preview deletion safety (Review Focus 2)", () => {
 
 describe("rollbackApp", () => {
   it("re-applies a READY deployment as a new one with actor rollback", async () => {
-    const good = await deployApp(h.deps, owner, null, prod());
+    const good = await deployApp(h.deps, owner, prod());
     await h.db
       .updateTable("app_deployments")
       .set({ status: "READY" })
@@ -482,7 +443,6 @@ describe("rollbackApp", () => {
     await deployApp(
       h.deps,
       owner,
-      null,
       prod({ packages: [{ name: "@acme/shop", version: "9.9.9" }] }),
     );
     h.envs.setStatus(app.production_environment_id, "READY");
@@ -498,7 +458,7 @@ describe("rollbackApp", () => {
   });
 
   it("refuses non-READY sources, strangers and App identities", async () => {
-    const d = await deployApp(h.deps, owner, null, prod());
+    const d = await deployApp(h.deps, owner, prod());
     expect(await code(rollbackApp(h.deps, owner, d.id))).toBe("BAD_USER_INPUT");
     await h.db
       .updateTable("app_deployments")
@@ -514,7 +474,7 @@ describe("rollbackApp", () => {
   });
 
   it("refuses to roll back a preview that is gone", async () => {
-    const d = await deployApp(h.deps, owner, null, preview(5));
+    const d = await deployApp(h.deps, owner, preview(5));
     await h.db
       .updateTable("app_deployments")
       .set({ status: "READY" })
@@ -536,9 +496,20 @@ describe("rollbackApp", () => {
 });
 
 describe("appDeployment access", () => {
-  it("owner and App identity can read; strangers cannot", async () => {
-    const d = await deployApp(h.deps, owner, null, prod());
-    expect((await appDeploymentFor(h.deps, appIdentity, d.id))?.id).toBe(d.id);
+  it("owner (GraphQL) and App identity (CI path) can read; strangers cannot", async () => {
+    const d = await deployApp(h.deps, owner, prod());
+    expect(await code(appDeploymentFor(h.deps, appIdentity, d.id))).toBe(
+      "FORBIDDEN",
+    );
+    expect((await ciDeployment(h.deps, ciIdentity(null), d.id))?.id).toBe(d.id);
+    expect(
+      await ciDeployment(
+        h.deps,
+        { ...ciIdentity(null), appDid: "did:key:other" },
+        d.id,
+      ),
+    ).toBeNull();
+    expect(await ciDeployment(h.deps, ciIdentity(null), "missing")).toBeNull();
     expect((await appDeploymentFor(h.deps, owner, d.id))?.id).toBe(d.id);
     expect(await code(appDeploymentFor(h.deps, stranger, d.id))).toBe(
       "FORBIDDEN",

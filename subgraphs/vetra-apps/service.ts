@@ -130,27 +130,37 @@ async function assertNotWorkload(
   }
 }
 
-/** Owner / admin, or this App's own identity (CI). */
-async function loadAppForDeployer(
+/**
+ * A CI caller, authenticated by the vetra-apps HTTP routes: a Renown bearer
+ * for the CI audience, verified with @renown/sdk (delegation credential and
+ * its proof included). `claim` is the token's `vetra` claim (C1).
+ */
+export interface CiIdentity {
+  address: string;
+  chainId: number;
+  /** did:key that issued the bearer (the App identity). */
+  appDid: string;
+  claim: VetraClaim | null;
+}
+
+/** The App, if the CI token was issued by its identity on behalf of its owner. */
+async function authorizeCi(
   deps: AppsDeps,
-  caller: Caller,
+  ci: CiIdentity,
   appId: string,
-): Promise<{ app: AppRow; viaIdentity: boolean }> {
+): Promise<AppRow> {
   const app = await getApp(deps.db, appId);
   if (!app) throw appsError("NOT_FOUND", "App not found");
-  if (caller.appKey && caller.appKey === app.identity_did) {
-    if (caller.address !== app.owner_address) {
-      throw appsError(
-        "FORBIDDEN",
-        "App identity does not act for this App's owner",
-      );
-    }
-    return { app, viaIdentity: true };
+  if (ci.appDid !== app.identity_did) {
+    throw appsError("FORBIDDEN", "Token was not issued by this App's identity");
   }
-  await assertNotWorkload(deps, caller);
-  if (app.owner_address === caller.address || caller.isAdmin)
-    return { app, viaIdentity: false };
-  throw appsError("FORBIDDEN", "Not allowed to deploy this App");
+  if (ci.address.toLowerCase() !== app.owner_address) {
+    throw appsError(
+      "FORBIDDEN",
+      "App identity does not act for this App's owner",
+    );
+  }
+  return app;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,12 +685,7 @@ export async function openAppSetupPullRequest(
   );
 }
 
-export async function appRegistryCredentials(
-  deps: AppsDeps,
-  caller: Caller,
-  appId: string,
-) {
-  const { app } = await loadAppForDeployer(deps, caller, appId);
+function registryCredentials(deps: AppsDeps, app: AppRow) {
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
   if (app.status === "DISCONNECTED")
     throw appsError("APP_NOT_ACTIVE", "App is disconnected");
@@ -693,6 +698,24 @@ export async function appRegistryCredentials(
       app.harbor_robot_secret_enc,
     ),
   };
+}
+
+/** Owner / admin (GraphQL). CI uses {@link ciRegistryCredentials}. */
+export async function appRegistryCredentials(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+) {
+  return registryCredentials(deps, await loadAppForOwner(deps, caller, appId));
+}
+
+/** CI route: push/pull robot of the App's Harbor project. */
+export async function ciRegistryCredentials(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  appId: string,
+) {
+  return registryCredentials(deps, await authorizeCi(deps, ci, appId));
 }
 
 export async function appDeploymentsFor(
@@ -717,9 +740,28 @@ export async function appDeploymentFor(
   caller: Caller,
   deploymentId: string,
 ): Promise<DeploymentRow | null> {
+  await assertNotWorkload(deps, caller);
   const d = await getDeployment(deps.db, deploymentId);
   if (!d) return null;
-  await loadAppForDeployer(deps, caller, d.app_id);
+  await loadAppForOwner(deps, caller, d.app_id);
+  return d;
+}
+
+/** CI route: a deployment of the token's own App (others read as missing). */
+export async function ciDeployment(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  deploymentId: string,
+): Promise<DeploymentRow | null> {
+  const d = await getDeployment(deps.db, deploymentId);
+  if (!d) return null;
+  const app = await getApp(deps.db, d.app_id);
+  if (!app) return null;
+  try {
+    await authorizeCi(deps, ci, app.id);
+  } catch {
+    return null;
+  }
   return d;
 }
 
@@ -806,85 +848,130 @@ export function resolveImage(
   return { repository, tag: raw };
 }
 
-function expectedRef(
+const PRODUCTION_EVENTS = new Set(["push", "workflow_dispatch"]);
+
+/**
+ * A CI token may only deploy what its own run was minted for (C1 claim):
+ * PRODUCTION ← refClass PRODUCTION, a push/workflow_dispatch run of
+ * refs/heads/<productionBranch>; PREVIEW ← refClass PREVIEW, a pull_request
+ * run of refs/pull/<prNumber>/merge (pull_request_target & co. are refused).
+ */
+function assertClaimAllows(
   app: AppRow,
+  claim: VetraClaim | null,
   kind: AppDeploymentKind,
   prNumber: number | null,
-): string {
-  return kind === "PRODUCTION"
-    ? `refs/heads/${app.production_branch}`
-    : `refs/pull/${prNumber}/merge`;
-}
-
-export async function deployApp(
-  deps: AppsDeps,
-  caller: Caller,
-  claim: VetraClaim | null,
-  input: DeployAppInput,
-): Promise<DeploymentRow> {
-  const { app, viaIdentity } = await loadAppForDeployer(
-    deps,
-    caller,
-    input.appId,
-  );
-  const kind = input.kind;
-  const prNumber = kind === "PREVIEW" ? (input.prNumber ?? null) : null;
-  if (
-    kind === "PREVIEW" &&
-    (prNumber === null || !Number.isInteger(prNumber) || prNumber < 1)
-  ) {
-    throw appsError("BAD_USER_INPUT", "PREVIEW deployments need a prNumber");
+): VetraClaim {
+  if (!claim) throw appsError("FORBIDDEN", "Token carries no vetra claim");
+  if (claim.repositoryId !== app.repository_id) {
+    throw appsError("FORBIDDEN", "Token was minted for another repository");
   }
-  let gitRef = input.gitRef.trim();
-  let actorGithub = input.actorGithub?.trim() || null;
-  let runUrl = input.runUrl?.trim() || null;
-
-  if (viaIdentity) {
-    // A CI token may only deploy what its own run was minted for: the
-    // production branch → PRODUCTION, refs/pull/<n>/merge → that PR's preview.
-    const want = expectedRef(app, kind, prNumber);
-    if (!claim) {
-      throw appsError("FORBIDDEN", "App identity token carries no vetra claim");
-    }
-    if (claim.ref !== want) {
+  if (kind === "PRODUCTION") {
+    const want = `refs/heads/${app.production_branch}`;
+    if (
+      claim.refClass !== "PRODUCTION" ||
+      !PRODUCTION_EVENTS.has(claim.eventName ?? "") ||
+      claim.ref !== want
+    ) {
       throw appsError(
         "FORBIDDEN",
-        `Token for ${claim.ref} cannot deploy ${kind} (needs ${want})`,
+        `Token for ${claim.ref} (${claim.refClass ?? "?"}, ${claim.eventName ?? "?"}) cannot deploy PRODUCTION`,
       );
     }
-    if (claim.repositoryId && claim.repositoryId !== app.repository_id) {
-      throw appsError("FORBIDDEN", "Token was minted for another repository");
+  } else {
+    const want = `refs/pull/${prNumber}/merge`;
+    if (
+      claim.refClass !== "PREVIEW" ||
+      claim.eventName !== "pull_request" ||
+      claim.ref !== want
+    ) {
+      throw appsError(
+        "FORBIDDEN",
+        `Token for ${claim.ref} (${claim.refClass ?? "?"}, ${claim.eventName ?? "?"}) cannot deploy PR #${prNumber}`,
+      );
     }
-    gitRef = claim.ref;
-    actorGithub = claim.actor ?? actorGithub;
+  }
+  return claim;
+}
+
+function normalizePrNumber(input: DeployAppInput): number | null {
+  if (input.kind !== "PREVIEW") return null;
+  const n = input.prNumber ?? null;
+  if (n === null || !Number.isInteger(n) || n < 1) {
+    throw appsError("BAD_USER_INPUT", "PREVIEW deployments need a prNumber");
+  }
+  return n;
+}
+
+async function deployChecked(
+  deps: AppsDeps,
+  app: AppRow,
+  input: DeployAppInput,
+  prNumber: number | null,
+  actor: { did: string | null; github: string | null; gitRef: string },
+): Promise<DeploymentRow> {
+  if (input.kind !== "PRODUCTION" && input.kind !== "PREVIEW") {
+    throw appsError("BAD_USER_INPUT", "kind must be PRODUCTION or PREVIEW");
   }
   if (app.status !== "ACTIVE")
     throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
-  if (!gitRef) throw appsError("BAD_USER_INPUT", "gitRef is required");
-  if (!SHA.test(input.sha))
+  if (!actor.gitRef) throw appsError("BAD_USER_INPUT", "gitRef is required");
+  if (typeof input.sha !== "string" || !SHA.test(input.sha)) {
     throw appsError("BAD_USER_INPUT", "sha must be a git commit sha");
-  if (runUrl && !/^https:\/\/github\.com\//.test(runUrl)) runUrl = null;
+  }
+  if (!Array.isArray(input.packages))
+    throw appsError("BAD_USER_INPUT", "packages must be a list");
   validatePackages(input.packages);
-  if (kind === "PREVIEW" && !app.previews_enabled) {
+  if (input.kind === "PREVIEW" && !app.previews_enabled) {
     throw appsError("PREVIEWS_DISABLED", "Previews are disabled for this App");
   }
+  let runUrl = input.runUrl?.trim() || null;
+  if (runUrl && !/^https:\/\/github\.com\//.test(runUrl)) runUrl = null;
   const productionState = await deps.envs.getState(
     app.production_environment_id,
   );
   const image = resolveImage(app, input.imageTag, productionState);
-
   return performDeploy(deps, app, productionState, {
-    kind,
+    kind: input.kind,
     prNumber,
-    gitRef,
+    gitRef: actor.gitRef,
     sha: input.sha.toLowerCase(),
     runUrl,
-    actorGithub,
-    actorDid: viaIdentity
-      ? caller.appKey
-      : `did:pkh:eip155:${caller.chainId}:${caller.address}`,
+    actorGithub: actor.github,
+    actorDid: actor.did,
     packages: input.packages.map((p) => ({ name: p.name, version: p.version })),
     image,
+  });
+}
+
+/** Owner / admin (GraphQL, manual redeploy). App identities are refused. */
+export async function deployApp(
+  deps: AppsDeps,
+  caller: Caller,
+  input: DeployAppInput,
+): Promise<DeploymentRow> {
+  const app = await loadAppForOwner(deps, caller, input.appId);
+  const prNumber = normalizePrNumber(input);
+  return deployChecked(deps, app, input, prNumber, {
+    did: `did:pkh:eip155:${caller.chainId}:${caller.address}`,
+    github: input.actorGithub?.trim() || null,
+    gitRef: (input.gitRef ?? "").trim(),
+  });
+}
+
+/** CI route: deploy as the App identity, bounded by the token's vetra claim. */
+export async function ciDeployApp(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  input: DeployAppInput,
+): Promise<DeploymentRow> {
+  const app = await authorizeCi(deps, ci, input.appId);
+  const prNumber = normalizePrNumber(input);
+  const claim = assertClaimAllows(app, ci.claim, input.kind, prNumber);
+  return deployChecked(deps, app, input, prNumber, {
+    did: ci.appDid,
+    github: claim.actor ?? (input.actorGithub?.trim() || null),
+    gitRef: claim.ref,
   });
 }
 

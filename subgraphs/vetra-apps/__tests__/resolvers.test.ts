@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildASTSchema, type GraphQLObjectType } from "graphql";
 import { schema } from "../schema.js";
 import { createResolvers } from "../resolvers.js";
-import { readVetraClaim, requireCaller } from "../auth.js";
+import {
+  bearerHasVetraClaim,
+  parseVetraClaim,
+  requireCaller,
+} from "../auth.js";
 import { loadAppsConfig, missingConfig } from "../config.js";
 import { decryptSecret, encryptSecret } from "../crypto.js";
 import { workflowTemplate } from "../workflow-template.js";
@@ -45,45 +49,38 @@ describe("SDL", () => {
   });
 });
 
-describe("readVetraClaim", () => {
-  it("reads the claim of the bearer that authenticated the request", () => {
+describe("vetra claim parsing", () => {
+  it("parseVetraClaim keeps C1 fields incl. eventName and rejects malformed claims", () => {
     expect(
-      readVetraClaim(
-        identityCtx({
-          iss: APP_DID,
-          vetra: { ref: "refs/heads/main", prNumber: null, sha: "abc" },
-        }),
-      ),
-    ).toMatchObject({ ref: "refs/heads/main", sha: "abc", prNumber: null });
+      parseVetraClaim({
+        ref: "refs/heads/main",
+        refClass: "PRODUCTION",
+        eventName: "push",
+        prNumber: null,
+        runId: 5,
+      }),
+    ).toMatchObject({
+      ref: "refs/heads/main",
+      refClass: "PRODUCTION",
+      eventName: "push",
+      prNumber: null,
+      runId: "5",
+    });
+    expect(parseVetraClaim({ ref: 1 })).toBeNull();
+    expect(parseVetraClaim(null)).toBeNull();
   });
 
-  it("ignores a token issued by another key, malformed tokens and missing claims", () => {
+  it("bearerHasVetraClaim spots CI tokens, whoever issued them", () => {
     expect(
-      readVetraClaim(
-        identityCtx({
-          iss: "did:key:other",
-          vetra: { ref: "refs/heads/main" },
-        }),
+      bearerHasVetraClaim(
+        identityCtx({ iss: "did:key:any", vetra: { ref: "x" } }),
       ),
-    ).toBeNull();
-    expect(readVetraClaim(identityCtx({ iss: APP_DID }))).toBeNull();
+    ).toBe(true);
+    expect(bearerHasVetraClaim(identityCtx({ iss: APP_DID }))).toBe(false);
+    expect(bearerHasVetraClaim(identityCtx(null))).toBe(false);
     expect(
-      readVetraClaim(identityCtx({ iss: APP_DID, vetra: { ref: 1 } })),
-    ).toBeNull();
-    expect(readVetraClaim(identityCtx(null))).toBeNull();
-    expect(
-      readVetraClaim({
-        ...identityCtx(null),
-        headers: { authorization: "Bearer not-a-jwt" },
-      }),
-    ).toBeNull();
-    expect(
-      readVetraClaim({
-        headers: {
-          authorization: `Bearer ${jwt({ iss: APP_DID, vetra: { ref: "x" } })}`,
-        },
-      }),
-    ).toBeNull();
+      bearerHasVetraClaim({ headers: { authorization: "Bearer not-a-jwt" } }),
+    ).toBe(false);
   });
 
   it("requireCaller lowercases and flags admins", () => {
@@ -127,21 +124,23 @@ describe("resolvers", () => {
     packages: [],
   });
 
-  it("deployApp honours the bearer's vetra claim", async () => {
+  it("deployApp works for the owner and resolves URLs; CI bearers are refused", async () => {
     const r = createResolvers(h.deps);
+    const ownerCtx = {
+      user: {
+        address: OWNER,
+        chainId: 1,
+        networkId: "eip155",
+        appKey: USER_KEY,
+      },
+      headers: {},
+    };
     const ok = await r.Mutation.deployApp(
       null,
       { input: deployInput() },
-      identityCtx({
-        iss: APP_DID,
-        vetra: { ref: "refs/heads/main", actor: "octocat" },
-      }),
+      ownerCtx,
     );
-    expect(ok).toMatchObject({
-      kind: "PRODUCTION",
-      actorGithub: "octocat",
-      packages: [],
-    });
+    expect(ok).toMatchObject({ kind: "PRODUCTION", packages: [] });
     expect(await ok.urls()).toMatchObject({
       connect: expect.stringContaining("-connect.vetra.io"),
     });
@@ -149,7 +148,7 @@ describe("resolvers", () => {
       r.Mutation.deployApp(
         null,
         { input: deployInput() },
-        identityCtx({ iss: APP_DID, vetra: { ref: "refs/pull/1/merge" } }),
+        identityCtx({ iss: APP_DID, vetra: { ref: "refs/heads/main" } }),
       ),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
@@ -387,9 +386,29 @@ describe("HTTP clients", () => {
       "https://switchboard.renown.vetra.io/graphql/renown-workload",
     );
     expect(seen[0].headers["x-renown-workload-registration-token"]).toBe("tok");
+  });
+
+  it("Renown: the delegation check uses @renown/sdk with EIP-712 proof verification", async () => {
+    const fetchDelegation = vi.fn(async (o: { appDid: string }) =>
+      o.appDid === APP_DID ? ({ id: "cred" } as never) : undefined,
+    );
+    const renown = createRenownApi(
+      { switchboardUrl: "https://r", registrationToken: "tok" },
+      "https://www.renown.id",
+      fetch,
+      fetchDelegation,
+    );
     expect(
       await renown.hasDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
     ).toBe(true);
+    expect(fetchDelegation).toHaveBeenCalledWith({
+      address: OWNER,
+      chainId: 1,
+      appDid: APP_DID,
+      baseUrl: "https://www.renown.id",
+      discover: false,
+      verifySignature: true,
+    });
     expect(
       await renown.hasDelegation({
         address: OWNER,
@@ -397,6 +416,28 @@ describe("HTTP clients", () => {
         did: "did:key:other",
       }),
     ).toBe(false);
+  });
+
+  it("Renown: an unsigned credential (no EIP-712 proof) does not count as a delegation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          credential: {
+            issuer: { id: `did:pkh:eip155:1:${OWNER}`, ethereumAddress: OWNER },
+            credentialSubject: { id: APP_DID },
+          },
+        }),
+      ),
+    );
+    const renown = createRenownApi(
+      { switchboardUrl: "https://r", registrationToken: "tok" },
+      "https://www.renown.id",
+    );
+    expect(
+      await renown.hasDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
+    ).toBe(false);
+    vi.unstubAllGlobals();
   });
 
   it("Renown: surfaces GraphQL error codes", async () => {

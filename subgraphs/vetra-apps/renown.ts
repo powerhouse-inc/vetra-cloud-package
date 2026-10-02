@@ -1,3 +1,4 @@
+import { fetchDelegationCredential } from "@renown/sdk/node";
 import type { RenownWorkloadConfig } from "./config.js";
 
 /** Client of the Renown workload-identity API (contract C1) + delegation lookup. */
@@ -30,6 +31,7 @@ export function createRenownApi(
   cfg: RenownWorkloadConfig,
   renownWebUrl: string,
   fetchImpl: FetchLike = fetch,
+  fetchDelegation: typeof fetchDelegationCredential = fetchDelegationCredential,
 ): RenownApi {
   const endpoint = `${cfg.switchboardUrl}/graphql/renown-workload`;
 
@@ -87,33 +89,17 @@ export function createRenownApi(
     },
 
     async hasDelegation({ address, chainId, did }) {
-      const url = new URL("/api/auth/credential", renownWebUrl);
-      url.searchParams.set("address", address);
-      url.searchParams.set("chainId", String(chainId));
-      url.searchParams.set("connectId", did);
-      url.searchParams.set("appId", did);
-      const res = await fetchImpl(url, { method: "GET" });
-      if (!res.ok) return false;
-      const body = (await res.json().catch(() => null)) as {
-        credential?: {
-          issuer?: { id?: string };
-          credentialSubject?: { id?: string };
-          expirationDate?: string;
-        } | null;
-      } | null;
-      const cred = body?.credential;
-      if (!cred || cred.credentialSubject?.id !== did) return false;
-      // issuer.id = did:pkh:eip155:<chainId>:<address>
-      const [, , , issuerChain, issuerAddress] = (cred.issuer?.id ?? "").split(
-        ":",
-      );
-      if (issuerChain !== String(chainId)) return false;
-      if (issuerAddress?.toLowerCase() !== address.toLowerCase()) return false;
-      if (cred.expirationDate) {
-        const exp = Date.parse(cred.expirationDate);
-        if (Number.isNaN(exp) || exp <= Date.now()) return false;
-      }
-      return true;
+      // REST lookup on the Renown app (no switchboard discovery), then the
+      // SDK re-verifies the credential's EIP-712 proof against the issuer.
+      const credential = await fetchDelegation({
+        address,
+        chainId,
+        appDid: did,
+        baseUrl: renownWebUrl,
+        discover: false,
+        verifySignature: true,
+      });
+      return credential !== undefined;
     },
   };
 }

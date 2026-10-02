@@ -21,6 +21,7 @@ import {
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
 import { handleGithubWebhook } from "./webhook.js";
+import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -36,7 +37,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
   additionalContextFields = {};
 
   private timers: ReturnType<typeof setInterval>[] = [];
-  private disposeWebhook: (() => void) | null = null;
+  private routeHandles: { dispose(): void }[] = [];
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -84,9 +85,35 @@ export class VetraAppsSubgraph extends BaseSubgraph {
             : new Response(null, { status: result.status });
         },
       );
-      this.disposeWebhook = () => handle.dispose();
+      this.routeHandles.push(handle);
     } catch (err) {
       console.warn(`[vetra-apps] webhook route not registered: ${String(err)}`);
+    }
+
+    // CI routes (Renown workload tokens for VETRA_APPS_CI_AUDIENCE only):
+    // /api/@powerhousedao/vetra-cloud-package/apps/ci/...
+    try {
+      const ci = createCiRoutes(
+        deps,
+        createRenownCiVerifier({
+          audience: cfg.ciAudience,
+          renownUrl: cfg.renownWebUrl,
+        }),
+      );
+      const json = { auth: "public" as const, maxBodyBytes: 256 * 1024 };
+      this.routeHandles.push(
+        this.http.post("apps/ci/registry-credentials", json, (request) =>
+          ci.registryCredentials(request),
+        ),
+        this.http.post("apps/ci/deploy", json, (request) => ci.deploy(request)),
+        this.http.get(
+          "apps/ci/deployments/:id",
+          { auth: "public" },
+          (request, ctx) => ci.deployment(request, ctx.params.id ?? ""),
+        ),
+      );
+    } catch (err) {
+      console.warn(`[vetra-apps] CI routes not registered: ${String(err)}`);
     }
 
     const every = (ms: number, name: string, run: () => Promise<unknown>) => {
@@ -116,7 +143,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
   async onDisconnect() {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    this.disposeWebhook?.();
-    this.disposeWebhook = null;
+    for (const h of this.routeHandles) h.dispose();
+    this.routeHandles = [];
   }
 }

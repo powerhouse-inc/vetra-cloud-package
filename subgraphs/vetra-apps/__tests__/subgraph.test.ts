@@ -29,26 +29,40 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
     for (const k of ENV_KEYS) vi.stubEnv(k, "");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
-    const routes: { path: string; options: unknown; handler: Handler }[] = [];
+    const routes: {
+      method: string;
+      path: string;
+      options: unknown;
+      handler: Handler;
+    }[] = [];
     const disposed = vi.fn();
+    const route =
+      (method: string) =>
+      (path: string, options: unknown, handler: Handler) => {
+        routes.push({ method, path, options, handler });
+        return { url: `https://x/api/pkg/${path}`, dispose: disposed };
+      };
     const subgraph = new VetraAppsSubgraph({
       reactorClient: {},
       relationalDb: { createNamespace: async () => db },
-      http: {
-        post: (path: string, options: unknown, handler: Handler) => {
-          routes.push({ path, options, handler });
-          return { url: `https://x/api/pkg/${path}`, dispose: disposed };
-        },
-      },
+      http: { post: route("POST"), get: route("GET") },
     } as never);
 
     await subgraph.onSetup();
 
-    expect(routes.map((r) => [r.path, r.options])).toStrictEqual([
+    expect(routes.map((r) => [r.method, r.path, r.options])).toStrictEqual([
       [
+        "POST",
         "github/webhook",
         { auth: "public", body: "raw", maxBodyBytes: 5 * 1024 * 1024 },
       ],
+      [
+        "POST",
+        "apps/ci/registry-credentials",
+        { auth: "public", maxBodyBytes: 256 * 1024 },
+      ],
+      ["POST", "apps/ci/deploy", { auth: "public", maxBodyBytes: 256 * 1024 }],
+      ["GET", "apps/ci/deployments/:id", { auth: "public" }],
     ]);
     const res = await routes[0].handler(
       new Request("https://x/api/pkg/github/webhook", {
@@ -58,6 +72,15 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
       { rawBody: Buffer.from("{}") },
     );
     expect(res.status).toBe(503);
+    // CI routes answer 401 without a bearer
+    const ciRes = await routes[3].handler(
+      new Request("https://x/api/pkg/apps/ci/deployments/1"),
+      {
+        params: { id: "1" },
+      } as never,
+    );
+    expect(ciRes.status).toBe(401);
+    expect(await ciRes.json()).toMatchObject({ error: "UNAUTHENTICATED" });
 
     const resolvers = subgraph.resolvers as {
       Mutation: Record<string, (...a: unknown[]) => Promise<unknown>>;
@@ -87,7 +110,7 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
     expect(await resolvers.Query.myApps(null, {}, ctx)).toStrictEqual([]);
 
     await subgraph.onDisconnect();
-    expect(disposed).toHaveBeenCalledOnce();
+    expect(disposed).toHaveBeenCalledTimes(4);
     await db.destroy();
   });
 
@@ -100,10 +123,11 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
       reactorClient: {},
       relationalDb: { createNamespace: async () => db },
       http: {
-        post: (_p: string, _o: unknown, h: Handler) => {
-          handler = h;
+        post: (p: string, _o: unknown, h: Handler) => {
+          if (p === "github/webhook") handler = h;
           return { url: "", dispose: () => undefined };
         },
+        get: () => ({ url: "", dispose: () => undefined }),
       },
     } as never);
     await subgraph.onSetup();

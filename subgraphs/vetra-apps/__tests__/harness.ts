@@ -21,7 +21,12 @@ import type { EnvGateway } from "../envs.js";
 import type { GithubDeployApi } from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
-import type { AppsDeps } from "../service.js";
+import {
+  ciDeployApp,
+  type AppsDeps,
+  type CiIdentity,
+  type DeployAppInput,
+} from "../service.js";
 import type { Caller } from "../auth.js";
 
 export const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -253,6 +258,8 @@ export function testConfig(
     encryptionKey: Buffer.alloc(32, 7),
     vetraAppUrl: "https://vetra.io",
     renownWebUrl: "https://www.renown.id",
+    ciAudience:
+      "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps",
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     ...over,
@@ -330,11 +337,36 @@ export async function seedActiveApp(
   return confirmAppIdentity(h.deps, owner, app.id);
 }
 
-export const claim = (ref: string, extra: Record<string, unknown> = {}) => ({
-  ref,
-  repositoryId: REPO_ID,
-  repository: REPO,
-  actor: "octocat",
-  sha: "abcdef1234567",
-  ...extra,
+/** A C1 `vetra` claim for `ref` (refClass / eventName derived from the ref). */
+export const claim = (ref: string, extra: Record<string, unknown> = {}) => {
+  const pr = /^refs\/pull\/(\d+)\/merge$/.exec(ref);
+  return {
+    ref,
+    refClass: pr
+      ? "PREVIEW"
+      : ref.startsWith("refs/tags/")
+        ? "RELEASE"
+        : "PRODUCTION",
+    eventName: pr ? "pull_request" : "push",
+    prNumber: pr ? Number(pr[1]) : null,
+    repositoryId: REPO_ID,
+    repository: REPO,
+    actor: "octocat",
+    sha: "abcdef1234567",
+    ...extra,
+  };
+};
+
+/** The App identity (CI) with `vetra` claim `c`, as the CI routes authenticate it. */
+export const ciIdentity = (c: ReturnType<typeof claim> | null): CiIdentity => ({
+  address: OWNER,
+  chainId: 1,
+  appDid: APP_DID,
+  claim: c,
 });
+
+export const deployAsCi = (
+  deps: AppsDeps,
+  c: ReturnType<typeof claim> | null,
+  input: DeployAppInput,
+) => ciDeployApp(deps, ciIdentity(c), input);

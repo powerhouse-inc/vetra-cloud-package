@@ -1,6 +1,27 @@
 import { GraphQLError } from "graphql";
 import { envUrls } from "./envs.js";
-import { readVetraClaim, requireCaller, type AppsContext } from "./auth.js";
+import {
+  bearerHasVetraClaim,
+  requireCaller as requireAnyCaller,
+  type AppsContext,
+  type Caller,
+} from "./auth.js";
+import { appsError } from "./errors.js";
+
+/**
+ * GraphQL is for people (owner / admin). CI workload tokens (bearer with a
+ * `vetra` claim) are refused outright; they use the HTTP routes in ci.ts.
+ */
+function requireCaller(ctx: AppsContext): Caller {
+  const caller = requireAnyCaller(ctx);
+  if (bearerHasVetraClaim(ctx)) {
+    throw appsError(
+      "FORBIDDEN",
+      "CI tokens are only accepted by the vetra-apps CI routes",
+    );
+  }
+  return caller;
+}
 import {
   appDeploymentFor,
   appDeploymentsFor,
@@ -53,7 +74,8 @@ async function guard<T>(
   }
 }
 
-function mapDeployment(deps: AppsDeps, d: DeploymentRow) {
+/** AppDeployment fields without `urls` (shared with the CI HTTP routes). */
+export function deploymentFields(d: DeploymentRow) {
   return {
     id: d.id,
     appId: d.app_id,
@@ -71,6 +93,12 @@ function mapDeployment(deps: AppsDeps, d: DeploymentRow) {
     error: d.error,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
+  };
+}
+
+function mapDeployment(deps: AppsDeps, d: DeploymentRow) {
+  return {
+    ...deploymentFields(d),
     urls: async () =>
       envUrls(
         d.environment_id ? await deps.envs.getState(d.environment_id) : null,
@@ -250,15 +278,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "deployApp", async () =>
-          mapDeployment(
-            deps,
-            await deployApp(
-              deps,
-              requireCaller(ctx),
-              readVetraClaim(ctx),
-              input,
-            ),
-          ),
+          mapDeployment(deps, await deployApp(deps, requireCaller(ctx), input)),
         ),
       rollbackApp: (
         _: unknown,

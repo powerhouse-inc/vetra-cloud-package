@@ -20,6 +20,8 @@ export interface AppsContext {
 export interface VetraClaim {
   ref: string;
   refClass?: string;
+  /** GitHub event that started the run (push, pull_request, …). */
+  eventName?: string;
   sha?: string;
   repository?: string;
   repositoryId?: string;
@@ -61,25 +63,8 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-/**
- * The `vetra` claim of the request's bearer. The gateway already verified the
- * token's signature (that is how `ctx.user` exists), so the payload is only
- * re-read here — and only trusted when its issuer is the same did:key the
- * gateway put into `ctx.user.appKey`, i.e. it is the very token that
- * authenticated this request. Anything else → null (no claim).
- */
-export function readVetraClaim(ctx: AppsContext): VetraClaim | null {
-  const raw = ctx.headers?.authorization;
-  const header = Array.isArray(raw) ? raw[0] : raw;
-  if (!header) return null;
-  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
-  if (!match) return null;
-  const payload = decodeJwtPayload(match[1]);
-  if (!payload) return null;
-  const appKey = ctx.user?.appKey;
-  if (!appKey || (payload.iss !== appKey && payload.sub !== appKey))
-    return null;
-  const vetra = payload.vetra;
+/** Parse a `vetra` claim object from a (verified) token payload. */
+export function parseVetraClaim(vetra: unknown): VetraClaim | null {
   if (!vetra || typeof vetra !== "object") return null;
   const claim = vetra as Record<string, unknown>;
   if (typeof claim.ref !== "string" || !claim.ref) return null;
@@ -88,6 +73,7 @@ export function readVetraClaim(ctx: AppsContext): VetraClaim | null {
   return {
     ref: claim.ref,
     refClass: str(claim.refClass),
+    eventName: str(claim.eventName),
     sha: str(claim.sha),
     repository: str(claim.repository),
     repositoryId: str(claim.repositoryId),
@@ -96,4 +82,25 @@ export function readVetraClaim(ctx: AppsContext): VetraClaim | null {
     actor: str(claim.actor),
     prNumber: typeof claim.prNumber === "number" ? claim.prNumber : null,
   };
+}
+
+/** Payload of a compact JWT (no verification), or null. */
+export function decodeJwtPayloadUnverified(
+  token: string,
+): Record<string, unknown> | null {
+  return decodeJwtPayload(token);
+}
+
+/**
+ * Does the request's bearer carry a `vetra` claim (i.e. is it a CI workload
+ * token)? Those are only accepted by the vetra-apps HTTP routes, never by
+ * GraphQL — checked without verification on purpose: any such token is refused.
+ */
+export function bearerHasVetraClaim(ctx: AppsContext): boolean {
+  const raw = ctx.headers?.authorization;
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  const match = header ? /^Bearer\s+(\S+)$/i.exec(header.trim()) : null;
+  if (!match) return false;
+  const payload = decodeJwtPayload(match[1]);
+  return !!payload && payload.vetra !== undefined && payload.vetra !== null;
 }

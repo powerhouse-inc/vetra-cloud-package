@@ -58,7 +58,6 @@ describe("deployment watcher", () => {
     const d = await deployApp(
       h.deps,
       owner,
-      null,
       input({ imageTag: "sha-aaaaaaaaaaaa" }),
     );
     expect(await runDeploymentWatcherOnce(h.deps)).toStrictEqual([]); // env still CHANGES_APPROVED
@@ -87,7 +86,7 @@ describe("deployment watcher", () => {
   });
 
   it("marks FAILED on DEPLOYMENt_FAILED", async () => {
-    const d = await deployApp(h.deps, owner, null, input());
+    const d = await deployApp(h.deps, owner, input());
     h.envs.setStatus(app.production_environment_id, "DEPLOYMENt_FAILED");
     await runDeploymentWatcherOnce(h.deps);
     expect(await getDeployment(h.db, d.id)).toMatchObject({
@@ -97,7 +96,7 @@ describe("deployment watcher", () => {
   });
 
   it("marks FAILED after the 15 minute timeout", async () => {
-    const d = await deployApp(h.deps, owner, null, input());
+    const d = await deployApp(h.deps, owner, input());
     h.clock.now = new Date(h.clock.now.getTime() + 16 * 60_000);
     await runDeploymentWatcherOnce(h.deps);
     expect(await getDeployment(h.db, d.id)).toMatchObject({
@@ -107,7 +106,7 @@ describe("deployment watcher", () => {
   });
 
   it("marks FAILED when the env is gone and fails stuck PENDING rows", async () => {
-    const d = await deployApp(h.deps, owner, null, preview(3));
+    const d = await deployApp(h.deps, owner, preview(3));
     await h.envs.delete(d.environment_id!);
     await h.db
       .insertInto("app_deployments")
@@ -141,9 +140,9 @@ describe("deployment watcher", () => {
 
 describe("preview TTL sweeper", () => {
   it("deletes previews whose last deploy is older than previewTtlDays", async () => {
-    const old = await deployApp(h.deps, owner, null, preview(1));
+    const old = await deployApp(h.deps, owner, preview(1));
     h.clock.now = new Date(h.clock.now.getTime() + 6 * 86_400_000);
-    await deployApp(h.deps, owner, null, preview(2));
+    await deployApp(h.deps, owner, preview(2));
     h.clock.now = new Date(h.clock.now.getTime() + 2 * 86_400_000);
     expect(await runPreviewSweepOnce(h.deps)).toBe(1);
     expect(
@@ -156,7 +155,7 @@ describe("preview TTL sweeper", () => {
 
 describe("GitHub feedback", () => {
   it("creates a GitHub deployment, reports its status and upserts the sticky PR comment", async () => {
-    const d = await deployApp(h.deps, owner, null, preview(7));
+    const d = await deployApp(h.deps, owner, preview(7));
     await reportDeploymentToGithub(h.deps, d.id);
     expect(h.github.calls.createDeployment[0]).toEqual([
       INSTALLATION,
@@ -202,7 +201,7 @@ describe("GitHub feedback", () => {
   });
 
   it("is a no-op without GitHub config or for disconnected Apps", async () => {
-    const d = await deployApp(h.deps, owner, null, input());
+    const d = await deployApp(h.deps, owner, input());
     await reportDeploymentToGithub({ ...h.deps, github: null }, d.id);
     await h.db.updateTable("apps").set({ status: "DISCONNECTED" }).execute();
     await reportDeploymentToGithub(h.deps, d.id);
@@ -223,7 +222,7 @@ describe("GitHub webhook (Review Focus 3)", () => {
     });
 
   it("401s a missing or wrong signature without side effects", async () => {
-    await deployApp(h.deps, owner, null, preview(7));
+    await deployApp(h.deps, owner, preview(7));
     const body = closed(7);
     for (const signature of [
       null,
@@ -251,8 +250,8 @@ describe("GitHub webhook (Review Focus 3)", () => {
   });
 
   it("pull_request.closed deletes that PR's preview and supersedes its deployments", async () => {
-    const d = await deployApp(h.deps, owner, null, preview(7));
-    await deployApp(h.deps, owner, null, preview(8));
+    const d = await deployApp(h.deps, owner, preview(7));
+    await deployApp(h.deps, owner, preview(8));
     const body = closed(7);
     const res = await handleGithubWebhook(h.deps, {
       rawBody: Buffer.from(body),
@@ -266,7 +265,7 @@ describe("GitHub webhook (Review Focus 3)", () => {
   });
 
   it("installation.deleted disconnects the Apps and removes their previews", async () => {
-    await deployApp(h.deps, owner, null, preview(7));
+    await deployApp(h.deps, owner, preview(7));
     const body = JSON.stringify({
       action: "deleted",
       installation: { id: Number(INSTALLATION) },

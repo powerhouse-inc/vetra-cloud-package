@@ -33,6 +33,8 @@ export interface VetraAppsConfig {
   vetraAppUrl: string;
   /** Renown web app (delegation authorize page + credential REST). */
   renownWebUrl: string;
+  /** The only audience Renown issues CI (workload) tokens for; verified by the CI routes. */
+  ciAudience: string;
   /** Registry the production env installs packages from. */
   productionRegistry: string;
   /** Registry preview envs install PR packages from. */
@@ -107,6 +109,9 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     renownWebUrl: (
       trimmed(env.RENOWN_WEB_URL) ?? "https://www.renown.id"
     ).replace(/\/+$/, ""),
+    ciAudience:
+      trimmed(env.VETRA_APPS_CI_AUDIENCE) ??
+      "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps",
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
   };
