@@ -395,33 +395,12 @@ export async function createApp(
     gitRef: `refs/heads/${productionBranch}`,
     imageProject: harborProject,
   });
-  let envId: string;
-  if (input.productionEnvironmentId && attachEnvState) {
-    envId = input.productionEnvironmentId;
-    const wasReady = attachEnvState.status === "READY";
-    // The link widens the FUSION allowlist, so it re-renders; re-approve only
-    // a settled env (never ship an owner's unapproved pending edits).
-    await deps.envs.execute(
-      envId,
-      wasReady ? [link, approveChanges({})] : [link],
-    );
-  } else {
-    envId = await deps.envs.create();
-    await deps.envs.execute(envId, [
-      setLabel({ label: name }),
-      initialize({
-        genericSubdomain: deps.generateSubdomain(envId),
-        genericBaseDomain: "vetra.io",
-        defaultPackageRegistry: deps.cfg.productionRegistry,
-      }),
-      setOwner({ address: caller.address }),
-      link,
-      enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
-      enableService({ type: "CONNECT", prefix: "connect" }),
-      approveChanges({}),
-    ]);
-  }
-
+  // The apps row goes in before the env actions: the gitops render resolves
+  // the App's Harbor project from it (see app-image-project.ts).
+  const attach = Boolean(input.productionEnvironmentId && attachEnvState);
+  const envId = attach
+    ? input.productionEnvironmentId!
+    : await deps.envs.create();
   const nowIso = deps.now().toISOString();
   await deps.db
     .insertInto("apps")
@@ -451,6 +430,34 @@ export async function createApp(
       updated_at: nowIso,
     })
     .execute();
+  try {
+    if (attach) {
+      const wasReady = attachEnvState!.status === "READY";
+      // The link widens the FUSION allowlist, so it re-renders; re-approve only
+      // a settled env (never ship an owner's unapproved pending edits).
+      await deps.envs.execute(
+        envId,
+        wasReady ? [link, approveChanges({})] : [link],
+      );
+    } else {
+      await deps.envs.execute(envId, [
+        setLabel({ label: name }),
+        initialize({
+          genericSubdomain: deps.generateSubdomain(envId),
+          genericBaseDomain: "vetra.io",
+          defaultPackageRegistry: deps.cfg.productionRegistry,
+        }),
+        setOwner({ address: caller.address }),
+        link,
+        enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
+        enableService({ type: "CONNECT", prefix: "connect" }),
+        approveChanges({}),
+      ]);
+    }
+  } catch (err) {
+    await deps.db.deleteFrom("apps").where("id", "=", appId).execute();
+    throw err;
+  }
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
   );
