@@ -16,6 +16,7 @@ import type { AppsDeps } from "./service.js";
 import {
   reportDeploymentToGithub,
   runDeploymentWatcherOnce,
+  runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
   SWEEP_INTERVAL_MS,
   WATCH_INTERVAL_MS,
@@ -135,9 +136,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     every(WATCH_INTERVAL_MS, "deployment watcher", () =>
       runDeploymentWatcherOnce(deps),
     );
-    every(SWEEP_INTERVAL_MS, "preview sweeper", () =>
-      runPreviewSweepOnce(deps),
-    );
+    every(SWEEP_INTERVAL_MS, "preview sweeper", async () => {
+      await runPreviewSweepOnce(deps);
+      await runIdentityExpirySweepOnce(deps);
+    });
   }
 
   async onDisconnect() {

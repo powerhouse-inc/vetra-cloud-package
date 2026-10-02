@@ -10,7 +10,7 @@ import {
   type CiTokenVerifier,
 } from "../ci.js";
 import { createResolvers } from "../resolvers.js";
-import { getDeployment, type AppRow } from "../repo.js";
+import { getApp, getDeployment, type AppRow } from "../repo.js";
 import {
   APP_DID,
   OWNER,
@@ -431,7 +431,9 @@ describe("CI token verification with @renown/sdk (real did:key tokens)", () => {
     const { token, did } = await tokenFor(AUDIENCE);
     await h.db.updateTable("apps").set({ identity_did: did }).execute();
     const strict = createRenownCiVerifier({ audience: AUDIENCE });
-    expect(await strict(token)).toBeNull();
+    expect(await strict(token)).toStrictEqual({
+      identityExpired: { appDid: did, address: OWNER },
+    });
     // ...whereas the same token passes the identity check when the proof is not re-verified
     const r = await createCiRoutes(h.deps, verifier).registryCredentials(
       post("apps/ci/registry-credentials", `Bearer ${token}`, {
@@ -439,6 +441,77 @@ describe("CI token verification with @renown/sdk (real did:key tokens)", () => {
       }),
     );
     expect(r.status).toBe(200);
+  });
+});
+
+describe("expired / missing App identity delegation", () => {
+  async function tokenWithoutDelegation() {
+    const crypto = await new RenownCryptoBuilder()
+      .withKeyPairStorage(new MemoryKeyStorage())
+      .build();
+    const token = await createAuthBearerToken(
+      1,
+      "eip155",
+      OWNER,
+      crypto.issuer,
+      {
+        aud: AUDIENCE,
+        expiresIn: 600,
+      },
+    );
+    // Renown has no (valid) delegation credential for this key any more.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("not found", { status: 404 })),
+    );
+    await h.db.updateTable("apps").set({ identity_did: crypto.did }).execute();
+    return token;
+  }
+  const verifier = createRenownCiVerifier({
+    audience: AUDIENCE,
+    verifySignature: false,
+  });
+
+  it("a valid token whose delegation is gone → 401 IDENTITY_EXPIRED; the App goes PENDING_IDENTITY", async () => {
+    const token = await tokenWithoutDelegation();
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: "2026-01-01T00:00:00.000Z" })
+      .execute();
+    const r = await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
+    expect(r.status).toBe(401);
+    expect(await r.json()).toStrictEqual({
+      error: "IDENTITY_EXPIRED",
+      message:
+        "The App's deploy identity authorization expired — re-authorize it on vetra.io",
+    });
+    expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
+  });
+
+  it("with a stored expiry still in the future (revoked, or Renown unreachable) the status is left alone", async () => {
+    const token = await tokenWithoutDelegation();
+    const r = await createCiRoutes(h.deps, verifier).registryCredentials(
+      post("apps/ci/registry-credentials", `Bearer ${token}`, {
+        appId: app.id,
+      }),
+    );
+    expect(r.status).toBe(401);
+    expect(((await r.json()) as { error: string }).error).toBe(
+      "IDENTITY_EXPIRED",
+    );
+    expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
+  });
+
+  it("an invalid token is still plain UNAUTHENTICATED", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const r = await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", "Bearer not.a.jwt", deployBody()),
+    );
+    expect(((await r.json()) as { error: string }).error).toBe(
+      "UNAUTHENTICATED",
+    );
   });
 });
 

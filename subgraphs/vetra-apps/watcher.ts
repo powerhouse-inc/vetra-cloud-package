@@ -104,6 +104,27 @@ async function nextStatus(
   return null;
 }
 
+/** ACTIVE Apps whose identity delegation expired → PENDING_IDENTITY (CI would 401 anyway). */
+export async function runIdentityExpirySweepOnce(
+  deps: AppsDeps,
+): Promise<number> {
+  const nowIso = deps.now().toISOString();
+  const expired = await deps.db
+    .updateTable("apps")
+    .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
+    .where("status", "=", "ACTIVE")
+    .where("identity_expires_at", "is not", null)
+    .where("identity_expires_at", "<", nowIso)
+    .returning(["id", "slug"])
+    .execute();
+  for (const a of expired) {
+    deps.logger.info(
+      `[vetra-apps] App ${a.slug} identity authorization expired → PENDING_IDENTITY`,
+    );
+  }
+  return expired.length;
+}
+
 /** Delete previews whose last deployment is older than the App's TTL. */
 export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
   const apps = await deps.db

@@ -189,7 +189,7 @@ describe("createApp", () => {
       "CONNECT",
     ]);
     expect(renownAuthorizeUrl(h.deps, app)).toBe(
-      `https://www.renown.id/?app=${encodeURIComponent(APP_DID)}&returnUrl=${encodeURIComponent(`https://vetra.io/user/apps/${app.id}?identity=1`)}`,
+      `https://www.renown.id/?app=${encodeURIComponent(APP_DID)}&returnUrl=${encodeURIComponent(`https://vetra.io/user/apps/${app.id}?identity=1`)}&expiresInDays=365`,
     );
   });
 
@@ -364,10 +364,21 @@ describe("App identity + settings", () => {
     expect((await confirmAppIdentity(h.deps, owner, app.id)).status).toBe(
       "PENDING_IDENTITY",
     );
-    h.renown.delegated = true;
-    expect((await confirmAppIdentity(h.deps, owner, app.id)).status).toBe(
-      "ACTIVE",
-    );
+    h.renown.delegation = { expiresAt: "2027-10-02T12:00:00.000Z" };
+    const active = await confirmAppIdentity(h.deps, owner, app.id);
+    expect(active.status).toBe("ACTIVE");
+    expect(active.identity_expires_at).toBe("2027-10-02T12:00:00.000Z");
+  });
+
+  it("confirmAppIdentity re-checks: a renewed credential updates the expiry, none left → PENDING_IDENTITY", async () => {
+    const app = await seedActiveApp(h);
+    h.renown.delegation = { expiresAt: "2028-01-01T00:00:00.000Z" };
+    expect(
+      (await confirmAppIdentity(h.deps, owner, app.id)).identity_expires_at,
+    ).toBe("2028-01-01T00:00:00.000Z");
+    h.renown.delegation = null; // expired or revoked
+    const pending = await confirmAppIdentity(h.deps, owner, app.id);
+    expect(pending.status).toBe("PENDING_IDENTITY");
   });
 
   it("updateApp validates limits and syncs the production branch to Renown", async () => {

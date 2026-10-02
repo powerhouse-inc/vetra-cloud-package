@@ -241,13 +241,14 @@ export function fakeHarbor(): HarborApi & {
 }
 
 export function fakeRenown(): RenownApi & {
-  delegated: boolean;
+  /** The owner's newest valid delegation for the App DID, or null. */
+  delegation: { expiresAt: string | null } | null;
   registered: unknown[];
   deleted: string[];
   updated: unknown[];
 } {
   const self = {
-    delegated: false,
+    delegation: null as { expiresAt: string | null } | null,
     registered: [] as unknown[],
     deleted: [] as string[],
     updated: [] as unknown[],
@@ -261,8 +262,8 @@ export function fakeRenown(): RenownApi & {
     async deleteWorkloadIdentity(did: string) {
       self.deleted.push(did);
     },
-    async hasDelegation() {
-      return self.delegated;
+    async getDelegation() {
+      return self.delegation;
     },
   };
   return self;
@@ -367,7 +368,7 @@ export async function seedActiveApp(
     repositoryId: REPO_ID,
     productionEnvironmentId,
   });
-  h.renown.delegated = true;
+  h.renown.delegation = { expiresAt: "2027-10-02T12:00:00.000Z" };
   return confirmAppIdentity(h.deps, owner, app.id);
 }
 

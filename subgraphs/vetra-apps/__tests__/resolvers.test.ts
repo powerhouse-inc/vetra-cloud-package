@@ -186,6 +186,7 @@ describe("resolvers", () => {
       },
       status: "ACTIVE",
       identityDid: APP_DID,
+      identityExpiresAt: "2027-10-02T12:00:00.000Z",
     });
     expect(await mapped.productionUrls()).toMatchObject({
       switchboard: expect.stringContaining("-switchboard.vetra.io"),
@@ -404,7 +405,9 @@ describe("HTTP clients", () => {
 
   it("Renown: the delegation check uses @renown/sdk with EIP-712 proof verification", async () => {
     const fetchDelegation = vi.fn(async (o: { appDid: string }) =>
-      o.appDid === APP_DID ? ({ id: "cred" } as never) : undefined,
+      o.appDid === APP_DID
+        ? ({ id: "cred", expirationDate: "2027-10-02T00:00:00.000Z" } as never)
+        : undefined,
     );
     const renown = createRenownApi(
       { switchboardUrl: "https://r", registrationToken: "tok" },
@@ -413,8 +416,8 @@ describe("HTTP clients", () => {
       fetchDelegation,
     );
     expect(
-      await renown.hasDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
-    ).toBe(true);
+      await renown.getDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
+    ).toStrictEqual({ expiresAt: "2027-10-02T00:00:00.000Z" });
     expect(fetchDelegation).toHaveBeenCalledWith({
       address: OWNER,
       chainId: 1,
@@ -424,12 +427,12 @@ describe("HTTP clients", () => {
       verifySignature: true,
     });
     expect(
-      await renown.hasDelegation({
+      await renown.getDelegation({
         address: OWNER,
         chainId: 1,
         did: "did:key:other",
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("Renown: an unsigned credential (no EIP-712 proof) does not count as a delegation", async () => {
@@ -449,8 +452,8 @@ describe("HTTP clients", () => {
       "https://www.renown.id",
     );
     expect(
-      await renown.hasDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
-    ).toBe(false);
+      await renown.getDelegation({ address: OWNER, chainId: 1, did: APP_DID }),
+    ).toBeNull();
     vi.unstubAllGlobals();
   });
 

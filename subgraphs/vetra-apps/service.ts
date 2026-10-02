@@ -72,6 +72,7 @@ export const PREVIEW_COMMENT_MARKER = "<!-- vetra-preview -->";
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 const HARBOR_HOST = "cr.vetra.io";
 const MAX_SLUG_ATTEMPTS = 10;
+export const IDENTITY_EXPIRES_IN_DAYS = 365;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -440,7 +441,9 @@ async function uniqueSlug(
 
 export function renownAuthorizeUrl(deps: AppsDeps, app: AppRow): string {
   const returnUrl = `${deps.cfg.vetraAppUrl}/user/apps/${app.id}?identity=1`;
-  return `${deps.cfg.renownWebUrl}/?app=${encodeURIComponent(app.identity_did)}&returnUrl=${encodeURIComponent(returnUrl)}`;
+  // Ask for a long-lived delegation (Renown's default is 7 days): CI stops
+  // deploying when it expires (see runIdentityExpirySweepOnce).
+  return `${deps.cfg.renownWebUrl}/?app=${encodeURIComponent(app.identity_did)}&returnUrl=${encodeURIComponent(returnUrl)}&expiresInDays=${IDENTITY_EXPIRES_IN_DAYS}`;
 }
 
 export interface CreateAppInput {
@@ -569,6 +572,7 @@ export async function createApp(
       harbor_project: harborProject,
       harbor_robot_name: robot.name,
       harbor_robot_id: robot.id,
+      identity_expires_at: null,
       harbor_robot_secret_enc: encryptSecret(
         deps.cfg.encryptionKey,
         robot.secret,
@@ -610,23 +614,37 @@ export async function createApp(
   return (await getApp(deps.db, appId))!;
 }
 
+/**
+ * Re-check the owner's delegation of the App identity. The newest valid
+ * credential → ACTIVE with its expiry; none (never signed, expired or
+ * revoked) → PENDING_IDENTITY. A DISCONNECTED App keeps its status (only the
+ * expiry is refreshed).
+ */
 export async function confirmAppIdentity(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
 ) {
   const app = await loadAppForOwner(deps, caller, appId);
-  if (app.status !== "PENDING_IDENTITY") return app;
   if (!deps.renown) throw notConfigured("Renown workload identities");
-  const ok = await deps.renown.hasDelegation({
+  const delegation = await deps.renown.getDelegation({
     address: app.owner_address,
     chainId: app.owner_chain_id,
     did: app.identity_did,
   });
-  if (!ok) return app;
+  const status =
+    app.status === "DISCONNECTED"
+      ? app.status
+      : delegation
+        ? "ACTIVE"
+        : "PENDING_IDENTITY";
   await deps.db
     .updateTable("apps")
-    .set({ status: "ACTIVE", updated_at: deps.now().toISOString() })
+    .set({
+      status,
+      identity_expires_at: delegation?.expiresAt ?? null,
+      updated_at: deps.now().toISOString(),
+    })
     .where("id", "=", app.id)
     .execute();
   return (await getApp(deps.db, app.id))!;
