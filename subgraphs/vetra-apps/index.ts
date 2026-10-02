@@ -15,6 +15,7 @@ import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
 import {
   reportDeploymentToGithub,
+  reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
   runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
@@ -67,6 +68,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
+    deps.onPreviewRemoved = (app, preview, reason) =>
+      reportPreviewRemovedToGithub(deps, app, preview, reason);
 
     this.resolvers = createResolvers(deps);
 
