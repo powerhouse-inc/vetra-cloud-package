@@ -10,6 +10,7 @@ import {
 } from "./repo.js";
 import {
   deletePreview,
+  isPullRequestClosed,
   PREVIEW_COMMENT_MARKER,
   type AppsDeps,
 } from "./service.js";
@@ -144,6 +145,7 @@ export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
       .where("app_id", "=", app.id)
       .where("last_deployed_at", "<", cutoff)
       .execute();
+    const deletedStale = new Set<number>();
     for (const p of stale) {
       try {
         await deletePreview(
@@ -152,11 +154,39 @@ export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
           p,
           `no deploy for ${app.preview_ttl_days} days`,
         );
+        deletedStale.add(p.pr_number);
         removed++;
       } catch (err) {
         deps.logger.warn(
           `[vetra-apps] sweeper: ${p.environment_id}: ${String(err)}`,
         );
+      }
+    }
+    // Previews whose PR was closed without us noticing (missed webhook, or a
+    // CI run that finished after the close). Unknown state → keep.
+    if (deps.github && app.status !== "DISCONNECTED") {
+      const rest = (
+        await deps.db
+          .selectFrom("app_previews")
+          .selectAll()
+          .where("app_id", "=", app.id)
+          .execute()
+      ).filter((p) => !deletedStale.has(p.pr_number));
+      for (const p of rest) {
+        try {
+          if (!(await isPullRequestClosed(deps, app, p.pr_number))) continue;
+          await deletePreview(
+            deps,
+            app,
+            p,
+            `pull request #${p.pr_number} is closed`,
+          );
+          removed++;
+        } catch (err) {
+          deps.logger.warn(
+            `[vetra-apps] sweeper: ${p.environment_id}: ${String(err)}`,
+          );
+        }
       }
     }
   }
