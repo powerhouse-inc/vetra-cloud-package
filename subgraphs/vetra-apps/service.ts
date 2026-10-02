@@ -64,6 +64,12 @@ export interface AppsDeps {
   logger: AppsLogger;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
+  /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
+  onPreviewRemoved?: (
+    app: AppRow,
+    preview: PreviewRow,
+    reason: string,
+  ) => Promise<void>;
 }
 
 export const DEFAULT_PREVIEW_LIMIT = 5;
@@ -755,7 +761,17 @@ export async function deletePreview(
   deps.logger.info(
     `[vetra-apps] deleted preview of ${app.slug} PR #${preview.pr_number} (${reason})`,
   );
+  // Superseded deployments → GitHub deployment status `inactive`.
   for (const d of superseded) await notifyChanged(deps, d.id);
+  if (deps.onPreviewRemoved) {
+    try {
+      await deps.onPreviewRemoved(app, preview, reason);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] preview-removed feedback failed: ${String(err)}`,
+      );
+    }
+  }
 }
 
 export async function deletePreviewsOfApp(

@@ -16,6 +16,7 @@ import {
   deploymentApplied,
   githubEnvironmentName,
   reportDeploymentToGithub,
+  reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
   runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
@@ -293,6 +294,35 @@ describe("GitHub webhook (Review Focus 3)", () => {
     expect(h.envs.deleted).toStrictEqual([d.environment_id]);
     expect((await getDeployment(h.db, d.id))?.status).toBe("SUPERSEDED");
     expect(await getPreview(h.db, app.id, 8)).not.toBeNull();
+  });
+
+  it("a removed preview updates the sticky comment to Removed and its GitHub deployment to inactive", async () => {
+    h.deps.onPreviewRemoved = (app, preview, reason) =>
+      reportPreviewRemovedToGithub(h.deps, app, preview, reason);
+    const d = await deployApp(h.deps, owner, preview(7));
+    await reportDeploymentToGithub(h.deps, d.id); // GitHub deployment + "Deploying" comment exist
+    h.deps.onDeploymentChanged = (id) => reportDeploymentToGithub(h.deps, id);
+    const body = closed(7);
+    await handleGithubWebhook(h.deps, {
+      rawBody: Buffer.from(body),
+      signature: sign("whsec", body),
+      event: "pull_request",
+    });
+    const statuses = h.github.calls.createDeploymentStatus.map(
+      (c) => c[3] as { state: string },
+    );
+    expect(statuses.at(-1)?.state).toBe("inactive");
+    const [, , pr, marker, comment] = h.github.calls.upsertPrComment.at(-1) as [
+      string,
+      string,
+      number,
+      string,
+      string,
+    ];
+    expect([pr, marker]).toStrictEqual([7, PREVIEW_COMMENT_MARKER]);
+    expect(comment).toContain("### Vetra preview: Removed");
+    expect(comment).toContain("pull request #7 closed");
+    expect(comment).not.toMatch(/https:\/\/sub-/); // no live URLs any more
   });
 
   it("installation.deleted disconnects the Apps and removes their previews", async () => {

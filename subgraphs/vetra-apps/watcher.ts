@@ -297,3 +297,34 @@ export async function reportDeploymentToGithub(
     );
   }
 }
+
+/**
+ * The preview of `preview.pr_number` is gone: rewrite the sticky PR comment to
+ * "Removed" with the reason and no live URLs. (Its GitHub deployments were
+ * already set `inactive` through the SUPERSEDED deployment rows.)
+ */
+export async function reportPreviewRemovedToGithub(
+  deps: AppsDeps,
+  app: AppRow,
+  preview: { pr_number: number },
+  reason: string,
+) {
+  const github = deps.github;
+  if (!github || app.status === "DISCONNECTED" || app.status === "DELETED")
+    return;
+  const body = [
+    PREVIEW_COMMENT_MARKER,
+    "### Vetra preview: Removed",
+    "",
+    `The preview environment of this pull request was removed (${reason}).`,
+    "",
+    `[${app.name} on Vetra](${deps.cfg.vetraAppUrl}/user/apps/${app.id})`,
+  ].join("\n");
+  await github.upsertPrComment(
+    app.installation_id,
+    app.repository_full_name,
+    preview.pr_number,
+    PREVIEW_COMMENT_MARKER,
+    body,
+  );
+}

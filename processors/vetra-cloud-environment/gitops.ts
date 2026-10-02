@@ -1177,6 +1177,12 @@ export async function generateValuesYaml(
   const databaseEnabled = switchboardEnabled;
   // PR previews: small throwaway DB (empty data, no backups), see isPreviewEnv.
   const preview = isPreviewEnv(state);
+  // Previews need no durable attachments: the chart's attachments PVC is
+  // Prune=false + resource-policy keep (right for tenants), so on a preview it
+  // would outlive the cascade delete. emptyDir also skips the PVC template.
+  const switchboardPersistenceBlock = preview
+    ? `\n  persistence:\n    kind: emptyDir`
+    : "";
 
   const packages = effectivePackages(state);
   const phPackages = packages
@@ -1401,7 +1407,7 @@ switchboard:
   gitops:
     enabled: false
   name: switchboard
-  replicaCount: 1
+  replicaCount: 1${switchboardPersistenceBlock}
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
     tag: ${switchboardTag}
