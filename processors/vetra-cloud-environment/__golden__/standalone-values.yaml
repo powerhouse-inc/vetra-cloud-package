@@ -1,0 +1,302 @@
+# managed-by: vetra-cloud-environment
+# Route tenant env vars & secrets through the standalone vetra-secrets-controller
+# (Postgres-backed; transit-encrypted secrets; auto rolling restart via Reloader).
+tenantSecretsController:
+  enabled: true
+
+global:
+  disabled: false
+  subdomain: "vast-vole-351c8164"
+  wildcardTls: true
+  imagePullSecrets:
+    enabled: true
+    name: harbor-credentials
+    useExisting: true
+database:
+  cnpg:
+    enabled: true
+    name: vast-vole-351c8164-8tgxdfjj-pg
+    instances: 1
+    storageClass: longhorn-studio
+    storageSize: 50Gi
+    postgresql:
+      maxConnections: "600"
+      sharedBuffers: 512MB
+      effectiveCacheSize: 2GB
+      workMem: 32MB
+    pooler:
+      enabled: true
+      instances: 1
+      poolMode: transaction
+      defaultPoolSize: 50
+      maxClientConnections: 400
+    backup:
+      enabled: true
+      destinationPath: s3://powerhouse-cnpg-backups/vast-vole-351c8164-8tgxdfjj/
+      endpointURL: https://hel1.your-objectstorage.com
+      credentialsSecret: s3-credentials
+      retentionPolicy: 180d
+      useExistingSecret: true
+      scheduledBackup:
+        enabled: true
+        schedule: 0 2 * * *
+        immediate: true
+    resources:
+      # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
+      # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
+      # the single biggest CPU reservation in the cluster (~60 cores across ~30
+      # studio DBs vs ~1.5 cores actually used). Cut requests to a real-usage
+      # floor; limits stay 8 cores / 8Gi so the DB still bursts freely under
+      # event load — this reclaims the idle scheduling floor only, no OOM or
+      # throttle risk. (Right-sized 2026-08-05; trimmed again 2026-08-11 to
+      # 512Mi/100m after live steady-state measured median ~161Mi/40m, p90
+      # ~178Mi over 34 DBs — 1Gi/250m was still ~5-6x over-reserved.)
+      requests:
+        memory: 512Mi
+        cpu: "100m"
+      limits:
+        memory: 8Gi
+        cpu: "8"
+    bootstrap:
+      database: vast_vole_351c8164_8tgxdfjj_db
+      owner: vast_vole_351c8164_8tgxdfjj_user
+switchboard:
+  enabled: true
+  gitops:
+    enabled: false
+  name: switchboard
+  replicaCount: 1
+  image:
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
+    tag: v6.2.3-dev.28
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+  ingress:
+    enabled: true
+    className: traefik
+    host: "vast-vole-351c8164-switchboard.vetra.io"
+    tls:
+      enabled: true
+      secretName: switchboard-vast-vole-351c8164-vetra-io-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    PORT: "3000"
+    NODE_ENV: production
+    NODE_OPTIONS: "--max-old-space-size=3072"
+    PH_REGISTRY_URL: "https://registry.vetra.io"
+    PH_REGISTRY_PACKAGES: "@achra/pkg@1.2.3"
+    OPENBAO_ADDR: https://openbao.vetra.io
+    PROMETHEUS_URL: http://prometheus-server.monitoring.svc
+    LOKI_URL: http://loki.monitoring.svc:3100
+  envConfigMap:
+    TENANT_ID: vast-vole-351c8164-8tgxdfjj
+    TENANT_NAME: "achra"
+  envFrom:
+    - configMapRef:
+        name: vast-vole-351c8164-8tgxdfjj-env
+        optional: true
+    - secretRef:
+        name: vast-vole-351c8164-8tgxdfjj-secrets
+        optional: true
+  # /health and /ready are registered ahead of auth, so these keep working with
+  # REQUIRE_AUTHENTICATED_CALLER=true. "exec: null" clears the chart's default
+  # exec probe: Helm merges maps, and a probe with two handler types is rejected.
+  livenessProbe:
+    enabled: true
+    exec: null
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 120
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    exec: null
+    httpGet:
+      path: /ready
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 12
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "4"
+      memory: "4Gi"
+  autoscaling:
+    enabled: false
+connect:
+  enabled: true
+  name: connect
+  replicaCount: 1
+  image:
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
+    tag: v6.2.3-dev.28
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+  ingress:
+    enabled: true
+    className: traefik
+    host: "vast-vole-351c8164-connect.vetra.io"
+    tls:
+      enabled: true
+      secretName: connect-vast-vole-351c8164-vetra-io-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    PORT: "3001"
+    NODE_ENV: production
+    NODE_OPTIONS: "--max-old-space-size=384"
+    PH_REGISTRY_URL: "https://registry.vetra.io"
+    PH_REGISTRY_PACKAGES: "@achra/pkg@1.2.3"
+    PH_CONNECT_CONFIG_JSON: "{\"packages\":[{\"packageName\":\"@achra/pkg\",\"version\":\"1.2.3\"}],\"packageRegistryUrl\":\"https://registry.vetra.io\"}"
+  envConfigMap:
+    TENANT_ID: vast-vole-351c8164-8tgxdfjj
+    TENANT_NAME: "achra"
+  envFrom:
+    - configMapRef:
+        name: vast-vole-351c8164-8tgxdfjj-env
+        optional: true
+    - secretRef:
+        name: vast-vole-351c8164-8tgxdfjj-secrets
+        optional: true
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 120
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 12
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: false
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+glitchtip:
+  enabled: false
+  environment: vast-vole-351c8164-8tgxdfjj
+sentry:
+  enabled: true
+  environment: vast-vole-351c8164-8tgxdfjj
+networkPolicy:
+  enabled: false
+app:
+  enabled: true
+  name: fusion
+  replicaCount: 1
+  image:
+    repository: "cr.vetra.io/achra/frontend"
+    tag: "sha-abc1234def56"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+  ingress:
+    enabled: true
+    className: traefik
+    host: "vast-vole-351c8164-fusion.vetra.io"
+    additionalHosts: []
+    tls:
+      enabled: true
+      secretName: fusion-vast-vole-351c8164-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    "PORT": "3000"
+    "HOSTNAME": "0.0.0.0"
+    "NODE_ENV": "production"
+    "NEXT_PUBLIC_SWITCHBOARD_URL": "https://vast-vole-351c8164-switchboard.vetra.io/graphql"
+    "NEXT_PUBLIC_CONNECT_URL": "https://vast-vole-351c8164-connect.vetra.io"
+    "NEXT_PUBLIC_RENOWN_URL": "https://www.renown.id"
+    "NEXT_PUBLIC_BASE_URL": "https://vast-vole-351c8164-fusion.vetra.io"
+    "NEXT_PUBLIC_X": "1"
+  envConfigMap: {}
+  envSecret: {}
+  secretEnv: []
+  podLabels:
+    powerhouse.io/service: fusion
+  # Chunks keep their names but change content when NEXT_PUBLIC_* change
+  # (placeholder swap at start) — override Next's 1-year immutable caching.
+  staticCacheMaxAge: 3600
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  autoscaling:
+    enabled: false
+clint:
+  enabled: false
+  agents: []
+docling:
+  enabled: false
+paperless:
+  enabled: false
+speckle:
+  enabled: false

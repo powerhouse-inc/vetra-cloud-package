@@ -524,6 +524,19 @@ function readServiceSize(
   );
 }
 
+/** PR preview envs (state.app.role === PREVIEW) run the slim profile. */
+export function isPreviewEnv(state: VetraCloudEnvironmentState): boolean {
+  return state.app?.role === "PREVIEW";
+}
+
+/** App-service size: previews always run the smallest size. */
+function effectiveAppSize(
+  state: VetraCloudEnvironmentState,
+  svc: VetraCloudEnvironmentService | undefined,
+): VetraCloudRessourceSize {
+  return isPreviewEnv(state) ? "VETRA_AGENT_S" : readServiceSize(svc);
+}
+
 /**
  * Heuristic for classifying legacy env entries (those without an
  * explicit isSecret flag — pre-isSecret schema or pre-UI-update data).
@@ -947,7 +960,10 @@ export function generateFusionBlock(
     .map((p) => p.trim())
     .filter(Boolean);
   const project = image.split("/")[1] ?? "";
-  if (!allowedProjects.includes(project)) {
+  // An App-linked env may also pull from its own App's Harbor project. The
+  // link is system-only (SET_APP_LINK), so a user cannot widen this.
+  const appProject = state.app?.imageProject ?? null;
+  if (!allowedProjects.includes(project) && project !== appProject) {
     logger.warn(
       `FUSION image ${image} for tenant ${opts.tenantId}: Harbor project '${project}' is not in FUSION_IMAGE_PROJECTS — not rendering`,
     );
@@ -989,7 +1005,7 @@ export function generateFusionBlock(
     env.set(e.name, e.value ?? "");
   }
 
-  const resources = APP_RESOURCE_MAP[readServiceSize(service)];
+  const resources = APP_RESOURCE_MAP[effectiveAppSize(state, service)];
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
     .join("\n");
@@ -1068,6 +1084,18 @@ ${secretEnvBlock}
     enabled: false`;
 }
 
+const STANDARD_DB_RESOURCES = `      requests:
+        memory: 512Mi
+        cpu: "100m"
+      limits:
+        memory: 8Gi
+        cpu: "8"`;
+const PREVIEW_DB_RESOURCES = `      requests:
+        memory: 256Mi
+        cpu: "50m"
+      limits:
+        memory: 512Mi`;
+
 export async function generateValuesYaml(
   db: Kysely<DB>,
   state: VetraCloudEnvironmentState,
@@ -1125,7 +1153,7 @@ export async function generateValuesYaml(
     : "/health";
   const connectTag = connectService?.version ?? defaultAppImageTag();
   const switchboardResources =
-    APP_RESOURCE_MAP[readServiceSize(switchboardService)];
+    APP_RESOURCE_MAP[effectiveAppSize(state, switchboardService)];
   // Connect uses its own flat spec, not APP_RESOURCE_MAP — see CONNECT_RESOURCES.
   const connectResources = CONNECT_RESOURCES;
   // STOPPED = housekeeping sleep (wakeable): renders global.disabled=true so the
@@ -1142,6 +1170,8 @@ export async function generateValuesYaml(
   // and the associated 50Gi Hetzner volume. Toggling Switchboard on later
   // flips this back to true and CNPG comes up then.
   const databaseEnabled = switchboardEnabled;
+  // PR previews: small throwaway DB (empty data, no backups), see isPreviewEnv.
+  const preview = isPreviewEnv(state);
 
   const packages = effectivePackages(state);
   const phPackages = packages
@@ -1320,10 +1350,10 @@ database:
     name: ${tenantId}-pg
     instances: 1
     storageClass: longhorn-studio
-    storageSize: 50Gi
+    storageSize: ${preview ? "5Gi" : "50Gi"}
     postgresql:
-      maxConnections: "600"
-      sharedBuffers: 512MB
+      maxConnections: ${preview ? '"100"' : '"600"'}
+      sharedBuffers: ${preview ? "128MB" : "512MB"}
       effectiveCacheSize: 2GB
       workMem: 32MB
     pooler:
@@ -1333,16 +1363,16 @@ database:
       defaultPoolSize: 50
       maxClientConnections: 400
     backup:
-      enabled: true
+      enabled: ${!preview}
       destinationPath: s3://powerhouse-cnpg-backups/${tenantId}/
       endpointURL: https://hel1.your-objectstorage.com
       credentialsSecret: s3-credentials
       retentionPolicy: 180d
       useExistingSecret: true
       scheduledBackup:
-        enabled: true
+        enabled: ${!preview}
         schedule: 0 2 * * *
-        immediate: true
+        immediate: ${!preview}
     resources:
       # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
       # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
@@ -1353,12 +1383,7 @@ database:
       # throttle risk. (Right-sized 2026-08-05; trimmed again 2026-08-11 to
       # 512Mi/100m after live steady-state measured median ~161Mi/40m, p90
       # ~178Mi over 34 DBs — 1Gi/250m was still ~5-6x over-reserved.)
-      requests:
-        memory: 512Mi
-        cpu: "100m"
-      limits:
-        memory: 8Gi
-        cpu: "8"
+${preview ? PREVIEW_DB_RESOURCES : STANDARD_DB_RESOURCES}
     bootstrap:
       database: ${dbName}_db
       owner: ${dbName}_user
