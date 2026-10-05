@@ -227,6 +227,29 @@ function fallbackPackageRegistry(): string {
   return process.env.DEFAULT_PACKAGE_REGISTRY || "https://registry.dev.vetra.io";
 }
 
+/**
+ * Whether the tenant reactor keys processor cursors by array position.
+ *
+ * Position keying is the reactor's own default, and it makes cursor identity
+ * depend on the order of the processor list. Adding or removing a package
+ * reorders that list, so unrelated processors lose their place and replay
+ * their drive from ordinal 0 — a cost that has nothing to do with the package
+ * that changed. Stable keys derive from each processor's record id, namespace
+ * or class name instead, so the list can change without disturbing cursors.
+ *
+ * We emit "false" (stable keys) for every tenant. tenants/pfnuer-{dev,prod}
+ * already set this by hand; this makes it the platform default.
+ *
+ * Switching an environment over orphans its old position-keyed cursors, so it
+ * replays once on the first render that carries this. The rollout is naturally
+ * staged: a tenant only re-renders when it next reaches CHANGES_APPROVED.
+ * Set TENANT_LEGACY_PROCESSOR_IDS=true on the switchboard to revert the fleet
+ * without a release. Read lazily, like fallbackPackageRegistry.
+ */
+function tenantLegacyProcessorIds(): string {
+  return process.env.TENANT_LEGACY_PROCESSOR_IDS === "true" ? "true" : "false";
+}
+
 // ---------------------------------------------------------------------------
 // Custom-domain ingress fragment
 // ---------------------------------------------------------------------------
@@ -1430,6 +1453,7 @@ switchboard:
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${switchboardResources.nodeMaxOldSpaceMb}`)}
     PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || fallbackPackageRegistry())}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
+    REACTOR_LEGACY_PROCESSOR_IDS: ${yamlQuote(tenantLegacyProcessorIds())}
     OPENBAO_ADDR: https://openbao.vetra.io
     PROMETHEUS_URL: http://prometheus-server.monitoring.svc
     LOKI_URL: http://loki.monitoring.svc:3100

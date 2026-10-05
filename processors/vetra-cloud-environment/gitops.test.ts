@@ -1583,3 +1583,45 @@ describe("generateValuesYaml — workflows master key", () => {
     expect(await masterKeyRows()).toEqual([]);
   });
 });
+
+describe("generateValuesYaml — processor cursor keying", () => {
+  const originalFlag = process.env.TENANT_LEGACY_PROCESSOR_IDS;
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.TENANT_LEGACY_PROCESSOR_IDS;
+    else process.env.TENANT_LEGACY_PROCESSOR_IDS = originalFlag;
+  });
+  beforeEach(() => {
+    delete process.env.TENANT_LEGACY_PROCESSOR_IDS;
+  });
+
+  const switchboardOnly = () =>
+    envState({
+      services: [
+        { type: "SWITCHBOARD", prefix: "switchboard", enabled: true, url: null, status: "ACTIVE", version: null, config: null, selectedRessource: null },
+      ],
+    });
+
+  it("gives the tenant reactor stable cursor keys by default", async () => {
+    const yaml = await generateValuesYaml(dbStub, switchboardOnly(), "doc-procids");
+    expect(yaml).toContain('REACTOR_LEGACY_PROCESSOR_IDS: "false"');
+  });
+
+  it("only sets it on the switchboard — connect runs no processors", async () => {
+    const yaml = await generateValuesYaml(dbStub, switchboardOnly(), "doc-procids-sb");
+    const hits = [...yaml.matchAll(/REACTOR_LEGACY_PROCESSOR_IDS:/g)];
+    expect(hits).toHaveLength(1);
+  });
+
+  it("reverts the fleet to position keying when TENANT_LEGACY_PROCESSOR_IDS=true", async () => {
+    // Escape hatch: flip the switchboard env, no release needed.
+    process.env.TENANT_LEGACY_PROCESSOR_IDS = "true";
+    const yaml = await generateValuesYaml(dbStub, switchboardOnly(), "doc-procids-legacy");
+    expect(yaml).toContain('REACTOR_LEGACY_PROCESSOR_IDS: "true"');
+  });
+
+  it("treats any value other than \"true\" as stable keys", async () => {
+    process.env.TENANT_LEGACY_PROCESSOR_IDS = "yes";
+    const yaml = await generateValuesYaml(dbStub, switchboardOnly(), "doc-procids-odd");
+    expect(yaml).toContain('REACTOR_LEGACY_PROCESSOR_IDS: "false"');
+  });
+});

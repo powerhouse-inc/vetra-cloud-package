@@ -89,6 +89,7 @@ switchboard:
     NODE_OPTIONS: "--max-old-space-size=3072"
     PH_REGISTRY_URL: "https://registry.vetra.io"
     PH_REGISTRY_PACKAGES: "@achra/pkg@1.2.3"
+    REACTOR_LEGACY_PROCESSOR_IDS: "false"
     OPENBAO_ADDR: https://openbao.vetra.io
     PROMETHEUS_URL: http://prometheus-server.monitoring.svc
     LOKI_URL: http://loki.monitoring.svc:3100
