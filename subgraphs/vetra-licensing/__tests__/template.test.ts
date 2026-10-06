@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { renderTemplateActions, templateHash, type TemplateShape } from "../template.js";
+import {
+  renderTemplateActions,
+  templateHash,
+  UnknownTemplateSizeError,
+  type TemplateShape,
+} from "../template.js";
 
 const template: TemplateShape = {
   services: [
@@ -39,6 +44,17 @@ describe("renderTemplateActions", () => {
       template: { ...template, services: [{ id: "s1", type: "CONNECT", prefix: "connect" }], size: null },
     });
     expect(actions.filter((a) => a.type === "ENABLE_SERVICE")).toHaveLength(1);
+  });
+
+  it("refuses an unrecognised size rather than silently shrinking the environment", () => {
+    expect(() =>
+      renderTemplateActions({
+        label: "Acme vault",
+        subdomain: "acme-vault",
+        owner: "0x1111111111111111111111111111111111111111",
+        template: { ...template, size: "XXL" },
+      }),
+    ).toThrow(UnknownTemplateSizeError);
   });
 });
 

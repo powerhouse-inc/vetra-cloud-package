@@ -47,8 +47,18 @@ const RESOURCE_SIZES: readonly VetraCloudRessourceSize[] = [
   "VETRA_AGENT_XXL",
 ];
 
+export class UnknownTemplateSizeError extends Error {}
+
+/** null means "no resource size"; any other unrecognised value is an error. */
 function asResourceSize(size: string | null): VetraCloudRessourceSize | undefined {
-  return RESOURCE_SIZES.find((s) => s === size);
+  if (size === null) return undefined;
+  const found = RESOURCE_SIZES.find((s) => s === size);
+  if (!found) {
+    throw new UnknownTemplateSizeError(
+      `unknown template size "${size}" — expected one of ${RESOURCE_SIZES.join(", ")}`,
+    );
+  }
+  return found;
 }
 
 /**
