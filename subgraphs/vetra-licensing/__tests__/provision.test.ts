@@ -158,6 +158,35 @@ describe("applyEnvironmentTemplate", () => {
     expect(d.upsertRow).not.toHaveBeenCalled();
   });
 
+  // lic-1 expired and lic-2 was issued for the same user and type. The
+  // environment is already right, so nothing is dispatched to it, but the row
+  // must stop citing the expired licence.
+  it("repoints the row at a renewed licence without touching the environment", async () => {
+    const upsertRow = vi.fn<ProvisionDeps["upsertRow"]>(async (r) => r);
+    const d = base({
+      findRow: vi.fn(async () => existingRow(hashOf(template))),
+      upsertRow,
+    });
+    const row = await applyEnvironmentTemplate(d, {
+      ...input,
+      licenseId: "lic-2",
+      now: "2026-11-01T00:00:00.000Z",
+    });
+    expect(upsertRow).toHaveBeenCalledOnce();
+    expect(upsertRow.mock.calls[0][0]).toMatchObject({
+      environment_id: "env-1",
+      license_id: "lic-2",
+      template_hash: hashOf(template),
+      created_at: input.now,
+      updated_at: "2026-11-01T00:00:00.000Z",
+    });
+    expect(row.license_id).toBe("lic-2");
+    expect(d.envs.create).not.toHaveBeenCalled();
+    expect(d.envs.execute).not.toHaveBeenCalled();
+    expect(d.envs.getState).not.toHaveBeenCalled();
+    expect(d.claimRow).not.toHaveBeenCalled();
+  });
+
   it("is idempotent end to end against a stateful store", async () => {
     const store = new Map<string, AppUserEnvironments>();
     const d = base({

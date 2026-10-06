@@ -84,7 +84,15 @@ export async function applyEnvironmentTemplate(
   const existing = await deps.findRow(input.appId, user);
 
   if (existing && existing.template_hash === wanted) {
-    return existing;
+    if (existing.license_id === input.licenseId) return existing;
+    // Same shape, new licence (a renewal): the environment is already right,
+    // so dispatch nothing to it. Only repoint the row at the licence that now
+    // justifies it, so it never cites an expired one.
+    return deps.upsertRow({
+      ...existing,
+      license_id: input.licenseId,
+      updated_at: input.now,
+    });
   }
 
   if (!existing) {

@@ -8,6 +8,8 @@ export interface ActiveLicense {
 export interface UserEnvironment {
   user: string;
   environmentId: string;
+  /** The licence the row currently cites as justification. */
+  licenseId: string;
   templateHash: string;
 }
 
@@ -49,7 +51,14 @@ export function computeLicensePlan(
   const toApply = [...desired.values()]
     .filter((l) => {
       const env = actual.get(key(l.user));
-      return !env || env.templateHash !== l.templateHash;
+      // A different licence id with the same shape is still an apply: the
+      // call is a cheap row update (no template actions) that makes the row
+      // cite the licence that now justifies the environment.
+      return (
+        !env ||
+        env.templateHash !== l.templateHash ||
+        env.licenseId !== l.licenseId
+      );
     })
     .sort((a, b) => a.licenseId.localeCompare(b.licenseId));
 

@@ -10,7 +10,12 @@ export interface LicensingClient {
     { id: string; kind: string; status: string; templateHash: string }[]
   >;
   appUserEnvironments(): Promise<
-    { user: string; environmentId: string; templateHash: string }[]
+    {
+      user: string;
+      environmentId: string;
+      licenseId: string;
+      templateHash: string;
+    }[]
   >;
   applyEnvironmentTemplate(input: {
     licenseId: string;

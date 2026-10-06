@@ -12,6 +12,7 @@ const lic = (over: Partial<ActiveLicense> = {}): ActiveLicense => ({
 const env = (over: Partial<UserEnvironment> = {}): UserEnvironment => ({
   user: "0xaaa",
   environmentId: "env-1",
+  licenseId: "lic-1",
   templateHash: "hash-1",
   ...over,
 });
@@ -29,6 +30,16 @@ describe("computeLicensePlan", () => {
       toApply: [],
       toRelease: [],
     });
+  });
+
+  // Same shape, new licence: the row must be repointed, so the plan applies.
+  it("applies when only the licence behind the environment changed", () => {
+    const plan = computeLicensePlan(
+      [lic({ licenseId: "lic-2" })],
+      [env({ licenseId: "lic-1" })],
+    );
+    expect(plan.toApply.map((l) => l.licenseId)).toEqual(["lic-2"]);
+    expect(plan.toRelease).toEqual([]);
   });
 
   it("re-applies when the template has changed", () => {
