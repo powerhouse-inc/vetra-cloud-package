@@ -30,6 +30,13 @@ export interface LicenseReads {
   licenses(appId: string, status: string | null): Promise<LicenseView[]>;
   licenseTypes(appId: string): Promise<LicenseTypeView[]>;
   templateFor(licenseId: string): Promise<TemplateShape | null>;
+  /** One licence type by document id; null when missing or not a licence type. */
+  licenseType(id: string): Promise<{
+    id: string;
+    app: string;
+    status: string;
+    validityDays: number | null;
+  } | null>;
   /** Every licence across all apps; the keeper is global. */
   listLicenses(): Promise<LicenseRow[]>;
 }
@@ -82,6 +89,7 @@ interface ParsedLicenseType {
   app: string | null;
   kind: string;
   status: string;
+  validityDays: number | null;
   template: TemplateShape | null;
 }
 
@@ -135,6 +143,7 @@ function parseLicenseType(doc: unknown): ParsedLicenseType | null {
     app: str(g.app),
     kind: str(g.kind) ?? "",
     status,
+    validityDays: typeof g.validityDays === "number" ? g.validityDays : null,
     template: parseTemplate(g.template),
   };
 }
@@ -210,6 +219,17 @@ export function createReactorLicenseReads(
       const type = parseLicenseType(await getDoc(license.licenseTypeId));
       if (!type || type.status === "RETIRED") return null;
       return type.template;
+    },
+
+    async licenseType(id) {
+      const t = parseLicenseType(await getDoc(id));
+      if (!t || t.app === null) return null;
+      return {
+        id: t.id,
+        app: t.app,
+        status: t.status,
+        validityDays: t.validityDays,
+      };
     },
 
     async listLicenses() {

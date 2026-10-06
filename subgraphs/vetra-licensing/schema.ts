@@ -19,6 +19,11 @@ export const schema: DocumentNode = gql`
     environmentId: String!
   }
 
+  input IssuePublisherGrantInput {
+    licenseTypeId: String!
+    user: String!
+  }
+
   type VetraLicensingQueries {
     appLicenses(status: String): [AppLicense!]!
     appLicenseTypes: [AppLicenseTypeSummary!]!
@@ -30,6 +35,11 @@ export const schema: DocumentNode = gql`
       input: ApplyEnvironmentTemplateInput!
     ): AppUserEnvironment!
     releaseEnvironment(input: ReleaseEnvironmentInput!): Boolean!
+    """
+    Issue a PUBLISHER_GRANT licence for one of the caller app's own licence
+    types. Returns the new licence document id.
+    """
+    issuePublisherGrant(input: IssuePublisherGrantInput!): String!
   }
 
   type AppLicense {

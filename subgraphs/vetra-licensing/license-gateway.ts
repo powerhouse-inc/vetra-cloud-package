@@ -2,10 +2,11 @@ import type { Action } from "document-model";
 import { actions } from "document-models/app-owner-license";
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
 
-export const LICENSE_DOC_TYPE = "powerhouse/app-owner-license";
+import { LICENSE_DOC_TYPE } from "./reads.js";
 
 /** Narrow surface over the reactor client: only what the gateway uses. */
 export interface LicenseGatewayClientLike {
+  createEmpty(type: string, options: object): Promise<{ header: unknown }>;
   execute(id: string, branch: string, actions: Action[]): Promise<unknown>;
   get(id: string): Promise<unknown>;
   getOperations(
@@ -21,6 +22,10 @@ export interface LicenseGateway {
   activate(id: string): Promise<void>;
   /** ISSUED|ACTIVE -> EXPIRED. Throws when the reducer rejects or the document is missing. */
   expire(id: string): Promise<void>;
+  /** Creates an empty licence document and returns its id. */
+  create(): Promise<string>;
+  /** Applies actions to a licence document; throws if any is rejected. */
+  execute(id: string, actions: Action[]): Promise<void>;
 }
 
 type DocLike = { header?: { revision?: Record<string, number> } };
@@ -45,11 +50,11 @@ export function createReactorLicenseGateway(
   // not thrown: it is only visible in the appended operations. Without this
   // check a rejected transition would look applied and the keeper would retry
   // the same licence forever.
-  async function run(id: string, action: Action): Promise<void> {
+  async function run(id: string, acts: Action[]): Promise<void> {
     const before = await getDoc(id);
     if (!before) throw new Error(`license ${id} not found`);
     const sinceRevision = before.header?.revision?.global ?? 0;
-    await client.execute(id, "main", [action]);
+    await client.execute(id, "main", acts);
 
     const appended: OpLike[] = [];
     let cursor = "0";
@@ -64,18 +69,25 @@ export function createReactorLicenseGateway(
       if (!res.nextCursor || res.results.length === 0) break;
       cursor = res.nextCursor;
     }
-    const mine = appended.find((op) => op.action?.id === action.id);
-    if (!mine) {
-      throw new Error(`${action.type} was not applied to license ${id}`);
-    }
-    if (mine.error) {
-      throw new Error(`${action.type} rejected: ${mine.error}`);
+    for (const action of acts) {
+      const mine = appended.find((op) => op.action?.id === action.id);
+      if (!mine) {
+        throw new Error(`${action.type} was not applied to license ${id}`);
+      }
+      if (mine.error) {
+        throw new Error(`${action.type} rejected: ${mine.error}`);
+      }
     }
   }
 
   return {
     // No signer: the actions are system-signed, as in the env gateway.
-    activate: (id) => run(id, actions.activateLicense({})),
-    expire: (id) => run(id, actions.expireLicense({})),
+    activate: (id) => run(id, [actions.activateLicense({})]),
+    expire: (id) => run(id, [actions.expireLicense({})]),
+    async create() {
+      const doc = await client.createEmpty(LICENSE_DOC_TYPE, {});
+      return (doc.header as { id: string }).id;
+    },
+    execute: run,
   };
 }

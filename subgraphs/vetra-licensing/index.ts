@@ -80,6 +80,16 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
             .execute();
         },
       },
+      grant: {
+        // No allow-list store exists in this slice. The grant is authorised by
+        // the caller's own App identity and by the licence type having to
+        // belong to that same app (checked in issuePublisherGrant), so any
+        // holder address is accepted. Replace this when a list is introduced.
+        isOnAllowList: async () => true,
+        getLicenseType: reads.licenseType,
+        createLicenseDocument: gateway.create,
+        execute: gateway.execute,
+      },
       cfg,
       read: {
         licenses: reads.licenses,

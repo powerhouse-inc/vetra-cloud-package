@@ -243,6 +243,35 @@ describe("templateFor", () => {
   });
 });
 
+describe("licenseType", () => {
+  it("returns app, status and validityDays for a licence type document", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lt-1": licenseType("lt-1", { validityDays: 90 }) }),
+    );
+    expect(await reads.licenseType("lt-1")).toEqual({
+      id: "lt-1",
+      app: "app-1",
+      status: "ACTIVE",
+      validityDays: 90,
+    });
+  });
+
+  it("keeps a null validityDays as null", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lt-1": licenseType("lt-1", { validityDays: null }) }),
+    );
+    expect((await reads.licenseType("lt-1"))?.validityDays).toBeNull();
+  });
+
+  it("returns null for a missing document or one with no app", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lt-2": licenseType("lt-2", { app: null }) }),
+    );
+    expect(await reads.licenseType("nope")).toBeNull();
+    expect(await reads.licenseType("lt-2")).toBeNull();
+  });
+});
+
 describe("licenseTypes", () => {
   it("scopes to the app and hashes with the real templateHash", async () => {
     const reads = createReactorLicenseReads(

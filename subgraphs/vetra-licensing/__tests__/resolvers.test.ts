@@ -31,6 +31,15 @@ const spies = () => ({
   execute: vi.fn(async () => undefined),
   getState: vi.fn(async () => null),
   deleteEnv: vi.fn(async () => undefined),
+  isOnAllowList: vi.fn(async () => true),
+  getLicenseType: vi.fn(async () => ({
+    id: "type-1",
+    app: "app-1",
+    status: "ACTIVE",
+    validityDays: 30 as number | null,
+  })),
+  createLicenseDocument: vi.fn(async () => "lic-new"),
+  grantExecute: vi.fn(async (_id: string, _a: unknown[]) => undefined),
 });
 
 const build = (s: ReturnType<typeof spies>, enabled = false) => {
@@ -50,6 +59,12 @@ const build = (s: ReturnType<typeof spies>, enabled = false) => {
       environmentStatus: s.environmentStatus,
       stopEnvironment: s.stopEnvironment,
       deleteRow: s.deleteRow,
+    },
+    grant: {
+      isOnAllowList: s.isOnAllowList,
+      getLicenseType: s.getLicenseType,
+      createLicenseDocument: s.createLicenseDocument,
+      execute: s.grantExecute,
     },
     cfg: {
       enabled,
@@ -84,6 +99,11 @@ const FIELDS: [group: string, field: string, args: unknown][] = [
     "VetraLicensingMutations",
     "releaseEnvironment",
     { input: { environmentId: "env-1" } },
+  ],
+  [
+    "VetraLicensingMutations",
+    "issuePublisherGrant",
+    { input: { licenseTypeId: "type-1", user: "0xaaa" } },
   ],
 ];
 
@@ -124,6 +144,9 @@ describe("resolver authorization", () => {
     expect(s.deleteRow).not.toHaveBeenCalled();
     expect(s.create).not.toHaveBeenCalled();
     expect(s.execute).not.toHaveBeenCalled();
+    expect(s.createLicenseDocument).not.toHaveBeenCalled();
+    expect(s.getLicenseType).not.toHaveBeenCalled();
+    expect(s.grantExecute).not.toHaveBeenCalled();
   });
 
   it.each(FIELDS)("%s.%s rejects an empty context", async (
@@ -181,6 +204,7 @@ describe("licensing disabled", () => {
   const writes: [string, unknown][] = [
     ["applyEnvironmentTemplate", { input: { licenseId: "lic-1", label: "Acme" } }],
     ["releaseEnvironment", { input: { environmentId: "env-1" } }],
+    ["issuePublisherGrant", { input: { licenseTypeId: "type-1", user: "0xaaa" } }],
   ];
 
   it.each(writes)("%s is refused and touches neither the database nor the reactor", async (field, args) => {
@@ -204,6 +228,9 @@ describe("licensing disabled", () => {
     expect(s.create).not.toHaveBeenCalled();
     expect(s.execute).not.toHaveBeenCalled();
     expect(s.deleteEnv).not.toHaveBeenCalled();
+    expect(s.getLicenseType).not.toHaveBeenCalled();
+    expect(s.createLicenseDocument).not.toHaveBeenCalled();
+    expect(s.grantExecute).not.toHaveBeenCalled();
   });
 
   it("applyEnvironmentTemplate proceeds when enabled", async () => {
@@ -237,5 +264,62 @@ describe("licensing disabled", () => {
     await expect(r.VetraLicensingQueries.appLicenseTypes({}, {}, APP_CTX)).resolves.toEqual([]);
     expect(s.licenses).toHaveBeenCalled();
     expect(s.licenseTypes).toHaveBeenCalled();
+  });
+});
+
+describe("issuePublisherGrant", () => {
+  const GRANT_CTX = {
+    user: { ...APP_CTX.user, address: "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" },
+  };
+  const args = { input: { licenseTypeId: "type-1", user: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } };
+
+  it("returns the new licence document id and derives the app from the caller", async () => {
+    const s = spies();
+    const r = build(s, true);
+    const before = Date.now();
+    await expect(
+      r.VetraLicensingMutations.issuePublisherGrant({}, args, GRANT_CTX),
+    ).resolves.toBe("lic-new");
+
+    expect(s.findAppByIdentityDid).toHaveBeenCalledWith("did:key:z6MkApp");
+    expect(s.createLicenseDocument).toHaveBeenCalledOnce();
+    expect(s.grantExecute).toHaveBeenCalledOnce();
+    const [docId, acts] = s.grantExecute.mock.calls[0];
+    expect(docId).toBe("lic-new");
+    const input = (acts[0] as { input: Record<string, string> }).input;
+    expect(input.app).toBe("app-1");
+    expect(input.user).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(input.issuedBy).toBe("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    // `now` comes from the resolver as a UTC `Z` instant.
+    expect(input.start).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(Date.parse(input.start)).toBeGreaterThanOrEqual(before);
+  });
+
+  it("is refused when licensing is disabled, before any lookup or write", async () => {
+    const s = spies();
+    const r = build(s, false);
+    await expect(
+      r.VetraLicensingMutations.issuePublisherGrant({}, args, GRANT_CTX),
+    ).rejects.toBeInstanceOf(LicensingDisabledError);
+    expect(s.isOnAllowList).not.toHaveBeenCalled();
+    expect(s.getLicenseType).not.toHaveBeenCalled();
+    expect(s.createLicenseDocument).not.toHaveBeenCalled();
+    expect(s.grantExecute).not.toHaveBeenCalled();
+  });
+
+  it("will not issue a type belonging to another app", async () => {
+    const s = spies();
+    s.getLicenseType.mockResolvedValue({
+      id: "type-1",
+      app: "app-2",
+      status: "ACTIVE",
+      validityDays: 30,
+    });
+    const r = build(s, true);
+    await expect(
+      r.VetraLicensingMutations.issuePublisherGrant({}, args, GRANT_CTX),
+    ).rejects.toThrow(/not issuable/);
+    expect(s.createLicenseDocument).not.toHaveBeenCalled();
+    expect(s.grantExecute).not.toHaveBeenCalled();
   });
 });

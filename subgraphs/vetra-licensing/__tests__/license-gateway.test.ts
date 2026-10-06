@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { actions } from "document-models/app-owner-license";
 import {
   createReactorLicenseGateway,
   type LicenseGatewayClientLike,
@@ -19,7 +20,12 @@ function fakeClient(opts: {
 }) {
   const executed: Executed[] = [];
   const opQueries: { filter?: { sinceRevision?: number } }[] = [];
+  const created: { type: string }[] = [];
   const client: LicenseGatewayClientLike = {
+    async createEmpty(type) {
+      created.push({ type });
+      return { header: { id: "lic-new" } };
+    },
     async get(id) {
       if (opts.exists === false) throw new Error(`Document not found: ${id}`);
       return { header: { revision: { global: opts.revision ?? 4 } } };
@@ -30,15 +36,17 @@ function fakeClient(opts: {
     },
     async getOperations(_id, _view, filter) {
       opQueries.push({ filter });
-      const a = executed[0].actions[0];
       return {
         results: opts.dropOp
           ? []
-          : [{ action: { id: a.id, type: a.type }, error: opts.error }],
+          : executed[0].actions.map((a) => ({
+              action: { id: a.id, type: a.type },
+              error: opts.error,
+            })),
       };
     },
   };
-  return { client, executed, opQueries };
+  return { client, executed, opQueries, created };
 }
 
 describe("createReactorLicenseGateway", () => {
@@ -84,5 +92,29 @@ describe("createReactorLicenseGateway", () => {
       createReactorLicenseGateway(f.client).activate("nope"),
     ).rejects.toThrow("license nope not found");
     expect(f.executed).toHaveLength(0);
+  });
+
+  it("create makes an empty licence document and returns its id", async () => {
+    const f = fakeClient({});
+    await expect(createReactorLicenseGateway(f.client).create()).resolves.toBe(
+      "lic-new",
+    );
+    expect(f.created).toEqual([{ type: "powerhouse/app-owner-license" }]);
+  });
+
+  it("execute dispatches every action and surfaces a rejection", async () => {
+    const f = fakeClient({});
+    const gw = createReactorLicenseGateway(f.client);
+    const acts = [actions.activateLicense({}), actions.expireLicense({})];
+    await gw.execute("lic-1", acts);
+    expect(f.executed[0].actions.map((a) => a.type)).toEqual([
+      "ACTIVATE_LICENSE",
+      "EXPIRE_LICENSE",
+    ]);
+
+    const bad = fakeClient({ error: "nope" });
+    await expect(
+      createReactorLicenseGateway(bad.client).execute("lic-1", acts),
+    ).rejects.toThrow("ACTIVATE_LICENSE rejected: nope");
   });
 });

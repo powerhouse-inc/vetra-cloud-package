@@ -3,6 +3,7 @@ import type { VetraLicensingDB, AppUserEnvironments } from "./db/schema.js";
 import { resolveCallerApp, type AuthContext, type AuthDeps } from "./auth.js";
 import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
 import { releaseEnvironment, type ReleaseDeps } from "./release.js";
+import { issuePublisherGrant, type GrantDeps } from "./issuers/publisher-grant.js";
 import type { LicensingConfig } from "./config.js";
 import type { TemplateShape } from "./template.js";
 
@@ -29,6 +30,7 @@ export interface ResolverDeps {
     "findRow" | "countForApp" | "maxForApp" | "claimRow" | "upsertRow"
   >;
   release: ReleaseDeps;
+  grant: GrantDeps;
   cfg: LicensingConfig;
   /** Reads licence and licence-type documents. Every read is scoped to one app. */
   read: {
@@ -178,6 +180,25 @@ export function createResolvers(
     },
 
     VetraLicensingMutations: {
+      issuePublisherGrant: async (
+        _p: unknown,
+        args: { input: { licenseTypeId: string; user: string } },
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
+        return issuePublisherGrant(deps.grant, {
+          appId,
+          licenseTypeId: args.input.licenseTypeId,
+          user: args.input.user,
+          // resolveCallerApp guarantees an authenticated context.
+          issuedBy: ctx.user?.address ?? "",
+          // Supplied here, never in a reducer: a UTC `Z` instant from
+          // toISOString() keeps every stored timestamp lexically comparable.
+          now: new Date().toISOString(),
+        });
+      },
+
       applyEnvironmentTemplate: async (
         _p: unknown,
         args: { input: { licenseId: string; label: string } },
