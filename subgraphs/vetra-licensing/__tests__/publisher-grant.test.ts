@@ -4,6 +4,7 @@ import {
   issuePublisherGrant,
   LicenseTypeNotIssuableError,
   NotOnAllowListError,
+  InvalidHolderAddressError,
 } from "../issuers/publisher-grant.js";
 
 const deps = (
@@ -90,6 +91,36 @@ describe("issuePublisherGrant", () => {
     const d = deps(["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], 365, { app: "app-2" });
     await expect(issuePublisherGrant(d, input)).rejects.toBeInstanceOf(
       LicenseTypeNotIssuableError,
+    );
+  });
+
+  it("rejects a malformed holder address before creating any document", async () => {
+    const d = deps([]);
+    await expect(
+      issuePublisherGrant(d, { ...input, user: "notanaddress" }),
+    ).rejects.toBeInstanceOf(InvalidHolderAddressError);
+    // The point of validating first: no orphan licence document is left behind.
+    expect(d.createLicenseDocument).not.toHaveBeenCalled();
+    expect(d.execute).not.toHaveBeenCalled();
+    expect(d.isOnAllowList).not.toHaveBeenCalled();
+  });
+
+  it("rejects an address of the wrong length", async () => {
+    const d = deps([]);
+    await expect(
+      issuePublisherGrant(d, { ...input, user: "0xabc" }),
+    ).rejects.toBeInstanceOf(InvalidHolderAddressError);
+    expect(d.createLicenseDocument).not.toHaveBeenCalled();
+  });
+
+  it("accepts a checksummed address, normalising it to lower case", async () => {
+    const d = deps(["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+    await expect(issuePublisherGrant(d, input)).resolves.toBe("lic-1");
+    const action = d.execute.mock.calls[0][1][0] as Action & {
+      input: Record<string, unknown>;
+    };
+    expect(action.input.user).toBe(
+      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
   });
 });

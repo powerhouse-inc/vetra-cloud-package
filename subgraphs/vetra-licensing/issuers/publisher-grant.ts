@@ -3,6 +3,15 @@ import { actions } from "document-models/app-owner-license";
 
 export class NotOnAllowListError extends Error {}
 export class LicenseTypeNotIssuableError extends Error {}
+export class InvalidHolderAddressError extends Error {}
+
+/**
+ * The subgraph's GraphQL input types the holder as `String`, but the document
+ * model's ISSUE_LICENSE takes `EthereumAddress`. Validating here — before any
+ * document is created — is what stops a malformed holder from leaving an empty
+ * licence document behind for every rejected call.
+ */
+const ETHEREUM_ADDRESS = /^0x[a-f0-9]{40}$/;
 
 export interface GrantDeps {
   isOnAllowList(appId: string, user: string): Promise<boolean>;
@@ -37,6 +46,12 @@ export async function issuePublisherGrant(
   input: GrantInput,
 ): Promise<string> {
   const user = input.user.toLowerCase();
+
+  if (!ETHEREUM_ADDRESS.test(user)) {
+    throw new InvalidHolderAddressError(
+      `${input.user} is not a valid holder address`,
+    );
+  }
 
   if (!(await deps.isOnAllowList(input.appId, user))) {
     throw new NotOnAllowListError(
