@@ -39,6 +39,15 @@ export interface ResolverDeps {
   };
 }
 
+/**
+ * Thrown by every write when licensing is switched off for this deployment.
+ * Reads are never gated, so an operator can still inspect licences and
+ * environments on a deployment where the feature is off.
+ */
+export class LicensingDisabledError extends Error {
+  override name = "LicensingDisabledError";
+}
+
 const toGql = (r: AppUserEnvironments) => ({
   appId: r.app_id,
   user: r.user_address,
@@ -65,6 +74,18 @@ export function createResolvers(
       .where("user_address", "=", user.toLowerCase())
       .executeTakeFirst()
       .then((r) => r ?? null);
+
+  // Gate for every mutation. Called after resolveCallerApp so an
+  // unauthenticated caller learns nothing about the deployment's configuration,
+  // and before anything is read or written. The flag keeps its historical name
+  // LICENSING_KEEPER_ENABLED although it now gates the whole write path.
+  const requireEnabled = () => {
+    if (!deps.cfg.enabled) {
+      throw new LicensingDisabledError(
+        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
+      );
+    }
+  };
 
   const countForApp = (appId: string) =>
     db
@@ -163,6 +184,7 @@ export function createResolvers(
         ctx: AuthContext,
       ) => {
         const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
         // Looked up inside the caller's own active licences, so a licence id
         // belonging to another app is indistinguishable from an unknown one.
         const licenses = await deps.read.licenses(appId, "ACTIVE");
@@ -199,6 +221,7 @@ export function createResolvers(
         ctx: AuthContext,
       ) => {
         const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
         return releaseEnvironment(deps.release, appId, args.input.environmentId);
       },
     },

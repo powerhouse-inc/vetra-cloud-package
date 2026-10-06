@@ -87,7 +87,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     this.resolvers = createResolvers(db, deps);
 
-    // Inert unless the environment sets cfg.enabled; dry-run by default.
+    // cfg.enabled gates the whole write path: the keeper below, and every
+    // mutation in createResolvers (they refuse with LicensingDisabledError).
+    // Queries stay available either way. cfg.dryRun only affects the keeper.
+    // Off by default; dry-run by default. The variable keeps its original name,
+    // LICENSING_KEEPER_ENABLED.
     this.keeper = new LicenseKeeper({
       listLicenses: reads.listLicenses,
       activate: gateway.activate,
