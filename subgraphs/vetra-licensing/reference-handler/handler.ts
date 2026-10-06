@@ -19,6 +19,15 @@ export interface LicensingClient {
   releaseEnvironment(input: { environmentId: string }): Promise<boolean>;
 }
 
+export interface LicenseHandlerConfig {
+  /**
+   * Log the plan and change nothing. Defaults to true: read a few ticks of
+   * "would apply / would release" before you let this handler act. Set
+   * `{ dryRun: false }` when the plan it logs is the one you want.
+   */
+  dryRun: boolean;
+}
+
 /**
  * Reconciles active licences against existing environments. Call
  * `reconcileOnce()` from a timer. It keeps no state between runs, so it heals
@@ -32,6 +41,7 @@ export class LicenseHandler {
   constructor(
     private readonly client: LicensingClient,
     private readonly logger: Pick<Console, "info" | "warn">,
+    private readonly config: LicenseHandlerConfig = { dryRun: true },
   ) {}
 
   async reconcileOnce(): Promise<void> {
@@ -49,11 +59,14 @@ export class LicenseHandler {
     );
 
     const active: ActiveLicense[] = [];
+    // Addresses are compared lowercased throughout: a licence document may
+    // carry a checksummed address while the environment table stores it
+    // lowercased, and the two must still be the same user.
     const parked = new Set<string>();
     for (const l of licenses) {
       const type = usable.get(l.licenseTypeId);
       if (!type) {
-        parked.add(l.user);
+        parked.add(l.user.toLowerCase());
         this.logger.warn(
           `[license-handler] licence ${l.id} points at unusable type ${l.licenseTypeId}; skipping`,
         );
@@ -69,14 +82,26 @@ export class LicenseHandler {
 
     const plan = computeLicensePlan(
       active,
-      environments.filter((e) => !parked.has(e.user)),
+      environments.filter((e) => !parked.has(e.user.toLowerCase())),
     );
 
+    if (this.config.dryRun) {
+      this.logger.info(
+        `[license-handler] dry run: would apply ${plan.toApply
+          .map((l) => l.licenseId)
+          .join(", ")} and release ${plan.toRelease.join(", ")}`,
+      );
+      return;
+    }
+
     for (const l of plan.toApply) {
+      // Every licence in the plan came from `active`, which only holds licences
+      // whose type is in `usable`, so this lookup always finds one.
+      const type = usable.get(l.licenseTypeId)!;
       try {
         await this.client.applyEnvironmentTemplate({
           licenseId: l.licenseId,
-          label: usable.get(l.licenseTypeId)?.kind ?? l.licenseTypeId,
+          label: type.kind,
         });
       } catch (err) {
         this.logger.warn(

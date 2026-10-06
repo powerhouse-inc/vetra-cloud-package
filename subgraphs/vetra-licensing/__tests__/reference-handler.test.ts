@@ -1,7 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LicenseHandler } from "../reference-handler/handler.js";
 
 const logger = { info: vi.fn(), warn: vi.fn() };
+
+/** Dry run is the default; every behavioural test opts out of it explicitly. */
+const acting = (c: unknown) =>
+  new LicenseHandler(c as never, logger, { dryRun: false });
+
+beforeEach(() => {
+  logger.info.mockClear();
+  logger.warn.mockClear();
+});
 
 const client = (over: Record<string, unknown> = {}) => ({
   appLicenses: vi.fn(async () => [
@@ -37,9 +46,51 @@ const env = (templateHash: string) => ({
 });
 
 describe("LicenseHandler", () => {
-  it("applies a template for an active licence with no environment", async () => {
+  // The handler a publisher just generated logs its plan before it is trusted
+  // to act, so the default must change nothing.
+  it("defaults to a dry run that only logs the plan", async () => {
     const c = client();
     await new LicenseHandler(c as never, logger).reconcileOnce();
+    expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
+    expect(c.releaseEnvironment).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("dry run"),
+    );
+  });
+
+  it("names the licence it would apply in the dry-run log", async () => {
+    const c = client();
+    await new LicenseHandler(c as never, logger).reconcileOnce();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("lic-1"));
+  });
+
+  // The licence document may carry a checksummed address; the environment
+  // table stores it lowercased. Both must mean the same user.
+  it("matches a checksummed licence address to a lowercased environment", async () => {
+    const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+    const c = client({
+      appLicenses: vi.fn(async () => [
+        {
+          id: "lic-1",
+          user: mixed,
+          licenseTypeId: "type-1",
+          status: "ACTIVE",
+          start: null,
+          end: null,
+        },
+      ]),
+      appUserEnvironments: vi.fn(async () => [
+        { ...env("hash-1"), user: mixed.toLowerCase() },
+      ]),
+    });
+    await acting(c).reconcileOnce();
+    expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
+    expect(c.releaseEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("applies a template for an active licence with no environment", async () => {
+    const c = client();
+    await acting(c).reconcileOnce();
     expect(c.applyEnvironmentTemplate).toHaveBeenCalledWith({
       licenseId: "lic-1",
       label: "2026-free-tier",
@@ -48,7 +99,7 @@ describe("LicenseHandler", () => {
 
   it("is a no-op on the second run", async () => {
     const c = client({ appUserEnvironments: vi.fn(async () => [env("hash-1")]) });
-    await new LicenseHandler(c as never, logger).reconcileOnce();
+    await acting(c).reconcileOnce();
     expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
     expect(c.releaseEnvironment).not.toHaveBeenCalled();
   });
@@ -68,7 +119,7 @@ describe("LicenseHandler", () => {
       ]),
       appUserEnvironments: vi.fn(async () => [env("stale")]),
     });
-    await new LicenseHandler(c as never, logger).reconcileOnce();
+    await acting(c).reconcileOnce();
     expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
     expect(c.releaseEnvironment).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("lic-1"));
@@ -79,7 +130,7 @@ describe("LicenseHandler", () => {
       appLicenses: vi.fn(async () => []),
       appUserEnvironments: vi.fn(async () => [env("hash-1")]),
     });
-    await new LicenseHandler(c as never, logger).reconcileOnce();
+    await acting(c).reconcileOnce();
     expect(c.releaseEnvironment).toHaveBeenCalledWith({ environmentId: "env-1" });
   });
 });

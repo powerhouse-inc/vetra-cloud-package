@@ -66,6 +66,28 @@ describe("computeLicensePlan", () => {
     );
   });
 
+  // Licence documents may carry a checksummed address while the environment
+  // table stores it lowercased. Keyed on the raw string, every tick would both
+  // release the live environment and create a fresh one.
+  it("treats a checksummed and a lowercased address as one user", () => {
+    const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+    const plan = computeLicensePlan(
+      [lic({ user: mixed })],
+      [env({ user: mixed.toLowerCase() })],
+    );
+    expect(plan).toEqual({ toApply: [], toRelease: [] });
+  });
+
+  it("releases nothing for a user whose licence differs only in case", () => {
+    const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+    const plan = computeLicensePlan(
+      [lic({ user: mixed, templateHash: "hash-2" })],
+      [env({ user: mixed.toLowerCase() })],
+    );
+    expect(plan.toRelease).toEqual([]);
+    expect(plan.toApply).toHaveLength(1);
+  });
+
   it("keeps users independent", () => {
     const plan = computeLicensePlan(
       [lic({ user: "0xaaa" })],
