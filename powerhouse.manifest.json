@@ -14,6 +14,10 @@
     {
       "name": "AppLicenseType",
       "id": "powerhouse/app-license-type"
+    },
+    {
+      "name": "AppOwnerLicense",
+      "id": "powerhouse/app-owner-license"
     }
   ],
   "apps": [],
