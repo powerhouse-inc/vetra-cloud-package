@@ -1,0 +1,250 @@
+import type { Kysely } from "kysely";
+import type { VetraLicensingDB, AppUserEnvironments } from "./db/schema.js";
+import { resolveCallerApp, type AuthContext, type AuthDeps } from "./auth.js";
+import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
+import { releaseEnvironment, type ReleaseDeps } from "./release.js";
+import { issuePublisherGrant, type GrantDeps } from "./issuers/publisher-grant.js";
+import type { LicensingConfig } from "./config.js";
+import type { TemplateShape } from "./template.js";
+
+export interface LicenseView {
+  id: string;
+  user: string;
+  licenseTypeId: string;
+  status: string;
+  start: string | null;
+  end: string | null;
+}
+
+export interface LicenseTypeView {
+  id: string;
+  kind: string;
+  status: string;
+  templateHash: string;
+}
+
+export interface ResolverDeps {
+  auth: AuthDeps;
+  provision: Omit<
+    ProvisionDeps,
+    "findRow" | "countForApp" | "maxForApp" | "claimRow" | "upsertRow"
+  >;
+  release: ReleaseDeps;
+  grant: GrantDeps;
+  cfg: LicensingConfig;
+  /** Reads licence and licence-type documents. Every read is scoped to one app. */
+  read: {
+    licenses(appId: string, status: string | null): Promise<LicenseView[]>;
+    licenseTypes(appId: string): Promise<LicenseTypeView[]>;
+    /** null when the licence type is missing or RETIRED. */
+    templateFor(licenseId: string): Promise<TemplateShape | null>;
+  };
+}
+
+/**
+ * Thrown by every write when licensing is switched off for this deployment.
+ * Reads are never gated, so an operator can still inspect licences and
+ * environments on a deployment where the feature is off.
+ */
+export class LicensingDisabledError extends Error {
+  override name = "LicensingDisabledError";
+}
+
+const toGql = (r: AppUserEnvironments) => ({
+  appId: r.app_id,
+  user: r.user_address,
+  environmentId: r.environment_id,
+  licenseId: r.license_id,
+  templateHash: r.template_hash,
+});
+
+/**
+ * No field here takes an app id from its arguments. Every resolver derives it
+ * from the caller's App identity via resolveCallerApp.
+ */
+export function createResolvers(
+  db: Kysely<VetraLicensingDB>,
+  deps: ResolverDeps,
+): Record<string, unknown> {
+  // user_address is stored lowercased; normalise at every database boundary so
+  // a mixed-case caller can never produce a second row.
+  const findRow = (appId: string, user: string) =>
+    db
+      .selectFrom("app_user_environments")
+      .selectAll()
+      .where("app_id", "=", appId)
+      .where("user_address", "=", user.toLowerCase())
+      .executeTakeFirst()
+      .then((r) => r ?? null);
+
+  // Gate for every mutation. Called after resolveCallerApp so an
+  // unauthenticated caller learns nothing about the deployment's configuration,
+  // and before anything is read or written. The flag keeps its historical name
+  // LICENSING_KEEPER_ENABLED although it now gates the whole write path.
+  const requireEnabled = () => {
+    if (!deps.cfg.enabled) {
+      throw new LicensingDisabledError(
+        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
+      );
+    }
+  };
+
+  const countForApp = (appId: string) =>
+    db
+      .selectFrom("app_user_environments")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("app_id", "=", appId)
+      .executeTakeFirstOrThrow()
+      .then((r) => Number(r.n));
+
+  const maxForApp = (appId: string) =>
+    db
+      .selectFrom("app_environment_limits")
+      .select("max_environments")
+      .where("app_id", "=", appId)
+      .executeTakeFirst()
+      .then((r) => r?.max_environments ?? deps.cfg.defaultMaxEnvironments);
+
+  // Claim: insert if the key is free, otherwise change nothing and return the
+  // row that already owns it. This is what makes the primary key the lock —
+  // the loser of a race adopts the winner's environment instead of orphaning
+  // its own, and a claim is never overwritten by a later claimant.
+  const claimRow = async (input: AppUserEnvironments) => {
+    const row = { ...input, user_address: input.user_address.toLowerCase() };
+    await db
+      .insertInto("app_user_environments")
+      .values(row)
+      .onConflict((oc) => oc.columns(["app_id", "user_address"]).doNothing())
+      .execute();
+    return db
+      .selectFrom("app_user_environments")
+      .selectAll()
+      .where("app_id", "=", row.app_id)
+      .where("user_address", "=", row.user_address)
+      .executeTakeFirstOrThrow();
+  };
+
+  // The conflict clause deliberately leaves environment_id alone, so the loser
+  // of a race adopts the winner's environment; the re-read returns that row.
+  const upsertRow = async (input: AppUserEnvironments) => {
+    const row = { ...input, user_address: input.user_address.toLowerCase() };
+    await db
+      .insertInto("app_user_environments")
+      .values(row)
+      .onConflict((oc) =>
+        oc.columns(["app_id", "user_address"]).doUpdateSet({
+          license_id: row.license_id,
+          template_hash: row.template_hash,
+          updated_at: row.updated_at,
+        }),
+      )
+      .execute();
+    return db
+      .selectFrom("app_user_environments")
+      .selectAll()
+      .where("app_id", "=", row.app_id)
+      .where("user_address", "=", row.user_address)
+      .executeTakeFirstOrThrow();
+  };
+
+  return {
+    Query: { vetraLicensing: () => ({}) },
+    Mutation: { vetraLicensing: () => ({}) },
+
+    VetraLicensingQueries: {
+      appLicenses: async (
+        _p: unknown,
+        args: { status?: string | null },
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        return deps.read.licenses(appId, args.status ?? null);
+      },
+      appLicenseTypes: async (_p: unknown, _a: unknown, ctx: AuthContext) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        return deps.read.licenseTypes(appId);
+      },
+      appUserEnvironments: async (
+        _p: unknown,
+        _a: unknown,
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        const rows = await db
+          .selectFrom("app_user_environments")
+          .selectAll()
+          .where("app_id", "=", appId)
+          .execute();
+        return rows.map(toGql);
+      },
+    },
+
+    VetraLicensingMutations: {
+      issuePublisherGrant: async (
+        _p: unknown,
+        args: { input: { licenseTypeId: string; user: string } },
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
+        return issuePublisherGrant(deps.grant, {
+          appId,
+          licenseTypeId: args.input.licenseTypeId,
+          user: args.input.user,
+          // resolveCallerApp guarantees an authenticated context.
+          issuedBy: ctx.user?.address ?? "",
+          // Supplied here, never in a reducer: a UTC `Z` instant from
+          // toISOString() keeps every stored timestamp lexically comparable.
+          now: new Date().toISOString(),
+        });
+      },
+
+      applyEnvironmentTemplate: async (
+        _p: unknown,
+        args: { input: { licenseId: string; label: string } },
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
+        // Looked up inside the caller's own active licences, so a licence id
+        // belonging to another app is indistinguishable from an unknown one.
+        const licenses = await deps.read.licenses(appId, "ACTIVE");
+        const licence = licenses.find((l) => l.id === args.input.licenseId);
+        if (!licence) {
+          throw new Error(
+            `license ${args.input.licenseId} is not an active license of app ${appId}`,
+          );
+        }
+        const row = await applyEnvironmentTemplate(
+          {
+            ...deps.provision,
+            findRow,
+            countForApp,
+            maxForApp,
+            claimRow,
+            upsertRow,
+          },
+          {
+            appId,
+            user: licence.user,
+            licenseId: licence.id,
+            template: await deps.read.templateFor(licence.id),
+            label: args.input.label,
+            now: new Date().toISOString(),
+          },
+        );
+        return toGql(row);
+      },
+
+      releaseEnvironment: async (
+        _p: unknown,
+        args: { input: { environmentId: string } },
+        ctx: AuthContext,
+      ) => {
+        const { appId } = await resolveCallerApp(deps.auth, ctx);
+        requireEnabled();
+        return releaseEnvironment(deps.release, appId, args.input.environmentId);
+      },
+    },
+  };
+}
