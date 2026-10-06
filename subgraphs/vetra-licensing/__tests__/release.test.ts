@@ -64,6 +64,15 @@ describe("releaseEnvironment", () => {
     expect(d.deleteRow).toHaveBeenCalled();
   });
 
+  it("drops the row without sleeping a DRAFT environment", async () => {
+    const d = deps({ environmentStatus: vi.fn(async () => "DRAFT") });
+    await expect(
+      releaseEnvironment(d as never, "app-1", "env-1"),
+    ).resolves.toBe(true);
+    expect(d.stopEnvironment).not.toHaveBeenCalled();
+    expect(d.deleteRow).toHaveBeenCalledWith("app-1", "0xaaa");
+  });
+
   // A transient status must keep failing so the next tick retries, rather than
   // dropping the row and forgetting a live environment.
   it("lets a rejection from a transient status propagate and keeps the row", async () => {

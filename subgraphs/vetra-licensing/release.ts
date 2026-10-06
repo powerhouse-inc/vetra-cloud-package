@@ -14,9 +14,11 @@ export interface ReleaseDeps {
 /**
  * Statuses from which SLEEP_ENVIRONMENT is either pointless or rejected, and
  * which already mean "this environment is not serving anyone". Releasing one
- * is just forgetting the row.
+ * is just forgetting the row. DRAFT is included because it means the document
+ * was never deployed, so there is nothing to put to sleep.
  */
 const ALREADY_RELEASED = new Set([
+  "DRAFT",
   "STOPPED",
   "TERMINATING",
   "DESTROYED",
