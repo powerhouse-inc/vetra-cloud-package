@@ -64,6 +64,10 @@
       "name": "Vetra Github Auth"
     },
     {
+      "id": "vetra-licensing",
+      "name": "Vetra Licensing"
+    },
+    {
       "id": "vetra-apps",
       "name": "Vetra Apps"
     }
