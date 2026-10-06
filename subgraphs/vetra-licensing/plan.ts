@@ -38,14 +38,17 @@ export function computeLicensePlan(
 
   const actual = new Map(environments.map((e) => [e.user, e]));
 
-  const toApply = [...desired.values()].filter((l) => {
-    const env = actual.get(l.user);
-    return !env || env.templateHash !== l.templateHash;
-  });
+  const toApply = [...desired.values()]
+    .filter((l) => {
+      const env = actual.get(l.user);
+      return !env || env.templateHash !== l.templateHash;
+    })
+    .sort((a, b) => a.licenseId.localeCompare(b.licenseId));
 
   const toRelease = environments
     .filter((e) => !desired.has(e.user))
-    .map((e) => e.environmentId);
+    .map((e) => e.environmentId)
+    .sort((a, b) => a.localeCompare(b));
 
   return { toApply, toRelease };
 }

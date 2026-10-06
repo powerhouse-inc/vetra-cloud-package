@@ -44,7 +44,7 @@ describe("computeLicensePlan", () => {
     });
   });
 
-  // Review Focus 2: a user holding two active licences must resolve deterministically.
+  // A user holding several active licences must resolve the same way every time.
   it("picks the same licence regardless of input order", () => {
     const a = lic({ licenseId: "lic-a", templateHash: "hash-a" });
     const b = lic({ licenseId: "lic-b", templateHash: "hash-b" });
@@ -53,6 +53,17 @@ describe("computeLicensePlan", () => {
     expect(forwards).toEqual(backwards);
     expect(forwards.toApply).toHaveLength(1);
     expect(forwards.toApply[0].licenseId).toBe("lic-a");
+  });
+
+  it("produces an identical plan when users arrive in the opposite order", () => {
+    const la = lic({ licenseId: "lic-a", user: "0xaaa", templateHash: "hash-1" });
+    const lb = lic({ licenseId: "lic-b", user: "0xbbb", templateHash: "hash-2" });
+    const ea = env({ user: "0xccc", environmentId: "env-c", templateHash: "hash-3" });
+    const eb = env({ user: "0xddd", environmentId: "env-d", templateHash: "hash-4" });
+
+    expect(computeLicensePlan([la, lb], [ea, eb])).toEqual(
+      computeLicensePlan([lb, la], [eb, ea]),
+    );
   });
 
   it("keeps users independent", () => {
