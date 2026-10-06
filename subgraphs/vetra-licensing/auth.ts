@@ -1,6 +1,12 @@
-export class UnauthenticatedError extends Error {}
-export class UnknownAppIdentityError extends Error {}
-export class AppIdentityInactiveError extends Error {}
+export class UnauthenticatedError extends Error {
+  override name = "UnauthenticatedError";
+}
+export class UnknownAppIdentityError extends Error {
+  override name = "UnknownAppIdentityError";
+}
+export class AppIdentityInactiveError extends Error {
+  override name = "AppIdentityInactiveError";
+}
 
 export interface AuthContext {
   user?: {

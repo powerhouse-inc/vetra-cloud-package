@@ -45,7 +45,6 @@ describe("resolveCallerApp", () => {
     ).rejects.toBeInstanceOf(UnknownAppIdentityError);
   });
 
-  // Review Focus 5: an expired delegation must fail closed.
   it("rejects an app whose identity has lapsed", async () => {
     const d = deps({ id: "app-1", status: "PENDING_IDENTITY" });
     await expect(
