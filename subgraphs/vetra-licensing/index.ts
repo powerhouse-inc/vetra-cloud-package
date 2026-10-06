@@ -69,6 +69,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         stopEnvironment: async (environmentId) => {
           await envs.execute(environmentId, [sleepEnvironment({})]);
         },
+        // Reached only for a DRAFT document; see releaseEnvironment.
+        deleteEnvironment: (environmentId) => envs.delete(environmentId),
+        logger: console,
         deleteRow: async (appId, user) => {
           await db
             .deleteFrom("app_user_environments")
