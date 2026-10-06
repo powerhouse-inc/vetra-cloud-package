@@ -2,9 +2,21 @@ import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
 import { schema } from "./schema.js";
-import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraLicensingDB } from "./db/schema.js";
+import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
+import { createReactorEnvGateway } from "../vetra-apps/envs.js";
+import { generateSubdomain } from "../../shared/subdomain-generator.js";
+import { sleepEnvironment } from "document-models/vetra-cloud-environment";
+import { createResolvers, type ResolverDeps } from "./resolvers.js";
+import { loadLicensingConfig } from "./config.js";
+
+/**
+ * Licence and licence-type documents are not available in this build, so the
+ * document reads are not wired yet. They fail loudly rather than answer empty.
+ */
+const notWired = (what: string) => (): Promise<never> =>
+  Promise.reject(new Error(`vetra-licensing: ${what} is not wired yet`));
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -24,6 +36,52 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     await up(db as Kysely<any>);
 
-    this.resolvers = createResolvers(db);
+    // Read-only view of the vetra-apps namespace, for App identity lookup.
+    const appsDb = (await this.relationalDb.createNamespace(
+      "vetra-apps",
+    )) as unknown as Kysely<VetraAppsDB>;
+
+    const envs = createReactorEnvGateway(this.reactorClient as never);
+
+    const deps: ResolverDeps = {
+      auth: {
+        findAppByIdentityDid: (did) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "status"])
+            .where("identity_did", "=", did)
+            .executeTakeFirst()
+            .then((r) => r ?? null),
+      },
+      provision: { envs, generateSubdomain },
+      release: {
+        findRowByEnvironment: (environmentId) =>
+          db
+            .selectFrom("app_user_environments")
+            .selectAll()
+            .where("environment_id", "=", environmentId)
+            .executeTakeFirst()
+            .then((r) => r ?? null),
+        // Sleep only. Nothing here can delete the environment document.
+        stopEnvironment: async (environmentId) => {
+          await envs.execute(environmentId, [sleepEnvironment({})]);
+        },
+        deleteRow: async (appId, user) => {
+          await db
+            .deleteFrom("app_user_environments")
+            .where("app_id", "=", appId)
+            .where("user_address", "=", user.toLowerCase())
+            .execute();
+        },
+      },
+      cfg: loadLicensingConfig(),
+      read: {
+        licenses: notWired("licence reads"),
+        licenseTypes: notWired("licence-type reads"),
+        templateFor: notWired("template lookup"),
+      },
+    };
+
+    this.resolvers = createResolvers(db, deps);
   }
 }
