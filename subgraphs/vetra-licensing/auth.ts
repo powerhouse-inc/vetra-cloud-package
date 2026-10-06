@@ -22,25 +22,20 @@ export interface AuthDeps {
 }
 
 /**
- * The caller is an App identity, never a person. The app id is taken from the
- * delegation, never from an argument, so no app can name another app's id.
- *
- * `apps.identity_did` holds the App's did:key, which reactor-api surfaces as
- * `user.appKey`. When it is present it is the only thing looked up; otherwise
- * the did:pkh of the signing address is tried (it will not match a did:key, so
- * a plain person fails closed with UnknownAppIdentityError).
+ * The caller is an App identity presenting its did:key (`user.appKey`), never a
+ * person: a human wallet address is not an accepted identity here. The app id
+ * is taken from that identity, never from an argument, so no app can name
+ * another app's id. There is exactly one way to authenticate.
  */
 export async function resolveCallerApp(
   deps: AuthDeps,
   ctx: AuthContext,
 ): Promise<{ appId: string }> {
-  const u = ctx.user;
-  if (!u) {
+  const did = ctx.user?.appKey;
+  if (!did) {
     throw new UnauthenticatedError("a license call must carry an app identity");
   }
 
-  const did =
-    u.appKey ?? `did:pkh:${u.networkId}:${u.chainId}:${u.address.toLowerCase()}`;
   const app = await deps.findAppByIdentityDid(did);
   if (!app) {
     throw new UnknownAppIdentityError(`no app is registered for ${did}`);
