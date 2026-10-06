@@ -10,13 +10,9 @@ import { generateSubdomain } from "../../shared/subdomain-generator.js";
 import { sleepEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
-
-/**
- * Licence and licence-type documents are not available in this build, so the
- * document reads are not wired yet. They fail loudly rather than answer empty.
- */
-const notWired = (what: string) => (): Promise<never> =>
-  Promise.reject(new Error(`vetra-licensing: ${what} is not wired yet`));
+import { createReactorLicenseReads } from "./reads.js";
+import { createReactorLicenseGateway } from "./license-gateway.js";
+import { LicenseKeeper } from "./keeper.js";
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -28,6 +24,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   typeDefs: DocumentNode = schema;
   resolvers: Record<string, unknown> = {};
   additionalContextFields = {};
+  private keeper: LicenseKeeper | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -42,6 +39,10 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     )) as unknown as Kysely<VetraAppsDB>;
 
     const envs = createReactorEnvGateway(this.reactorClient as never);
+
+    const cfg = loadLicensingConfig();
+    const reads = createReactorLicenseReads(this.reactorClient as never);
+    const gateway = createReactorLicenseGateway(this.reactorClient as never);
 
     const deps: ResolverDeps = {
       auth: {
@@ -76,14 +77,31 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
             .execute();
         },
       },
-      cfg: loadLicensingConfig(),
+      cfg,
       read: {
-        licenses: notWired("licence reads"),
-        licenseTypes: notWired("licence-type reads"),
-        templateFor: notWired("template lookup"),
+        licenses: reads.licenses,
+        licenseTypes: reads.licenseTypes,
+        templateFor: reads.templateFor,
       },
     };
 
     this.resolvers = createResolvers(db, deps);
+
+    // Inert unless the environment sets cfg.enabled; dry-run by default.
+    this.keeper = new LicenseKeeper({
+      listLicenses: reads.listLicenses,
+      activate: gateway.activate,
+      expire: gateway.expire,
+      now: () => new Date().toISOString(),
+      cfg,
+      logger: console,
+    });
+    this.keeper.start();
+  }
+
+  async onDisconnect(): Promise<void> {
+    this.keeper?.stop();
+    this.keeper = null;
+    await super.onDisconnect();
   }
 }

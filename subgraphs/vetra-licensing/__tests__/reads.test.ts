@@ -264,3 +264,22 @@ describe("licenseTypes", () => {
     ]);
   });
 });
+
+describe("findAll cursor guard", () => {
+  it("terminates and returns the rows seen when the cursor never advances", async () => {
+    let calls = 0;
+    const client: LicenseClientLike = {
+      async find() {
+        calls++;
+        if (calls > 10) throw new Error("cursor guard missing: looped");
+        return { results: [license("a")], nextCursor: "0" };
+      },
+      async get() {
+        throw new Error("unused");
+      },
+    };
+    const out = await createReactorLicenseReads(client).listLicenses();
+    expect(out.map((l) => l.id)).toEqual(["a"]);
+    expect(calls).toBe(1);
+  });
+});
