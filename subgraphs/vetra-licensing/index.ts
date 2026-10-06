@@ -62,6 +62,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
             .where("environment_id", "=", environmentId)
             .executeTakeFirst()
             .then((r) => r ?? null),
+        environmentStatus: async (environmentId) =>
+          (await envs.getState(environmentId))?.status ?? null,
         // Sleep only. Nothing here can delete the environment document.
         stopEnvironment: async (environmentId) => {
           await envs.execute(environmentId, [sleepEnvironment({})]);
