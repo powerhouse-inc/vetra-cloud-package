@@ -26,7 +26,7 @@ export interface ResolverDeps {
   auth: AuthDeps;
   provision: Omit<
     ProvisionDeps,
-    "findRow" | "countForApp" | "maxForApp" | "upsertRow"
+    "findRow" | "countForApp" | "maxForApp" | "claimRow" | "upsertRow"
   >;
   release: ReleaseDeps;
   cfg: LicensingConfig;
@@ -81,6 +81,25 @@ export function createResolvers(
       .where("app_id", "=", appId)
       .executeTakeFirst()
       .then((r) => r?.max_environments ?? deps.cfg.defaultMaxEnvironments);
+
+  // Claim: insert if the key is free, otherwise change nothing and return the
+  // row that already owns it. This is what makes the primary key the lock —
+  // the loser of a race adopts the winner's environment instead of orphaning
+  // its own, and a claim is never overwritten by a later claimant.
+  const claimRow = async (input: AppUserEnvironments) => {
+    const row = { ...input, user_address: input.user_address.toLowerCase() };
+    await db
+      .insertInto("app_user_environments")
+      .values(row)
+      .onConflict((oc) => oc.columns(["app_id", "user_address"]).doNothing())
+      .execute();
+    return db
+      .selectFrom("app_user_environments")
+      .selectAll()
+      .where("app_id", "=", row.app_id)
+      .where("user_address", "=", row.user_address)
+      .executeTakeFirstOrThrow();
+  };
 
   // The conflict clause deliberately leaves environment_id alone, so the loser
   // of a race adopts the winner's environment; the re-read returns that row.
@@ -154,7 +173,14 @@ export function createResolvers(
           );
         }
         const row = await applyEnvironmentTemplate(
-          { ...deps.provision, findRow, countForApp, maxForApp, upsertRow },
+          {
+            ...deps.provision,
+            findRow,
+            countForApp,
+            maxForApp,
+            claimRow,
+            upsertRow,
+          },
           {
             appId,
             user: licence.user,

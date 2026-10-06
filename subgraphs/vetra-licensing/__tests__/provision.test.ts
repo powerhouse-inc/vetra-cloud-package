@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
+import { defaultGlobalState } from "document-models/vetra-cloud-environment";
 import {
   applyEnvironmentTemplate,
   AppEnvironmentCapReachedError,
   LicenseTypeUnavailableError,
+  UNAPPLIED_TEMPLATE_HASH,
   type ProvisionDeps,
 } from "../provision.js";
 import type { AppUserEnvironments } from "../db/schema.js";
@@ -41,15 +43,21 @@ const existingRow = (templateHash: string): AppUserEnvironments => ({
   updated_at: input.now,
 });
 
+/** An environment that has been initialized, so provisioning must update it. */
+const liveState = () => ({ ...defaultGlobalState(), status: "READY" as const });
+
 const base = (over: Partial<ProvisionDeps> = {}) => {
   const deps = {
     findRow: vi.fn<ProvisionDeps["findRow"]>(async () => null),
     countForApp: vi.fn<ProvisionDeps["countForApp"]>(async () => 0),
     maxForApp: vi.fn<ProvisionDeps["maxForApp"]>(async () => 50),
+    claimRow: vi.fn<ProvisionDeps["claimRow"]>(async (row) => row),
     upsertRow: vi.fn<ProvisionDeps["upsertRow"]>(async (row) => row),
     envs: {
       create: vi.fn<ProvisionDeps["envs"]["create"]>(async () => "env-1"),
       execute: vi.fn<ProvisionDeps["envs"]["execute"]>(async () => undefined),
+      getState: vi.fn<ProvisionDeps["envs"]["getState"]>(async () => null),
+      delete: vi.fn<ProvisionDeps["envs"]["delete"]>(async () => undefined),
     },
     generateSubdomain: (id: string) => `sub-${id}`,
     ...over,
@@ -68,8 +76,81 @@ describe("applyEnvironmentTemplate", () => {
     expect(row.template_hash).toBe(hashOf(template));
   });
 
+  // Claim-first: the row owns the document before any action is applied to it.
+  it("claims the row before touching the new document", async () => {
+    const order: string[] = [];
+    const claimRow = vi.fn<ProvisionDeps["claimRow"]>(async (row) => {
+      order.push("claim");
+      return row;
+    });
+    const d = base({
+      claimRow,
+      envs: {
+        create: vi.fn(async () => {
+          order.push("create");
+          return "env-1";
+        }),
+        execute: vi.fn(async () => {
+          order.push("execute");
+        }),
+        getState: vi.fn(async () => null),
+        delete: vi.fn(async () => undefined),
+      },
+    });
+    await applyEnvironmentTemplate(d, input);
+    expect(order).toEqual(["create", "claim", "execute"]);
+    expect(claimRow.mock.calls[0][0].template_hash).toBe(
+      UNAPPLIED_TEMPLATE_HASH,
+    );
+  });
+
+  // The defect this replaces leaked one environment document per tick forever.
+  it("reuses the claimed document after a rejected action list", async () => {
+    const store = new Map<string, AppUserEnvironments>();
+    let created = 0;
+    let rejections = 1;
+    const d = base({
+      findRow: vi.fn(async (a, u) => store.get(`${a}|${u}`) ?? null),
+      claimRow: vi.fn(async (row) => {
+        const key = `${row.app_id}|${row.user_address}`;
+        const held = store.get(key);
+        if (held) return held;
+        store.set(key, row);
+        return row;
+      }),
+      upsertRow: vi.fn(async (row) => {
+        store.set(`${row.app_id}|${row.user_address}`, row);
+        return row;
+      }),
+      envs: {
+        create: vi.fn(async () => `env-${++created}`),
+        execute: vi.fn(async () => {
+          if (rejections-- > 0) throw new Error("ENABLE_SERVICE rejected");
+        }),
+        // A document whose action list was rejected never left DRAFT.
+        getState: vi.fn(async () => null),
+        delete: vi.fn(async () => undefined),
+      },
+    });
+
+    await expect(applyEnvironmentTemplate(d, input)).rejects.toThrow(
+      "ENABLE_SERVICE rejected",
+    );
+    const claimed = store.get(`app-1|${USER}`);
+    expect(claimed?.environment_id).toBe("env-1");
+    expect(claimed?.template_hash).toBe(UNAPPLIED_TEMPLATE_HASH);
+
+    const row = await applyEnvironmentTemplate(d, input);
+    expect(created).toBe(1);
+    expect(d.envs.create).toHaveBeenCalledOnce();
+    expect(row.environment_id).toBe("env-1");
+    expect(row.template_hash).toBe(hashOf(template));
+  });
+
   it("creates nothing on a second identical call", async () => {
-    const d = base({ findRow: vi.fn(async () => existingRow(hashOf(template))) });
+    const d = base({
+      findRow: vi.fn(async () => existingRow(hashOf(template))),
+    });
     const row = await applyEnvironmentTemplate(d, input);
     expect(row.environment_id).toBe("env-1");
     expect(d.envs.create).not.toHaveBeenCalled();
@@ -81,6 +162,13 @@ describe("applyEnvironmentTemplate", () => {
     const store = new Map<string, AppUserEnvironments>();
     const d = base({
       findRow: vi.fn(async (a, u) => store.get(`${a}|${u}`) ?? null),
+      claimRow: vi.fn(async (row) => {
+        const key = `${row.app_id}|${row.user_address}`;
+        const held = store.get(key);
+        if (held) return held;
+        store.set(key, row);
+        return row;
+      }),
       upsertRow: vi.fn(async (row) => {
         store.set(`${row.app_id}|${row.user_address}`, row);
         return row;
@@ -93,22 +181,34 @@ describe("applyEnvironmentTemplate", () => {
     expect(store.size).toBe(1);
   });
 
-  // Two concurrent first-time calls must yield one environment. The database
-  // closes the race: the first writer's environment_id survives and the loser
-  // adopts it, so the function must return what upsertRow returns.
-  it("adopts the winner's environment when two calls race", async () => {
+  // Two concurrent first-time calls must yield one environment, and the loser
+  // must not leave a fully-provisioned document behind that nothing can reclaim.
+  it("deletes the loser's document when two calls race", async () => {
     let created = 0;
     const store = new Map<string, AppUserEnvironments>();
     const d = base({
       envs: {
         create: vi.fn(async () => `env-${++created}`),
         execute: vi.fn(async () => undefined),
+        getState: vi.fn(async () => null),
+        delete: vi.fn(async () => undefined),
       },
+      claimRow: vi.fn(async (row) => {
+        const key = `${row.app_id}|${row.user_address}`;
+        const held = store.get(key);
+        if (held) return held;
+        store.set(key, row);
+        return row;
+      }),
       upsertRow: vi.fn(async (row) => {
         const key = `${row.app_id}|${row.user_address}`;
         const winner = store.get(key);
         const landed = winner
-          ? { ...winner, template_hash: row.template_hash, updated_at: row.updated_at }
+          ? {
+              ...winner,
+              template_hash: row.template_hash,
+              updated_at: row.updated_at,
+            }
           : row;
         store.set(key, landed);
         return landed;
@@ -118,9 +218,10 @@ describe("applyEnvironmentTemplate", () => {
       applyEnvironmentTemplate(d, input),
       applyEnvironmentTemplate(d, input),
     ]);
-    expect(d.upsertRow).toHaveBeenCalledTimes(2);
     expect(a.environment_id).toBe(b.environment_id);
     expect(store.size).toBe(1);
+    expect(d.envs.delete).toHaveBeenCalledTimes(1);
+    expect(d.envs.delete).toHaveBeenCalledWith("env-2");
   });
 
   it("refuses when the template is unavailable and leaves the environment alone", async () => {
@@ -134,7 +235,10 @@ describe("applyEnvironmentTemplate", () => {
   });
 
   it("refuses a new environment at the cap", async () => {
-    const d = base({ countForApp: vi.fn(async () => 50), maxForApp: vi.fn(async () => 50) });
+    const d = base({
+      countForApp: vi.fn(async () => 50),
+      maxForApp: vi.fn(async () => 50),
+    });
     await expect(applyEnvironmentTemplate(d, input)).rejects.toBeInstanceOf(
       AppEnvironmentCapReachedError,
     );
@@ -153,12 +257,45 @@ describe("applyEnvironmentTemplate", () => {
     expect(row.template_hash).toBe(hashOf(template));
   });
 
+  it("updates an initialized environment without replaying the create actions", async () => {
+    const execute = vi.fn<ProvisionDeps["envs"]["execute"]>(
+      async () => undefined,
+    );
+    const d = base({
+      findRow: vi.fn(async () => existingRow("stale")),
+      envs: {
+        create: vi.fn(async () => "env-1"),
+        execute,
+        getState: vi.fn(async () => liveState()),
+        delete: vi.fn(async () => undefined),
+      },
+    });
+    await applyEnvironmentTemplate(d, input);
+    const types = execute.mock.calls[0][1].map((a) => a.type);
+    expect(types).not.toContain("INITIALIZE");
+    expect(types).not.toContain("SET_OWNER");
+  });
+
+  it("keeps created_at from the row it is updating", async () => {
+    const d = base({ findRow: vi.fn(async () => existingRow("stale")) });
+    const row = await applyEnvironmentTemplate(d, {
+      ...input,
+      now: "2026-11-01T00:00:00.000Z",
+    });
+    expect(row.created_at).toBe(input.now);
+    expect(row.updated_at).toBe("2026-11-01T00:00:00.000Z");
+  });
+
   it("lets an unknown template size propagate unchanged", async () => {
     const d = base();
     await expect(
-      applyEnvironmentTemplate(d, { ...input, template: { ...template, size: "HUGE" } }),
+      applyEnvironmentTemplate(d, {
+        ...input,
+        template: { ...template, size: "HUGE" },
+      }),
     ).rejects.toBeInstanceOf(UnknownTemplateSizeError);
     expect(d.envs.create).not.toHaveBeenCalled();
+    expect(d.claimRow).not.toHaveBeenCalled();
     expect(d.upsertRow).not.toHaveBeenCalled();
   });
 });
