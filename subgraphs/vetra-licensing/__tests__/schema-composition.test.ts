@@ -63,6 +63,7 @@ describe("subgraph schema composition", () => {
     expect(fieldsOf(built, "VetraPublisherMutations")).toEqual(
       expect.arrayContaining([
         "createLicenseType",
+        "setLicenseTypeDetails",
         "setLicenseTypeTemplate",
         "addLicenseTypeService",
         "addLicenseTypePackage",

@@ -54,6 +54,14 @@ export const publisherSchema: DocumentNode = gql`
     validityDays: Int
   }
 
+  # Deliberately no app field: a type's app is fixed at creation.
+  input SetLicenseTypeDetailsInput {
+    licenseTypeId: String!
+    kind: String
+    label: String
+    validityDays: Int
+  }
+
   input SetLicenseTypeTemplateInput {
     licenseTypeId: String!
     size: String
@@ -93,6 +101,7 @@ export const publisherSchema: DocumentNode = gql`
 
   type VetraPublisherMutations {
     createLicenseType(input: CreateLicenseTypeInput!): String!
+    setLicenseTypeDetails(input: SetLicenseTypeDetailsInput!): Boolean!
     setLicenseTypeTemplate(input: SetLicenseTypeTemplateInput!): Boolean!
     addLicenseTypeService(input: AddLicenseTypeServiceInput!): Boolean!
     addLicenseTypePackage(input: AddLicenseTypePackageInput!): Boolean!

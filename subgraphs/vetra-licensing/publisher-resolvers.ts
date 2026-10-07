@@ -216,6 +216,30 @@ export function createPublisherResolvers(
         return id;
       },
 
+      setLicenseTypeDetails: async (
+        _p: unknown,
+        args: {
+          input: {
+            licenseTypeId: string;
+            kind?: string | null;
+            label?: string | null;
+            validityDays?: number | null;
+          };
+        },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        // No `app` key, ever: the reducer would reassign the type to that app,
+        // a cross-tenant write. Omitted, the reducer leaves the app untouched.
+        return dispatch(id, [
+          actions.setLicenseTypeDetails({
+            kind: args.input.kind ?? null,
+            label: args.input.label ?? null,
+            validityDays: args.input.validityDays ?? null,
+          }),
+        ]);
+      },
+
       setLicenseTypeTemplate: async (
         _p: unknown,
         args: {

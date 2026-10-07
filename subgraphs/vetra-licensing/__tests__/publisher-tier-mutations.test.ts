@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Kysely } from "kysely";
 import type { Action } from "document-model";
-import { reducer, utils } from "document-models/app-license-type";
+import { actions, reducer, utils } from "document-models/app-license-type";
 import {
   createPublisherResolvers,
   UnknownLicenseTypeError,
@@ -100,6 +100,10 @@ function makeDeps(over: { enabled?: boolean } = {}) {
 
 const CALLS: Array<[string, unknown]> = [
   ["createLicenseType", { input: { appId: "app-1", kind: "pro" } }],
+  [
+    "setLicenseTypeDetails",
+    { input: { licenseTypeId: "T1", label: "Pro" } },
+  ],
   [
     "setLicenseTypeTemplate",
     { input: { licenseTypeId: "T1", size: "SMALL" } },
@@ -209,6 +213,104 @@ describe("publisher tier authoring", () => {
       expect(anon, name).toBeInstanceOf(UnauthenticatedError);
       expect(b.dispatched, name).toEqual([]);
     }
+  });
+
+  it("setLicenseTypeDetails dispatches SET_LICENSE_TYPE_DETAILS to the right document with the edited fields", async () => {
+    const { m, dispatched } = makeDeps();
+    const r = await m.setLicenseTypeDetails(
+      {},
+      {
+        input: {
+          licenseTypeId: "T1",
+          kind: "team",
+          label: "Team",
+          validityDays: 90,
+        },
+      },
+      ctx(OWNER),
+    );
+    expect(r).toBe(true);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].id).toBe("T1");
+    expect(dispatched[0].actions).toHaveLength(1);
+    expect(dispatched[0].actions[0].type).toBe("SET_LICENSE_TYPE_DETAILS");
+    expect(dispatched[0].actions[0].input).toEqual({
+      kind: "team",
+      label: "Team",
+      validityDays: 90,
+    });
+  });
+
+  it("setLicenseTypeDetails never dispatches an app key, so a tier cannot be moved to another publisher's app", async () => {
+    const { m, dispatched } = makeDeps();
+    // A hostile client smuggles an app in the input; it must not reach the action.
+    await m.setLicenseTypeDetails(
+      {},
+      {
+        input: {
+          licenseTypeId: "T1",
+          label: "Pro",
+          app: "app-2",
+          appId: "app-2",
+        },
+      },
+      ctx(OWNER),
+    );
+    const input = dispatched[0].actions[0].input as Record<string, unknown>;
+    expect(Object.keys(input)).not.toContain("app");
+    expect("app" in input).toBe(false);
+    expect(JSON.stringify(input)).not.toContain("app-2");
+    // and the reducer leaves an existing app alone when the key is absent
+    const base = utils.createDocument();
+    const withApp = reducer(
+      base,
+      actions.setLicenseTypeDetails({ app: "app-1", kind: "pro" }) as never,
+    );
+    const after = reducer(withApp, dispatched[0].actions[0] as never);
+    expect(after.state.global.app).toBe("app-1");
+  });
+
+  it("setLicenseTypeDetails on a foreign licence type is UnknownLicenseTypeError and the gateway is never called", async () => {
+    const { m, typeGateway, dispatched } = makeDeps();
+    await expect(
+      m.setLicenseTypeDetails(
+        {},
+        { input: { licenseTypeId: "TX", label: "Hijack" } },
+        ctx(OWNER),
+      ),
+    ).rejects.toBeInstanceOf(UnknownLicenseTypeError);
+    expect(typeGateway.execute).not.toHaveBeenCalled();
+    expect(dispatched).toEqual([]);
+  });
+
+  it("setLicenseTypeDetails: disabled gate applies after authorisation", async () => {
+    const own = makeDeps({ enabled: false });
+    await expect(
+      own.m.setLicenseTypeDetails(
+        {},
+        { input: { licenseTypeId: "T1", label: "x" } },
+        ctx(OWNER),
+      ),
+    ).rejects.toBeInstanceOf(LicensingDisabledError);
+    expect(own.typeGateway.execute).not.toHaveBeenCalled();
+
+    const foreign = makeDeps({ enabled: false });
+    await expect(
+      foreign.m.setLicenseTypeDetails(
+        {},
+        { input: { licenseTypeId: "TX", label: "x" } },
+        ctx(OWNER),
+      ),
+    ).rejects.toBeInstanceOf(UnknownLicenseTypeError);
+
+    const anon = makeDeps({ enabled: false });
+    await expect(
+      anon.m.setLicenseTypeDetails(
+        {},
+        { input: { licenseTypeId: "T1", label: "x" } },
+        ctx(),
+      ),
+    ).rejects.toBeInstanceOf(UnauthenticatedError);
   });
 
   it("adds a service and a package with server-generated ids", async () => {
