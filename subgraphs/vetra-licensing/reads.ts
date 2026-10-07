@@ -2,6 +2,10 @@ import { isDocumentNotFound } from "../vetra-apps/envs.js";
 import type { LicenseRow, LicenseStatusName } from "./transitions.js";
 import type { LicenseTypeView, LicenseView } from "./resolvers.js";
 import { templateHash, type TemplateShape } from "./template.js";
+import {
+  resolveTemplateArtifacts,
+  templateNeedsArtifacts,
+} from "./artifact-resolution.js";
 
 export const LICENSE_DOC_TYPE = "powerhouse/app-owner-license";
 export const LICENSE_TYPE_DOC_TYPE = "powerhouse/app-license-type";
@@ -38,6 +42,12 @@ export interface LicenseFullRow {
 
 /** A licence type with the fields the publisher dashboard shows. */
 export interface LicenseTypeDetail {
+  /**
+   * Why this type's artifacts could not be resolved, or null when they were.
+   * A type that cannot be resolved is not provisioned: the licence is HELD, not
+   * given an environment running some other version. See artifact-resolution.ts.
+   */
+  resolutionError: string | null;
   id: string;
   kind: string;
   label: string | null;
@@ -47,7 +57,34 @@ export interface LicenseTypeDetail {
   template: TemplateShape;
 }
 
+/**
+ * One artifact the app has published, as the template builder offers it.
+ *
+ * Read from the app's own document: the document id IS the app id, so no
+ * lookup table stands between a template and the images it can reference.
+ */
+export interface AppArtifactVersion {
+  version: string;
+  /**
+   * What CI published: a full image reference for a FUSION_IMAGE, a registry
+   * URL for a PACKAGE. Provisioning derives the repository from it, so it is
+   * read here rather than reconstructed from the app's Harbor project.
+   */
+  reference: string;
+}
+
+export interface AppArtifact {
+  kind: "PACKAGE" | "FUSION_IMAGE";
+  name: string;
+  /** Newest last, as the document stores them. */
+  versions: AppArtifactVersion[];
+  /** Channel name to the version it currently points at. */
+  channels: { channel: string; version: string }[];
+}
+
 export interface LicenseReads {
+  /** Every artifact the app has published, for the template builder's selects. */
+  appArtifacts(appId: string): Promise<AppArtifact[]>;
   /** Every licence type of one app, with label, validity and template contents. */
   licenseTypeDetails(appId: string): Promise<LicenseTypeDetail[]>;
   licenses(appId: string, status: string | null): Promise<LicenseView[]>;
@@ -182,6 +219,34 @@ function parseLicenseType(doc: unknown): ParsedLicenseType | null {
   };
 }
 
+/**
+ * Resolves a template's artifacts, or reports why it could not.
+ *
+ * Never throws: one unresolvable type must not blank an app's whole list. The
+ * error travels with the type so provisioning can HOLD that licence while every
+ * other type of the app is still planned normally.
+ *
+ * On failure the hash stays the unresolved one, which is stable — an app whose
+ * image was yanked does not churn every tick.
+ */
+function resolveSafely(
+  template: TemplateShape,
+  artifacts: AppArtifact[],
+): { template: TemplateShape; error: string | null } {
+  if (!templateNeedsArtifacts(template)) return { template, error: null };
+  try {
+    return {
+      template: resolveTemplateArtifacts(template, artifacts),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      template,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export function createReactorLicenseReads(
   client: LicenseClientLike,
 ): LicenseReads {
@@ -220,7 +285,9 @@ export function createReactorLicenseReads(
   return {
     async licenses(appId, status) {
       return (await parsedLicenses())
-        .filter((l) => l.app === appId && (status === null || l.status === status))
+        .filter(
+          (l) => l.app === appId && (status === null || l.status === status),
+        )
         .map((l) => ({
           id: l.id,
           user: l.user,
@@ -232,7 +299,10 @@ export function createReactorLicenseReads(
     },
 
     async licenseTypes(appId) {
-      const docs = await findAll(LICENSE_TYPE_DOC_TYPE);
+      const [docs, artifacts] = await Promise.all([
+        findAll(LICENSE_TYPE_DOC_TYPE),
+        this.appArtifacts(appId),
+      ]);
       return docs.flatMap((d) => {
         const t = parseLicenseType(d);
         if (!t || t.app !== appId) return [];
@@ -241,18 +311,58 @@ export function createReactorLicenseReads(
             id: t.id,
             kind: t.kind,
             status: t.status,
-            templateHash: templateHash(t.template ?? EMPTY_TEMPLATE),
+            templateHash: templateHash(
+              resolveSafely(t.template ?? EMPTY_TEMPLATE, artifacts).template,
+            ),
           },
         ];
       });
     },
 
+    async appArtifacts(appId) {
+      // The app document's id is the app id, so this is a direct get. A missing
+      // document means the app has published nothing yet — an empty list, not
+      // an error: the builder says so rather than showing an empty dropdown.
+      const doc = await getDoc(appId);
+      if (!isRec(doc) || !isRec(doc.state)) return [];
+      const global = doc.state.global;
+      if (!isRec(global) || !Array.isArray(global.artifacts)) return [];
+
+      return global.artifacts.flatMap((a): AppArtifact[] => {
+        if (!isRec(a)) return [];
+        const kind = str(a.kind);
+        const name = str(a.name);
+        if ((kind !== "PACKAGE" && kind !== "FUSION_IMAGE") || !name) return [];
+        const versions = Array.isArray(a.versions)
+          ? a.versions.flatMap((v) => {
+              if (!isRec(v)) return [];
+              const version = str(v.version);
+              const reference = str(v.reference);
+              return version && reference ? [{ version, reference }] : [];
+            })
+          : [];
+        const channels = Array.isArray(a.channels)
+          ? a.channels.flatMap((c) => {
+              if (!isRec(c)) return [];
+              const channel = str(c.channel);
+              const version = str(c.version);
+              return channel && version ? [{ channel, version }] : [];
+            })
+          : [];
+        return [{ kind, name, versions, channels }];
+      });
+    },
+
     async licenseTypeDetails(appId) {
-      const docs = await findAll(LICENSE_TYPE_DOC_TYPE);
+      // One artifact read per app per tick, shared by every type of that app.
+      const [docs, artifacts] = await Promise.all([
+        findAll(LICENSE_TYPE_DOC_TYPE),
+        this.appArtifacts(appId),
+      ]);
       return docs.flatMap((d) => {
         const t = parseLicenseType(d);
         if (!t || t.app !== appId) return [];
-        const template = t.template ?? EMPTY_TEMPLATE;
+        const resolved = resolveSafely(t.template ?? EMPTY_TEMPLATE, artifacts);
         return [
           {
             id: t.id,
@@ -260,8 +370,11 @@ export function createReactorLicenseReads(
             label: t.label,
             status: t.status,
             validityDays: t.validityDays,
-            templateHash: templateHash(template),
-            template,
+            // Over the RESOLVED template: a publish moves the channel, which
+            // moves this hash, which is what makes the keeper re-provision.
+            templateHash: templateHash(resolved.template),
+            template: resolved.template,
+            resolutionError: resolved.error,
           },
         ];
       });

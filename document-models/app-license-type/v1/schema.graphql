@@ -56,6 +56,14 @@ type TemplateService {
   id: OID!
   type: TemplateServiceType!
   prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
+}
+
+enum AutoUpdateChannel {
+  DEV
+  STAGING
+  LATEST
 }
 
 type TemplatePackage {
@@ -83,12 +91,22 @@ input AddTemplateServiceInput {
   id: OID!
   type: TemplateServiceType!
   prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
 }
 
 input AddTemplatePackageInput {
   id: OID!
   packageName: String
   version: String
+}
+
+input RemoveTemplateServiceInput {
+  id: OID!
+}
+
+input RemoveTemplatePackageInput {
+  id: OID!
 }
 
 input PublishLicenseTypeInput {

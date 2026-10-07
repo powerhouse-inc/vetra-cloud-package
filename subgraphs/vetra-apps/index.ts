@@ -117,6 +117,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
           ci.registryCredentials(request),
         ),
         this.http.post("apps/ci/deploy", json, (request) => ci.deploy(request)),
+        this.http.post("apps/ci/artifacts", json, (request) =>
+          ci.artifacts(request),
+        ),
         this.http.get(
           "apps/ci/deployments/:id",
           { auth: "public" },

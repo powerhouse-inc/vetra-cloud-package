@@ -15,9 +15,15 @@ const type = (o: Partial<LicenseTypeDetail> = {}): LicenseTypeDetail => ({
   validityDays: 30,
   templateHash: "h1",
   template: TEMPLATE,
+  resolutionError: null,
   ...o,
 });
-const licence = { licenseId: "l1", user: "0xa", licenseTypeId: "t1", templateHash: "h1" };
+const licence = {
+  licenseId: "l1",
+  user: "0xa",
+  licenseTypeId: "t1",
+  templateHash: "h1",
+};
 
 describe("resolveTemplateForLicence", () => {
   it("resolves the matching type to its template and label", () => {
@@ -27,7 +33,10 @@ describe("resolveTemplateForLicence", () => {
   });
 
   it("skips, without a template, when the type hash disagrees (stale shape)", () => {
-    const r = resolveTemplateForLicence([type({ templateHash: "h2" })], licence);
+    const r = resolveTemplateForLicence(
+      [type({ templateHash: "h2" })],
+      licence,
+    );
     expect(r.ok).toBe(false);
     expect(r).not.toHaveProperty("template");
     expect((r as { reason: string }).reason).toMatch(/changed/);
@@ -46,7 +55,9 @@ describe("resolveTemplateForLicence", () => {
 
 describe("createTypeSnapshots", () => {
   const reads = () => ({
-    licenseTypeDetails: vi.fn(async (appId: string) => [type({ id: `t-${appId}` })]),
+    licenseTypeDetails: vi.fn(async (appId: string) => [
+      type({ id: `t-${appId}` }),
+    ]),
   });
 
   it("serves detailsFor from the snapshot licenseTypes just took: one read per app", async () => {
@@ -84,5 +95,22 @@ describe("createTypeSnapshots", () => {
     const s = createTypeSnapshots(r);
     expect((await s.detailsFor("a"))[0]?.id).toBe("t-a");
     expect(r.licenseTypeDetails).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a template whose artifacts cannot be resolved", () => {
+  // Spec: hold the licence. Provisioning something arbitrary would silently
+  // downgrade a holder to a version nobody chose.
+  it("refuses, naming the reason the publisher has to fix", () => {
+    const out = resolveTemplateForLicence(
+      [type({ resolutionError: 'image "dtbau-psb" has no STAGING build yet' })],
+      licence,
+    );
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.reason).toMatch(/no STAGING build yet/);
+  });
+
+  it("still resolves a type whose artifacts are fine", () => {
+    expect(resolveTemplateForLicence([type()], licence).ok).toBe(true);
   });
 });

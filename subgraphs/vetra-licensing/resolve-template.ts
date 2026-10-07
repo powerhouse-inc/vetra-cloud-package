@@ -18,12 +18,24 @@ export function resolveTemplateForLicence(
 ): ResolvedTemplate {
   const type = details.find((t) => t.id === licence.licenseTypeId);
   if (!type) {
-    return { ok: false, reason: `licence type ${licence.licenseTypeId} not found` };
+    return {
+      ok: false,
+      reason: `licence type ${licence.licenseTypeId} not found`,
+    };
   }
   if (type.templateHash !== licence.templateHash) {
     return {
       ok: false,
       reason: `licence type ${type.id} template changed since it was planned`,
+    };
+  }
+  // The licence is HELD, not provisioned onto whatever version happens to be
+  // around. An environment running last week's image because this week's was
+  // yanked is worse than one that waits for the publisher to fix it.
+  if (type.resolutionError) {
+    return {
+      ok: false,
+      reason: `licence type ${type.id} cannot be resolved: ${type.resolutionError}`,
     };
   }
   return { ok: true, template: type.template, label: type.label ?? type.kind };

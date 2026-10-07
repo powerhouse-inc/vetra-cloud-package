@@ -1,6 +1,8 @@
 import {
   addTemplatePackage,
   addTemplateService,
+  removeTemplatePackage,
+  removeTemplateService,
   publishLicenseType,
   reducer,
   retireLicenseType,
@@ -127,9 +129,9 @@ describe("AppLicenseType", () => {
       });
       const last = doc.operations.global.at(-1);
       expect(last?.error).toBeUndefined();
-      expect(doc.state.global.template?.services.map((s) => s.type)).toStrictEqual([
-        ...types,
-      ]);
+      expect(
+        doc.state.global.template?.services.map((s) => s.type),
+      ).toStrictEqual([...types]);
     });
 
     it("builds the Knowledge Vault shape: fusion app plus switchboard", () => {
@@ -140,8 +142,20 @@ describe("AppLicenseType", () => {
       doc = reducer(doc, addTemplateService({ id: "svc-2", type: "FUSION" }));
       expect(doc.operations.global.at(-1)?.error).toBeUndefined();
       expect(doc.state.global.template?.services).toStrictEqual([
-        { id: "svc-1", type: "SWITCHBOARD", prefix: "api" },
-        { id: "svc-2", type: "FUSION", prefix: null },
+        {
+          id: "svc-1",
+          type: "SWITCHBOARD",
+          prefix: "api",
+          artifactName: null,
+          artifactChannel: null,
+        },
+        {
+          id: "svc-2",
+          type: "FUSION",
+          prefix: null,
+          artifactName: null,
+          artifactChannel: null,
+        },
       ]);
     });
 
@@ -152,8 +166,20 @@ describe("AppLicenseType", () => {
       );
       doc = reducer(doc, addTemplateService({ id: "svc-2", type: "CLINT" }));
       expect(doc.state.global.template?.services).toStrictEqual([
-        { id: "svc-1", type: "CONNECT", prefix: "connect" },
-        { id: "svc-2", type: "CLINT", prefix: null },
+        {
+          id: "svc-1",
+          type: "CONNECT",
+          prefix: "connect",
+          artifactName: null,
+          artifactChannel: null,
+        },
+        {
+          id: "svc-2",
+          type: "CLINT",
+          prefix: null,
+          artifactName: null,
+          artifactChannel: null,
+        },
       ]);
     });
 
@@ -280,5 +306,119 @@ describe("AppLicenseType", () => {
       );
       expect(doc.state.global.status).toBe("DRAFT");
     });
+  });
+});
+
+describe("artifact-backed services", () => {
+  const fusion = (over: Record<string, unknown> = {}) =>
+    addTemplateService({
+      id: "svc-1",
+      type: "FUSION",
+      artifactName: "dtbau-psb",
+      ...over,
+    });
+
+  it("defaults the channel to LATEST and the prefix to the artifact name", () => {
+    const doc = reducer(utils.createDocument(), fusion());
+    expect(doc.operations.global[0].error).toBeUndefined();
+    expect(doc.state.global.template?.services[0]).toStrictEqual({
+      id: "svc-1",
+      type: "FUSION",
+      prefix: "dtbau-psb",
+      artifactName: "dtbau-psb",
+      artifactChannel: "LATEST",
+    });
+  });
+
+  it("keeps an explicit prefix and channel", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      fusion({ prefix: "psb", artifactChannel: "STAGING" }),
+    );
+    expect(doc.state.global.template?.services[0]).toMatchObject({
+      prefix: "psb",
+      artifactChannel: "STAGING",
+    });
+  });
+
+  it("leaves a service with no artifact untouched", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      addTemplateService({ id: "svc-1", type: "SWITCHBOARD", prefix: "api" }),
+    );
+    expect(doc.state.global.template?.services[0]).toStrictEqual({
+      id: "svc-1",
+      type: "SWITCHBOARD",
+      prefix: "api",
+      artifactName: null,
+      artifactChannel: null,
+    });
+  });
+
+  // Only FUSION runs the app's own image; anything else would render a service
+  // the provisioner cannot build.
+  it("refuses an artifact on a non-FUSION service", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      fusion({ type: "SWITCHBOARD" }),
+    );
+    expect(doc.operations.global[0].error).toBe(
+      "only a FUSION service can reference an artifact, not SWITCHBOARD",
+    );
+    expect(doc.state.global.template).toBeNull();
+  });
+});
+
+describe("removing template entries", () => {
+  // Without this, a mistyped service could only be undone by retiring the whole
+  // tier and rebuilding it — the dead end the publisher form used to warn about.
+  it("removes a service and leaves the others in order", () => {
+    let doc = reducer(
+      utils.createDocument(),
+      addTemplateService({ id: "a", type: "CONNECT" }),
+    );
+    doc = reducer(doc, addTemplateService({ id: "b", type: "SWITCHBOARD" }));
+    doc = reducer(doc, addTemplateService({ id: "c", type: "DOCLING" }));
+    doc = reducer(doc, removeTemplateService({ id: "b" }));
+
+    expect(doc.operations.global.at(-1)?.error).toBeUndefined();
+    expect(doc.state.global.template?.services.map((s) => s.id)).toStrictEqual([
+      "a",
+      "c",
+    ]);
+  });
+
+  it("removes a package", () => {
+    let doc = reducer(
+      utils.createDocument(),
+      addTemplatePackage({ id: "p1", packageName: "a", version: "1" }),
+    );
+    doc = reducer(doc, removeTemplatePackage({ id: "p1" }));
+    expect(doc.state.global.template?.packages).toStrictEqual([]);
+  });
+
+  it("lets the id be reused after a removal", () => {
+    let doc = reducer(
+      utils.createDocument(),
+      addTemplateService({ id: "a", type: "CONNECT" }),
+    );
+    doc = reducer(doc, removeTemplateService({ id: "a" }));
+    doc = reducer(doc, addTemplateService({ id: "a", type: "FUSION" }));
+    expect(doc.operations.global.at(-1)?.error).toBeUndefined();
+    expect(doc.state.global.template?.services).toHaveLength(1);
+  });
+
+  it("refuses to remove something that is not there", () => {
+    const doc = reducer(
+      utils.createDocument(),
+      removeTemplateService({ id: "nope" }),
+    );
+    expect(doc.operations.global[0].error).toBe("service nope does not exist");
+
+    const doc2 = reducer(
+      utils.createDocument(),
+      removeTemplatePackage({ id: "nope" }),
+    );
+    expect(doc2.operations.global[0].error).toBe("package nope does not exist");
   });
 });

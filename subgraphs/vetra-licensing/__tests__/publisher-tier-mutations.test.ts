@@ -100,14 +100,8 @@ function makeDeps(over: { enabled?: boolean } = {}) {
 
 const CALLS: Array<[string, unknown]> = [
   ["createLicenseType", { input: { appId: "app-1", kind: "pro" } }],
-  [
-    "setLicenseTypeDetails",
-    { input: { licenseTypeId: "T1", label: "Pro" } },
-  ],
-  [
-    "setLicenseTypeTemplate",
-    { input: { licenseTypeId: "T1", size: "SMALL" } },
-  ],
+  ["setLicenseTypeDetails", { input: { licenseTypeId: "T1", label: "Pro" } }],
+  ["setLicenseTypeTemplate", { input: { licenseTypeId: "T1", size: "SMALL" } }],
   [
     "addLicenseTypeService",
     { input: { licenseTypeId: "T1", type: "SWITCHBOARD" } },
@@ -116,6 +110,8 @@ const CALLS: Array<[string, unknown]> = [
     "addLicenseTypePackage",
     { input: { licenseTypeId: "T1", packageName: "@x/y" } },
   ],
+  ["removeLicenseTypeService", { input: { licenseTypeId: "T1", id: "svc-1" } }],
+  ["removeLicenseTypePackage", { input: { licenseTypeId: "T1", id: "pkg-1" } }],
   ["publishLicenseType", { licenseTypeId: "T1" }],
   ["retireLicenseType", { licenseTypeId: "T1" }],
 ];
@@ -395,5 +391,63 @@ describe("publisher tier authoring", () => {
     expect(
       await m.retireLicenseType({}, { licenseTypeId: id }, ctx(OWNER)),
     ).toBe(true);
+  });
+});
+
+describe("artifact-backed services and removal", () => {
+  it("passes the artifact and channel through to the document", async () => {
+    const { m, docs } = makeDeps();
+    await m.addLicenseTypeService(
+      {},
+      {
+        input: {
+          licenseTypeId: "T1",
+          type: "FUSION",
+          artifactName: "dtbau-psb",
+          artifactChannel: "STAGING",
+        },
+      },
+      ctx(OWNER),
+    );
+    expect(docs.get("T1")?.state.global.template?.services[0]).toMatchObject({
+      type: "FUSION",
+      artifactName: "dtbau-psb",
+      artifactChannel: "STAGING",
+      prefix: "dtbau-psb",
+    });
+  });
+
+  it("surfaces the reducer's refusal when an artifact is put on a non-FUSION service", async () => {
+    const { m } = makeDeps();
+    await expect(
+      m.addLicenseTypeService(
+        {},
+        {
+          input: {
+            licenseTypeId: "T1",
+            type: "SWITCHBOARD",
+            artifactName: "dtbau-psb",
+          },
+        },
+        ctx(OWNER),
+      ),
+    ).rejects.toThrow(/only a FUSION service/);
+  });
+
+  it("removes a service the publisher added by mistake", async () => {
+    const { m, docs } = makeDeps();
+    await m.addLicenseTypeService(
+      {},
+      { input: { licenseTypeId: "T1", type: "CONNECT" } },
+      ctx(OWNER),
+    );
+    const added = docs.get("T1")!.state.global.template!.services[0]!;
+
+    await m.removeLicenseTypeService(
+      {},
+      { input: { licenseTypeId: "T1", id: added.id } },
+      ctx(OWNER),
+    );
+    expect(docs.get("T1")?.state.global.template?.services).toStrictEqual([]);
   });
 });

@@ -34,6 +34,30 @@ export const publisherSchema: DocumentNode = gql`
     id: String!
     type: String!
     prefix: String
+    "The app artifact this FUSION service runs; null for every other type."
+    artifactName: String
+    "DEV, STAGING or LATEST — which published version the service follows."
+    artifactChannel: String
+  }
+
+  "One artifact the app has published, as the template builder offers it."
+  type PublisherAppArtifact {
+    kind: String!
+    name: String!
+    "Every published version, newest last."
+    versions: [PublisherArtifactVersion!]!
+    channels: [PublisherArtifactChannel!]!
+  }
+
+  type PublisherArtifactVersion {
+    version: String!
+    "The full image reference or registry URL CI published."
+    reference: String!
+  }
+
+  type PublisherArtifactChannel {
+    channel: String!
+    version: String!
   }
 
   type PublisherTemplatePackage {
@@ -78,6 +102,15 @@ export const publisherSchema: DocumentNode = gql`
     licenseTypeId: String!
     type: String!
     prefix: String
+    "Only a FUSION service may name an artifact; anything else is refused."
+    artifactName: String
+    "Defaults to LATEST when an artifact is named."
+    artifactChannel: String
+  }
+
+  input RemoveLicenseTypeEntryInput {
+    licenseTypeId: String!
+    id: String!
   }
 
   input AddLicenseTypePackageInput {
@@ -100,6 +133,8 @@ export const publisherSchema: DocumentNode = gql`
   type VetraPublisherQueries {
     myApps: [PublisherApp!]!
     licenseTypes(appId: String!): [PublisherLicenseType!]!
+    "Artifacts this app has published, for the template builder's selects."
+    appArtifacts(appId: String!): [PublisherAppArtifact!]!
     licenses(appId: String!, status: String): [PublisherLicense!]!
     environments(appId: String!): [AppUserEnvironment!]!
   }
@@ -110,6 +145,8 @@ export const publisherSchema: DocumentNode = gql`
     setLicenseTypeTemplate(input: SetLicenseTypeTemplateInput!): Boolean!
     addLicenseTypeService(input: AddLicenseTypeServiceInput!): Boolean!
     addLicenseTypePackage(input: AddLicenseTypePackageInput!): Boolean!
+    removeLicenseTypeService(input: RemoveLicenseTypeEntryInput!): Boolean!
+    removeLicenseTypePackage(input: RemoveLicenseTypeEntryInput!): Boolean!
     publishLicenseType(licenseTypeId: String!): Boolean!
     retireLicenseType(licenseTypeId: String!): Boolean!
     issueGrant(input: IssueGrantInput!): String!

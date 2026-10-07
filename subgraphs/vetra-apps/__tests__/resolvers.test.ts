@@ -344,6 +344,28 @@ describe("workflow template", () => {
     expect(t).toContain('build-command: "bun run build"');
   });
 
+  // A Powerhouse package's own build script is `ph-cli build`, and ph-cli
+  // declares engines.node >= 24. A workflow that sets up an older Node makes
+  // every such build fail on the install or the build step.
+  it.each(["pnpm", "npm", "yarn", "bun"] as const)(
+    "sets up a Node new enough for ph-cli (%s)",
+    (packageManager) => {
+      const t = workflowTemplate("app-1", "main", { packageManager });
+      expect(t).toContain("actions/setup-node@v4");
+      const node = /node-version: (\d+)/.exec(t);
+      expect(node).not.toBeNull();
+      expect(Number(node![1])).toBeGreaterThanOrEqual(24);
+    },
+  );
+
+  it("sets up Node for a bun repository too, since the build still runs ph-cli", () => {
+    const t = workflowTemplate("app-1", "main", { packageManager: "bun" });
+    expect(t).toContain("oven-sh/setup-bun@v2");
+    expect(t).toContain("actions/setup-node@v4");
+    // bun is not a valid setup-node cache key; asking for it fails the step.
+    expect(t).not.toContain("cache: bun");
+  });
+
   it("sets up npm and its commands for an npm repository", () => {
     const t = workflowTemplate("app-1", "main", { packageManager: "npm" });
     expect(t).toContain("cache: npm");

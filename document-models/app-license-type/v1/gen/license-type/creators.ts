@@ -7,6 +7,8 @@ import {
   AddTemplatePackageInputSchema,
   AddTemplateServiceInputSchema,
   PublishLicenseTypeInputSchema,
+  RemoveTemplatePackageInputSchema,
+  RemoveTemplateServiceInputSchema,
   RetireLicenseTypeInputSchema,
   SetLicenseTypeDetailsInputSchema,
   SetTemplateInputSchema,
@@ -15,6 +17,8 @@ import type {
   AddTemplatePackageInput,
   AddTemplateServiceInput,
   PublishLicenseTypeInput,
+  RemoveTemplatePackageInput,
+  RemoveTemplateServiceInput,
   RetireLicenseTypeInput,
   SetLicenseTypeDetailsInput,
   SetTemplateInput,
@@ -23,6 +27,8 @@ import type {
   AddTemplatePackageAction,
   AddTemplateServiceAction,
   PublishLicenseTypeAction,
+  RemoveTemplatePackageAction,
+  RemoveTemplateServiceAction,
   RetireLicenseTypeAction,
   SetLicenseTypeDetailsAction,
   SetTemplateAction,
@@ -61,6 +67,24 @@ export const addTemplatePackage = (input: AddTemplatePackageInput) =>
     { ...input },
     undefined,
     AddTemplatePackageInputSchema,
+    "global",
+  );
+
+export const removeTemplateService = (input: RemoveTemplateServiceInput) =>
+  createAction<RemoveTemplateServiceAction>(
+    "REMOVE_TEMPLATE_SERVICE",
+    { ...input },
+    undefined,
+    RemoveTemplateServiceInputSchema,
+    "global",
+  );
+
+export const removeTemplatePackage = (input: RemoveTemplatePackageInput) =>
+  createAction<RemoveTemplatePackageAction>(
+    "REMOVE_TEMPLATE_PACKAGE",
+    { ...input },
+    undefined,
+    RemoveTemplatePackageInputSchema,
     "global",
   );
 
