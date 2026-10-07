@@ -149,6 +149,9 @@ export function createPublisherResolvers(
           status: t.status,
           validityDays: t.validityDays,
           templateHash: t.templateHash,
+          size: t.template.size,
+          baseDomain: t.template.baseDomain,
+          packageRegistry: t.template.packageRegistry,
           services: t.template.services,
           packages: t.template.packages,
         }));

@@ -21,6 +21,11 @@ export const publisherSchema: DocumentNode = gql`
     status: String!
     validityDays: Int
     templateHash: String!
+    # The template's scalar fields. SET_TEMPLATE is a full replace, so a client
+    # editing one of them must read all three to send the others back unchanged.
+    size: String
+    baseDomain: String
+    packageRegistry: String
     services: [PublisherTemplateService!]!
     packages: [PublisherTemplatePackage!]!
   }
