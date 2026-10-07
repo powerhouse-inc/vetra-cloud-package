@@ -36,7 +36,20 @@ export interface LicenseFullRow {
   end: string | null;
 }
 
+/** A licence type with the fields the publisher dashboard shows. */
+export interface LicenseTypeDetail {
+  id: string;
+  kind: string;
+  label: string | null;
+  status: string;
+  validityDays: number | null;
+  templateHash: string;
+  template: TemplateShape;
+}
+
 export interface LicenseReads {
+  /** Every licence type of one app, with label, validity and template contents. */
+  licenseTypeDetails(appId: string): Promise<LicenseTypeDetail[]>;
   licenses(appId: string, status: string | null): Promise<LicenseView[]>;
   licenseTypes(appId: string): Promise<LicenseTypeView[]>;
   templateFor(licenseId: string): Promise<TemplateShape | null>;
@@ -100,6 +113,7 @@ interface ParsedLicenseType {
   id: string;
   app: string | null;
   kind: string;
+  label: string | null;
   status: string;
   validityDays: number | null;
   template: TemplateShape | null;
@@ -154,6 +168,7 @@ function parseLicenseType(doc: unknown): ParsedLicenseType | null {
     id,
     app: str(g.app),
     kind: str(g.kind) ?? "",
+    label: str(g.label),
     status,
     validityDays: typeof g.validityDays === "number" ? g.validityDays : null,
     template: parseTemplate(g.template),
@@ -220,6 +235,26 @@ export function createReactorLicenseReads(
             kind: t.kind,
             status: t.status,
             templateHash: templateHash(t.template ?? EMPTY_TEMPLATE),
+          },
+        ];
+      });
+    },
+
+    async licenseTypeDetails(appId) {
+      const docs = await findAll(LICENSE_TYPE_DOC_TYPE);
+      return docs.flatMap((d) => {
+        const t = parseLicenseType(d);
+        if (!t || t.app !== appId) return [];
+        const template = t.template ?? EMPTY_TEMPLATE;
+        return [
+          {
+            id: t.id,
+            kind: t.kind,
+            label: t.label,
+            status: t.status,
+            validityDays: t.validityDays,
+            templateHash: templateHash(template),
+            template,
           },
         ];
       });
