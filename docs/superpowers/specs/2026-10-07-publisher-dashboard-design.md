@@ -233,6 +233,37 @@ dashboard bug.
 provisioning*, not catalogue access. Anyone can still `ph install` the package
 from the registry. Connecting the two is a separate piece of design.
 
+**Retiring a tier does not end service for existing holders.** The provisioning
+keeper provisions from a RETIRED licence type, and `templateFor` on the machine
+surface agrees. Retire means "no new grants"; the licence is the entitlement and
+the type is only where the template comes from, so a holder with an active
+licence keeps their environment and can have one created. Revoking the licence is
+how an environment goes away. This overrode the spec during implementation and is
+recorded here so that it is not "fixed" back: making a retired tier stop serving
+would silently take down paying holders when a publisher merely tidied their tier
+list.
+
+**A holder with two active licences gets an arbitrary one.**
+`computeLicensePlan` picks the lowest licence id, and ids are UUIDs, so granting a
+Pro licence to someone who already holds a Free one silently does nothing about
+half the time, with no error and no log, until the old licence expires or is
+revoked. The mirror case can silently downgrade a holder. The 2026-10-06 spec
+records this as Open question 1; the dashboard makes a second grant one-click
+routine, so it belongs here too. It is deliberately not fixed in this branch:
+choosing a precedence rule settles an open spec question, which belongs with the
+UI work.
+
+**The provisioning keeper trusts the app id declared by a document.** It groups
+licences by the `app` field of the licence document and provisions under that app
+with no caller proving ownership, so forged `app-license-type` and
+`app-owner-license` documents naming a victim's app id would make the keeper
+provision attacker-chosen packages into that app. This is not reachable through
+this subgraph, and reachability otherwise depends on the reactor's document-write
+ACLs, which are not verified from this repository. It is a threat-model item that
+must be settled before anyone sets `LICENSING_KEEPER_ENABLED=true`, because this
+branch escalates the trust from "an App identity must call a mutation" to "a
+document alone creates infrastructure".
+
 ## Error handling
 
 Backend errors carry a specific class and message and are surfaced verbatim by
