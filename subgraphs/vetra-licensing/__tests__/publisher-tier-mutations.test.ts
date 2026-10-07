@@ -3,10 +3,10 @@ import type { Kysely } from "kysely";
 import type { Action } from "document-model";
 import { actions, reducer, utils } from "document-models/app-license-type";
 import {
-  createPublisherResolvers,
   UnknownLicenseTypeError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createPublisherResolvers } from "./unwrapped-publisher-resolvers.js";
 import { LicensingDisabledError } from "../resolvers.js";
 import { UnauthenticatedError } from "../auth.js";
 import type { VetraLicensingDB } from "../db/schema.js";

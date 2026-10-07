@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Kysely } from "kysely";
 import {
-  createPublisherResolvers,
   UnknownLicenseTypeError,
   UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createPublisherResolvers } from "./unwrapped-publisher-resolvers.js";
 import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
 import { UnauthenticatedError } from "../auth.js";
 import type { VetraLicensingDB } from "../db/schema.js";

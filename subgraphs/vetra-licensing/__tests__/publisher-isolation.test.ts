@@ -4,11 +4,11 @@ import { buildASTSchema, type GraphQLInputObjectType } from "graphql";
 import { schema } from "../schema.js";
 import type { Action } from "document-model";
 import {
-  createPublisherResolvers,
   UnknownLicenseTypeError,
   UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createPublisherResolvers } from "./unwrapped-publisher-resolvers.js";
 import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
 import { LicenseTypeNotIssuableError } from "../issuers/publisher-grant.js";
 import type { VetraLicensingDB } from "../db/schema.js";

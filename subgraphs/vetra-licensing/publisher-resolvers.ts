@@ -18,25 +18,15 @@ import { actions } from "document-models/app-license-type";
 import { NegativeValidityError } from "../../document-models/app-license-type/v1/gen/license-type/error.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { issuePublisherGrant } from "./issuers/publisher-grant.js";
+import {
+  toPublisherGraphQLError,
+  UnknownLicenseError,
+  UnknownLicenseTypeError,
+} from "./publisher-errors.js";
 
-/**
- * Thrown by Tasks 6 and 7 for a licence type that is missing OR belongs to
- * another publisher. The message is fixed so the two cases are
- * indistinguishable, as with NotAppOwnerError.
- */
-export class UnknownLicenseTypeError extends Error {
-  override name = "UnknownLicenseTypeError";
-  constructor() {
-    super("no such licence type");
-  }
-}
-/** As UnknownLicenseTypeError, for a licence. */
-export class UnknownLicenseError extends Error {
-  override name = "UnknownLicenseError";
-  constructor() {
-    super("no such licence");
-  }
-}
+// Defined in publisher-errors.ts (which maps them to GraphQL codes) so that
+// module does not import this one; re-exported to keep existing import paths.
+export { UnknownLicenseTypeError, UnknownLicenseError } from "./publisher-errors.js";
 
 export interface PublisherDeps {
   auth: PublisherAuthDeps;
@@ -123,21 +113,33 @@ export function createPublisherResolvers(
     return true;
   };
 
+  // Converts a thrown licensing error into a GraphQLError with a stable
+  // extensions.code. Wraps the whole field, so gate order is untouched.
+  const withCodes =
+    <A, R>(fn: (p: unknown, a: A, c: Ctx) => Promise<R>) =>
+    async (p: unknown, a: A, c: Ctx): Promise<R> => {
+      try {
+        return await fn(p, a, c);
+      } catch (err) {
+        throw toPublisherGraphQLError(err);
+      }
+    };
+
   return {
     Query: { vetraPublisher: () => ({}) },
     Mutation: { vetraPublisher: () => ({}) },
 
     VetraPublisherQueries: {
-      myApps: async (_p: unknown, _a: unknown, ctx: Ctx) => {
+      myApps: withCodes(async (_p: unknown, _a: unknown, ctx: Ctx) => {
         const address = ctx.user?.address;
         if (!address) {
           throw new UnauthenticatedError("sign in to manage licences");
         }
         const apps = await deps.auth.listAppsForOwner(address.toLowerCase());
         return apps.map((a) => ({ id: a.id, name: a.name, status: a.status }));
-      },
+      }),
 
-      licenseTypes: async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
+      licenseTypes: withCodes(async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
         const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
         const types = await deps.reads.licenseTypeDetails(appId);
         return types.map((t) => ({
@@ -150,9 +152,9 @@ export function createPublisherResolvers(
           services: t.template.services,
           packages: t.template.packages,
         }));
-      },
+      }),
 
-      licenses: async (
+      licenses: withCodes(async (
         _p: unknown,
         args: { appId: string; status?: string | null },
         ctx: Ctx,
@@ -173,9 +175,9 @@ export function createPublisherResolvers(
           ...l,
           environmentId: envByUser.get(l.user.toLowerCase()) ?? null,
         }));
-      },
+      }),
 
-      environments: async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
+      environments: withCodes(async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
         const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
         const rows = await db
           .selectFrom("app_user_environments")
@@ -183,11 +185,11 @@ export function createPublisherResolvers(
           .where("app_id", "=", appId)
           .execute();
         return rows.map(toGql);
-      },
+      }),
     },
 
     VetraPublisherMutations: {
-      createLicenseType: async (
+      createLicenseType: withCodes(async (
         _p: unknown,
         args: {
           input: {
@@ -223,9 +225,9 @@ export function createPublisherResolvers(
         const id = await deps.typeGateway.create();
         await deps.typeGateway.execute(id, [detailsAction]);
         return id;
-      },
+      }),
 
-      setLicenseTypeDetails: async (
+      setLicenseTypeDetails: withCodes(async (
         _p: unknown,
         args: {
           input: {
@@ -254,9 +256,9 @@ export function createPublisherResolvers(
             validityDays,
           }),
         ]);
-      },
+      }),
 
-      setLicenseTypeTemplate: async (
+      setLicenseTypeTemplate: withCodes(async (
         _p: unknown,
         args: {
           input: {
@@ -276,9 +278,9 @@ export function createPublisherResolvers(
             packageRegistry: args.input.packageRegistry ?? null,
           }),
         ]);
-      },
+      }),
 
-      addLicenseTypeService: async (
+      addLicenseTypeService: withCodes(async (
         _p: unknown,
         args: {
           input: { licenseTypeId: string; type: string; prefix?: string | null };
@@ -293,9 +295,9 @@ export function createPublisherResolvers(
             prefix: args.input.prefix ?? null,
           }),
         ]);
-      },
+      }),
 
-      addLicenseTypePackage: async (
+      addLicenseTypePackage: withCodes(async (
         _p: unknown,
         args: {
           input: {
@@ -314,27 +316,27 @@ export function createPublisherResolvers(
             version: args.input.version ?? null,
           }),
         ]);
-      },
+      }),
 
-      publishLicenseType: async (
+      publishLicenseType: withCodes(async (
         _p: unknown,
         args: { licenseTypeId: string },
         ctx: Ctx,
       ) => {
         const { id } = await authoriseType(args.licenseTypeId, ctx);
         return dispatch(id, [actions.publishLicenseType({})]);
-      },
+      }),
 
-      retireLicenseType: async (
+      retireLicenseType: withCodes(async (
         _p: unknown,
         args: { licenseTypeId: string },
         ctx: Ctx,
       ) => {
         const { id } = await authoriseType(args.licenseTypeId, ctx);
         return dispatch(id, [actions.retireLicenseType({})]);
-      },
+      }),
 
-      issueGrant: async (
+      issueGrant: withCodes(async (
         _p: unknown,
         args: {
           input: { appId: string; licenseTypeId: string; user: string };
@@ -355,9 +357,9 @@ export function createPublisherResolvers(
           issuedBy: ctx.user!.address,
           now: new Date().toISOString(),
         });
-      },
+      }),
 
-      revokeLicense: async (
+      revokeLicense: withCodes(async (
         _p: unknown,
         args: { input: { licenseId: string; reason?: string | null } },
         ctx: Ctx,
@@ -367,7 +369,7 @@ export function createPublisherResolvers(
           licenseActions.revokeLicense({ reason: args.input.reason ?? null }),
         ]);
         return true;
-      },
+      }),
     },
   };
 }
