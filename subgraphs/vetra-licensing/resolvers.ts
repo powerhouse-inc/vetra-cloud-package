@@ -4,6 +4,7 @@ import { resolveCallerApp, type AuthContext, type AuthDeps } from "./auth.js";
 import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
 import { releaseEnvironment, type ReleaseDeps } from "./release.js";
 import { issuePublisherGrant, type GrantDeps } from "./issuers/publisher-grant.js";
+import { createEnvironmentRows } from "./rows.js";
 import type { LicensingConfig } from "./config.js";
 import type { TemplateShape } from "./template.js";
 
@@ -83,77 +84,11 @@ export function createResolvers(
   db: Kysely<VetraLicensingDB>,
   deps: ResolverDeps,
 ): Record<string, unknown> {
-  // user_address is stored lowercased; normalise at every database boundary so
-  // a mixed-case caller can never produce a second row.
-  const findRow = (appId: string, user: string) =>
-    db
-      .selectFrom("app_user_environments")
-      .selectAll()
-      .where("app_id", "=", appId)
-      .where("user_address", "=", user.toLowerCase())
-      .executeTakeFirst()
-      .then((r) => r ?? null);
+  const { findRow, countForApp, maxForApp, claimRow, upsertRow } =
+    createEnvironmentRows(db, deps.cfg);
 
   // Gate for every mutation; see makeRequireEnabled for ordering rules.
   const requireEnabled = makeRequireEnabled(deps.cfg);
-
-  const countForApp = (appId: string) =>
-    db
-      .selectFrom("app_user_environments")
-      .select((eb) => eb.fn.countAll<number>().as("n"))
-      .where("app_id", "=", appId)
-      .executeTakeFirstOrThrow()
-      .then((r) => Number(r.n));
-
-  const maxForApp = (appId: string) =>
-    db
-      .selectFrom("app_environment_limits")
-      .select("max_environments")
-      .where("app_id", "=", appId)
-      .executeTakeFirst()
-      .then((r) => r?.max_environments ?? deps.cfg.defaultMaxEnvironments);
-
-  // Claim: insert if the key is free, otherwise change nothing and return the
-  // row that already owns it. This is what makes the primary key the lock —
-  // the loser of a race adopts the winner's environment instead of orphaning
-  // its own, and a claim is never overwritten by a later claimant.
-  const claimRow = async (input: AppUserEnvironments) => {
-    const row = { ...input, user_address: input.user_address.toLowerCase() };
-    await db
-      .insertInto("app_user_environments")
-      .values(row)
-      .onConflict((oc) => oc.columns(["app_id", "user_address"]).doNothing())
-      .execute();
-    return db
-      .selectFrom("app_user_environments")
-      .selectAll()
-      .where("app_id", "=", row.app_id)
-      .where("user_address", "=", row.user_address)
-      .executeTakeFirstOrThrow();
-  };
-
-  // The conflict clause deliberately leaves environment_id alone, so the loser
-  // of a race adopts the winner's environment; the re-read returns that row.
-  const upsertRow = async (input: AppUserEnvironments) => {
-    const row = { ...input, user_address: input.user_address.toLowerCase() };
-    await db
-      .insertInto("app_user_environments")
-      .values(row)
-      .onConflict((oc) =>
-        oc.columns(["app_id", "user_address"]).doUpdateSet({
-          license_id: row.license_id,
-          template_hash: row.template_hash,
-          updated_at: row.updated_at,
-        }),
-      )
-      .execute();
-    return db
-      .selectFrom("app_user_environments")
-      .selectAll()
-      .where("app_id", "=", row.app_id)
-      .where("user_address", "=", row.user_address)
-      .executeTakeFirstOrThrow();
-  };
 
   return {
     Query: { vetraLicensing: () => ({}) },

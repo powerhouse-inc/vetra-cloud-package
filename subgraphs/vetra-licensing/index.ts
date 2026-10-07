@@ -19,7 +19,8 @@ import { createReactorLicenseTypeGateway } from "./license-type-gateway.js";
 import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
 import { mergeResolvers } from "./merge-resolvers.js";
 import { releaseEnvironment } from "./release.js";
-import type { AppUserEnvironments } from "./db/schema.js";
+import { createEnvironmentRows } from "./rows.js";
+import { resolveTemplateForLicence } from "./resolve-template.js";
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -141,66 +142,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     this.resolvers = mergeResolvers(machineResolvers, publisherResolvers);
 
-    // Same row-level operations createResolvers builds privately; the keeper
-    // needs them outside a resolver call.
-    const findRow = (appId: string, user: string) =>
-      db
-        .selectFrom("app_user_environments")
-        .selectAll()
-        .where("app_id", "=", appId)
-        .where("user_address", "=", user.toLowerCase())
-        .executeTakeFirst()
-        .then((r) => r ?? null);
-    const reread = (row: AppUserEnvironments) =>
-      db
-        .selectFrom("app_user_environments")
-        .selectAll()
-        .where("app_id", "=", row.app_id)
-        .where("user_address", "=", row.user_address)
-        .executeTakeFirstOrThrow();
+    // The same row operations the resolvers use, so the per-app environment
+    // cap is one implementation on both paths.
     const provisionDeps: ProvisionDeps = {
       ...deps.provision,
-      findRow,
-      countForApp: (appId) =>
-        db
-          .selectFrom("app_user_environments")
-          .select((eb) => eb.fn.countAll<number>().as("n"))
-          .where("app_id", "=", appId)
-          .executeTakeFirstOrThrow()
-          .then((r) => Number(r.n)),
-      maxForApp: (appId) =>
-        db
-          .selectFrom("app_environment_limits")
-          .select("max_environments")
-          .where("app_id", "=", appId)
-          .executeTakeFirst()
-          .then((r) => r?.max_environments ?? cfg.defaultMaxEnvironments),
-      claimRow: async (input) => {
-        const row = { ...input, user_address: input.user_address.toLowerCase() };
-        await db
-          .insertInto("app_user_environments")
-          .values(row)
-          .onConflict((oc) =>
-            oc.columns(["app_id", "user_address"]).doNothing(),
-          )
-          .execute();
-        return reread(row);
-      },
-      upsertRow: async (input) => {
-        const row = { ...input, user_address: input.user_address.toLowerCase() };
-        await db
-          .insertInto("app_user_environments")
-          .values(row)
-          .onConflict((oc) =>
-            oc.columns(["app_id", "user_address"]).doUpdateSet({
-              license_id: row.license_id,
-              template_hash: row.template_hash,
-              updated_at: row.updated_at,
-            }),
-          )
-          .execute();
-        return reread(row);
-      },
+      ...createEnvironmentRows(db, cfg),
     };
 
     // Inert unless cfg.enabled (default false); dry-run (default true) is
@@ -222,20 +168,13 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           templateHash: r.template_hash,
         })),
       applyFor: async (appId, licence) => {
-        // Resolve the template from the licence type document's details (with
-        // a document-type check), not from reads.templateFor.
-        const type = (await reads.licenseTypeDetails(appId)).find(
-          (t) => t.id === licence.licenseTypeId,
+        const resolved = resolveTemplateForLicence(
+          await reads.licenseTypeDetails(appId),
+          licence,
         );
-        if (!type) {
+        if (!resolved.ok) {
           console.warn(
-            `[licensing] licence ${licence.licenseId}: type ${licence.licenseTypeId} not found for app ${appId}; skipping`,
-          );
-          return;
-        }
-        if (type.templateHash !== licence.templateHash) {
-          console.warn(
-            `[licensing] licence ${licence.licenseId}: type ${type.id} template changed since it was planned; skipping`,
+            `[licensing] licence ${licence.licenseId} (app ${appId}): ${resolved.reason}; skipping`,
           );
           return;
         }
@@ -243,8 +182,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           appId,
           user: licence.user,
           licenseId: licence.licenseId,
-          template: type.template,
-          label: type.label ?? type.kind,
+          template: resolved.template,
+          label: resolved.label,
           now: new Date().toISOString(),
         });
       },
