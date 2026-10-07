@@ -44,7 +44,11 @@ import {
   type DeploymentRow,
   type PreviewRow,
 } from "./repo.js";
-import { workflowTemplate } from "./workflow-template.js";
+import {
+  LOCKFILES,
+  workflowTemplate,
+  type PackageManager,
+} from "./workflow-template.js";
 
 export interface AppsLogger {
   info(msg: string): void;
@@ -842,6 +846,45 @@ export async function deleteApp(
   return true;
 }
 
+/**
+ * What toolchain the generated workflow must set up. The lockfile decides, since
+ * it is what the install actually needs; a repository with no package.json gets
+ * no setup and no install/build/publish steps at all.
+ *
+ * Probing is best-effort: if GitHub cannot be read we fall back to pnpm, which
+ * is what the workflow assumed unconditionally before.
+ */
+export async function detectRepoToolchain(
+  github: GithubDeployApi,
+  installationId: string,
+  repoFullName: string,
+): Promise<{
+  packageManager: PackageManager | null;
+  declaresPackageManager: boolean;
+}> {
+  const read = (path: string) =>
+    github.getRepoFile(installationId, repoFullName, path).catch(() => null);
+
+  const pkg = await read("package.json");
+  if (pkg === null) return { packageManager: null, declaresPackageManager: false };
+
+  let declaresPackageManager = false;
+  try {
+    declaresPackageManager =
+      typeof (JSON.parse(pkg) as { packageManager?: unknown }).packageManager ===
+      "string";
+  } catch {
+    // An unparseable package.json still means there is a Node project here.
+  }
+
+  for (const [lockfile, manager] of LOCKFILES) {
+    if ((await read(lockfile)) !== null)
+      return { packageManager: manager, declaresPackageManager };
+  }
+  // A package.json with no lockfile: pnpm remains the house default.
+  return { packageManager: "pnpm", declaresPackageManager };
+}
+
 export async function openAppSetupPullRequest(
   deps: AppsDeps,
   caller: Caller,
@@ -849,13 +892,18 @@ export async function openAppSetupPullRequest(
 ): Promise<string> {
   const app = await loadAppForOwner(deps, caller, appId);
   const github = requireGithub(deps);
+  const repo = await detectRepoToolchain(
+    github,
+    app.installation_id,
+    app.repository_full_name,
+  );
   return github.openPullRequestWithFile(
     app.installation_id,
     app.repository_full_name,
     {
       branch: "vetra/setup",
       path: ".github/workflows/vetra.yml",
-      content: workflowTemplate(app.id, app.production_branch),
+      content: workflowTemplate(app.id, app.production_branch, repo),
       commitMessage: "ci: deploy with Vetra",
       title: "Deploy with Vetra",
       body: [

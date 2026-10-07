@@ -7,6 +7,13 @@ export interface ProvisioningKeeperDeps {
   allLicenses(): Promise<LicenseFullRow[]>;
   licenseTypes(appId: string): Promise<LicenseTypeView[]>;
   environments(appId: string): Promise<UserEnvironment[]>;
+  /**
+   * Licence ids this app's owner actually authorised. The keeper reads licence
+   * DOCUMENTS, and find() returns every app-owner-license document in the
+   * reactor whoever created it; the documents are system-signed, so a forged one
+   * has no signature to check. This set is the provenance they cannot supply.
+   */
+  authorizedLicenseIds(appId: string): Promise<Set<string>>;
   applyFor(appId: string, licence: ActiveLicense): Promise<void>;
   releaseFor(appId: string, environmentId: string): Promise<void>;
   cfg: LicensingConfig;
@@ -88,12 +95,25 @@ export class ProvisioningKeeper {
 
     // A retired type still supplies its template: the licence is the
     // entitlement, the type is only where the template comes from.
+    const authorized = await this.d.authorizedLicenseIds(appId);
+
     const actives: ActiveLicense[] = [];
     // Users whose active licence could not be resolved. Unknown is not
     // unentitled, so their environments are held, never released.
     const held = new Set<string>();
     for (const row of rows) {
       if (row.status !== "ACTIVE") continue;
+      // A licence nobody authorised provisions nothing. Holding rather than
+      // releasing keeps this non-destructive: a licence that predates the
+      // authorisation table, or a row lost to a failed write, must never cost a
+      // customer their environment.
+      if (!authorized.has(row.id)) {
+        this.d.logger.warn(
+          `[licensing] licence ${row.id} of app ${appId} skipped: no authorisation on record`,
+        );
+        held.add(row.user.toLowerCase());
+        continue;
+      }
       const templateHash = hashes.get(row.licenseTypeId);
       if (templateHash === undefined) {
         this.d.logger.warn(

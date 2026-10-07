@@ -34,6 +34,10 @@ export const LicenseTypeStatusSchema = z.enum(["ACTIVE", "DRAFT", "RETIRED"]);
 export const TemplateServiceTypeSchema = z.enum([
   "CLINT",
   "CONNECT",
+  "DOCLING",
+  "FUSION",
+  "PAPERLESS",
+  "SPECKLE",
   "SWITCHBOARD",
 ]);
 
