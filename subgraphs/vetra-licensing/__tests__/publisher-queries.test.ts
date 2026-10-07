@@ -27,24 +27,38 @@ const throwingDb = new Proxy(
   },
 ) as unknown as Kysely<VetraLicensingDB>;
 
-/** A db whose only supported query is the app_user_environments select. */
+const envRow = (app: string, user: string, env: string) => ({
+  app_id: app,
+  user_address: user,
+  environment_id: env,
+  license_id: `L-${env}`,
+  template_hash: "h",
+});
+
+/**
+ * A db whose only supported query is the app_user_environments select. It
+ * honours every `where(col, "=", value)` it is given, so dropping a filter in
+ * the resolver changes the rows returned, not just the calls made.
+ */
 function envDb(rows: Array<Record<string, string>>) {
-  const where = vi.fn();
+  const filters: Array<[string, string]> = [];
   const chain: Record<string, unknown> = {
     selectAll: () => chain,
-    where: (...a: unknown[]) => {
-      where(...a);
+    where: (col: string, op: string, val: string) => {
+      if (op !== "=") throw new Error(`unsupported operator ${op}`);
+      filters.push([col, val]);
       return chain;
     },
-    execute: async () => rows,
+    execute: async () =>
+      rows.filter((r) => filters.every(([c, v]) => r[c] === v)),
   };
-  const db = {
-    selectFrom: vi.fn((t: string) => {
+  return {
+    selectFrom: (t: string) => {
       if (t !== "app_user_environments") throw new Error(`unexpected ${t}`);
+      filters.length = 0;
       return chain;
-    }),
+    },
   } as unknown as Kysely<VetraLicensingDB>;
-  return { db, where };
 }
 
 const template = {
@@ -55,38 +69,44 @@ const template = {
   packageRegistry: null,
 };
 
+const lic = (id: string, app: string, user: string, status = "ACTIVE") => ({
+  id,
+  app,
+  user,
+  licenseTypeId: "T1",
+  status,
+  start: null,
+  end: null,
+});
+const ALL_LICENSES = [
+  lic("L1", "app-1", HOLDER),
+  lic("L2", "app-1", STRANGER),
+  lic("L3", "app-1", OWNER, "REVOKED"),
+  lic("LX", "app-2", HOLDER),
+];
+const typeDoc = (id: string, app: string, label: string) => ({
+  id,
+  app,
+  kind: "pro",
+  label,
+  status: "PUBLISHED",
+  validityDays: 30,
+  templateHash: "h",
+  template,
+});
+const ALL_TYPES = [typeDoc("T1", "app-1", "Pro"), typeDoc("TX", "app-2", "Other")];
+
 function makeDeps(over: { cfgEnabled?: boolean } = {}) {
   const reads = {
-    licenses: vi.fn(async () => [
-      {
-        id: "L1",
-        user: HOLDER,
-        licenseTypeId: "T1",
-        status: "ACTIVE",
-        start: null,
-        end: null,
-      },
-      {
-        id: "L2",
-        user: STRANGER,
-        licenseTypeId: "T1",
-        status: "ACTIVE",
-        start: null,
-        end: null,
-      },
-    ]),
+    licenses: vi.fn(async (appId: string, status: string | null) =>
+      ALL_LICENSES.filter(
+        (l) => l.app === appId && (status === null || l.status === status),
+      ).map(({ app: _app, ...l }) => l),
+    ),
     licenseTypes: vi.fn(),
-    licenseTypeDetails: vi.fn(async () => [
-      {
-        id: "T1",
-        kind: "pro",
-        label: "Pro",
-        status: "PUBLISHED",
-        validityDays: 30,
-        templateHash: "h",
-        template,
-      },
-    ]),
+    licenseTypeDetails: vi.fn(async (appId: string) =>
+      ALL_TYPES.filter((t) => t.app === appId).map(({ app: _app, ...t }) => t),
+    ),
     licenseType: vi.fn(),
     templateFor: vi.fn(),
     listLicenses: vi.fn(),
@@ -200,7 +220,7 @@ describe("publisher queries: reads", () => {
 
   it("serves every read even when licensing is disabled", async () => {
     const { deps } = makeDeps({ cfgEnabled: false });
-    const { db } = envDb([]);
+    const db = envDb([]);
     const q = Q(createPublisherResolvers(db, deps));
     await expect(q.myApps({}, {}, ctx(OWNER))).resolves.toHaveLength(1);
     await expect(
@@ -208,67 +228,78 @@ describe("publisher queries: reads", () => {
     ).resolves.toHaveLength(1);
     await expect(
       q.licenses({}, { appId: "app-1" }, ctx(OWNER)),
-    ).resolves.toHaveLength(2);
+    ).resolves.toHaveLength(3);
     await expect(
       q.environments({}, { appId: "app-1" }, ctx(OWNER)),
     ).resolves.toEqual([]);
   });
 
-  it("joins each licence to its environment id, or null when it has none", async () => {
-    const { deps, reads } = makeDeps();
-    const { db, where } = envDb([
-      {
-        app_id: "app-1",
-        user_address: HOLDER,
-        environment_id: "env-9",
-        license_id: "L1",
-        template_hash: "h",
-      },
-    ]);
-    const q = Q(createPublisherResolvers(db, deps));
-    const out = (await q.licenses(
+  it("licenseTypes returns only the requested app's types", async () => {
+    const { deps } = makeDeps();
+    const q = Q(createPublisherResolvers(throwingDb, deps));
+    const out = (await q.licenseTypes(
       {},
-      { appId: "app-1", status: "ACTIVE" },
+      { appId: "app-1" },
       ctx(OWNER),
-    )) as Array<{ id: string; environmentId: string | null }>;
-    expect(out.map((l) => [l.id, l.environmentId])).toEqual([
-      ["L1", "env-9"],
-      ["L2", null],
-    ]);
-    expect(reads.licenses).toHaveBeenCalledWith("app-1", "ACTIVE");
-    expect(where).toHaveBeenCalledWith("app_id", "=", "app-1");
+    )) as Array<{ id: string }>;
+    expect(out.map((t) => t.id)).toEqual(["T1"]);
   });
 
-  it("joins case-insensitively on the holder address", async () => {
+  it("licenses returns only the requested app's licences, filtered by status", async () => {
     const { deps } = makeDeps();
-    const { db } = envDb([
-      {
-        app_id: "app-1",
-        user_address: HOLDER.toUpperCase(),
-        environment_id: "env-9",
-        license_id: "L1",
-        template_hash: "h",
-      },
+    const q = Q(createPublisherResolvers(envDb([]), deps));
+    const all = (await q.licenses(
+      {},
+      { appId: "app-1" },
+      ctx(OWNER),
+    )) as Array<{ id: string }>;
+    expect(all.map((l) => l.id)).toEqual(["L1", "L2", "L3"]);
+    const revoked = (await q.licenses(
+      {},
+      { appId: "app-1", status: "REVOKED" },
+      ctx(OWNER),
+    )) as Array<{ id: string }>;
+    expect(revoked.map((l) => l.id)).toEqual(["L3"]);
+  });
+
+  it("joins each licence to its environment id, or null when it has none", async () => {
+    const { deps } = makeDeps();
+    // HOLDER also has an environment in app-2; it must not bleed into app-1.
+    const db = envDb([
+      envRow("app-1", HOLDER, "env-1"),
+      envRow("app-2", HOLDER, "env-X"),
+      envRow("app-2", STRANGER, "env-Y"),
     ]);
     const q = Q(createPublisherResolvers(db, deps));
     const out = (await q.licenses(
       {},
       { appId: "app-1" },
       ctx(OWNER),
-    )) as Array<{ environmentId: string | null }>;
-    expect(out[0].environmentId).toBe("env-9");
+    )) as Array<{ id: string; environmentId: string | null }>;
+    expect(out.map((l) => [l.id, l.environmentId])).toEqual([
+      ["L1", "env-1"],
+      ["L2", null],
+      ["L3", null],
+    ]);
   });
 
-  it("environments maps rows to the GraphQL shape", async () => {
+  it("joins case-insensitively on the holder address", async () => {
     const { deps } = makeDeps();
-    const { db } = envDb([
-      {
-        app_id: "app-1",
-        user_address: HOLDER,
-        environment_id: "env-9",
-        license_id: "L1",
-        template_hash: "h",
-      },
+    const db = envDb([envRow("app-1", HOLDER.toUpperCase(), "env-1")]);
+    const q = Q(createPublisherResolvers(db, deps));
+    const out = (await q.licenses(
+      {},
+      { appId: "app-1" },
+      ctx(OWNER),
+    )) as Array<{ environmentId: string | null }>;
+    expect(out[0].environmentId).toBe("env-1");
+  });
+
+  it("environments returns only the requested app's rows, never another publisher's", async () => {
+    const { deps } = makeDeps();
+    const db = envDb([
+      envRow("app-1", HOLDER, "env-1"),
+      envRow("app-2", STRANGER, "env-X"),
     ]);
     const q = Q(createPublisherResolvers(db, deps));
     await expect(
@@ -277,8 +308,8 @@ describe("publisher queries: reads", () => {
       {
         appId: "app-1",
         user: HOLDER,
-        environmentId: "env-9",
-        licenseId: "L1",
+        environmentId: "env-1",
+        licenseId: "L-env-1",
         templateHash: "h",
       },
     ]);
