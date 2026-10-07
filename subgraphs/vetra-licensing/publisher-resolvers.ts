@@ -91,7 +91,7 @@ export function createPublisherResolvers(
       throw err;
     }
     requireEnabled();
-    return licenseTypeId;
+    return { id: licenseTypeId, type };
   };
 
   /**
@@ -228,14 +228,21 @@ export function createPublisherResolvers(
         },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        const { id, type } = await authoriseType(args.input.licenseTypeId, ctx);
+        // The reducer always assigns validityDays, so an omitted key must
+        // carry the current value, or an unrelated edit would wipe it. Test key
+        // presence, not truthiness: explicit null clears, and 0 is a value.
+        const validityDays =
+          "validityDays" in args.input
+            ? (args.input.validityDays ?? null)
+            : (type.validityDays ?? null);
         // No `app` key, ever: the reducer would reassign the type to that app,
         // a cross-tenant write. Omitted, the reducer leaves the app untouched.
         return dispatch(id, [
           actions.setLicenseTypeDetails({
             kind: args.input.kind ?? null,
             label: args.input.label ?? null,
-            validityDays: args.input.validityDays ?? null,
+            validityDays,
           }),
         ]);
       },
@@ -252,7 +259,7 @@ export function createPublisherResolvers(
         },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
         return dispatch(id, [
           actions.setTemplate({
             size: args.input.size ?? null,
@@ -269,7 +276,7 @@ export function createPublisherResolvers(
         },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
         return dispatch(id, [
           actions.addTemplateService({
             id: crypto.randomUUID(),
@@ -290,7 +297,7 @@ export function createPublisherResolvers(
         },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
         return dispatch(id, [
           actions.addTemplatePackage({
             id: crypto.randomUUID(),
@@ -305,7 +312,7 @@ export function createPublisherResolvers(
         args: { licenseTypeId: string },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.licenseTypeId, ctx);
+        const { id } = await authoriseType(args.licenseTypeId, ctx);
         return dispatch(id, [actions.publishLicenseType({})]);
       },
 
@@ -314,7 +321,7 @@ export function createPublisherResolvers(
         args: { licenseTypeId: string },
         ctx: Ctx,
       ) => {
-        const id = await authoriseType(args.licenseTypeId, ctx);
+        const { id } = await authoriseType(args.licenseTypeId, ctx);
         return dispatch(id, [actions.retireLicenseType({})]);
       },
 

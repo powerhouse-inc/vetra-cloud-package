@@ -67,7 +67,7 @@ function makeDeps(over: { enabled?: boolean } = {}) {
   const reads = {
     licenseType: vi.fn(async (id: string) =>
       TYPES[id]
-        ? { id, app: TYPES[id], status: "DRAFT", validityDays: null }
+        ? { id, app: TYPES[id], status: "DRAFT", validityDays: 30 }
         : null,
     ),
   };
@@ -311,6 +311,39 @@ describe("publisher tier authoring", () => {
         ctx(),
       ),
     ).rejects.toBeInstanceOf(UnauthenticatedError);
+  });
+
+  const detailsInput = async (input: Record<string, unknown>) => {
+    const { m, dispatched } = makeDeps();
+    await m
+      .setLicenseTypeDetails(
+        {},
+        { input: { licenseTypeId: "T1", ...input } },
+        ctx(OWNER),
+      )
+      .catch(() => undefined); // the real reducer rejects 0; the dispatch is what we inspect
+    return dispatched[0].actions[0].input as Record<string, unknown>;
+  };
+
+  it("setLicenseTypeDetails: editing only the label keeps the current validityDays", async () => {
+    const input = await detailsInput({ label: "Renamed" });
+    expect(input.validityDays).toBe(30);
+    expect(input.label).toBe("Renamed");
+  });
+
+  it("setLicenseTypeDetails: an explicit validityDays null clears it", async () => {
+    const input = await detailsInput({ validityDays: null });
+    expect(input.validityDays).toBeNull();
+  });
+
+  it("setLicenseTypeDetails: validityDays 0 is sent as 0, not treated as absent", async () => {
+    const input = await detailsInput({ validityDays: 0 });
+    expect(input.validityDays).toBe(0);
+  });
+
+  it("setLicenseTypeDetails: a number sets validityDays; absent kind and label stay null (unchanged)", async () => {
+    const input = await detailsInput({ validityDays: 90 });
+    expect(input).toEqual({ kind: null, label: null, validityDays: 90 });
   });
 
   it("adds a service and a package with server-generated ids", async () => {
