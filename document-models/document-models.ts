@@ -1,5 +1,6 @@
 import { AppLicenseType as AppLicenseTypeV1 } from "document-models/app-license-type/v1";
 import { AppOwnerLicense as AppOwnerLicenseV1 } from "document-models/app-owner-license/v1";
+import { VetraApp as VetraAppV1 } from "document-models/vetra-app/v1";
 import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "document-models/vetra-cloud-environment/v1";
 
 /**
@@ -10,5 +11,6 @@ import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "document-model
 export const documentModels = [
   AppLicenseTypeV1,
   AppOwnerLicenseV1,
+  VetraAppV1,
   VetraCloudEnvironmentV1,
 ] as const;

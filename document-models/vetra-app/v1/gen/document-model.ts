@@ -1,0 +1,122 @@
+import type { DocumentModelGlobalState } from "document-model";
+
+export const documentModel: DocumentModelGlobalState = {
+  id: "powerhouse/vetra-app",
+  name: "VetraApp",
+  author: {
+    name: "Powerhouse",
+    website: "https://powerhouse.inc",
+  },
+  extension: "vapp",
+  description:
+    "A Vetra App: what a publisher owns, the repository it deploys from, and what it has published.",
+  specifications: [
+    {
+      version: 1,
+      changeLog: [],
+      state: {
+        global: {
+          schema:
+            "type VetraAppState {\n  name: String\n  slug: String\n  owner: EthereumAddress\n  status: VetraAppStatus!\n  repository: VetraAppRepository\n  identity: VetraAppIdentity\n  productionEnvironmentId: OID\n  previews: VetraAppPreviews\n  artifacts: [VetraAppArtifact!]!\n}\n\nenum VetraAppStatus {\n  PENDING_IDENTITY\n  ACTIVE\n  DISCONNECTED\n  DELETED\n}\n\ntype VetraAppRepository {\n  repositoryId: String\n  fullName: String\n  productionBranch: String\n}\n\ntype VetraAppIdentity {\n  did: String\n  expiresAt: DateTime\n}\n\ntype VetraAppPreviews {\n  enabled: Boolean!\n  limit: Int!\n  ttlDays: Int!\n}\n\ntype VetraAppArtifact {\n  id: OID!\n  kind: VetraAppArtifactKind!\n  name: String!\n  versions: [VetraAppArtifactVersion!]!\n  channels: [VetraAppArtifactChannel!]!\n}\n\nenum VetraAppArtifactKind {\n  PACKAGE\n  FUSION_IMAGE\n}\n\ntype VetraAppArtifactVersion {\n  version: String!\n  reference: String!\n  commitSha: String\n  runId: String\n  publishedAt: DateTime!\n}\n\ntype VetraAppArtifactChannel {\n  channel: AutoUpdateChannel!\n  version: String!\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}",
+          initialValue:
+            '{\n  "name": null,\n  "slug": null,\n  "owner": null,\n  "status": "PENDING_IDENTITY",\n  "repository": null,\n  "identity": null,\n  "productionEnvironmentId": null,\n  "previews": null,\n  "artifacts": []\n}',
+          examples: [],
+        },
+        local: {
+          schema: "",
+          initialValue: "",
+          examples: [],
+        },
+      },
+      modules: [
+        {
+          id: "module-app",
+          name: "app",
+          description: "App facts and published artifacts.",
+          operations: [
+            {
+              id: "op-set-app-details",
+              name: "SET_APP_DETAILS",
+              description: "Set the app's name, slug and owner.",
+              schema:
+                "input SetAppDetailsInput {\n  name: String\n  slug: String\n  owner: EthereumAddress\n}",
+              template: "",
+              reducer:
+                "if (action.input.name) state.name = action.input.name;\nif (action.input.slug) state.slug = action.input.slug;\nif (action.input.owner) state.owner = action.input.owner;",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-connect-repository",
+              name: "CONNECT_REPOSITORY",
+              description:
+                "Record the GitHub repository this app deploys from.",
+              schema:
+                "input ConnectRepositoryInput {\n  repositoryId: String\n  fullName: String\n  productionBranch: String\n}",
+              template: "",
+              reducer:
+                "state.repository = {\n  repositoryId: action.input.repositoryId ?? null,\n  fullName: action.input.fullName ?? null,\n  productionBranch: action.input.productionBranch ?? null,\n};",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-identity",
+              name: "SET_IDENTITY",
+              description:
+                "Record the app's Renown workload identity and its expiry.",
+              schema:
+                "input SetIdentityInput {\n  did: String\n  expiresAt: DateTime\n}",
+              template: "",
+              reducer:
+                "state.identity = {\n  did: action.input.did ?? null,\n  expiresAt: action.input.expiresAt ?? null,\n};",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-status",
+              name: "SET_STATUS",
+              description:
+                "Set the app's lifecycle status. DELETED is a soft delete and is kept forever.",
+              schema: "input SetStatusInput {\n  status: VetraAppStatus!\n}",
+              template: "",
+              reducer: "state.status = action.input.status;",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-previews",
+              name: "SET_PREVIEWS",
+              description: "Set the preview environment policy.",
+              schema:
+                "input SetPreviewsInput {\n  enabled: Boolean!\n  limit: Int!\n  ttlDays: Int!\n}",
+              template: "",
+              reducer:
+                "state.previews = {\n  enabled: action.input.enabled,\n  limit: action.input.limit,\n  ttlDays: action.input.ttlDays,\n};",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-production-environment",
+              name: "SET_PRODUCTION_ENVIRONMENT",
+              description:
+                "Point the app at its production environment document.",
+              schema:
+                "input SetProductionEnvironmentInput {\n  environmentId: OID\n}",
+              template: "",
+              reducer:
+                "state.productionEnvironmentId = action.input.environmentId ?? null;",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
