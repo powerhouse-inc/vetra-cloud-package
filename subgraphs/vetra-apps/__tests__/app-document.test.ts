@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "document-model";
-import { makeHarness, seedActiveApp, type Harness } from "./harness.js";
+import { makeHarness, owner, seedActiveApp, type Harness } from "./harness.js";
+import { deleteApp, updateApp } from "../service.js";
 import { setStatus } from "../../../document-models/vetra-app/v1/index.js";
 import {
   appDocumentActions,
@@ -89,9 +90,11 @@ describe("backfillAppDocuments", () => {
 describe("mirrorAppToDocument", () => {
   it("mirrors an app change into the document", async () => {
     const docs = fakeDocs(new Set(["a1"]));
-    await mirrorAppToDocument({ db: h.db, docs, logger: { warn: vi.fn() } }, "a1", [
-      setStatus({ status: "DISCONNECTED" }) as Action,
-    ]);
+    await mirrorAppToDocument(
+      { db: h.db, docs, logger: { warn: vi.fn() } },
+      "a1",
+      [setStatus({ status: "DISCONNECTED" }) as Action],
+    );
     expect(docs.executed).toHaveLength(1);
   });
 
@@ -111,5 +114,84 @@ describe("mirrorAppToDocument", () => {
       ]),
     ).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("dual-write", () => {
+  const names = (docs: ReturnType<typeof fakeDocs>, at = -1) =>
+    docs.executed.at(at)!.actions.map((a) => a.type);
+
+  it("mirrors the row's current facts, not just the column that changed", async () => {
+    const app = await seedActiveApp(h);
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
+
+    await updateApp(h.deps, owner, app.id, { name: "renamed" });
+
+    expect(docs.executed).toHaveLength(1);
+    // CONNECT_REPOSITORY / SET_IDENTITY / SET_PREVIEWS replace their group
+    // wholesale, so a patch-shaped mirror would null what the patch left alone.
+    expect(names(docs)).toStrictEqual([
+      "SET_APP_DETAILS",
+      "CONNECT_REPOSITORY",
+      "SET_IDENTITY",
+      "SET_PREVIEWS",
+      "SET_PRODUCTION_ENVIRONMENT",
+      "SET_STATUS",
+    ]);
+    const details = docs.executed[0]!.actions[0] as unknown as {
+      input: { name: string; slug: string };
+    };
+    expect(details.input.name).toBe("renamed");
+    expect(details.input.slug).toBe(app.slug);
+  });
+
+  it("creates the document first when it is missing", async () => {
+    const app = await seedActiveApp(h);
+    const docs = fakeDocs();
+    h.deps.docs = docs;
+
+    await updateApp(h.deps, owner, app.id, { name: "healed" });
+
+    expect(docs.created).toStrictEqual([app.id]);
+    expect(docs.executed).toHaveLength(1);
+  });
+
+  it("mirrors the DELETED status when an app is deleted", async () => {
+    const app = await seedActiveApp(h);
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
+
+    await deleteApp(h.deps, owner, app.id, true);
+
+    const status = docs.executed.at(-1)!.actions.at(-1) as unknown as {
+      input: { status: string };
+    };
+    expect(status.input.status).toBe("DELETED");
+  });
+
+  // Reads are still served from the table in this step, so a reactor outage
+  // must not fail the user's request.
+  it("still updates the app when the document write throws", async () => {
+    const app = await seedActiveApp(h);
+    h.deps.docs = {
+      async create() {},
+      async exists() {
+        return true;
+      },
+      async execute() {
+        throw new Error("reactor down");
+      },
+    };
+
+    const updated = await updateApp(h.deps, owner, app.id, { name: "kept" });
+    expect(updated.name).toBe("kept");
+  });
+
+  it("does not mirror at all when no document store is wired", async () => {
+    const app = await seedActiveApp(h);
+    h.deps.docs = null;
+    const updated = await updateApp(h.deps, owner, app.id, { name: "no-docs" });
+    expect(updated.name).toBe("no-docs");
   });
 });

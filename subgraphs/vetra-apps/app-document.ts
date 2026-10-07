@@ -116,3 +116,68 @@ export async function mirrorAppToDocument(
     );
   }
 }
+
+/**
+ * What the dual-write needs from `AppsDeps`. `docs` is optional: a deployment
+ * with no reactor surface wired simply does not mirror, and every existing
+ * caller keeps type-checking unchanged.
+ */
+export interface AppMirrorDeps {
+  db: Kysely<VetraAppsDB>;
+  docs?: AppDocStore | null;
+  logger: Pick<Console, "warn">;
+}
+
+/**
+ * Mirrors a row's *current* facts into its document, creating the document
+ * first if it is missing.
+ *
+ * Mirroring the whole row rather than the columns that changed is deliberate.
+ * CONNECT_REPOSITORY, SET_IDENTITY and SET_PREVIEWS replace their group
+ * wholesale, so an action built from a partial patch would null the fields the
+ * patch left alone. The row is the truth in this step; re-stating it is
+ * idempotent and cannot drift.
+ *
+ * Creating a missing document here also heals an app that was created while
+ * the reactor was unreachable.
+ */
+export async function mirrorAppRow(
+  deps: AppMirrorDeps,
+  row: AppRow,
+): Promise<void> {
+  const docs = deps.docs;
+  if (!docs) return;
+  try {
+    if (!(await docs.exists(row.id))) await docs.create(row.id);
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] creating the document for app ${row.id} failed: ${String(err)}`,
+    );
+    return;
+  }
+  await mirrorAppToDocument(
+    { db: deps.db, docs, logger: deps.logger },
+    row.id,
+    appDocumentActions(row),
+  );
+}
+
+/** Mirrors an app by id, when the caller has the id but not the row. */
+export async function mirrorAppById(
+  deps: AppMirrorDeps,
+  appId: string,
+): Promise<void> {
+  try {
+    const row = await deps.db
+      .selectFrom("apps")
+      .selectAll()
+      .where("id", "=", appId)
+      .executeTakeFirst();
+    if (!row) return;
+    await mirrorAppRow(deps, row);
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] reloading app ${appId} to mirror it failed: ${String(err)}`,
+    );
+  }
+}

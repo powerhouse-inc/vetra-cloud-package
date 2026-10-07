@@ -13,6 +13,8 @@ import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
+import { backfillAppDocuments } from "./app-document.js";
+import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
   reportDeploymentToGithub,
   reportPreviewRemovedToGithub,
@@ -66,6 +68,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
+      docs: createReactorAppDocStore(this.reactorClient as never),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     deps.onPreviewRemoved = (app, preview, reason) =>
@@ -143,6 +146,22 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       await runPreviewSweepOnce(deps);
       await runIdentityExpirySweepOnce(deps);
     });
+
+    // One document per app row. Idempotent: a row whose document exists is
+    // skipped. Not awaited — reads are served from the table, so startup must
+    // not wait on the reactor.
+    void backfillAppDocuments({ db, docs: deps.docs!, logger: console })
+      .then(({ created, skipped }) => {
+        if (created > 0 || skipped > 0)
+          console.info(
+            `[vetra-apps] app documents: ${created} created, ${skipped} already present`,
+          );
+      })
+      .catch((err: unknown) =>
+        console.warn(
+          `[vetra-apps] app document backfill failed: ${String(err)}`,
+        ),
+      );
   }
 
   async onDisconnect() {

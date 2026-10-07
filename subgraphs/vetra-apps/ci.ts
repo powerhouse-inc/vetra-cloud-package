@@ -15,6 +15,7 @@ import {
   type CiIdentity,
   type DeployAppInput,
 } from "./service.js";
+import { mirrorAppById } from "./app-document.js";
 
 /**
  * CI-facing HTTP routes of vetra-apps, mounted under
@@ -103,7 +104,7 @@ async function markIdentityExpired(
   address: string,
 ) {
   const nowIso = deps.now().toISOString();
-  await deps.db
+  const expired = await deps.db
     .updateTable("apps")
     .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
     .where("identity_did", "=", appDid)
@@ -115,7 +116,9 @@ async function markIdentityExpired(
         eb("identity_expires_at", "<=", nowIso),
       ]),
     )
+    .returning(["id"])
     .execute();
+  for (const row of expired) await mirrorAppById(deps, row.id);
 }
 
 const STATUS: Record<string, number> = {

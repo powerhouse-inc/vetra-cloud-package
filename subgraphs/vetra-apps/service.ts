@@ -49,6 +49,11 @@ import {
   workflowTemplate,
   type PackageManager,
 } from "./workflow-template.js";
+import {
+  mirrorAppById,
+  mirrorAppRow,
+  type AppDocStore,
+} from "./app-document.js";
 
 export interface AppsLogger {
   info(msg: string): void;
@@ -66,6 +71,11 @@ export interface AppsDeps {
   now: () => Date;
   newId: () => string;
   logger: AppsLogger;
+  /**
+   * The reactor surface the app documents live on. Absent = no mirroring; reads
+   * are served from the table either way in this step.
+   */
+  docs?: AppDocStore | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
@@ -621,7 +631,9 @@ export async function createApp(
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
   );
-  return (await getApp(deps.db, appId))!;
+  const created = (await getApp(deps.db, appId))!;
+  await mirrorAppRow(deps, created);
+  return created;
 }
 
 /**
@@ -657,7 +669,9 @@ export async function confirmAppIdentity(
     })
     .where("id", "=", app.id)
     .execute();
-  return (await getApp(deps.db, app.id))!;
+  const confirmed = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, confirmed);
+  return confirmed;
 }
 
 export interface UpdateAppInput {
@@ -724,7 +738,9 @@ export async function updateApp(
       .where("id", "=", app.id)
       .execute();
   }
-  return (await getApp(deps.db, app.id))!;
+  const updated = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, updated);
+  return updated;
 }
 
 /**
@@ -840,6 +856,7 @@ export async function deleteApp(
     .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
     .where("id", "=", app.id)
     .execute();
+  await mirrorAppById(deps, app.id);
   deps.logger.info(
     `[vetra-apps] deleted App ${app.slug} (${app.id}); slug stays reserved`,
   );
@@ -866,13 +883,14 @@ export async function detectRepoToolchain(
     github.getRepoFile(installationId, repoFullName, path).catch(() => null);
 
   const pkg = await read("package.json");
-  if (pkg === null) return { packageManager: null, declaresPackageManager: false };
+  if (pkg === null)
+    return { packageManager: null, declaresPackageManager: false };
 
   let declaresPackageManager = false;
   try {
     declaresPackageManager =
-      typeof (JSON.parse(pkg) as { packageManager?: unknown }).packageManager ===
-      "string";
+      typeof (JSON.parse(pkg) as { packageManager?: unknown })
+        .packageManager === "string";
   } catch {
     // An unparseable package.json still means there is a Node project here.
   }
