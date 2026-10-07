@@ -7,8 +7,10 @@ import {
   UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createReactorLicenseReads } from "../reads.js";
 import { LicensingDisabledError } from "../resolvers.js";
 import { UnauthenticatedError } from "../auth.js";
+import { NotAppOwnerError } from "../publisher-auth.js";
 import { InvalidHolderAddressError } from "../issuers/publisher-grant.js";
 import type { VetraLicensingDB } from "../db/schema.js";
 
@@ -183,7 +185,7 @@ describe("publisher issueGrant", () => {
         { input: { ...GRANT.input, appId: "app-2" } },
         ctx(OWNER),
       ),
-    ).rejects.toBeInstanceOf(Error);
+    ).rejects.toBeInstanceOf(NotAppOwnerError);
     expect(grant.createLicenseDocument).not.toHaveBeenCalled();
     expect(dispatched).toEqual([]);
   });
@@ -202,7 +204,9 @@ describe("publisher revokeLicense", () => {
 
   it("another publisher's licence is UnknownLicenseError and nothing is dispatched", async () => {
     const { m, dispatched } = makeDeps();
-    // The caller also forges an app id they DO own; it must be ignored.
+    // RevokeLicenseInput has no appId, so GraphQL rejects this at the boundary;
+    // the test deliberately pins the resolver-level contract as defence in depth.
+    // The caller forges an app id they DO own; it must be ignored.
     const err = await m
       .revokeLicense(
         {},
@@ -225,6 +229,43 @@ describe("publisher revokeLicense", () => {
     expect(missing).toBeInstanceOf(UnknownLicenseError);
     expect((missing as Error).message).toBe((foreign as Error).message);
     expect(dispatched).toEqual([]);
+  });
+
+  it("a licence-TYPE id is UnknownLicenseError, not a false success", async () => {
+    const { m, dispatched, licenseGateway } = makeDeps();
+    // Real reads over an ACTIVE licence-type document of the caller's own app:
+    // without a document-type check it parses as a licence and "revokes".
+    const typeDoc = {
+      header: { id: "T1", documentType: "powerhouse/app-license-type" },
+      state: { global: { app: "app-1", kind: "pro", status: "ACTIVE" } },
+    };
+    const realReads = createReactorLicenseReads({
+      find: async () => ({ results: [] }),
+      get: async (id: string) => {
+        if (id !== "T1") throw new Error(`Document not found: ${id}`);
+        return typeDoc;
+      },
+    });
+    const m2 = createPublisherResolvers(throwingDb, {
+      auth: {
+        findAppById: async () => ({
+          id: "app-1",
+          name: "a",
+          status: "ACTIVE",
+          owner_address: OWNER,
+        }),
+        listAppsForOwner: vi.fn(),
+      },
+      reads: realReads,
+      cfg: { enabled: true },
+      licenseGateway,
+    } as unknown as PublisherDeps).VetraPublisherMutations as typeof m;
+    const err = await m2
+      .revokeLicense({}, { input: { licenseId: "T1" } }, ctx(OWNER))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnknownLicenseError);
+    expect(dispatched).toEqual([]);
+    expect(licenseGateway.execute).not.toHaveBeenCalled();
   });
 
   it("reads one licence rather than scanning them all", async () => {
@@ -264,8 +305,11 @@ describe("publisher grant gates", () => {
       const err = await m[name]({}, args, ctx(STRANGER)).catch(
         (e: unknown) => e,
       );
-      expect(err, name).toBeInstanceOf(Error);
       expect(err, name).not.toBeInstanceOf(LicensingDisabledError);
+      // issueGrant surfaces the raw ownership error; revokeLicense remaps it.
+      expect(err, name).toBeInstanceOf(
+        name === "issueGrant" ? NotAppOwnerError : UnknownLicenseError,
+      );
       expect(dispatched, name).toEqual([]);
       expect(created, name).toEqual([]);
     }

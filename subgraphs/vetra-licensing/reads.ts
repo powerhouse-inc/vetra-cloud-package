@@ -78,6 +78,11 @@ function docId(doc: unknown): string | null {
   return str(doc.header.id);
 }
 
+/** True when the document's own type is the expected one. */
+function isDocType(doc: unknown, type: string): boolean {
+  return isRec(doc) && isRec(doc.header) && doc.header.documentType === type;
+}
+
 function globalState(doc: unknown): Rec | null {
   if (!isRec(doc) || !isRec(doc.state) || !isRec(doc.state.global)) return null;
   return doc.state.global;
@@ -271,7 +276,11 @@ export function createReactorLicenseReads(
     },
 
     async licenseType(id) {
-      const t = parseLicenseType(await getDoc(id));
+      // By-id reads must check the type: a licence document would otherwise
+      // parse as a licence type (and vice versa).
+      const doc = await getDoc(id);
+      if (!isDocType(doc, LICENSE_TYPE_DOC_TYPE)) return null;
+      const t = parseLicenseType(doc);
       if (!t || t.app === null) return null;
       return {
         id: t.id,
@@ -282,7 +291,9 @@ export function createReactorLicenseReads(
     },
 
     async license(id) {
-      const l = parseLicense(await getDoc(id));
+      const doc = await getDoc(id);
+      if (!isDocType(doc, LICENSE_DOC_TYPE)) return null;
+      const l = parseLicense(doc);
       if (!l || l.app === null) return null;
       return {
         id: l.id,

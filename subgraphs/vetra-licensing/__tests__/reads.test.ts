@@ -18,7 +18,7 @@ function license(
   g: Partial<Record<string, unknown>> = {},
 ): unknown {
   return {
-    header: { id },
+    header: { id, documentType: "powerhouse/app-owner-license" },
     state: {
       global: {
         app: "app-1",
@@ -35,7 +35,7 @@ function license(
 
 function licenseType(id: string, g: Partial<Record<string, unknown>> = {}) {
   return {
-    header: { id },
+    header: { id, documentType: "powerhouse/app-license-type" },
     state: {
       global: {
         app: "app-1",
@@ -301,6 +301,22 @@ describe("license", () => {
     expect(await reads.license("nope")).toBeNull();
     expect(await reads.license("lic-2")).toBeNull();
     expect(await reads.license("lic-3")).toBeNull();
+  });
+});
+
+describe("by-id reads check the document type", () => {
+  it("license() is null for an ACTIVE licence-type document", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lt-1": licenseType("lt-1") }),
+    );
+    expect(await reads.license("lt-1")).toBeNull();
+  });
+
+  it("licenseType() is null for a licence document", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lic-1": license("lic-1", { kind: "pro" }) }),
+    );
+    expect(await reads.licenseType("lic-1")).toBeNull();
   });
 });
 
