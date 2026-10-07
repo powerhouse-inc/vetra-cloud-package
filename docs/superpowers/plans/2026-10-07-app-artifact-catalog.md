@@ -627,11 +627,12 @@ workload token as every other CI call."
 - Modify: `subgraphs/vetra-apps/schema.ts` (SDL)
 - Modify: `subgraphs/vetra-apps/resolvers.ts`
 - Modify: `subgraphs/vetra-apps/artifacts.ts` (add the query helper)
+- Modify: `subgraphs/vetra-apps/service.ts` (add `appArtifactsFor`)
 - Test: `subgraphs/vetra-apps/__tests__/artifacts.test.ts` (extend)
 
 **Interfaces:**
 - Consumes: `normalizeArtifactName` (Task 2).
-- Produces: `listAppArtifacts(db, appId, opts?: { limit?: number }): Promise<ArtifactView[]>` where
+- Produces: `listAppArtifacts(db, appId, opts?: { limit?: number }): Promise<ArtifactView[]>`, `appArtifactsFor(deps, caller, appId)`, where
   `ArtifactView = { kind: ArtifactKind; name: string; versions: string[]; channels: Array<{ channel: string; version: string }>; latestReference: string }`,
   and the GraphQL field `Query.appArtifacts(appId: ID!): [AppArtifact!]!`.
 
@@ -763,17 +764,37 @@ and add to `type Query`:
   appArtifacts(appId: ID!): [AppArtifact!]!
 ```
 
-In `subgraphs/vetra-apps/resolvers.ts`, beside the other app-scoped queries (the `appDeployment` resolver at `resolvers.ts:189` is the closest shape), add:
+Resolvers in this subgraph call a service function rather than reaching into
+`deps.db` (see `appDeployment` at `resolvers.ts:189`, which calls
+`appDeploymentFor`). Follow that: add to `subgraphs/vetra-apps/service.ts`,
+beside `appDeploymentsFor`:
+
+```ts
+/** Owner-scoped read of an app's catalogued artifacts. */
+export async function appArtifactsFor(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+) {
+  const app = await appForOwner(deps, caller, appId);
+  return listAppArtifacts(deps.db, app.id);
+}
+```
+
+`appForOwner` (exported, `service.ts:414`) is the authorised loader —
+`loadAppForOwner` is module-private and cannot be imported. Add
+`import { listAppArtifacts } from "./artifacts.js";` to `service.ts`.
+
+Then in `subgraphs/vetra-apps/resolvers.ts`, beside `appDeployment`:
 
 ```ts
       appArtifacts: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
-        guard(deps, "appArtifacts", async () => {
-          const app = await loadAppForOwner(deps, requireCaller(ctx), appId);
-          return listAppArtifacts(deps.db, app.id);
-        }),
+        guard(deps, "appArtifacts", () =>
+          appArtifactsFor(deps, requireCaller(ctx), appId),
+        ),
 ```
 
-Import `listAppArtifacts` from `./artifacts.js`.
+Import `appArtifactsFor` from `./service.js`.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -784,7 +805,7 @@ Expected: PASS, including the SDL test in `subgraph.test.ts` that asserts every 
 
 ```bash
 npm run tsc && npx oxlint subgraphs/vetra-apps
-git add subgraphs/vetra-apps/artifacts.ts subgraphs/vetra-apps/schema.ts subgraphs/vetra-apps/resolvers.ts subgraphs/vetra-apps/__tests__/artifacts.test.ts
+git add subgraphs/vetra-apps/artifacts.ts subgraphs/vetra-apps/schema.ts subgraphs/vetra-apps/resolvers.ts subgraphs/vetra-apps/service.ts subgraphs/vetra-apps/__tests__/artifacts.test.ts
 git commit -m "feat(apps): appArtifacts query for the template builder
 
 Groups an app's published versions and channel pointers per artifact, bounded so
