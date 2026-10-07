@@ -1,7 +1,9 @@
 import { gql } from "graphql-tag";
-import type { DocumentNode } from "graphql";
+import { Kind, type DocumentNode } from "graphql";
+import { publisherSchema } from "./publisher-schema.js";
 
-export const schema: DocumentNode = gql`
+/** The machine surface (vetraLicensing). Unchanged; served as part of `schema`. */
+export const machineSchema: DocumentNode = gql`
   type AppUserEnvironment {
     appId: String!
     user: String!
@@ -66,3 +68,13 @@ export const schema: DocumentNode = gql`
     vetraLicensing: VetraLicensingMutations!
   }
 `;
+
+/**
+ * Everything this subgraph serves: the machine surface and the publisher
+ * surface in one document. The publisher document extends Query and Mutation
+ * and reuses AppUserEnvironment, so the two are only valid together.
+ */
+export const schema: DocumentNode = {
+  kind: Kind.DOCUMENT,
+  definitions: [...machineSchema.definitions, ...publisherSchema.definitions],
+};
