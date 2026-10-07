@@ -130,6 +130,24 @@ describe("ProvisioningKeeper", () => {
     expect(d.releaseFor).not.toHaveBeenCalled();
   });
 
+  it("holds regardless of address case: lowercase licence, checksummed environment row", async () => {
+    // Mirror of the case above. Real rows are lowercased on write
+    // (provision.ts), so this direction is defensive only; it pins the
+    // precedent computeLicensePlan sets, that the invariant is enforced here
+    // rather than assumed of the caller.
+    const d = deps(
+      {},
+      [lic({ licenseTypeId: "type-gone", user: "0xabcdef0123456789abcdef0123456789abcdef01" })],
+      {
+        "app-a": [
+          { user: "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01", environmentId: "env-case2", licenseId: "lic-1", templateHash: "hash-a" },
+        ],
+      },
+    );
+    await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.releaseFor.mock.calls).toEqual([]);
+  });
+
   it("still releases a user with no active licence while holding another user's environment", async () => {
     const d = deps(
       {},
@@ -281,6 +299,24 @@ describe("ProvisioningKeeper", () => {
     release();
     await vi.advanceTimersByTimeAsync(cfg.scanIntervalMs);
     expect(d.allLicenses).toHaveBeenCalledTimes(2);
+    keeper.stop();
+  });
+
+  it("releases the re-entrancy guard after a throwing tick, so the next tick runs", async () => {
+    vi.useFakeTimers();
+    const allLicenses = vi
+      .fn<() => Promise<LicenseFullRow[]>>()
+      .mockRejectedValueOnce(new Error("first tick fails"))
+      .mockResolvedValue([lic({})]);
+    const d = deps({ allLicenses });
+    const keeper = new ProvisioningKeeper(d);
+    keeper.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(d.applyFor).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(cfg.scanIntervalMs);
+    expect(allLicenses).toHaveBeenCalledTimes(2);
+    expect(d.applyFor).toHaveBeenCalledTimes(1);
     keeper.stop();
   });
 
