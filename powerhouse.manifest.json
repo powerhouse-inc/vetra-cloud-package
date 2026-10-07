@@ -28,6 +28,13 @@
       "documentTypes": [
         "powerhouse/vetra-cloud-environment"
       ]
+    },
+    {
+      "id": "app-license-type",
+      "name": "app-license-type",
+      "documentTypes": [
+        "powerhouse/app-license-type"
+      ]
     }
   ],
   "processors": [
