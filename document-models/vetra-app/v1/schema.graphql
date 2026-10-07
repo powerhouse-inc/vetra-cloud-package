@@ -1,0 +1,138 @@
+scalar Unknown
+scalar DateTime
+scalar Address
+scalar AttachmentRef
+scalar Amount_Tokens
+scalar EthereumAddress
+scalar EmailAddress
+scalar Amount_Percentage
+scalar Date
+scalar URL
+scalar Amount_Money
+scalar OLabel
+scalar Currency
+scalar PHID
+scalar OID
+scalar Amount_Fiat
+scalar Amount_Currency
+scalar Amount_Crypto
+scalar Amount
+scalar Upload
+
+type VetraAppState {
+  name: String
+  slug: String
+  owner: EthereumAddress
+  status: VetraAppStatus!
+  repository: VetraAppRepository
+  identity: VetraAppIdentity
+  productionEnvironmentId: OID
+  previews: VetraAppPreviews
+  artifacts: [VetraAppArtifact!]!
+}
+
+enum VetraAppStatus {
+  PENDING_IDENTITY
+  ACTIVE
+  DISCONNECTED
+  DELETED
+}
+
+type VetraAppRepository {
+  repositoryId: String
+  fullName: String
+  productionBranch: String
+}
+
+type VetraAppIdentity {
+  did: String
+  expiresAt: DateTime
+}
+
+type VetraAppPreviews {
+  enabled: Boolean!
+  limit: Int!
+  ttlDays: Int!
+}
+
+type VetraAppArtifact {
+  id: OID!
+  kind: VetraAppArtifactKind!
+  name: String!
+  versions: [VetraAppArtifactVersion!]!
+  channels: [VetraAppArtifactChannel!]!
+}
+
+enum VetraAppArtifactKind {
+  PACKAGE
+  FUSION_IMAGE
+}
+
+type VetraAppArtifactVersion {
+  version: String!
+  reference: String!
+  commitSha: String
+  runId: String
+  publishedAt: DateTime!
+}
+
+type VetraAppArtifactChannel {
+  channel: AutoUpdateChannel!
+  version: String!
+}
+
+enum AutoUpdateChannel {
+  DEV
+  STAGING
+  LATEST
+}
+
+# app
+
+input SetAppDetailsInput {
+  name: String
+  slug: String
+  owner: EthereumAddress
+}
+
+input ConnectRepositoryInput {
+  repositoryId: String
+  fullName: String
+  productionBranch: String
+}
+
+input SetIdentityInput {
+  did: String
+  expiresAt: DateTime
+}
+
+input SetStatusInput {
+  status: VetraAppStatus!
+}
+
+input SetPreviewsInput {
+  enabled: Boolean!
+  limit: Int!
+  ttlDays: Int!
+}
+
+input SetProductionEnvironmentInput {
+  environmentId: OID
+}
+
+input RecordArtifactVersionInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  version: String!
+  reference: String!
+  commitSha: String
+  runId: String
+  publishedAt: DateTime!
+}
+
+input SetArtifactChannelInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  channel: AutoUpdateChannel!
+  version: String!
+}

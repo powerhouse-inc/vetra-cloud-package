@@ -18,6 +18,10 @@
     {
       "id": "powerhouse/app-owner-license",
       "name": "AppOwnerLicense"
+    },
+    {
+      "id": "powerhouse/vetra-app",
+      "name": "VetraApp"
     }
   ],
   "apps": [],

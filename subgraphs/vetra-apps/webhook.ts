@@ -5,6 +5,7 @@ import {
   deletePreviewsOfApp,
   type AppsDeps,
 } from "./service.js";
+import { mirrorAppById } from "./app-document.js";
 
 /** `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`. */
 export function verifyGithubSignature(
@@ -63,6 +64,7 @@ async function disconnect(
       .set({ status: "DISCONNECTED", updated_at: deps.now().toISOString() })
       .where("id", "=", app.id)
       .execute();
+    await mirrorAppById(deps, app.id);
     await deletePreviewsOfApp(deps, { ...app, status: "DISCONNECTED" }, reason);
     deps.logger.info(`[vetra-apps] App ${app.slug} disconnected (${reason})`);
   }
