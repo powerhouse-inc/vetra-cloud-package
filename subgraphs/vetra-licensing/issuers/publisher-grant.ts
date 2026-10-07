@@ -23,6 +23,19 @@ export interface GrantDeps {
   } | null>;
   createLicenseDocument(): Promise<string>;
   execute(documentId: string, actions: Action[]): Promise<unknown>;
+  /**
+   * Records that this licence was authorised by the app's owner. The keeper
+   * provisions only licences with such a record, because the licence documents
+   * themselves are system-signed and carry no provenance to check.
+   */
+  recordGrant(row: {
+    licenseId: string;
+    appId: string;
+    licenseTypeId: string;
+    user: string;
+    issuedBy: string;
+    now: string;
+  }): Promise<void>;
 }
 
 export interface GrantInput {
@@ -87,6 +100,17 @@ export async function issuePublisherGrant(
       end,
     }),
   ]);
+
+  // After the document exists, so a failed issue never leaves an authorisation
+  // for a licence that was not created.
+  await deps.recordGrant({
+    licenseId: documentId,
+    appId: input.appId,
+    licenseTypeId: type.id,
+    user,
+    issuedBy: input.issuedBy.toLowerCase(),
+    now: start,
+  });
 
   return documentId;
 }

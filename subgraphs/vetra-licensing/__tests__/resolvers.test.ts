@@ -40,6 +40,7 @@ const spies = () => ({
   })),
   createLicenseDocument: vi.fn(async () => "lic-new"),
   grantExecute: vi.fn(async (_id: string, _a: unknown[]) => undefined),
+  recordGrant: vi.fn(async () => undefined),
 });
 
 const build = (s: ReturnType<typeof spies>, enabled = false) => {
@@ -65,6 +66,7 @@ const build = (s: ReturnType<typeof spies>, enabled = false) => {
       getLicenseType: s.getLicenseType,
       createLicenseDocument: s.createLicenseDocument,
       execute: s.grantExecute,
+      recordGrant: s.recordGrant,
     },
     cfg: {
       enabled,
