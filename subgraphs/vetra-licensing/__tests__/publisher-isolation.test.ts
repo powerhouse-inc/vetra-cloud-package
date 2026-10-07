@@ -212,7 +212,6 @@ const rejection = async (p: Promise<unknown>): Promise<Error> => {
   throw new Error("expected the call to be refused, but it resolved");
 };
 
-/** Message with the id the caller typed replaced, so ids can be compared. */
 /**
  * The WIRE representation: what a client receives. Isolation is judged on this,
  * not on the domain class, so a change to the code a client sees cannot slip
@@ -225,6 +224,7 @@ async function expectWire(p: Promise<unknown> | Error, code: string) {
   expect(codeOf(err)).toBe(code);
 }
 
+/** Message with the id the caller typed replaced, so ids can be compared. */
 const sans = (e: Error, id: string) => e.message.split(id).join("<id>");
 
 describe("app-keyed queries refuse another publisher's app", () => {
@@ -305,9 +305,9 @@ describe("app-keyed mutations refuse another publisher's app", () => {
     it("on B's app: refused, nothing issued", async () => {
       const h = makeHarness();
       await expectWire(
-      h.m.issueGrant({}, { input: { appId: APP_B, licenseTypeId: TYPE_B, user: HOLDER_B } }, asA),
-      "UNKNOWN_APP",
-    );
+        h.m.issueGrant({}, { input: { appId: APP_B, licenseTypeId: TYPE_B, user: HOLDER_B } }, asA),
+        "UNKNOWN_APP",
+      );
       h.expectNoWrite();
       expect(h.grant.getLicenseType).not.toHaveBeenCalled();
     });

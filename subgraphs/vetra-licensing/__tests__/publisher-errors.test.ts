@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { GraphQLError } from "graphql";
+import { GraphQLError, buildASTSchema, type GraphQLObjectType } from "graphql";
+import { schema } from "../schema.js";
 import type { Kysely } from "kysely";
 import { toPublisherGraphQLError, OperationRejectedError } from "../publisher-errors.js";
 import { UnauthenticatedError, AppIdentityInactiveError } from "../auth.js";
@@ -118,8 +119,20 @@ describe("publisher resolvers carry codes end to end", () => {
     ...(r.VetraPublisherMutations as Record<string, Field>),
   });
 
-  it("has exactly 13 publisher fields", () => {
-    expect(Object.keys(fieldsOf(build()))).toHaveLength(13);
+  it("resolver maps and the built schema define exactly the same publisher fields", () => {
+    // Both directions: a resolver with no schema field is dead code, and a
+    // schema field with no resolver would be a null at runtime. The count
+    // follows from the schema, not from a magic number.
+    const built = buildASTSchema(schema);
+    const r = build();
+    for (const group of ["VetraPublisherQueries", "VetraPublisherMutations"]) {
+      const type = built.getType(group) as GraphQLObjectType | undefined;
+      expect(type, group).toBeDefined();
+      expect(Object.keys(type!.getFields()).sort(), group).toEqual(
+        Object.keys(r[group] as object).sort(),
+      );
+    }
+    expect(Object.keys(fieldsOf(r)).length).toBeGreaterThan(0);
   });
 
   const names = Object.keys(fieldsOf(build()));
@@ -204,5 +217,30 @@ describe("a reducer rejection reaches the browser as INVALID_INPUT", () => {
     await expect(ltDrop.execute("x", [type])).rejects.toBeInstanceOf(OperationRejectedError);
     await expect(lic.activate("x")).rejects.toBeInstanceOf(OperationRejectedError);
     await expect(licDrop.activate("x")).rejects.toBeInstanceOf(OperationRejectedError);
+  });
+
+  it("revokeLicense on an already-revoked licence: INVALID_INPUT, text unchanged", async () => {
+    // The licence gateway has its own rejection detection, separate from the
+    // licence-type gateway's, so it is pinned separately.
+    const licenseGateway = createReactorLicenseGateway(
+      rejectingClient("cannot revoke a license with status REVOKED") as never,
+    );
+    const deps = {
+      auth: {
+        findAppById: async (id: string) => ({ id, name: "KV", status: "ACTIVE", owner_address: OWNER }),
+        listAppsForOwner: async () => [],
+      },
+      reads: { license: async (id: string) => ({ id, app: "app-1", status: "REVOKED" }) },
+      cfg: { enabled: true },
+      licenseGateway,
+    } as unknown as PublisherDeps;
+    const m = createPublisherResolvers(throwing<Kysely<VetraLicensingDB>>(), deps)
+      .VetraPublisherMutations as Record<string, (p: unknown, a: unknown, c: unknown) => Promise<unknown>>;
+    const err = (await m
+      .revokeLicense({}, { input: { licenseId: "lic-1" } }, { user: { address: OWNER } })
+      .catch((e: unknown) => e)) as GraphQLError;
+    expect(err).toBeInstanceOf(GraphQLError);
+    expect(codeOf(err)).toBe("INVALID_INPUT");
+    expect(err.message).toBe("REVOKE_LICENSE rejected: cannot revoke a license with status REVOKED");
   });
 });
