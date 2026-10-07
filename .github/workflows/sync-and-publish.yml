@@ -220,10 +220,14 @@ jobs:
           for s in PH_RENOWN_PRIVATE_KEY RENOWN_ADDRESS; do
             [ -n "${!s}" ] || { echo "::error::secret for $s is not set"; exit 1; }
           done
-          # Every channel goes to the dev registry (testing). Only stable releases
-          # (main -> latest) go to the prod registry, which production loads from.
+          # Every channel goes to the dev registry (testing). Stable releases
+          # (main -> latest) AND staging builds go to the prod registry: the
+          # staging tenant now sets PH_REGISTRY_URL=https://registry.vetra.io,
+          # so a staging build that only reached the dev registry would be
+          # uninstallable by the very environment it is built for. dev stays
+          # dev-only.
           REGISTRIES="https://registry.dev.vetra.io"
-          if [ "$CHANNEL" = "latest" ]; then
+          if [ "$CHANNEL" = "latest" ] || [ "$CHANNEL" = "staging" ]; then
             REGISTRIES="$REGISTRIES https://registry.vetra.io"
           fi
           PKG=$(node -p "require('./package.json').name")
