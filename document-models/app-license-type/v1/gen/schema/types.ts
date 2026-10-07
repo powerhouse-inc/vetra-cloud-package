@@ -69,6 +69,8 @@ export type AddTemplatePackageInput = {
 };
 
 export type AddTemplateServiceInput = {
+  artifactChannel?: InputMaybe<AutoUpdateChannel>;
+  artifactName?: InputMaybe<Scalars["String"]["input"]>;
   id: Scalars["OID"]["input"];
   prefix?: InputMaybe<Scalars["String"]["input"]>;
   type: TemplateServiceType;
@@ -83,6 +85,8 @@ export type AppLicenseTypeState = {
   validityDays: Maybe<Scalars["Int"]["output"]>;
 };
 
+export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
+
 export type EnvironmentTemplate = {
   baseDomain: Maybe<Scalars["String"]["output"]>;
   packageRegistry: Maybe<Scalars["URL"]["output"]>;
@@ -95,6 +99,14 @@ export type LicenseTypeStatus = "ACTIVE" | "DRAFT" | "RETIRED";
 
 export type PublishLicenseTypeInput = {
   _?: InputMaybe<Scalars["Boolean"]["input"]>;
+};
+
+export type RemoveTemplatePackageInput = {
+  id: Scalars["OID"]["input"];
+};
+
+export type RemoveTemplateServiceInput = {
+  id: Scalars["OID"]["input"];
 };
 
 export type RetireLicenseTypeInput = {
@@ -121,6 +133,8 @@ export type TemplatePackage = {
 };
 
 export type TemplateService = {
+  artifactChannel: Maybe<AutoUpdateChannel>;
+  artifactName: Maybe<Scalars["String"]["output"]>;
   id: Scalars["OID"]["output"];
   prefix: Maybe<Scalars["String"]["output"]>;
   type: TemplateServiceType;

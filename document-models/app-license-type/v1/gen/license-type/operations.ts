@@ -8,6 +8,8 @@ import type {
   AddTemplatePackageAction,
   AddTemplateServiceAction,
   PublishLicenseTypeAction,
+  RemoveTemplatePackageAction,
+  RemoveTemplateServiceAction,
   RetireLicenseTypeAction,
   SetLicenseTypeDetailsAction,
   SetTemplateAction,
@@ -32,6 +34,16 @@ export interface AppLicenseTypeLicenseTypeOperations {
   addTemplatePackageOperation: (
     state: AppLicenseTypeGlobalState,
     action: AddTemplatePackageAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  removeTemplateServiceOperation: (
+    state: AppLicenseTypeGlobalState,
+    action: RemoveTemplateServiceAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  removeTemplatePackageOperation: (
+    state: AppLicenseTypeGlobalState,
+    action: RemoveTemplatePackageAction,
     dispatch?: SignalDispatch,
   ) => void;
   publishLicenseTypeOperation: (

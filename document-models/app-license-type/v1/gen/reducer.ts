@@ -10,6 +10,8 @@ import {
   AddTemplatePackageInputSchema,
   AddTemplateServiceInputSchema,
   PublishLicenseTypeInputSchema,
+  RemoveTemplatePackageInputSchema,
+  RemoveTemplateServiceInputSchema,
   RetireLicenseTypeInputSchema,
   SetLicenseTypeDetailsInputSchema,
   SetTemplateInputSchema,
@@ -64,6 +66,30 @@ const stateReducer: StateReducer<AppLicenseTypePHState> = (
       AddTemplatePackageInputSchema().parse(action.input);
 
       appLicenseTypeLicenseTypeOperations.addTemplatePackageOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "REMOVE_TEMPLATE_SERVICE": {
+      RemoveTemplateServiceInputSchema().parse(action.input);
+
+      appLicenseTypeLicenseTypeOperations.removeTemplateServiceOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "REMOVE_TEMPLATE_PACKAGE": {
+      RemoveTemplatePackageInputSchema().parse(action.input);
+
+      appLicenseTypeLicenseTypeOperations.removeTemplatePackageOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

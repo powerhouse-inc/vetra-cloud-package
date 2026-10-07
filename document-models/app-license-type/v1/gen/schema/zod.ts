@@ -5,9 +5,12 @@ import type {
   AddTemplatePackageInput,
   AddTemplateServiceInput,
   AppLicenseTypeState,
+  AutoUpdateChannel,
   EnvironmentTemplate,
   LicenseTypeStatus,
   PublishLicenseTypeInput,
+  RemoveTemplatePackageInput,
+  RemoveTemplateServiceInput,
   RetireLicenseTypeInput,
   SetLicenseTypeDetailsInput,
   SetTemplateInput,
@@ -28,6 +31,8 @@ export const isDefinedNonNullAny = (v: any): v is definedNonNullAny =>
 export const definedNonNullAnySchema = z
   .any()
   .refine((v) => isDefinedNonNullAny(v));
+
+export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
 
 export const LicenseTypeStatusSchema = z.enum(["ACTIVE", "DRAFT", "RETIRED"]);
 
@@ -55,6 +60,8 @@ export function AddTemplateServiceInputSchema(): z.ZodObject<
   Properties<AddTemplateServiceInput>
 > {
   return z.object({
+    artifactChannel: AutoUpdateChannelSchema.nullish(),
+    artifactName: z.string().nullish(),
     id: z.string(),
     prefix: z.string().nullish(),
     type: TemplateServiceTypeSchema,
@@ -93,6 +100,22 @@ export function PublishLicenseTypeInputSchema(): z.ZodObject<
 > {
   return z.object({
     _: z.boolean().nullish(),
+  });
+}
+
+export function RemoveTemplatePackageInputSchema(): z.ZodObject<
+  Properties<RemoveTemplatePackageInput>
+> {
+  return z.object({
+    id: z.string(),
+  });
+}
+
+export function RemoveTemplateServiceInputSchema(): z.ZodObject<
+  Properties<RemoveTemplateServiceInput>
+> {
+  return z.object({
+    id: z.string(),
   });
 }
 
@@ -141,6 +164,8 @@ export function TemplateServiceSchema(): z.ZodObject<
 > {
   return z.object({
     __typename: z.literal("TemplateService").optional(),
+    artifactChannel: AutoUpdateChannelSchema.nullish(),
+    artifactName: z.string().nullish(),
     id: z.string(),
     prefix: z.string().nullish(),
     type: TemplateServiceTypeSchema,
