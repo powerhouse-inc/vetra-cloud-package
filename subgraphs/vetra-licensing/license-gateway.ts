@@ -2,6 +2,7 @@ import type { Action } from "document-model";
 import { actions } from "document-models/app-owner-license";
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
 
+import { OperationRejectedError } from "./publisher-errors.js";
 import { LICENSE_DOC_TYPE } from "./reads.js";
 
 /** Narrow surface over the reactor client: only what the gateway uses. */
@@ -72,10 +73,10 @@ export function createReactorLicenseGateway(
     for (const action of acts) {
       const mine = appended.find((op) => op.action?.id === action.id);
       if (!mine) {
-        throw new Error(`${action.type} was not applied to license ${id}`);
+        throw new OperationRejectedError(`${action.type} was not applied to license ${id}`);
       }
       if (mine.error) {
-        throw new Error(`${action.type} rejected: ${mine.error}`);
+        throw new OperationRejectedError(`${action.type} rejected: ${mine.error}`);
       }
     }
   }

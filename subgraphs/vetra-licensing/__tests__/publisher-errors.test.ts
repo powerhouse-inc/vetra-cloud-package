@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { GraphQLError } from "graphql";
 import type { Kysely } from "kysely";
-import { toPublisherGraphQLError } from "../publisher-errors.js";
+import { toPublisherGraphQLError, OperationRejectedError } from "../publisher-errors.js";
 import { UnauthenticatedError, AppIdentityInactiveError } from "../auth.js";
 import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
 import {
@@ -19,8 +19,11 @@ import {
 import {
   InvalidHolderAddressError,
   LicenseTypeNotIssuableError,
+  NotOnAllowListError,
 } from "../issuers/publisher-grant.js";
 import { NegativeValidityError } from "../../../document-models/app-license-type/v1/gen/license-type/error.js";
+import { createReactorLicenseTypeGateway } from "../license-type-gateway.js";
+import { createReactorLicenseGateway } from "../license-gateway.js";
 import type { VetraLicensingDB } from "../db/schema.js";
 
 const codeOf = (e: unknown) => (e as GraphQLError).extensions?.code;
@@ -50,11 +53,21 @@ describe("toPublisherGraphQLError", () => {
     ["NegativeValidityError", new NegativeValidityError("validityDays must be positive")],
     ["InvalidHolderAddressError", new InvalidHolderAddressError("bad address")],
     ["LicenseTypeNotIssuableError", new LicenseTypeNotIssuableError("not issuable")],
+    ["OperationRejectedError", new OperationRejectedError("PUBLISH_LICENSE_TYPE rejected: x")],
   ] as Array<[string, Error]>)("maps %s to INVALID_INPUT, message verbatim", (_n, err) => {
     const out = toPublisherGraphQLError(err);
     expect(out).toBeInstanceOf(GraphQLError);
     expect(codeOf(out)).toBe("INVALID_INPUT");
     expect((out as GraphQLError).message).toBe(err.message);
+  });
+
+  it("maps NotOnAllowListError to NOT_ON_ALLOW_LIST, message verbatim", () => {
+    // Unreachable in production today (isOnAllowList always returns true); pinned
+    // so a real allow list does not surface as INTERNAL_SERVER_ERROR.
+    const err = new NotOnAllowListError("0xabc is not on the allow list");
+    const out = toPublisherGraphQLError(err) as GraphQLError;
+    expect(codeOf(out)).toBe("NOT_ON_ALLOW_LIST");
+    expect(out.message).toBe(err.message);
   });
 
   it("gives NotAppOwnerError the SAME code and message as UnknownAppError", () => {
@@ -138,5 +151,58 @@ describe("publisher resolvers carry codes end to end", () => {
     const m = fieldsOf(build({ enabled: false })).createLicenseType;
     const err = await m({}, { input: { appId: "app-1", kind: "PRO" } }, owner).catch((e: unknown) => e);
     expect(codeOf(err)).toBe("LICENSING_DISABLED");
+  });
+});
+
+describe("a reducer rejection reaches the browser as INVALID_INPUT", () => {
+  const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  // Minimal reactor whose reducer rejects every action it is given.
+  const rejectingClient = (error: string | undefined, dropOp = false) => {
+    const ops: Array<{ index: number; action: { id: string; type: string }; error?: string }> = [];
+    let revision = 1;
+    return {
+      createEmpty: async () => ({ header: {} }),
+      get: async () => ({ header: { revision: { global: revision } } }),
+      execute: async (_id: string, _b: string, acts: Array<{ id: string; type: string }>) => {
+        if (!dropOp) for (const a of acts) ops.push({ index: revision++, action: { id: a.id, type: a.type }, error });
+        return {};
+      },
+      getOperations: async () => ({ results: ops }),
+    };
+  };
+
+  it("publishLicenseType on an incomplete template: INVALID_INPUT, text unchanged", async () => {
+    const typeGateway = createReactorLicenseTypeGateway(
+      rejectingClient("template is incomplete") as never,
+    );
+    const deps = {
+      auth: {
+        findAppById: async (id: string) => ({ id, name: "KV", status: "ACTIVE", owner_address: OWNER }),
+        listAppsForOwner: async () => [],
+      },
+      reads: { licenseType: async (id: string) => ({ id, app: "app-1", status: "DRAFT" }) },
+      cfg: { enabled: true },
+      typeGateway,
+    } as unknown as PublisherDeps;
+    const m = createPublisherResolvers(throwing<Kysely<VetraLicensingDB>>(), deps)
+      .VetraPublisherMutations as Record<string, (p: unknown, a: unknown, c: unknown) => Promise<unknown>>;
+    const err = (await m
+      .publishLicenseType({}, { licenseTypeId: "lt-1" }, { user: { address: OWNER } })
+      .catch((e: unknown) => e)) as GraphQLError;
+    expect(err).toBeInstanceOf(GraphQLError);
+    expect(codeOf(err)).toBe("INVALID_INPUT");
+    expect(err.message).toBe("PUBLISH_LICENSE_TYPE rejected: template is incomplete");
+  });
+
+  it("both gateways throw OperationRejectedError for rejected and unapplied actions", async () => {
+    const lt = createReactorLicenseTypeGateway(rejectingClient("nope") as never);
+    const lic = createReactorLicenseGateway(rejectingClient("nope") as never);
+    const ltDrop = createReactorLicenseTypeGateway(rejectingClient(undefined, true) as never);
+    const licDrop = createReactorLicenseGateway(rejectingClient(undefined, true) as never);
+    const type = (await import("document-models/app-license-type")).actions.publishLicenseType({});
+    await expect(lt.execute("x", [type])).rejects.toBeInstanceOf(OperationRejectedError);
+    await expect(ltDrop.execute("x", [type])).rejects.toBeInstanceOf(OperationRejectedError);
+    await expect(lic.activate("x")).rejects.toBeInstanceOf(OperationRejectedError);
+    await expect(licDrop.activate("x")).rejects.toBeInstanceOf(OperationRejectedError);
   });
 });

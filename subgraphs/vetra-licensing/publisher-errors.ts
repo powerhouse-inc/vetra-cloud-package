@@ -5,6 +5,7 @@ import { LicensingDisabledError } from "./resolvers.js";
 import {
   InvalidHolderAddressError,
   LicenseTypeNotIssuableError,
+  NotOnAllowListError,
 } from "./issuers/publisher-grant.js";
 import { NegativeValidityError } from "../../document-models/app-license-type/v1/gen/license-type/error.js";
 import {
@@ -33,6 +34,17 @@ export class UnknownLicenseError extends Error {
 }
 
 /**
+ * A reactor reducer refused an action ("<ACTION> rejected: <reason>") or never
+ * applied it. Thrown by both licence gateways; the message is the stable text
+ * they have always produced. Mapped to INVALID_INPUT: it is what an ordinary
+ * publisher hits (incomplete template on publish, duplicates, wrong state).
+ * Defined here, not in a gateway, so neither gateway imports the other.
+ */
+export class OperationRejectedError extends Error {
+  override name = "OperationRejectedError";
+}
+
+/**
  * Map a licensing error to a GraphQLError carrying a stable `extensions.code`.
  *
  * NotAppOwnerError and UnknownAppError share ONE code on purpose. They already
@@ -56,7 +68,13 @@ function codeFor(err: unknown): string | null {
   if (err instanceof LicensingDisabledError) return "LICENSING_DISABLED";
   if (err instanceof UnknownLicenseTypeError) return "UNKNOWN_LICENSE_TYPE";
   if (err instanceof UnknownLicenseError) return "UNKNOWN_LICENSE";
+  // Currently unreachable: production wiring (index.ts) has isOnAllowList
+  // always return true, as no allow-list store exists yet. Mapped now so the
+  // first real allow list does not surface as INTERNAL_SERVER_ERROR (which
+  // the dashboard retries).
+  if (err instanceof NotOnAllowListError) return "NOT_ON_ALLOW_LIST";
   if (
+    err instanceof OperationRejectedError ||
     err instanceof UnknownTemplateSizeError ||
     err instanceof UnsupportedTemplateServiceError ||
     err instanceof MissingPackageNameError ||
