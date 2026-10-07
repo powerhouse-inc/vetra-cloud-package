@@ -15,7 +15,9 @@ import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
 import {
   reportDeploymentToGithub,
+  reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
+  runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
   SWEEP_INTERVAL_MS,
   WATCH_INTERVAL_MS,
@@ -66,6 +68,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
+    deps.onPreviewRemoved = (app, preview, reason) =>
+      reportPreviewRemovedToGithub(deps, app, preview, reason);
 
     this.resolvers = createResolvers(deps);
 
@@ -135,9 +139,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     every(WATCH_INTERVAL_MS, "deployment watcher", () =>
       runDeploymentWatcherOnce(deps),
     );
-    every(SWEEP_INTERVAL_MS, "preview sweeper", () =>
-      runPreviewSweepOnce(deps),
-    );
+    every(SWEEP_INTERVAL_MS, "preview sweeper", async () => {
+      await runPreviewSweepOnce(deps);
+      await runIdentityExpirySweepOnce(deps);
+    });
   }
 
   async onDisconnect() {

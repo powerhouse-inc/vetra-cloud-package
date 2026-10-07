@@ -145,7 +145,10 @@ export class FakeEnvs implements EnvGateway {
 
 export function fakeGithub(): GithubDeployApi & {
   calls: Record<string, unknown[][]>;
+  /** PR number → state; "error" simulates GitHub being unreachable. Default open. */
+  prStates: Map<number, "open" | "closed" | "error">;
 } {
+  const prStates = new Map<number, "open" | "closed" | "error">();
   const calls: Record<string, unknown[][]> = {};
   const rec =
     <T>(name: string, result: (...args: any[]) => T) =>
@@ -198,6 +201,15 @@ export function fakeGithub(): GithubDeployApi & {
         defaultBranch: "main",
       },
     ]),
+    prStates,
+    getPullRequestState: rec(
+      "getPullRequestState",
+      (_i: string, _r: string, n: number) => {
+        const st = prStates.get(n) ?? "open";
+        if (st === "error") throw new Error("GitHub unreachable");
+        return st;
+      },
+    ),
     createDeployment: rec("createDeployment", () => String(++deploymentSeq)),
     createDeploymentStatus: rec("createDeploymentStatus", () => undefined),
     upsertPrComment: rec("upsertPrComment", () => undefined),
@@ -241,13 +253,14 @@ export function fakeHarbor(): HarborApi & {
 }
 
 export function fakeRenown(): RenownApi & {
-  delegated: boolean;
+  /** The owner's newest valid delegation for the App DID, or null. */
+  delegation: { expiresAt: string | null } | null;
   registered: unknown[];
   deleted: string[];
   updated: unknown[];
 } {
   const self = {
-    delegated: false,
+    delegation: null as { expiresAt: string | null } | null,
     registered: [] as unknown[],
     deleted: [] as string[],
     updated: [] as unknown[],
@@ -261,8 +274,8 @@ export function fakeRenown(): RenownApi & {
     async deleteWorkloadIdentity(did: string) {
       self.deleted.push(did);
     },
-    async hasDelegation() {
-      return self.delegated;
+    async getDelegation() {
+      return self.delegation;
     },
   };
   return self;
@@ -367,7 +380,7 @@ export async function seedActiveApp(
     repositoryId: REPO_ID,
     productionEnvironmentId,
   });
-  h.renown.delegated = true;
+  h.renown.delegation = { expiresAt: "2027-10-02T12:00:00.000Z" };
   return confirmAppIdentity(h.deps, owner, app.id);
 }
 

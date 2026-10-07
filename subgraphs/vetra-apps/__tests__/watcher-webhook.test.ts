@@ -16,7 +16,9 @@ import {
   deploymentApplied,
   githubEnvironmentName,
   reportDeploymentToGithub,
+  reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
+  runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
 } from "../watcher.js";
 import { handleGithubWebhook, verifyGithubSignature } from "../webhook.js";
@@ -153,6 +155,71 @@ describe("preview TTL sweeper", () => {
   });
 });
 
+describe("closed-PR preview sweeper", () => {
+  it("deletes previews whose PR is closed (Removed comment), keeps open and unknown ones", async () => {
+    h.deps.onPreviewRemoved = (a, p, reason) =>
+      reportPreviewRemovedToGithub(h.deps, a, p, reason);
+    const closedD = await deployApp(h.deps, owner, preview(21));
+    await deployApp(h.deps, owner, preview(22));
+    await deployApp(h.deps, owner, preview(23));
+    h.github.prStates.set(21, "closed");
+    h.github.prStates.set(23, "error"); // GitHub unreachable for this one
+    expect(await runPreviewSweepOnce(h.deps)).toBe(1);
+    expect(
+      (await listPreviews(h.db, app.id)).map((p) => p.pr_number),
+    ).toStrictEqual([22, 23]);
+    expect(h.envs.deleted).toStrictEqual([closedD.environment_id]);
+    expect((await getDeployment(h.db, closedD.id))?.status).toBe("SUPERSEDED");
+    const comment = h.github.calls.upsertPrComment.at(-1) as [
+      string,
+      string,
+      number,
+      string,
+      string,
+    ];
+    expect(comment[2]).toBe(21);
+    expect(comment[4]).toContain("### Vetra preview: Removed");
+    expect(comment[4]).toContain("pull request #21 is closed");
+  });
+
+  it("does nothing without GitHub config", async () => {
+    await deployApp(h.deps, owner, preview(24));
+    h.github.prStates.set(24, "closed");
+    expect(await runPreviewSweepOnce({ ...h.deps, github: null })).toBe(0);
+    expect(await listPreviews(h.db, app.id)).toHaveLength(1);
+  });
+});
+
+describe("identity expiry sweeper", () => {
+  it("moves ACTIVE Apps whose delegation expired to PENDING_IDENTITY", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: "2026-10-02T11:00:00.000Z" })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(1);
+    expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
+  });
+
+  it("leaves unexpired, unknown-expiry and non-ACTIVE Apps alone", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: "2027-01-01T00:00:00.000Z" })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    await h.db.updateTable("apps").set({ identity_expires_at: null }).execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    await h.db
+      .updateTable("apps")
+      .set({
+        identity_expires_at: "2020-01-01T00:00:00.000Z",
+        status: "DISCONNECTED",
+      })
+      .execute();
+    expect(await runIdentityExpirySweepOnce(h.deps)).toBe(0);
+    expect((await getApp(h.db, app.id))?.status).toBe("DISCONNECTED");
+  });
+});
+
 describe("GitHub feedback", () => {
   it("creates a GitHub deployment, reports its status and upserts the sticky PR comment", async () => {
     const d = await deployApp(h.deps, owner, preview(7));
@@ -262,6 +329,35 @@ describe("GitHub webhook (Review Focus 3)", () => {
     expect(h.envs.deleted).toStrictEqual([d.environment_id]);
     expect((await getDeployment(h.db, d.id))?.status).toBe("SUPERSEDED");
     expect(await getPreview(h.db, app.id, 8)).not.toBeNull();
+  });
+
+  it("a removed preview updates the sticky comment to Removed and its GitHub deployment to inactive", async () => {
+    h.deps.onPreviewRemoved = (app, preview, reason) =>
+      reportPreviewRemovedToGithub(h.deps, app, preview, reason);
+    const d = await deployApp(h.deps, owner, preview(7));
+    await reportDeploymentToGithub(h.deps, d.id); // GitHub deployment + "Deploying" comment exist
+    h.deps.onDeploymentChanged = (id) => reportDeploymentToGithub(h.deps, id);
+    const body = closed(7);
+    await handleGithubWebhook(h.deps, {
+      rawBody: Buffer.from(body),
+      signature: sign("whsec", body),
+      event: "pull_request",
+    });
+    const statuses = h.github.calls.createDeploymentStatus.map(
+      (c) => c[3] as { state: string },
+    );
+    expect(statuses.at(-1)?.state).toBe("inactive");
+    const [, , pr, marker, comment] = h.github.calls.upsertPrComment.at(-1) as [
+      string,
+      string,
+      number,
+      string,
+      string,
+    ];
+    expect([pr, marker]).toStrictEqual([7, PREVIEW_COMMENT_MARKER]);
+    expect(comment).toContain("### Vetra preview: Removed");
+    expect(comment).toContain("pull request #7 closed");
+    expect(comment).not.toMatch(/https:\/\/sub-/); // no live URLs any more
   });
 
   it("installation.deleted disconnects the Apps and removes their previews", async () => {

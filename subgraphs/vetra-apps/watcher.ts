@@ -10,6 +10,7 @@ import {
 } from "./repo.js";
 import {
   deletePreview,
+  isPullRequestClosed,
   PREVIEW_COMMENT_MARKER,
   type AppsDeps,
 } from "./service.js";
@@ -104,6 +105,27 @@ async function nextStatus(
   return null;
 }
 
+/** ACTIVE Apps whose identity delegation expired → PENDING_IDENTITY (CI would 401 anyway). */
+export async function runIdentityExpirySweepOnce(
+  deps: AppsDeps,
+): Promise<number> {
+  const nowIso = deps.now().toISOString();
+  const expired = await deps.db
+    .updateTable("apps")
+    .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
+    .where("status", "=", "ACTIVE")
+    .where("identity_expires_at", "is not", null)
+    .where("identity_expires_at", "<", nowIso)
+    .returning(["id", "slug"])
+    .execute();
+  for (const a of expired) {
+    deps.logger.info(
+      `[vetra-apps] App ${a.slug} identity authorization expired → PENDING_IDENTITY`,
+    );
+  }
+  return expired.length;
+}
+
 /** Delete previews whose last deployment is older than the App's TTL. */
 export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
   const apps = await deps.db
@@ -123,6 +145,7 @@ export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
       .where("app_id", "=", app.id)
       .where("last_deployed_at", "<", cutoff)
       .execute();
+    const deletedStale = new Set<number>();
     for (const p of stale) {
       try {
         await deletePreview(
@@ -131,11 +154,39 @@ export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
           p,
           `no deploy for ${app.preview_ttl_days} days`,
         );
+        deletedStale.add(p.pr_number);
         removed++;
       } catch (err) {
         deps.logger.warn(
           `[vetra-apps] sweeper: ${p.environment_id}: ${String(err)}`,
         );
+      }
+    }
+    // Previews whose PR was closed without us noticing (missed webhook, or a
+    // CI run that finished after the close). Unknown state → keep.
+    if (deps.github && app.status !== "DISCONNECTED") {
+      const rest = (
+        await deps.db
+          .selectFrom("app_previews")
+          .selectAll()
+          .where("app_id", "=", app.id)
+          .execute()
+      ).filter((p) => !deletedStale.has(p.pr_number));
+      for (const p of rest) {
+        try {
+          if (!(await isPullRequestClosed(deps, app, p.pr_number))) continue;
+          await deletePreview(
+            deps,
+            app,
+            p,
+            `pull request #${p.pr_number} is closed`,
+          );
+          removed++;
+        } catch (err) {
+          deps.logger.warn(
+            `[vetra-apps] sweeper: ${p.environment_id}: ${String(err)}`,
+          );
+        }
       }
     }
   }
@@ -275,4 +326,35 @@ export async function reportDeploymentToGithub(
       previewCommentBody(app, d, urls, deps.cfg.vetraAppUrl),
     );
   }
+}
+
+/**
+ * The preview of `preview.pr_number` is gone: rewrite the sticky PR comment to
+ * "Removed" with the reason and no live URLs. (Its GitHub deployments were
+ * already set `inactive` through the SUPERSEDED deployment rows.)
+ */
+export async function reportPreviewRemovedToGithub(
+  deps: AppsDeps,
+  app: AppRow,
+  preview: { pr_number: number },
+  reason: string,
+) {
+  const github = deps.github;
+  if (!github || app.status === "DISCONNECTED" || app.status === "DELETED")
+    return;
+  const body = [
+    PREVIEW_COMMENT_MARKER,
+    "### Vetra preview: Removed",
+    "",
+    `The preview environment of this pull request was removed (${reason}).`,
+    "",
+    `[${app.name} on Vetra](${deps.cfg.vetraAppUrl}/user/apps/${app.id})`,
+  ].join("\n");
+  await github.upsertPrComment(
+    app.installation_id,
+    app.repository_full_name,
+    preview.pr_number,
+    PREVIEW_COMMENT_MARKER,
+    body,
+  );
 }

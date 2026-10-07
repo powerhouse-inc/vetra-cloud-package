@@ -155,6 +155,18 @@ describe("gitops — PREVIEW profile", () => {
     expect(app).toContain('      cpu: "250m"\n      memory: "512Mi"');
   });
 
+  it("gives the preview switchboard an emptyDir instead of the kept-forever attachments PVC", async () => {
+    const sb = block(await render(envState({ app: PREVIEW_LINK })), "switchboard");
+    expect(sb).toContain("  replicaCount: 1\n  persistence:\n    kind: emptyDir\n");
+  });
+
+  it("standalone and PRODUCTION switchboards render no persistence override (chart default PVC)", async () => {
+    expect(block(await render(envState()), "switchboard")).not.toContain("persistence:");
+    expect(
+      block(await render(envState({ app: { ...PREVIEW_LINK, role: "PRODUCTION" } })), "switchboard"),
+    ).not.toContain("persistence:");
+  });
+
   it("keeps the full production profile for PRODUCTION-linked envs", async () => {
     const db = block(
       await render(envState({ app: { ...PREVIEW_LINK, role: "PRODUCTION" } })),

@@ -64,6 +64,12 @@ export interface AppsDeps {
   logger: AppsLogger;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
+  /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
+  onPreviewRemoved?: (
+    app: AppRow,
+    preview: PreviewRow,
+    reason: string,
+  ) => Promise<void>;
 }
 
 export const DEFAULT_PREVIEW_LIMIT = 5;
@@ -72,6 +78,7 @@ export const PREVIEW_COMMENT_MARKER = "<!-- vetra-preview -->";
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 const HARBOR_HOST = "cr.vetra.io";
 const MAX_SLUG_ATTEMPTS = 10;
+export const IDENTITY_EXPIRES_IN_DAYS = 365;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -440,7 +447,9 @@ async function uniqueSlug(
 
 export function renownAuthorizeUrl(deps: AppsDeps, app: AppRow): string {
   const returnUrl = `${deps.cfg.vetraAppUrl}/user/apps/${app.id}?identity=1`;
-  return `${deps.cfg.renownWebUrl}/?app=${encodeURIComponent(app.identity_did)}&returnUrl=${encodeURIComponent(returnUrl)}`;
+  // Ask for a long-lived delegation (Renown's default is 7 days): CI stops
+  // deploying when it expires (see runIdentityExpirySweepOnce).
+  return `${deps.cfg.renownWebUrl}/?app=${encodeURIComponent(app.identity_did)}&returnUrl=${encodeURIComponent(returnUrl)}&expiresInDays=${IDENTITY_EXPIRES_IN_DAYS}`;
 }
 
 export interface CreateAppInput {
@@ -569,6 +578,7 @@ export async function createApp(
       harbor_project: harborProject,
       harbor_robot_name: robot.name,
       harbor_robot_id: robot.id,
+      identity_expires_at: null,
       harbor_robot_secret_enc: encryptSecret(
         deps.cfg.encryptionKey,
         robot.secret,
@@ -610,23 +620,37 @@ export async function createApp(
   return (await getApp(deps.db, appId))!;
 }
 
+/**
+ * Re-check the owner's delegation of the App identity. The newest valid
+ * credential → ACTIVE with its expiry; none (never signed, expired or
+ * revoked) → PENDING_IDENTITY. A DISCONNECTED App keeps its status (only the
+ * expiry is refreshed).
+ */
 export async function confirmAppIdentity(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
 ) {
   const app = await loadAppForOwner(deps, caller, appId);
-  if (app.status !== "PENDING_IDENTITY") return app;
   if (!deps.renown) throw notConfigured("Renown workload identities");
-  const ok = await deps.renown.hasDelegation({
+  const delegation = await deps.renown.getDelegation({
     address: app.owner_address,
     chainId: app.owner_chain_id,
     did: app.identity_did,
   });
-  if (!ok) return app;
+  const status =
+    app.status === "DISCONNECTED"
+      ? app.status
+      : delegation
+        ? "ACTIVE"
+        : "PENDING_IDENTITY";
   await deps.db
     .updateTable("apps")
-    .set({ status: "ACTIVE", updated_at: deps.now().toISOString() })
+    .set({
+      status,
+      identity_expires_at: delegation?.expiresAt ?? null,
+      updated_at: deps.now().toISOString(),
+    })
     .where("id", "=", app.id)
     .execute();
   return (await getApp(deps.db, app.id))!;
@@ -737,7 +761,17 @@ export async function deletePreview(
   deps.logger.info(
     `[vetra-apps] deleted preview of ${app.slug} PR #${preview.pr_number} (${reason})`,
   );
+  // Superseded deployments → GitHub deployment status `inactive`.
   for (const d of superseded) await notifyChanged(deps, d.id);
+  if (deps.onPreviewRemoved) {
+    try {
+      await deps.onPreviewRemoved(app, preview, reason);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] preview-removed feedback failed: ${String(err)}`,
+      );
+    }
+  }
 }
 
 export async function deletePreviewsOfApp(
@@ -1056,6 +1090,82 @@ function normalizePrNumber(input: DeployAppInput): number | null {
   return n;
 }
 
+/**
+ * True only when GitHub definitely says the PR is not open. GitHub not
+ * configured or unreachable → false: deploys are never blocked on a GitHub
+ * outage (the sweeper catches a missed close later).
+ */
+export async function isPullRequestClosed(
+  deps: AppsDeps,
+  app: AppRow,
+  prNumber: number,
+): Promise<boolean> {
+  if (!deps.github) return false;
+  try {
+    const state = await deps.github.getPullRequestState(
+      app.installation_id,
+      app.repository_full_name,
+      prNumber,
+    );
+    return state !== "open";
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] PR state of ${app.repository_full_name}#${prNumber} unavailable: ${String(err)}`,
+    );
+    return false;
+  }
+}
+
+/** A PREVIEW deploy that is not applied (closed PR): an audit row, SUPERSEDED. */
+async function recordSkippedDeployment(
+  deps: AppsDeps,
+  app: AppRow,
+  req: {
+    prNumber: number | null;
+    gitRef: string;
+    sha: string;
+    runUrl: string | null;
+    actorGithub: string | null;
+    actorDid: string | null;
+    packages: { name: string; version: string }[];
+    imageTag: string | null;
+    reason: string;
+  },
+): Promise<DeploymentRow> {
+  const id = deps.newId();
+  const nowIso = deps.now().toISOString();
+  const preview =
+    req.prNumber !== null
+      ? await getPreview(deps.db, app.id, req.prNumber)
+      : null;
+  await deps.db
+    .insertInto("app_deployments")
+    .values({
+      id,
+      app_id: app.id,
+      environment_id: preview?.environment_id ?? null,
+      kind: "PREVIEW",
+      pr_number: req.prNumber,
+      git_ref: req.gitRef,
+      sha: req.sha,
+      packages: JSON.stringify(req.packages),
+      image_tag: req.imageTag,
+      status: "SUPERSEDED",
+      actor_did: req.actorDid,
+      actor_github: req.actorGithub,
+      run_url: req.runUrl,
+      error: req.reason,
+      github_deployment_id: null,
+      created_at: nowIso,
+      updated_at: nowIso,
+    })
+    .execute();
+  deps.logger.info(
+    `[vetra-apps] skipped preview deploy for ${app.slug}: ${req.reason}`,
+  );
+  return (await getDeployment(deps.db, id))!;
+}
+
 async function deployChecked(
   deps: AppsDeps,
   app: AppRow,
@@ -1084,6 +1194,28 @@ async function deployChecked(
     app.production_environment_id,
   );
   const image = resolveImage(app, input.imageTag, productionState);
+  // A PR's CI run can finish after the PR was merged/closed (and after the
+  // pull_request.closed webhook removed its preview): never (re)create or
+  // update a preview for a closed PR. Record the run as SUPERSEDED instead.
+  if (
+    input.kind === "PREVIEW" &&
+    (await isPullRequestClosed(deps, app, prNumber!))
+  ) {
+    return recordSkippedDeployment(deps, app, {
+      prNumber,
+      gitRef: actor.gitRef,
+      sha: input.sha.toLowerCase(),
+      runUrl,
+      actorGithub: actor.github,
+      actorDid: actor.did,
+      packages: input.packages.map((p) => ({
+        name: p.name,
+        version: p.version,
+      })),
+      imageTag: image ? `${image.repository}:${image.tag}` : null,
+      reason: `pull request #${prNumber} is closed`,
+    });
+  }
   return performDeploy(deps, app, productionState, {
     kind: input.kind,
     prNumber,

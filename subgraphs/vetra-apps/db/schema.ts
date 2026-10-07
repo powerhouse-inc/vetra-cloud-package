@@ -38,6 +38,8 @@ export interface AppsTable {
   harbor_robot_secret_enc: string;
   /** The App's Renown workload identity (did:key). */
   identity_did: string;
+  /** expirationDate of the owner's delegation credential (null = unknown / never). */
+  identity_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }

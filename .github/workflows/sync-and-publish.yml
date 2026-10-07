@@ -220,12 +220,12 @@ jobs:
           for s in PH_RENOWN_PRIVATE_KEY RENOWN_ADDRESS; do
             [ -n "${!s}" ] || { echo "::error::secret for $s is not set"; exit 1; }
           done
-          # Every channel goes to the dev registry (testing). Only stable releases
-          # (main -> latest) go to the prod registry, which production loads from.
-          REGISTRIES="https://registry.dev.vetra.io"
-          if [ "$CHANNEL" = "latest" ]; then
-            REGISTRIES="$REGISTRIES https://registry.vetra.io"
-          fi
+          # Single registry: registry.vetra.io, for every channel. The dev
+          # registry is no longer published to -- the tenants that matter
+          # (staging, prod) both read from registry.vetra.io, and publishing the
+          # same tarball twice only created a second packument that could go
+          # stale independently.
+          REGISTRIES="https://registry.vetra.io"
           PKG=$(node -p "require('./package.json').name")
           for reg in $REGISTRIES; do
             TOKEN=$(node scripts/ci/mint-renown-token.mjs "$reg")

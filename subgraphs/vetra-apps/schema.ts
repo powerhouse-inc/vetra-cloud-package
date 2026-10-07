@@ -84,6 +84,10 @@ export const schema: DocumentNode = gql`
     previewTtlDays: Int!
     harborProject: String!
     identityDid: String!
+    """
+    When the owner's authorization of the App identity expires (CI stops deploying then); null = unknown.
+    """
+    identityExpiresAt: String
     renownAuthorizeUrl: String!
     productionUrls: AppUrls!
     previews: [AppPreview!]!
