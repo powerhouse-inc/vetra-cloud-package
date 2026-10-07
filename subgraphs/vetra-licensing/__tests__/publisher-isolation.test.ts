@@ -423,16 +423,19 @@ describe("error wording does not distinguish 'not yours' from 'does not exist'",
     ["issueGrant", "m", "issueGrant", (id) => ({ input: { appId: id, licenseTypeId: TYPE_A, user: HOLDER_A } })],
   ];
 
-  it.each(APP_KEYED)("%s: B's app and a missing app read the same", async (_n, kind, field, args) => {
+  it.each(APP_KEYED)("%s: B's app and a missing app are indistinguishable", async (_n, kind, field, args) => {
     const h = makeHarness();
     const target = kind === "q" ? h.q : h.m;
     const theirs = await rejection(target[field]({}, args(APP_B), asA));
     const missing = await rejection(target[field]({}, args(GHOST_APP), asA));
+    // Distinct classes server-side (instanceof, logging)...
     expect(theirs).toBeInstanceOf(NotAppOwnerError);
     expect(missing).toBeInstanceOf(UnknownAppError);
-    // Same text once the typed id is normalised, and nothing but that id.
-    expect(sans(theirs, APP_B)).toBe(sans(missing, GHOST_APP));
-    expect(sans(theirs, APP_B)).toBe("no app <id>");
+    // ...but nothing a client can see differs: name and message both match.
+    expect(theirs.name).toBe(missing.name);
+    expect(theirs.message).toBe(missing.message);
+    expect(theirs.message).not.toContain(APP_B);
+    expect(missing.message).not.toContain(GHOST_APP);
     h.expectNoWrite();
     h.expectNoDataRead();
   });

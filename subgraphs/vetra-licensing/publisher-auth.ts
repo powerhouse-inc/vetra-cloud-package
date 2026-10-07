@@ -5,8 +5,13 @@ import {
   type AuthContext,
 } from "./auth.js";
 
+// `name` is deliberately the SAME on both classes (and the message is fixed and
+// does not echo the id): a client must not be able to tell "not yours" from
+// "does not exist". Do not "fix" it back to the class name. The classes stay
+// distinct for instanceof, and server-side logs can still tell them apart via
+// err.constructor.name, which no error formatter serialises.
 export class NotAppOwnerError extends Error {
-  override name = "NotAppOwnerError";
+  override name = "UnknownAppError";
 }
 export class UnknownAppError extends Error {
   override name = "UnknownAppError";
@@ -42,12 +47,12 @@ export async function resolveOwnerApp(
 
   const app = await deps.findAppById(appId);
   if (!app) {
-    throw new UnknownAppError(`no app ${appId}`);
+    throw new UnknownAppError("no such app");
   }
 
   const isOwner = app.owner_address.toLowerCase() === address.toLowerCase();
   if (!isOwner && !callerIsAdmin(ctx, address)) {
-    throw new NotAppOwnerError(`no app ${appId}`);
+    throw new NotAppOwnerError("no such app");
   }
 
   if (app.status !== "ACTIVE") {
