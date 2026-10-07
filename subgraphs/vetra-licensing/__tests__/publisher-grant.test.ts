@@ -24,6 +24,7 @@ const deps = (
   })),
   createLicenseDocument: vi.fn(async () => "lic-1"),
   execute: vi.fn(async (_id: string, _actions: Action[]) => undefined),
+  recordGrant: vi.fn(async () => undefined),
 });
 
 const input = {
@@ -122,5 +123,27 @@ describe("issuePublisherGrant", () => {
     expect(action.input.user).toBe(
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
+  });
+
+  // The keeper provisions only licences with an authorisation row, so the issue
+  // path must write one or a legitimate grant silently never provisions.
+  it("records the authorisation for the licence it just created", async () => {
+    const d = deps(["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+    const id = await issuePublisherGrant(d, input);
+    expect(d.recordGrant).toHaveBeenCalledWith({
+      licenseId: id,
+      appId: "app-1",
+      licenseTypeId: "type-1",
+      user: input.user.toLowerCase(),
+      issuedBy: input.issuedBy.toLowerCase(),
+      now: "2026-10-06T00:00:00.000Z",
+    });
+  });
+
+  it("records nothing when the grant is refused before the document exists", async () => {
+    // Refused on the allow list, before any document is created.
+    const d = deps([]);
+    await expect(issuePublisherGrant(d, input)).rejects.toBeInstanceOf(Error);
+    expect(d.recordGrant).not.toHaveBeenCalled();
   });
 });

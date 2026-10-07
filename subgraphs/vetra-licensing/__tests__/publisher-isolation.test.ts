@@ -169,6 +169,7 @@ function makeHarness() {
     execute: vi.fn(async (id: string, actions: Action[]) => {
       dispatched.push({ id, actions });
     }),
+    recordGrant: vi.fn(async () => undefined),
   };
   const deps = {
     auth,

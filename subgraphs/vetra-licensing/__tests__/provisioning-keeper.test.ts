@@ -38,6 +38,9 @@ const deps = (
   allLicenses: vi.fn(async () => licences),
   licenseTypes: vi.fn(async (appId: string) => types[appId] ?? []),
   environments: vi.fn(async (appId: string) => envs[appId] ?? []),
+  // Default: every licence in the fixture is authorised, so existing cases keep
+  // exercising what they were written for. The authorisation gate has its own.
+  authorizedLicenseIds: vi.fn(async () => new Set(licences.map((l) => l.id))),
   applyFor: vi.fn(async () => undefined),
   releaseFor: vi.fn(async () => undefined),
   cfg,
@@ -328,5 +331,54 @@ describe("ProvisioningKeeper", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining("down"));
     keeper.stop();
+  });
+
+  describe("authorisation gate", () => {
+    // allLicenses() returns every app-owner-license document in the reactor,
+    // whoever created it, and those documents are system-signed so a forged one
+    // carries no signature to check. Only licences the publisher surface
+    // authorised may provision.
+    it("does not provision a licence nobody authorised", async () => {
+      const d = deps({ authorizedLicenseIds: vi.fn(async () => new Set<string>()) });
+      await new ProvisioningKeeper(d).reconcileOnce();
+      expect(d.applyFor).not.toHaveBeenCalled();
+    });
+
+    it("holds the environment of an unauthorised licence instead of releasing it", async () => {
+      // A licence predating the authorisation table, or a lost row, must never
+      // cost a customer their environment.
+      const env: UserEnvironment = {
+        user: "0x1111111111111111111111111111111111111111",
+        environmentId: "env-1",
+        licenseId: "lic-1",
+        templateHash: "hash-a",
+      };
+      const d = deps(
+        { authorizedLicenseIds: vi.fn(async () => new Set<string>()) },
+        [lic({})],
+        { "app-a": [env] },
+      );
+      await new ProvisioningKeeper(d).reconcileOnce();
+      expect(d.releaseFor).not.toHaveBeenCalled();
+      expect(d.applyFor).not.toHaveBeenCalled();
+    });
+
+    it("provisions only the authorised licence when both are present", async () => {
+      const mine = lic({ id: "lic-1" });
+      const forged = lic({
+        id: "lic-forged",
+        user: "0x2222222222222222222222222222222222222222",
+      });
+      const d = deps(
+        { authorizedLicenseIds: vi.fn(async () => new Set(["lic-1"])) },
+        [mine, forged],
+      );
+      await new ProvisioningKeeper(d).reconcileOnce();
+      expect(d.applyFor).toHaveBeenCalledTimes(1);
+      expect(d.applyFor).toHaveBeenCalledWith(
+        "app-a",
+        expect.objectContaining({ licenseId: "lic-1" }),
+      );
+    });
   });
 });

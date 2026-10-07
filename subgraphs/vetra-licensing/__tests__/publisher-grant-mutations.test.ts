@@ -68,6 +68,7 @@ function makeDeps(over: { enabled?: boolean } = {}) {
       return id;
     }),
     execute: vi.fn(run),
+    recordGrant: vi.fn(async () => undefined),
   };
   const licenseGateway = { execute: vi.fn(run) };
   // L1 starts ACTIVE so a revoke is a legal transition.

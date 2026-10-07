@@ -98,6 +98,20 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         // belong to that same app (checked in issuePublisherGrant), so any
         // holder address is accepted. Replace this when a list is introduced.
         isOnAllowList: async () => true,
+        recordGrant: async (row) => {
+          await db
+            .insertInto("app_license_grants")
+            .values({
+              license_id: row.licenseId,
+              app_id: row.appId,
+              license_type_id: row.licenseTypeId,
+              user_address: row.user.toLowerCase(),
+              issued_by: row.issuedBy.toLowerCase(),
+              created_at: row.now,
+            })
+            .onConflict((oc) => oc.column("license_id").doNothing())
+            .execute();
+        },
         getLicenseType: reads.licenseType,
         createLicenseDocument: gateway.create,
         execute: gateway.execute,
@@ -157,6 +171,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const typeSnapshots = createTypeSnapshots(reads);
     this.provisioningKeeper = new ProvisioningKeeper({
       allLicenses: reads.allLicenses,
+      authorizedLicenseIds: async (appId: string) => {
+        const rows = await db
+          .selectFrom("app_license_grants")
+          .select("license_id")
+          .where("app_id", "=", appId)
+          .execute();
+        return new Set(rows.map((r) => r.license_id));
+      },
       licenseTypes: typeSnapshots.licenseTypes,
       environments: async (appId) =>
         (

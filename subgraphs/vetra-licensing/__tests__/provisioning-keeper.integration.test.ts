@@ -164,6 +164,12 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
 
     keeper = new ProvisioningKeeper({
       allLicenses: () => reads.allLicenses(),
+      authorizedLicenseIds: async (appId: string) =>
+        new Set(
+          (await reads.allLicenses())
+            .filter((r) => r.app === appId)
+            .map((r) => r.id),
+        ),
       licenseTypes: typeSnapshots.licenseTypes,
       environments: async (appId) =>
         (
