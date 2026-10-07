@@ -53,7 +53,10 @@ const deployedState = (): VetraCloudEnvironmentState => ({
   status: "READY",
   owner: OWNER,
   label: "Acme vault",
-  services: [enabled("CONNECT", "connect"), enabled("SWITCHBOARD", "switchboard")],
+  services: [
+    enabled("CONNECT", "connect"),
+    enabled("SWITCHBOARD", "switchboard"),
+  ],
   packages: [
     {
       registry: "https://registry.example.com",
@@ -194,7 +197,11 @@ describe("renderUpdateActions", () => {
       template: {
         ...template,
         packages: [
-          { id: "p1", packageName: "@powerhousedao/knowledge", version: "2.0.0" },
+          {
+            id: "p1",
+            packageName: "@powerhousedao/knowledge",
+            version: "2.0.0",
+          },
           { id: "p2", packageName: "@powerhousedao/vault", version: null },
         ],
       },
@@ -231,6 +238,21 @@ describe("renderUpdateActions", () => {
   // FUSION is enabled by the app-link flow, not by a licence template, so a
   // template that does not mention it must not tear it down.
   it("leaves a service type the template cannot express alone", () => {
+    // CLINT needs a clintConfig the template cannot carry, so it was enabled by
+    // something other than a licence template and is not ours to tear down.
+    const current = deployedState();
+    current.services.push(enabled("CLINT", "clint"));
+    const actions = renderUpdateActions({
+      label: "Acme vault",
+      template,
+      current,
+    });
+    expect(types(actions)).not.toContain("DISABLE_SERVICE");
+  });
+
+  // FUSION is template-managed now: dropping the app image from a tier means
+  // holders should stop running it.
+  it("disables a FUSION service the template no longer asks for", () => {
     const current = deployedState();
     current.services.push(enabled("FUSION", "fusion"));
     const actions = renderUpdateActions({
@@ -238,7 +260,7 @@ describe("renderUpdateActions", () => {
       template,
       current,
     });
-    expect(types(actions)).not.toContain("DISABLE_SERVICE");
+    expect(types(actions)).toContain("DISABLE_SERVICE");
   });
 });
 

@@ -27,7 +27,10 @@ describe("appArtifacts", () => {
           id: "FUSION_IMAGE:dtbau-psb",
           kind: "FUSION_IMAGE",
           name: "dtbau-psb",
-          versions: [{ version: "1.0.0" }, { version: "1.1.0" }],
+          versions: [
+            { version: "1.0.0", reference: "cr.vetra.io/p/dtbau-psb:1.0.0" },
+            { version: "1.1.0", reference: "cr.vetra.io/p/dtbau-psb:1.1.0" },
+          ],
           channels: [{ channel: "LATEST", version: "1.1.0" }],
         },
       ]),
@@ -37,7 +40,10 @@ describe("appArtifacts", () => {
       {
         kind: "FUSION_IMAGE",
         name: "dtbau-psb",
-        versions: ["1.0.0", "1.1.0"],
+        versions: [
+          { version: "1.0.0", reference: "cr.vetra.io/p/dtbau-psb:1.0.0" },
+          { version: "1.1.0", reference: "cr.vetra.io/p/dtbau-psb:1.1.0" },
+        ],
         channels: [{ channel: "LATEST", version: "1.1.0" }],
       },
     ]);
@@ -74,7 +80,13 @@ describe("appArtifacts", () => {
         {
           kind: "PACKAGE",
           name: "@acme/pkg",
-          versions: [{ version: "1.0.0" }, null, { nope: true }],
+          // a version with no reference cannot be run, so it is not offered
+          versions: [
+            { version: "1.0.0", reference: "https://reg/x" },
+            null,
+            { nope: true },
+            { version: "2.0.0" },
+          ],
           channels: [
             { channel: "LATEST" },
             { channel: "DEV", version: "1.0.0" },
@@ -83,7 +95,9 @@ describe("appArtifacts", () => {
       ]),
     ).appArtifacts("app-1");
 
-    expect(out[0]!.versions).toStrictEqual(["1.0.0"]);
+    expect(out[0]!.versions).toStrictEqual([
+      { version: "1.0.0", reference: "https://reg/x" },
+    ]);
     expect(out[0]!.channels).toStrictEqual([
       { channel: "DEV", version: "1.0.0" },
     ]);

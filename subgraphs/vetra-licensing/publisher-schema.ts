@@ -45,8 +45,14 @@ export const publisherSchema: DocumentNode = gql`
     kind: String!
     name: String!
     "Every published version, newest last."
-    versions: [String!]!
+    versions: [PublisherArtifactVersion!]!
     channels: [PublisherArtifactChannel!]!
+  }
+
+  type PublisherArtifactVersion {
+    version: String!
+    "The full image reference or registry URL CI published."
+    reference: String!
   }
 
   type PublisherArtifactChannel {
