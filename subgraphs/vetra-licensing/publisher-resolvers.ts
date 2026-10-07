@@ -1,12 +1,20 @@
 import type { Kysely } from "kysely";
 import type { VetraLicensingDB, AppUserEnvironments } from "./db/schema.js";
 import { UnauthenticatedError, type AuthContext } from "./auth.js";
-import { resolveOwnerApp, type PublisherAuthDeps } from "./publisher-auth.js";
+import type { Action } from "document-model";
+import {
+  resolveOwnerApp,
+  NotAppOwnerError,
+  UnknownAppError,
+  type PublisherAuthDeps,
+} from "./publisher-auth.js";
 import type { LicenseReads } from "./reads.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseTypeGateway } from "./license-type-gateway.js";
 import type { LicenseGateway } from "./license-gateway.js";
 import type { GrantDeps } from "./issuers/publisher-grant.js";
+import { LicensingDisabledError } from "./resolvers.js";
+import { actions } from "document-models/app-license-type";
 
 /**
  * Thrown by Tasks 6 and 7 for a licence type that is missing OR belongs to
@@ -44,6 +52,10 @@ const toGql = (r: AppUserEnvironments) => ({
   templateHash: r.template_hash,
 });
 
+type TemplateServiceType = Parameters<
+  typeof actions.addTemplateService
+>[0]["type"];
+
 type Ctx = AuthContext & { isAdmin?: (a: string) => boolean };
 
 /**
@@ -55,6 +67,42 @@ export function createPublisherResolvers(
   db: Kysely<VetraLicensingDB>,
   deps: PublisherDeps,
 ): Record<string, unknown> {
+  const requireEnabled = () => {
+    if (!deps.cfg.enabled) {
+      throw new LicensingDisabledError(
+        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
+      );
+    }
+  };
+
+  /**
+   * Gate for every field keyed on a licence type id. The app is read from the
+   * document itself, never from arguments: another publisher's type fails
+   * exactly like a missing one.
+   */
+  const authoriseType = async (licenseTypeId: string, ctx: Ctx) => {
+    if (!ctx.user?.address) {
+      throw new UnauthenticatedError("sign in to manage licences");
+    }
+    const type = await deps.reads.licenseType(licenseTypeId);
+    if (!type) throw new UnknownLicenseTypeError();
+    try {
+      await resolveOwnerApp(deps.auth, ctx, type.app);
+    } catch (err) {
+      if (err instanceof NotAppOwnerError || err instanceof UnknownAppError) {
+        throw new UnknownLicenseTypeError();
+      }
+      throw err;
+    }
+    requireEnabled();
+    return licenseTypeId;
+  };
+
+  const dispatch = async (id: string, acts: Action[]) => {
+    await deps.typeGateway.execute(id, acts);
+    return true;
+  };
+
   return {
     Query: { vetraPublisher: () => ({}) },
     Mutation: { vetraPublisher: () => ({}) },
@@ -115,6 +163,116 @@ export function createPublisherResolvers(
           .where("app_id", "=", appId)
           .execute();
         return rows.map(toGql);
+      },
+    },
+
+    VetraPublisherMutations: {
+      createLicenseType: async (
+        _p: unknown,
+        args: {
+          input: {
+            appId: string;
+            kind: string;
+            label?: string | null;
+            validityDays?: number | null;
+          };
+        },
+        ctx: Ctx,
+      ) => {
+        const { appId } = await resolveOwnerApp(
+          deps.auth,
+          ctx,
+          args.input.appId,
+        );
+        requireEnabled();
+        const id = await deps.typeGateway.create();
+        await deps.typeGateway.execute(id, [
+          actions.setLicenseTypeDetails({
+            app: appId,
+            kind: args.input.kind,
+            label: args.input.label ?? null,
+            validityDays: args.input.validityDays ?? null,
+          }),
+        ]);
+        return id;
+      },
+
+      setLicenseTypeTemplate: async (
+        _p: unknown,
+        args: {
+          input: {
+            licenseTypeId: string;
+            size?: string | null;
+            baseDomain?: string | null;
+            packageRegistry?: string | null;
+          };
+        },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        return dispatch(id, [
+          actions.setTemplate({
+            size: args.input.size ?? null,
+            baseDomain: args.input.baseDomain ?? null,
+            packageRegistry: args.input.packageRegistry ?? null,
+          }),
+        ]);
+      },
+
+      addLicenseTypeService: async (
+        _p: unknown,
+        args: {
+          input: { licenseTypeId: string; type: string; prefix?: string | null };
+        },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        return dispatch(id, [
+          actions.addTemplateService({
+            id: crypto.randomUUID(),
+            type: args.input.type as TemplateServiceType,
+            prefix: args.input.prefix ?? null,
+          }),
+        ]);
+      },
+
+      addLicenseTypePackage: async (
+        _p: unknown,
+        args: {
+          input: {
+            licenseTypeId: string;
+            packageName: string;
+            version?: string | null;
+          };
+        },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.input.licenseTypeId, ctx);
+        return dispatch(id, [
+          actions.addTemplatePackage({
+            id: crypto.randomUUID(),
+            packageName: args.input.packageName,
+            version: args.input.version ?? null,
+          }),
+        ]);
+      },
+
+      publishLicenseType: async (
+        _p: unknown,
+        args: { licenseTypeId: string },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.licenseTypeId, ctx);
+        return dispatch(id, [actions.publishLicenseType({})]);
+      },
+
+      retireLicenseType: async (
+        _p: unknown,
+        args: { licenseTypeId: string },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseType(args.licenseTypeId, ctx);
+        return dispatch(id, [actions.retireLicenseType({})]);
       },
     },
   };
