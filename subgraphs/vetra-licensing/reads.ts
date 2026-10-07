@@ -47,7 +47,24 @@ export interface LicenseTypeDetail {
   template: TemplateShape;
 }
 
+/**
+ * One artifact the app has published, as the template builder offers it.
+ *
+ * Read from the app's own document: the document id IS the app id, so no
+ * lookup table stands between a template and the images it can reference.
+ */
+export interface AppArtifact {
+  kind: "PACKAGE" | "FUSION_IMAGE";
+  name: string;
+  /** Newest last, as the document stores them. */
+  versions: string[];
+  /** Channel name to the version it currently points at. */
+  channels: { channel: string; version: string }[];
+}
+
 export interface LicenseReads {
+  /** Every artifact the app has published, for the template builder's selects. */
+  appArtifacts(appId: string): Promise<AppArtifact[]>;
   /** Every licence type of one app, with label, validity and template contents. */
   licenseTypeDetails(appId: string): Promise<LicenseTypeDetail[]>;
   licenses(appId: string, status: string | null): Promise<LicenseView[]>;
@@ -220,7 +237,9 @@ export function createReactorLicenseReads(
   return {
     async licenses(appId, status) {
       return (await parsedLicenses())
-        .filter((l) => l.app === appId && (status === null || l.status === status))
+        .filter(
+          (l) => l.app === appId && (status === null || l.status === status),
+        )
         .map((l) => ({
           id: l.id,
           user: l.user,
@@ -244,6 +263,38 @@ export function createReactorLicenseReads(
             templateHash: templateHash(t.template ?? EMPTY_TEMPLATE),
           },
         ];
+      });
+    },
+
+    async appArtifacts(appId) {
+      // The app document's id is the app id, so this is a direct get. A missing
+      // document means the app has published nothing yet — an empty list, not
+      // an error: the builder says so rather than showing an empty dropdown.
+      const doc = await getDoc(appId);
+      if (!isRec(doc) || !isRec(doc.state)) return [];
+      const global = doc.state.global;
+      if (!isRec(global) || !Array.isArray(global.artifacts)) return [];
+
+      return global.artifacts.flatMap((a): AppArtifact[] => {
+        if (!isRec(a)) return [];
+        const kind = str(a.kind);
+        const name = str(a.name);
+        if ((kind !== "PACKAGE" && kind !== "FUSION_IMAGE") || !name) return [];
+        const versions = Array.isArray(a.versions)
+          ? a.versions.flatMap((v) => {
+              const version = isRec(v) ? str(v.version) : null;
+              return version ? [version] : [];
+            })
+          : [];
+        const channels = Array.isArray(a.channels)
+          ? a.channels.flatMap((c) => {
+              if (!isRec(c)) return [];
+              const channel = str(c.channel);
+              const version = str(c.version);
+              return channel && version ? [{ channel, version }] : [];
+            })
+          : [];
+        return [{ kind, name, versions, channels }];
       });
     },
 

@@ -26,7 +26,10 @@ import {
 
 // Defined in publisher-errors.ts (which maps them to GraphQL codes) so that
 // module does not import this one; re-exported to keep existing import paths.
-export { UnknownLicenseTypeError, UnknownLicenseError } from "./publisher-errors.js";
+export {
+  UnknownLicenseTypeError,
+  UnknownLicenseError,
+} from "./publisher-errors.js";
 
 export interface PublisherDeps {
   auth: PublisherAuthDeps;
@@ -48,6 +51,10 @@ const toGql = (r: AppUserEnvironments) => ({
 type TemplateServiceType = Parameters<
   typeof actions.addTemplateService
 >[0]["type"];
+
+type AutoUpdateChannel = NonNullable<
+  Parameters<typeof actions.addTemplateService>[0]["artifactChannel"]
+>;
 
 type Ctx = AuthContext & { isAdmin?: (a: string) => boolean };
 
@@ -139,240 +146,302 @@ export function createPublisherResolvers(
         return apps.map((a) => ({ id: a.id, name: a.name, status: a.status }));
       }),
 
-      licenseTypes: withCodes(async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
-        const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
-        const types = await deps.reads.licenseTypeDetails(appId);
-        return types.map((t) => ({
-          id: t.id,
-          kind: t.kind,
-          label: t.label,
-          status: t.status,
-          validityDays: t.validityDays,
-          templateHash: t.templateHash,
-          size: t.template.size,
-          baseDomain: t.template.baseDomain,
-          packageRegistry: t.template.packageRegistry,
-          services: t.template.services,
-          packages: t.template.packages,
-        }));
-      }),
+      licenseTypes: withCodes(
+        async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
+          const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
+          const types = await deps.reads.licenseTypeDetails(appId);
+          return types.map((t) => ({
+            id: t.id,
+            kind: t.kind,
+            label: t.label,
+            status: t.status,
+            validityDays: t.validityDays,
+            templateHash: t.templateHash,
+            size: t.template.size,
+            baseDomain: t.template.baseDomain,
+            packageRegistry: t.template.packageRegistry,
+            services: t.template.services,
+            packages: t.template.packages,
+          }));
+        },
+      ),
 
-      licenses: withCodes(async (
-        _p: unknown,
-        args: { appId: string; status?: string | null },
-        ctx: Ctx,
-      ) => {
-        const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
-        const [licenses, envs] = await Promise.all([
-          deps.reads.licenses(appId, args.status ?? null),
-          db
+      appArtifacts: withCodes(
+        async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
+          const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
+          return deps.reads.appArtifacts(appId);
+        },
+      ),
+
+      licenses: withCodes(
+        async (
+          _p: unknown,
+          args: { appId: string; status?: string | null },
+          ctx: Ctx,
+        ) => {
+          const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
+          const [licenses, envs] = await Promise.all([
+            deps.reads.licenses(appId, args.status ?? null),
+            db
+              .selectFrom("app_user_environments")
+              .selectAll()
+              .where("app_id", "=", appId)
+              .execute(),
+          ]);
+          const envByUser = new Map(
+            envs.map((e) => [e.user_address.toLowerCase(), e.environment_id]),
+          );
+          return licenses.map((l) => ({
+            ...l,
+            environmentId: envByUser.get(l.user.toLowerCase()) ?? null,
+          }));
+        },
+      ),
+
+      environments: withCodes(
+        async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
+          const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
+          const rows = await db
             .selectFrom("app_user_environments")
             .selectAll()
             .where("app_id", "=", appId)
-            .execute(),
-        ]);
-        const envByUser = new Map(
-          envs.map((e) => [e.user_address.toLowerCase(), e.environment_id]),
-        );
-        return licenses.map((l) => ({
-          ...l,
-          environmentId: envByUser.get(l.user.toLowerCase()) ?? null,
-        }));
-      }),
-
-      environments: withCodes(async (_p: unknown, args: { appId: string }, ctx: Ctx) => {
-        const { appId } = await resolveOwnerApp(deps.auth, ctx, args.appId);
-        const rows = await db
-          .selectFrom("app_user_environments")
-          .selectAll()
-          .where("app_id", "=", appId)
-          .execute();
-        return rows.map(toGql);
-      }),
+            .execute();
+          return rows.map(toGql);
+        },
+      ),
     },
 
     VetraPublisherMutations: {
-      createLicenseType: withCodes(async (
-        _p: unknown,
-        args: {
-          input: {
-            appId: string;
-            kind: string;
-            label?: string | null;
-            validityDays?: number | null;
-          };
-        },
-        ctx: Ctx,
-      ) => {
-        const { appId } = await resolveOwnerApp(
-          deps.auth,
-          ctx,
-          args.input.appId,
-        );
-        requireEnabled();
-        // Refuse BEFORE anything is created, as publisher-grant does for the
-        // holder address: a rejected execute after create() would leave an
-        // orphan document (app: null) that no read can ever see. Building the
-        // action runs the action creator's own input check; the validity rule
-        // below is the reducer's, pinned to it by a test that runs the reducer.
-        const validityDays = args.input.validityDays ?? null;
-        const detailsAction = actions.setLicenseTypeDetails({
-          app: appId,
-          kind: args.input.kind,
-          label: args.input.label ?? null,
-          validityDays,
-        });
-        if (validityDays !== null && validityDays <= 0) {
-          throw new NegativeValidityError("validityDays must be positive");
-        }
-        const id = await deps.typeGateway.create();
-        await deps.typeGateway.execute(id, [detailsAction]);
-        return id;
-      }),
-
-      setLicenseTypeDetails: withCodes(async (
-        _p: unknown,
-        args: {
-          input: {
-            licenseTypeId: string;
-            kind?: string | null;
-            label?: string | null;
-            validityDays?: number | null;
-          };
-        },
-        ctx: Ctx,
-      ) => {
-        const { id, type } = await authoriseType(args.input.licenseTypeId, ctx);
-        // The reducer always assigns validityDays, so an omitted key must
-        // carry the current value, or an unrelated edit would wipe it. Test key
-        // presence, not truthiness: explicit null clears, and 0 is a value.
-        const validityDays =
-          "validityDays" in args.input
-            ? (args.input.validityDays ?? null)
-            : (type.validityDays ?? null);
-        // No `app` key, ever: the reducer would reassign the type to that app,
-        // a cross-tenant write. Omitted, the reducer leaves the app untouched.
-        return dispatch(id, [
-          actions.setLicenseTypeDetails({
-            kind: args.input.kind ?? null,
+      createLicenseType: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: {
+              appId: string;
+              kind: string;
+              label?: string | null;
+              validityDays?: number | null;
+            };
+          },
+          ctx: Ctx,
+        ) => {
+          const { appId } = await resolveOwnerApp(
+            deps.auth,
+            ctx,
+            args.input.appId,
+          );
+          requireEnabled();
+          // Refuse BEFORE anything is created, as publisher-grant does for the
+          // holder address: a rejected execute after create() would leave an
+          // orphan document (app: null) that no read can ever see. Building the
+          // action runs the action creator's own input check; the validity rule
+          // below is the reducer's, pinned to it by a test that runs the reducer.
+          const validityDays = args.input.validityDays ?? null;
+          const detailsAction = actions.setLicenseTypeDetails({
+            app: appId,
+            kind: args.input.kind,
             label: args.input.label ?? null,
             validityDays,
-          }),
-        ]);
-      }),
-
-      setLicenseTypeTemplate: withCodes(async (
-        _p: unknown,
-        args: {
-          input: {
-            licenseTypeId: string;
-            size?: string | null;
-            baseDomain?: string | null;
-            packageRegistry?: string | null;
-          };
+          });
+          if (validityDays !== null && validityDays <= 0) {
+            throw new NegativeValidityError("validityDays must be positive");
+          }
+          const id = await deps.typeGateway.create();
+          await deps.typeGateway.execute(id, [detailsAction]);
+          return id;
         },
-        ctx: Ctx,
-      ) => {
-        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
-        return dispatch(id, [
-          actions.setTemplate({
-            size: args.input.size ?? null,
-            baseDomain: args.input.baseDomain ?? null,
-            packageRegistry: args.input.packageRegistry ?? null,
-          }),
-        ]);
-      }),
+      ),
 
-      addLicenseTypeService: withCodes(async (
-        _p: unknown,
-        args: {
-          input: { licenseTypeId: string; type: string; prefix?: string | null };
+      setLicenseTypeDetails: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: {
+              licenseTypeId: string;
+              kind?: string | null;
+              label?: string | null;
+              validityDays?: number | null;
+            };
+          },
+          ctx: Ctx,
+        ) => {
+          const { id, type } = await authoriseType(
+            args.input.licenseTypeId,
+            ctx,
+          );
+          // The reducer always assigns validityDays, so an omitted key must
+          // carry the current value, or an unrelated edit would wipe it. Test key
+          // presence, not truthiness: explicit null clears, and 0 is a value.
+          const validityDays =
+            "validityDays" in args.input
+              ? (args.input.validityDays ?? null)
+              : (type.validityDays ?? null);
+          // No `app` key, ever: the reducer would reassign the type to that app,
+          // a cross-tenant write. Omitted, the reducer leaves the app untouched.
+          return dispatch(id, [
+            actions.setLicenseTypeDetails({
+              kind: args.input.kind ?? null,
+              label: args.input.label ?? null,
+              validityDays,
+            }),
+          ]);
         },
-        ctx: Ctx,
-      ) => {
-        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
-        return dispatch(id, [
-          actions.addTemplateService({
-            id: crypto.randomUUID(),
-            type: args.input.type as TemplateServiceType,
-            prefix: args.input.prefix ?? null,
-          }),
-        ]);
-      }),
+      ),
 
-      addLicenseTypePackage: withCodes(async (
-        _p: unknown,
-        args: {
-          input: {
-            licenseTypeId: string;
-            packageName: string;
-            version?: string | null;
-          };
+      setLicenseTypeTemplate: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: {
+              licenseTypeId: string;
+              size?: string | null;
+              baseDomain?: string | null;
+              packageRegistry?: string | null;
+            };
+          },
+          ctx: Ctx,
+        ) => {
+          const { id } = await authoriseType(args.input.licenseTypeId, ctx);
+          return dispatch(id, [
+            actions.setTemplate({
+              size: args.input.size ?? null,
+              baseDomain: args.input.baseDomain ?? null,
+              packageRegistry: args.input.packageRegistry ?? null,
+            }),
+          ]);
         },
-        ctx: Ctx,
-      ) => {
-        const { id } = await authoriseType(args.input.licenseTypeId, ctx);
-        return dispatch(id, [
-          actions.addTemplatePackage({
-            id: crypto.randomUUID(),
-            packageName: args.input.packageName,
-            version: args.input.version ?? null,
-          }),
-        ]);
-      }),
+      ),
 
-      publishLicenseType: withCodes(async (
-        _p: unknown,
-        args: { licenseTypeId: string },
-        ctx: Ctx,
-      ) => {
-        const { id } = await authoriseType(args.licenseTypeId, ctx);
-        return dispatch(id, [actions.publishLicenseType({})]);
-      }),
-
-      retireLicenseType: withCodes(async (
-        _p: unknown,
-        args: { licenseTypeId: string },
-        ctx: Ctx,
-      ) => {
-        const { id } = await authoriseType(args.licenseTypeId, ctx);
-        return dispatch(id, [actions.retireLicenseType({})]);
-      }),
-
-      issueGrant: withCodes(async (
-        _p: unknown,
-        args: {
-          input: { appId: string; licenseTypeId: string; user: string };
+      addLicenseTypeService: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: {
+              licenseTypeId: string;
+              type: string;
+              prefix?: string | null;
+              artifactName?: string | null;
+              artifactChannel?: string | null;
+            };
+          },
+          ctx: Ctx,
+        ) => {
+          const { id } = await authoriseType(args.input.licenseTypeId, ctx);
+          return dispatch(id, [
+            actions.addTemplateService({
+              id: crypto.randomUUID(),
+              type: args.input.type as TemplateServiceType,
+              prefix: args.input.prefix ?? null,
+              artifactName: args.input.artifactName ?? null,
+              artifactChannel:
+                (args.input.artifactChannel as AutoUpdateChannel | null) ??
+                null,
+            }),
+          ]);
         },
-        ctx: Ctx,
-      ) => {
-        const { appId } = await resolveOwnerApp(
-          deps.auth,
-          ctx,
-          args.input.appId,
-        );
-        requireEnabled();
-        return issuePublisherGrant(deps.grant, {
-          appId,
-          licenseTypeId: args.input.licenseTypeId,
-          user: args.input.user,
-          // resolveOwnerApp has already refused an unauthenticated caller.
-          issuedBy: ctx.user!.address,
-          now: new Date().toISOString(),
-        });
-      }),
+      ),
 
-      revokeLicense: withCodes(async (
-        _p: unknown,
-        args: { input: { licenseId: string; reason?: string | null } },
-        ctx: Ctx,
-      ) => {
-        const id = await authoriseLicense(args.input.licenseId, ctx);
-        await deps.licenseGateway.execute(id, [
-          licenseActions.revokeLicense({ reason: args.input.reason ?? null }),
-        ]);
-        return true;
-      }),
+      removeLicenseTypeService: withCodes(
+        async (
+          _p: unknown,
+          args: { input: { licenseTypeId: string; id: string } },
+          ctx: Ctx,
+        ) => {
+          const { id } = await authoriseType(args.input.licenseTypeId, ctx);
+          return dispatch(id, [
+            actions.removeTemplateService({ id: args.input.id }),
+          ]);
+        },
+      ),
+
+      removeLicenseTypePackage: withCodes(
+        async (
+          _p: unknown,
+          args: { input: { licenseTypeId: string; id: string } },
+          ctx: Ctx,
+        ) => {
+          const { id } = await authoriseType(args.input.licenseTypeId, ctx);
+          return dispatch(id, [
+            actions.removeTemplatePackage({ id: args.input.id }),
+          ]);
+        },
+      ),
+
+      addLicenseTypePackage: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: {
+              licenseTypeId: string;
+              packageName: string;
+              version?: string | null;
+            };
+          },
+          ctx: Ctx,
+        ) => {
+          const { id } = await authoriseType(args.input.licenseTypeId, ctx);
+          return dispatch(id, [
+            actions.addTemplatePackage({
+              id: crypto.randomUUID(),
+              packageName: args.input.packageName,
+              version: args.input.version ?? null,
+            }),
+          ]);
+        },
+      ),
+
+      publishLicenseType: withCodes(
+        async (_p: unknown, args: { licenseTypeId: string }, ctx: Ctx) => {
+          const { id } = await authoriseType(args.licenseTypeId, ctx);
+          return dispatch(id, [actions.publishLicenseType({})]);
+        },
+      ),
+
+      retireLicenseType: withCodes(
+        async (_p: unknown, args: { licenseTypeId: string }, ctx: Ctx) => {
+          const { id } = await authoriseType(args.licenseTypeId, ctx);
+          return dispatch(id, [actions.retireLicenseType({})]);
+        },
+      ),
+
+      issueGrant: withCodes(
+        async (
+          _p: unknown,
+          args: {
+            input: { appId: string; licenseTypeId: string; user: string };
+          },
+          ctx: Ctx,
+        ) => {
+          const { appId } = await resolveOwnerApp(
+            deps.auth,
+            ctx,
+            args.input.appId,
+          );
+          requireEnabled();
+          return issuePublisherGrant(deps.grant, {
+            appId,
+            licenseTypeId: args.input.licenseTypeId,
+            user: args.input.user,
+            // resolveOwnerApp has already refused an unauthenticated caller.
+            issuedBy: ctx.user!.address,
+            now: new Date().toISOString(),
+          });
+        },
+      ),
+
+      revokeLicense: withCodes(
+        async (
+          _p: unknown,
+          args: { input: { licenseId: string; reason?: string | null } },
+          ctx: Ctx,
+        ) => {
+          const id = await authoriseLicense(args.input.licenseId, ctx);
+          await deps.licenseGateway.execute(id, [
+            licenseActions.revokeLicense({ reason: args.input.reason ?? null }),
+          ]);
+          return true;
+        },
+      ),
     },
   };
 }
