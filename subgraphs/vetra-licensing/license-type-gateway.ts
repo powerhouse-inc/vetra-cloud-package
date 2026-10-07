@@ -2,6 +2,7 @@ import type { Action } from "document-model";
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
 
 import type { LicenseGatewayClientLike } from "./license-gateway.js";
+import { OperationRejectedError } from "./publisher-errors.js";
 import { LICENSE_TYPE_DOC_TYPE } from "./reads.js";
 
 export { LICENSE_TYPE_DOC_TYPE };
@@ -57,10 +58,10 @@ export function createReactorLicenseTypeGateway(
     for (const action of acts) {
       const mine = appended.find((op) => op.action?.id === action.id);
       if (!mine) {
-        throw new Error(`${action.type} was not applied to license type ${id}`);
+        throw new OperationRejectedError(`${action.type} was not applied to license type ${id}`);
       }
       if (mine.error) {
-        throw new Error(`${action.type} rejected: ${mine.error}`);
+        throw new OperationRejectedError(`${action.type} rejected: ${mine.error}`);
       }
     }
   }

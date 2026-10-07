@@ -1,16 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Kysely } from "kysely";
-import { buildASTSchema, type GraphQLInputObjectType } from "graphql";
+import { buildASTSchema, GraphQLError, type GraphQLInputObjectType } from "graphql";
 import { schema } from "../schema.js";
 import type { Action } from "document-model";
 import {
   createPublisherResolvers,
-  UnknownLicenseTypeError,
-  UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
 import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
-import { LicenseTypeNotIssuableError } from "../issuers/publisher-grant.js";
 import type { VetraLicensingDB } from "../db/schema.js";
 
 /**
@@ -215,6 +212,18 @@ const rejection = async (p: Promise<unknown>): Promise<Error> => {
   throw new Error("expected the call to be refused, but it resolved");
 };
 
+/**
+ * The WIRE representation: what a client receives. Isolation is judged on this,
+ * not on the domain class, so a change to the code a client sees cannot slip
+ * past the suite.
+ */
+const codeOf = (e: unknown) => (e as GraphQLError).extensions?.code;
+async function expectWire(p: Promise<unknown> | Error, code: string) {
+  const err = p instanceof Error ? p : await rejection(p);
+  expect(err).toBeInstanceOf(GraphQLError);
+  expect(codeOf(err)).toBe(code);
+}
+
 /** Message with the id the caller typed replaced, so ids can be compared. */
 const sans = (e: Error, id: string) => e.message.split(id).join("<id>");
 
@@ -235,7 +244,10 @@ describe("app-keyed queries refuse another publisher's app", () => {
     expect(own.map((t) => t.id)).toEqual([TYPE_A]);
     h.reads.licenseTypeDetails.mockClear();
 
-    await expect(h.q.licenseTypes({}, { appId: APP_B }, asA)).rejects.toBeInstanceOf(NotAppOwnerError);
+    await expectWire(
+      h.q.licenseTypes({}, { appId: APP_B }, asA),
+      "UNKNOWN_APP",
+    );
     expect(h.reads.licenseTypeDetails).not.toHaveBeenCalled();
   });
 
@@ -246,8 +258,14 @@ describe("app-keyed queries refuse another publisher's app", () => {
     h.reads.licenses.mockClear();
     h.dbSelects.length = 0;
 
-    await expect(h.q.licenses({}, { appId: APP_B }, asA)).rejects.toBeInstanceOf(NotAppOwnerError);
-    await expect(h.q.licenses({}, { appId: APP_B, status: "ACTIVE" }, asA)).rejects.toBeInstanceOf(NotAppOwnerError);
+    await expectWire(
+      h.q.licenses({}, { appId: APP_B }, asA),
+      "UNKNOWN_APP",
+    );
+    await expectWire(
+      h.q.licenses({}, { appId: APP_B, status: "ACTIVE" }, asA),
+      "UNKNOWN_APP",
+    );
     expect(h.reads.licenses).not.toHaveBeenCalled();
     expect(h.dbSelects).toEqual([]);
   });
@@ -259,7 +277,10 @@ describe("app-keyed queries refuse another publisher's app", () => {
     expect(own.every((e) => e.appId === APP_A)).toBe(true);
     h.dbSelects.length = 0;
 
-    await expect(h.q.environments({}, { appId: APP_B }, asA)).rejects.toBeInstanceOf(NotAppOwnerError);
+    await expectWire(
+      h.q.environments({}, { appId: APP_B }, asA),
+      "UNKNOWN_APP",
+    );
     expect(h.dbSelects).toEqual([]);
   });
 });
@@ -267,9 +288,10 @@ describe("app-keyed queries refuse another publisher's app", () => {
 describe("app-keyed mutations refuse another publisher's app", () => {
   it("createLicenseType: no document is created or dispatched", async () => {
     const h = makeHarness();
-    await expect(
+    await expectWire(
       h.m.createLicenseType({}, { input: { appId: APP_B, kind: "pro" } }, asA),
-    ).rejects.toBeInstanceOf(NotAppOwnerError);
+      "UNKNOWN_APP",
+    );
     h.expectNoWrite();
 
     // positive control
@@ -282,9 +304,10 @@ describe("app-keyed mutations refuse another publisher's app", () => {
   describe("issueGrant", () => {
     it("on B's app: refused, nothing issued", async () => {
       const h = makeHarness();
-      await expect(
+      await expectWire(
         h.m.issueGrant({}, { input: { appId: APP_B, licenseTypeId: TYPE_B, user: HOLDER_B } }, asA),
-      ).rejects.toBeInstanceOf(NotAppOwnerError);
+        "UNKNOWN_APP",
+      );
       h.expectNoWrite();
       expect(h.grant.getLicenseType).not.toHaveBeenCalled();
     });
@@ -294,14 +317,14 @@ describe("app-keyed mutations refuse another publisher's app", () => {
       const err = await rejection(
         h.m.issueGrant({}, { input: { appId: APP_A, licenseTypeId: TYPE_B, user: HOLDER_A } }, asA),
       );
-      expect(err).toBeInstanceOf(LicenseTypeNotIssuableError);
+      await expectWire(err, "INVALID_INPUT");
       h.expectNoWrite();
 
       // indistinguishable from a type that does not exist
       const ghost = await rejection(
         h.m.issueGrant({}, { input: { appId: APP_A, licenseTypeId: GHOST_TYPE, user: HOLDER_A } }, asA),
       );
-      expect(ghost).toBeInstanceOf(LicenseTypeNotIssuableError);
+      await expectWire(ghost, "INVALID_INPUT");
       expect(sans(err, TYPE_B)).toBe(sans(ghost, GHOST_TYPE));
       h.expectNoWrite();
     });
@@ -329,7 +352,7 @@ describe("licence-type-keyed mutations refuse another publisher's type", () => {
   it.each(CASES)("%s: refused, nothing dispatched; own type works", async (field, args) => {
     const h = makeHarness();
     const err = await rejection(h.m[field]({}, args(TYPE_B), asA));
-    expect(err).toBeInstanceOf(UnknownLicenseTypeError);
+    await expectWire(err, "UNKNOWN_LICENSE_TYPE");
     h.expectNoWrite();
     h.expectNoDataRead();
 
@@ -344,6 +367,8 @@ describe("licence-type-keyed mutations refuse another publisher's type", () => {
     const missing = await rejection(h.m[field]({}, args(GHOST_TYPE), asA));
     expect(theirs.name).toBe(missing.name);
     expect(theirs.message).toBe(missing.message);
+    expect(codeOf(theirs)).toBe("UNKNOWN_LICENSE_TYPE");
+    expect(codeOf(theirs)).toBe(codeOf(missing));
     // and it does not echo the id, which would let A confirm B's ids
     expect(theirs.message).not.toContain(TYPE_B);
     h.expectNoWrite();
@@ -380,9 +405,10 @@ describe("licence-type-keyed mutations refuse another publisher's type", () => {
 
     // The same via B's type is refused before any dispatch.
     const h2 = makeHarness();
-    await expect(
+    await expectWire(
       h2.m.setLicenseTypeDetails({}, { input: { licenseTypeId: TYPE_B, app: APP_A } }, asA),
-    ).rejects.toBeInstanceOf(UnknownLicenseTypeError);
+      "UNKNOWN_LICENSE_TYPE",
+    );
     h2.expectNoWrite();
   });
 });
@@ -393,7 +419,7 @@ describe("revokeLicense refuses another publisher's licence", () => {
   it("B's licence: refused, nothing dispatched; own licence is revoked", async () => {
     const h = makeHarness();
     const err = await rejection(h.m.revokeLicense({}, revoke(LIC_B), asA));
-    expect(err).toBeInstanceOf(UnknownLicenseError);
+    await expectWire(err, "UNKNOWN_LICENSE");
     h.expectNoWrite();
     h.expectNoDataRead();
 
@@ -408,6 +434,8 @@ describe("revokeLicense refuses another publisher's licence", () => {
     const missing = await rejection(h.m.revokeLicense({}, revoke(GHOST_LIC), asA));
     expect(theirs.name).toBe(missing.name);
     expect(theirs.message).toBe(missing.message);
+    expect(codeOf(theirs)).toBe("UNKNOWN_LICENSE");
+    expect(codeOf(theirs)).toBe(codeOf(missing));
     expect(theirs.message).not.toContain(LIC_B);
     h.expectNoWrite();
   });
@@ -428,10 +456,14 @@ describe("error wording does not distinguish 'not yours' from 'does not exist'",
     const target = kind === "q" ? h.q : h.m;
     const theirs = await rejection(target[field]({}, args(APP_B), asA));
     const missing = await rejection(target[field]({}, args(GHOST_APP), asA));
-    // Distinct classes server-side (instanceof, logging)...
-    expect(theirs).toBeInstanceOf(NotAppOwnerError);
-    expect(missing).toBeInstanceOf(UnknownAppError);
-    // ...but nothing a client can see differs: name and message both match.
+    // Distinct classes server-side (logging), visible only as originalError...
+    expect((theirs as GraphQLError).originalError).toBeInstanceOf(NotAppOwnerError);
+    expect((missing as GraphQLError).originalError).toBeInstanceOf(UnknownAppError);
+    // ...but nothing a client can see differs: name, message AND code match.
+    // A different code here would be an app-enumeration oracle.
+    expect(codeOf(theirs)).toBe("UNKNOWN_APP");
+    expect(codeOf(missing)).toBe("UNKNOWN_APP");
+    expect(codeOf(theirs)).toBe(codeOf(missing));
     expect(theirs.name).toBe(missing.name);
     expect(theirs.message).toBe(missing.message);
     expect(theirs.message).not.toContain(APP_B);

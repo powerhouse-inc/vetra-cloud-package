@@ -3,10 +3,10 @@ import type { Kysely } from "kysely";
 import type { Action } from "document-model";
 import { reducer, utils } from "document-models/app-owner-license";
 import {
-  createPublisherResolvers,
   UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createPublisherResolvers } from "./unwrapped-publisher-resolvers.js";
 import { createReactorLicenseReads } from "../reads.js";
 import { LicensingDisabledError } from "../resolvers.js";
 import { UnauthenticatedError } from "../auth.js";

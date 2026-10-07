@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Kysely } from "kysely";
 import {
-  createPublisherResolvers,
   UnknownLicenseTypeError,
   UnknownLicenseError,
   type PublisherDeps,
 } from "../publisher-resolvers.js";
+import { createPublisherResolvers } from "./unwrapped-publisher-resolvers.js";
 import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
 import { UnauthenticatedError } from "../auth.js";
 import type { VetraLicensingDB } from "../db/schema.js";
@@ -211,11 +211,38 @@ describe("publisher queries: reads", () => {
         status: "PUBLISHED",
         validityDays: 30,
         templateHash: "h",
+        size: null,
+        baseDomain: null,
+        packageRegistry: null,
         services: template.services,
         packages: template.packages,
       },
     ]);
     expect(reads.licenseTypeDetails).toHaveBeenCalledWith("app-1");
+  });
+
+  it("exposes size, baseDomain and packageRegistry so a client can send them back on a full-replace SET_TEMPLATE", async () => {
+    const { deps, reads } = makeDeps();
+    reads.licenseTypeDetails.mockResolvedValueOnce([
+      {
+        ...typeDoc("T1", "app-1", "Pro"),
+        template: {
+          ...template,
+          size: "M",
+          baseDomain: "example.org",
+          packageRegistry: "https://registry.example.org",
+        },
+      },
+    ] as never);
+    const q = Q(createPublisherResolvers(throwingDb, deps));
+    const out = (await q.licenseTypes({}, { appId: "app-1" }, ctx(OWNER))) as Array<
+      Record<string, unknown>
+    >;
+    expect(out[0]).toMatchObject({
+      size: "M",
+      baseDomain: "example.org",
+      packageRegistry: "https://registry.example.org",
+    });
   });
 
   it("serves every read even when licensing is disabled", async () => {
