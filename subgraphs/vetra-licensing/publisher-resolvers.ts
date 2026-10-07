@@ -15,6 +15,7 @@ import type { LicenseGateway } from "./license-gateway.js";
 import type { GrantDeps } from "./issuers/publisher-grant.js";
 import { makeRequireEnabled } from "./resolvers.js";
 import { actions } from "document-models/app-license-type";
+import { NegativeValidityError } from "../../document-models/app-license-type/v1/gen/license-type/error.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { issuePublisherGrant } from "./issuers/publisher-grant.js";
 
@@ -204,15 +205,23 @@ export function createPublisherResolvers(
           args.input.appId,
         );
         requireEnabled();
+        // Refuse BEFORE anything is created, as publisher-grant does for the
+        // holder address: a rejected execute after create() would leave an
+        // orphan document (app: null) that no read can ever see. Building the
+        // action runs the action creator's own input check; the validity rule
+        // below is the reducer's, pinned to it by a test that runs the reducer.
+        const validityDays = args.input.validityDays ?? null;
+        const detailsAction = actions.setLicenseTypeDetails({
+          app: appId,
+          kind: args.input.kind,
+          label: args.input.label ?? null,
+          validityDays,
+        });
+        if (validityDays !== null && validityDays <= 0) {
+          throw new NegativeValidityError("validityDays must be positive");
+        }
         const id = await deps.typeGateway.create();
-        await deps.typeGateway.execute(id, [
-          actions.setLicenseTypeDetails({
-            app: appId,
-            kind: args.input.kind,
-            label: args.input.label ?? null,
-            validityDays: args.input.validityDays ?? null,
-          }),
-        ]);
+        await deps.typeGateway.execute(id, [detailsAction]);
         return id;
       },
 
