@@ -5,7 +5,9 @@
 import { createAction } from "document-model";
 import {
   ConnectRepositoryInputSchema,
+  RecordArtifactVersionInputSchema,
   SetAppDetailsInputSchema,
+  SetArtifactChannelInputSchema,
   SetIdentityInputSchema,
   SetPreviewsInputSchema,
   SetProductionEnvironmentInputSchema,
@@ -13,7 +15,9 @@ import {
 } from "../schema/zod.js";
 import type {
   ConnectRepositoryInput,
+  RecordArtifactVersionInput,
   SetAppDetailsInput,
+  SetArtifactChannelInput,
   SetIdentityInput,
   SetPreviewsInput,
   SetProductionEnvironmentInput,
@@ -21,7 +25,9 @@ import type {
 } from "../types.js";
 import type {
   ConnectRepositoryAction,
+  RecordArtifactVersionAction,
   SetAppDetailsAction,
+  SetArtifactChannelAction,
   SetIdentityAction,
   SetPreviewsAction,
   SetProductionEnvironmentAction,
@@ -81,5 +87,23 @@ export const setProductionEnvironment = (
     { ...input },
     undefined,
     SetProductionEnvironmentInputSchema,
+    "global",
+  );
+
+export const recordArtifactVersion = (input: RecordArtifactVersionInput) =>
+  createAction<RecordArtifactVersionAction>(
+    "RECORD_ARTIFACT_VERSION",
+    { ...input },
+    undefined,
+    RecordArtifactVersionInputSchema,
+    "global",
+  );
+
+export const setArtifactChannel = (input: SetArtifactChannelInput) =>
+  createAction<SetArtifactChannelAction>(
+    "SET_ARTIFACT_CHANNEL",
+    { ...input },
+    undefined,
+    SetArtifactChannelInputSchema,
     "global",
   );

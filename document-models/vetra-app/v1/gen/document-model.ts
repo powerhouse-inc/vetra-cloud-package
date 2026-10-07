@@ -114,6 +114,49 @@ export const documentModel: DocumentModelGlobalState = {
               examples: [],
               scope: "global",
             },
+            {
+              id: "op-record-artifact-version",
+              name: "RECORD_ARTIFACT_VERSION",
+              description:
+                "Record a published version of one of this app's artifacts.",
+              schema:
+                "input RecordArtifactVersionInput {\n  kind: VetraAppArtifactKind!\n  name: String!\n  version: String!\n  reference: String!\n  commitSha: String\n  runId: String\n  publishedAt: DateTime!\n}",
+              template: "",
+              reducer:
+                "const MAX_ARTIFACT_VERSIONS = 50;\n\nlet artifact = state.artifacts.find(\n  (a) => a.kind === action.input.kind && a.name === action.input.name,\n);\nif (!artifact) {\n  artifact = {\n    id: `${action.input.kind}:${action.input.name}`,\n    kind: action.input.kind,\n    name: action.input.name,\n    versions: [],\n    channels: [],\n  };\n  state.artifacts.push(artifact);\n}\n\nconst entry = {\n  version: action.input.version,\n  reference: action.input.reference,\n  commitSha: action.input.commitSha ?? null,\n  runId: action.input.runId ?? null,\n  publishedAt: action.input.publishedAt,\n};\nconst at = artifact.versions.findIndex((v) => v.version === action.input.version);\nif (at >= 0) {\n  artifact.versions[at] = entry;\n} else {\n  artifact.versions.push(entry);\n}\n\n// A document that grows without bound eventually fails to load, and a dropdown\n// never needs the whole history.\nif (artifact.versions.length > MAX_ARTIFACT_VERSIONS) {\n  artifact.versions = artifact.versions.slice(\n    artifact.versions.length - MAX_ARTIFACT_VERSIONS,\n  );\n}\n// A channel aimed at a version the cap dropped is worse than no channel.\nartifact.channels = artifact.channels.filter((c) =>\n  artifact.versions.some((v) => v.version === c.version),\n);",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-set-artifact-channel",
+              name: "SET_ARTIFACT_CHANNEL",
+              description: "Point a channel at a published version.",
+              schema:
+                "input SetArtifactChannelInput {\n  kind: VetraAppArtifactKind!\n  name: String!\n  channel: AutoUpdateChannel!\n  version: String!\n}",
+              template: "",
+              reducer:
+                "const artifact = state.artifacts.find(\n  (a) => a.kind === action.input.kind && a.name === action.input.name,\n);\nif (!artifact) {\n  throw new UnknownArtifactError(\n    `${action.input.kind} ${action.input.name} has published nothing`,\n  );\n}\nif (!artifact.versions.some((v) => v.version === action.input.version)) {\n  throw new UnknownArtifactVersionError(\n    `${action.input.name} has no published version ${action.input.version}`,\n  );\n}\nconst at = artifact.channels.findIndex((c) => c.channel === action.input.channel);\nconst entry = { channel: action.input.channel, version: action.input.version };\nif (at >= 0) {\n  artifact.channels[at] = entry;\n} else {\n  artifact.channels.push(entry);\n}",
+              errors: [
+                {
+                  id: "err-unknown-artifact",
+                  name: "UnknownArtifactError",
+                  code: "UNKNOWN_ARTIFACT",
+                  description: "No such artifact on this app.",
+                  template: "",
+                },
+                {
+                  id: "err-unknown-artifact-version",
+                  name: "UnknownArtifactVersionError",
+                  code: "UNKNOWN_ARTIFACT_VERSION",
+                  description:
+                    "A channel may only point at a published version.",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
           ],
         },
       ],

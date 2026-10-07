@@ -119,3 +119,20 @@ input SetPreviewsInput {
 input SetProductionEnvironmentInput {
   environmentId: OID
 }
+
+input RecordArtifactVersionInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  version: String!
+  reference: String!
+  commitSha: String
+  runId: String
+  publishedAt: DateTime!
+}
+
+input SetArtifactChannelInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  channel: AutoUpdateChannel!
+  version: String!
+}

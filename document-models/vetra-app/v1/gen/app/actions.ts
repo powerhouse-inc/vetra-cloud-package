@@ -5,7 +5,9 @@
 import type { Action } from "document-model";
 import type {
   ConnectRepositoryInput,
+  RecordArtifactVersionInput,
   SetAppDetailsInput,
+  SetArtifactChannelInput,
   SetIdentityInput,
   SetPreviewsInput,
   SetProductionEnvironmentInput,
@@ -36,6 +38,14 @@ export type SetProductionEnvironmentAction = Action & {
   type: "SET_PRODUCTION_ENVIRONMENT";
   input: SetProductionEnvironmentInput;
 };
+export type RecordArtifactVersionAction = Action & {
+  type: "RECORD_ARTIFACT_VERSION";
+  input: RecordArtifactVersionInput;
+};
+export type SetArtifactChannelAction = Action & {
+  type: "SET_ARTIFACT_CHANNEL";
+  input: SetArtifactChannelInput;
+};
 
 export type VetraAppAppAction =
   | SetAppDetailsAction
@@ -43,4 +53,6 @@ export type VetraAppAppAction =
   | SetIdentityAction
   | SetStatusAction
   | SetPreviewsAction
-  | SetProductionEnvironmentAction;
+  | SetProductionEnvironmentAction
+  | RecordArtifactVersionAction
+  | SetArtifactChannelAction;

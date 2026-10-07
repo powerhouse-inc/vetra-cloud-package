@@ -4,7 +4,9 @@ import * as z from "zod";
 import type {
   AutoUpdateChannel,
   ConnectRepositoryInput,
+  RecordArtifactVersionInput,
   SetAppDetailsInput,
+  SetArtifactChannelInput,
   SetIdentityInput,
   SetPreviewsInput,
   SetProductionEnvironmentInput,
@@ -54,6 +56,20 @@ export function ConnectRepositoryInputSchema(): z.ZodObject<
   });
 }
 
+export function RecordArtifactVersionInputSchema(): z.ZodObject<
+  Properties<RecordArtifactVersionInput>
+> {
+  return z.object({
+    commitSha: z.string().nullish(),
+    kind: VetraAppArtifactKindSchema,
+    name: z.string(),
+    publishedAt: z.iso.datetime(),
+    reference: z.string(),
+    runId: z.string().nullish(),
+    version: z.string(),
+  });
+}
+
 export function SetAppDetailsInputSchema(): z.ZodObject<
   Properties<SetAppDetailsInput>
 > {
@@ -66,6 +82,17 @@ export function SetAppDetailsInputSchema(): z.ZodObject<
       })
       .nullish(),
     slug: z.string().nullish(),
+  });
+}
+
+export function SetArtifactChannelInputSchema(): z.ZodObject<
+  Properties<SetArtifactChannelInput>
+> {
+  return z.object({
+    channel: AutoUpdateChannelSchema,
+    kind: VetraAppArtifactKindSchema,
+    name: z.string(),
+    version: z.string(),
   });
 }
 

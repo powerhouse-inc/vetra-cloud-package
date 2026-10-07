@@ -8,7 +8,9 @@ import { vetraAppAppOperations } from "../src/reducers/app.js";
 
 import {
   ConnectRepositoryInputSchema,
+  RecordArtifactVersionInputSchema,
   SetAppDetailsInputSchema,
+  SetArtifactChannelInputSchema,
   SetIdentityInputSchema,
   SetPreviewsInputSchema,
   SetProductionEnvironmentInputSchema,
@@ -88,6 +90,30 @@ const stateReducer: StateReducer<VetraAppPHState> = (
       SetProductionEnvironmentInputSchema().parse(action.input);
 
       vetraAppAppOperations.setProductionEnvironmentOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "RECORD_ARTIFACT_VERSION": {
+      RecordArtifactVersionInputSchema().parse(action.input);
+
+      vetraAppAppOperations.recordArtifactVersionOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_ARTIFACT_CHANNEL": {
+      SetArtifactChannelInputSchema().parse(action.input);
+
+      vetraAppAppOperations.setArtifactChannelOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

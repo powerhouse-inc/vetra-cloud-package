@@ -6,7 +6,9 @@ import { type SignalDispatch } from "document-model";
 import type { VetraAppGlobalState } from "../types.js";
 import type {
   ConnectRepositoryAction,
+  RecordArtifactVersionAction,
   SetAppDetailsAction,
+  SetArtifactChannelAction,
   SetIdentityAction,
   SetPreviewsAction,
   SetProductionEnvironmentAction,
@@ -42,6 +44,16 @@ export interface VetraAppAppOperations {
   setProductionEnvironmentOperation: (
     state: VetraAppGlobalState,
     action: SetProductionEnvironmentAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  recordArtifactVersionOperation: (
+    state: VetraAppGlobalState,
+    action: RecordArtifactVersionAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setArtifactChannelOperation: (
+    state: VetraAppGlobalState,
+    action: SetArtifactChannelAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

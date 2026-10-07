@@ -70,10 +70,27 @@ export type ConnectRepositoryInput = {
   repositoryId?: InputMaybe<Scalars["String"]["input"]>;
 };
 
+export type RecordArtifactVersionInput = {
+  commitSha?: InputMaybe<Scalars["String"]["input"]>;
+  kind: VetraAppArtifactKind;
+  name: Scalars["String"]["input"];
+  publishedAt: Scalars["DateTime"]["input"];
+  reference: Scalars["String"]["input"];
+  runId?: InputMaybe<Scalars["String"]["input"]>;
+  version: Scalars["String"]["input"];
+};
+
 export type SetAppDetailsInput = {
   name?: InputMaybe<Scalars["String"]["input"]>;
   owner?: InputMaybe<Scalars["EthereumAddress"]["input"]>;
   slug?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type SetArtifactChannelInput = {
+  channel: AutoUpdateChannel;
+  kind: VetraAppArtifactKind;
+  name: Scalars["String"]["input"];
+  version: Scalars["String"]["input"];
 };
 
 export type SetIdentityInput = {
