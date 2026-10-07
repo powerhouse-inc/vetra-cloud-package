@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   connectRepository,
+  recordArtifactVersion,
   reducer,
   setAppDetails,
+  setArtifactChannel,
   setStatus,
-  utils, isVetraAppDocument, setIdentity, setPreviews, setProductionEnvironment, recordArtifactVersion, setArtifactChannel, SetAppDetailsInputSchema, ConnectRepositoryInputSchema, SetIdentityInputSchema, SetStatusInputSchema, SetPreviewsInputSchema, SetProductionEnvironmentInputSchema, RecordArtifactVersionInputSchema, SetArtifactChannelInputSchema } from "document-models/vetra-app/v1";
+  utils,
+} from "document-models/vetra-app/v1";
 
 describe("VetraApp", () => {
   it("starts PENDING_IDENTITY with no artifacts", () => {
@@ -46,11 +49,6 @@ describe("VetraApp", () => {
     expect(doc.state.global.status).toBe("DELETED");
   });
 });
-
-import {
-  recordArtifactVersion,
-  setArtifactChannel,
-} from "document-models/vetra-app/v1";
 
 const v = (version: string, over: Record<string, unknown> = {}) =>
   recordArtifactVersion({
