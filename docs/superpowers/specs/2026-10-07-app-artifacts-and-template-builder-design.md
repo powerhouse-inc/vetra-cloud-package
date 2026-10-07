@@ -124,10 +124,18 @@ single `fusion-dockerfile`:
 achra and knowledge-note do not break.
 
 **Publishing authenticates as the app's Renown workload identity**, not a shared
-registry token. The app already has one (`RENOWN_WORKLOAD_REGISTRATION_TOKEN` in
-the vetra-apps config); `ph publish` uses it, and the registry authorises by app
-ownership of the package name. This is what makes per-app publishing correct
-rather than a shared credential that happens to have rights.
+registry token. Every app already has its own identity — `apps.identity_did`,
+minted at registration via the platform's `RENOWN_WORKLOAD_REGISTRATION_TOKEN`,
+which is the credential that *creates* identities and is not itself the app's.
+The mechanism to use it in CI also exists: the action already exchanges a GitHub
+OIDC token for a bearer (`renown-url`), which proves the run belongs to that
+repository. Publishing uses that bearer, and the registry authorises by the
+app's ownership of the package name.
+
+This is the difference between per-app publishing and a shared credential that
+happens to have rights, and it is what the knowledge-note 403 was really about:
+the publish was refused because the credential was not tied to an app that owns
+`@powerhousedao/knowledge-note`.
 
 Each successful publish or image push calls the CI API to register its artifact
 and move its channel pointer.
