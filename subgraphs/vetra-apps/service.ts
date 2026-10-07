@@ -54,6 +54,10 @@ import {
   mirrorAppRow,
   type AppDocStore,
 } from "./app-document.js";
+import {
+  recordArtifactVersion,
+  setArtifactChannel,
+} from "../../document-models/vetra-app/v1/index.js";
 
 export interface AppsLogger {
   info(msg: string): void;
@@ -1649,4 +1653,85 @@ async function performDeploy(
   }
   await notifyChanged(deps, id);
   return (await getDeployment(deps.db, id))!;
+}
+
+// ---------------------------------------------------------------------------
+// CI: artifact registration
+// ---------------------------------------------------------------------------
+
+export interface RecordArtifactInput {
+  appId: string;
+  kind: "PACKAGE" | "FUSION_IMAGE";
+  name: string;
+  version: string;
+  reference: string;
+  commitSha?: string | null;
+  runId?: string | null;
+  /** Channel to point at this version, when the run publishes a channel build. */
+  channel?: "DEV" | "STAGING" | "LATEST" | null;
+}
+
+const ARTIFACT_KINDS = new Set(["PACKAGE", "FUSION_IMAGE"]);
+const ARTIFACT_CHANNELS = new Set(["DEV", "STAGING", "LATEST"]);
+
+/**
+ * Records one published artifact on the App's document, and optionally moves a
+ * channel pointer to it.
+ *
+ * Unlike the row mirror, this **fails loudly**. The document is the only place
+ * an artifact is recorded, so swallowing the error would drop the artifact
+ * silently and the template builder would never offer it.
+ */
+export async function ciRecordArtifact(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  input: RecordArtifactInput,
+) {
+  const app = await authorizeCi(deps, ci, input.appId);
+  if (!ARTIFACT_KINDS.has(input.kind))
+    throw appsError("BAD_USER_INPUT", "kind must be PACKAGE or FUSION_IMAGE");
+  for (const [field, value] of Object.entries({
+    name: input.name,
+    version: input.version,
+    reference: input.reference,
+  })) {
+    if (!value || !value.trim())
+      throw appsError("BAD_USER_INPUT", `${field} is required`);
+  }
+  if (input.channel != null && !ARTIFACT_CHANNELS.has(input.channel))
+    throw appsError("BAD_USER_INPUT", "channel must be DEV, STAGING or LATEST");
+  if (!deps.docs) throw notConfigured("The App document store");
+
+  const actions: Action[] = [
+    recordArtifactVersion({
+      kind: input.kind,
+      name: input.name.trim(),
+      version: input.version.trim(),
+      reference: input.reference.trim(),
+      commitSha: input.commitSha ?? null,
+      runId: input.runId ?? null,
+      publishedAt: deps.now().toISOString(),
+    }),
+  ];
+  if (input.channel != null) {
+    actions.push(
+      setArtifactChannel({
+        kind: input.kind,
+        name: input.name.trim(),
+        channel: input.channel,
+        version: input.version.trim(),
+      }),
+    );
+  }
+
+  // Create-on-demand: an App registered before the document backfill ran still
+  // has to be able to publish.
+  if (!(await deps.docs.exists(app.id))) await deps.docs.create(app.id);
+  await deps.docs.execute(app.id, actions);
+
+  deps.logger.info(
+    `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +
+      (input.channel ? ` and pointed ${input.channel} at it` : ""),
+  );
+  return { appId: app.id, recorded: true as const };
 }

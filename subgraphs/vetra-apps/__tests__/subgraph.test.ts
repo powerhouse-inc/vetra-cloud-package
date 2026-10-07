@@ -62,6 +62,11 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
         { auth: "public", maxBodyBytes: 256 * 1024 },
       ],
       ["POST", "apps/ci/deploy", { auth: "public", maxBodyBytes: 256 * 1024 }],
+      [
+        "POST",
+        "apps/ci/artifacts",
+        { auth: "public", maxBodyBytes: 256 * 1024 },
+      ],
       ["GET", "apps/ci/deployments/:id", { auth: "public" }],
     ]);
     const res = await routes[0].handler(
@@ -73,7 +78,12 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
     );
     expect(res.status).toBe(503);
     // CI routes answer 401 without a bearer
-    const ciRes = await routes[3].handler(
+    // by path, not by index: adding a route must not silently move this check
+    // onto a different handler
+    const deploymentsRoute = routes.find(
+      (r) => r.path === "apps/ci/deployments/:id",
+    )!;
+    const ciRes = await deploymentsRoute.handler(
       new Request("https://x/api/pkg/apps/ci/deployments/1"),
       {
         params: { id: "1" },
@@ -110,7 +120,9 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
     expect(await resolvers.Query.myApps(null, {}, ctx)).toStrictEqual([]);
 
     await subgraph.onDisconnect();
-    expect(disposed).toHaveBeenCalledTimes(4);
+    // every registered route is disposed — derived, so a new route cannot
+    // quietly leave a handle behind
+    expect(disposed).toHaveBeenCalledTimes(routes.length);
     await db.destroy();
   });
 

@@ -10,7 +10,9 @@ import { deploymentFields } from "./resolvers.js";
 import {
   ciDeployApp,
   ciDeployment,
+  ciRecordArtifact,
   ciRegistryCredentials,
+  type RecordArtifactInput,
   type AppsDeps,
   type CiIdentity,
   type DeployAppInput,
@@ -216,6 +218,23 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       run(request, async (ci) => {
         const body = await jsonBody(request);
         return ciRegistryCredentials(deps, ci, requireString(body, "appId"));
+      }),
+
+    artifacts: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        const str = (k: string) =>
+          typeof body[k] === "string" ? (body[k] as string) : null;
+        return ciRecordArtifact(deps, ci, {
+          appId: requireString(body, "appId"),
+          kind: requireString(body, "kind") as RecordArtifactInput["kind"],
+          name: requireString(body, "name"),
+          version: requireString(body, "version"),
+          reference: requireString(body, "reference"),
+          commitSha: str("commitSha"),
+          runId: str("runId"),
+          channel: str("channel") as RecordArtifactInput["channel"],
+        });
       }),
 
     deploy: (request: Request) =>
