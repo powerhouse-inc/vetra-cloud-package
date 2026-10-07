@@ -85,20 +85,79 @@ describe("ProvisioningKeeper", () => {
     );
   });
 
-  it("skips a licence whose type is RETIRED rather than guessing a hash", async () => {
+  it("applies an active licence whose type is RETIRED, with that type's hash", async () => {
     const d = deps(
       {
         licenseTypes: vi.fn(async () => [
-          { id: "type-a", kind: "PRO", status: "RETIRED", templateHash: "hash-a" },
+          { id: "type-a", kind: "PRO", status: "RETIRED", templateHash: "hash-retired" },
         ]),
       },
       [lic({})],
     );
     await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.applyFor).toHaveBeenCalledTimes(1);
+    expect(d.applyFor).toHaveBeenCalledWith(
+      "app-a",
+      expect.objectContaining({ licenseId: "lic-1", templateHash: "hash-retired" }),
+    );
+  });
+
+  it("holds the environment of a user whose active licence has a missing type: no release, no apply", async () => {
+    const d = deps({}, [lic({ licenseTypeId: "type-gone" })], {
+      "app-a": [
+        { user: "0x1111111111111111111111111111111111111111", environmentId: "env-held", licenseId: "lic-1", templateHash: "hash-a" },
+      ],
+    });
+    await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.releaseFor.mock.calls).toEqual([]);
     expect(d.applyFor).not.toHaveBeenCalled();
     expect(d.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("missing or retired"),
+      expect.stringContaining("env-held"),
     );
+  });
+
+  it("holds regardless of address case: checksummed licence, lowercased environment row", async () => {
+    const d = deps(
+      {},
+      [lic({ licenseTypeId: "type-gone", user: "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01" })],
+      {
+        "app-a": [
+          { user: "0xabcdef0123456789abcdef0123456789abcdef01", environmentId: "env-case", licenseId: "lic-1", templateHash: "hash-a" },
+        ],
+      },
+    );
+    await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.releaseFor).not.toHaveBeenCalled();
+  });
+
+  it("still releases a user with no active licence while holding another user's environment", async () => {
+    const d = deps(
+      {},
+      [
+        lic({ id: "lic-held", licenseTypeId: "type-gone" }),
+        lic({ id: "lic-revoked", status: "REVOKED", user: "0x2222222222222222222222222222222222222222" }),
+      ],
+      {
+        "app-a": [
+          { user: "0x1111111111111111111111111111111111111111", environmentId: "env-held", licenseId: "lic-held", templateHash: "h" },
+          { user: "0x2222222222222222222222222222222222222222", environmentId: "env-gone", licenseId: "lic-revoked", templateHash: "h" },
+        ],
+      },
+    );
+    await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.releaseFor).toHaveBeenCalledTimes(1);
+    expect(d.releaseFor).toHaveBeenCalledWith("app-a", "env-gone");
+  });
+
+  it("a transient empty licenseTypes read releases nothing for the app", async () => {
+    const d = deps({ licenseTypes: vi.fn(async () => []) }, [lic({})], {
+      "app-a": [
+        { user: "0x1111111111111111111111111111111111111111", environmentId: "env-1", licenseId: "lic-1", templateHash: "hash-a" },
+      ],
+    });
+    await new ProvisioningKeeper(d).reconcileOnce();
+    expect(d.releaseFor).not.toHaveBeenCalled();
+    expect(d.applyFor).not.toHaveBeenCalled();
   });
 
   it("skips and logs a licence with a falsy app", async () => {

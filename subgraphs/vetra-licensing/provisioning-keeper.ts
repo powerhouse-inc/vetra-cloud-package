@@ -83,19 +83,23 @@ export class ProvisioningKeeper {
     rows: LicenseFullRow[],
   ): Promise<void> {
     const hashes = new Map(
-      (await this.d.licenseTypes(appId))
-        .filter((t) => t.status !== "RETIRED")
-        .map((t) => [t.id, t.templateHash]),
+      (await this.d.licenseTypes(appId)).map((t) => [t.id, t.templateHash]),
     );
 
+    // A retired type still supplies its template: the licence is the
+    // entitlement, the type is only where the template comes from.
     const actives: ActiveLicense[] = [];
+    // Users whose active licence could not be resolved. Unknown is not
+    // unentitled, so their environments are held, never released.
+    const held = new Set<string>();
     for (const row of rows) {
       if (row.status !== "ACTIVE") continue;
       const templateHash = hashes.get(row.licenseTypeId);
       if (templateHash === undefined) {
         this.d.logger.warn(
-          `[licensing] licence ${row.id} of app ${appId} skipped: type ${row.licenseTypeId} is missing or retired`,
+          `[licensing] licence ${row.id} of app ${appId} skipped: type ${row.licenseTypeId} is missing`,
         );
+        held.add(row.user.toLowerCase());
         continue;
       }
       actives.push({
@@ -106,11 +110,22 @@ export class ProvisioningKeeper {
       });
     }
 
-    const plan = computeLicensePlan(actives, await this.d.environments(appId));
+    const environments = await this.d.environments(appId);
+    const plan = computeLicensePlan(actives, environments);
+    const toRelease = plan.toRelease.filter((environmentId) => {
+      const env = environments.find((e) => e.environmentId === environmentId);
+      if (env && held.has(env.user.toLowerCase())) {
+        this.d.logger.warn(
+          `[licensing] holding environment ${environmentId} of app ${appId}: its active licence has an unresolvable type`,
+        );
+        return false;
+      }
+      return true;
+    });
 
     if (this.d.cfg.dryRun) {
       this.d.logger.info(
-        `[licensing] dry run: app ${appId} would apply ${plan.toApply.length}, release ${plan.toRelease.length}`,
+        `[licensing] dry run: app ${appId} would apply ${plan.toApply.length}, release ${toRelease.length}`,
       );
       return;
     }
@@ -124,7 +139,7 @@ export class ProvisioningKeeper {
         );
       }
     }
-    for (const environmentId of plan.toRelease) {
+    for (const environmentId of toRelease) {
       try {
         await this.d.releaseFor(appId, environmentId);
       } catch (err) {
