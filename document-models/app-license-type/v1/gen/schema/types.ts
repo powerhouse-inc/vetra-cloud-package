@@ -126,4 +126,11 @@ export type TemplateService = {
   type: TemplateServiceType;
 };
 
-export type TemplateServiceType = "CLINT" | "CONNECT" | "SWITCHBOARD";
+export type TemplateServiceType =
+  | "CLINT"
+  | "CONNECT"
+  | "DOCLING"
+  | "FUSION"
+  | "PAPERLESS"
+  | "SPECKLE"
+  | "SWITCHBOARD";
