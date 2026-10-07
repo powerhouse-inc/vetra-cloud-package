@@ -55,8 +55,9 @@ describe("resolveOwnerApp", () => {
   });
 
   it("refuses a stranger", async () => {
+    const isAdmin = vi.fn(() => false);
     await expect(
-      resolveOwnerApp(deps(), ctx(STRANGER), "app-1"),
+      resolveOwnerApp(deps(), { ...ctx(STRANGER), isAdmin }, "app-1"),
     ).rejects.toBeInstanceOf(NotAppOwnerError);
   });
 
@@ -64,6 +65,54 @@ describe("resolveOwnerApp", () => {
     await expect(
       resolveOwnerApp(deps({ status: "PENDING_IDENTITY" }), ctx(OWNER), "app-1"),
     ).rejects.toBeInstanceOf(AppIdentityInactiveError);
+  });
+
+  it("refuses a stranger against an inactive app before checking status", async () => {
+    const isAdmin = vi.fn(() => false);
+    await expect(
+      resolveOwnerApp(
+        deps({ status: "PENDING_IDENTITY" }),
+        { ...ctx(STRANGER), isAdmin },
+        "app-1",
+      ),
+    ).rejects.toBeInstanceOf(NotAppOwnerError);
+  });
+
+  it("uses identical messages for unknown and not-owner errors", async () => {
+    const d = { ...deps(), findAppById: vi.fn(async () => null) };
+    let unknownMessage: string;
+    try {
+      await resolveOwnerApp(d, ctx(OWNER), "app-1");
+    } catch (e) {
+      unknownMessage = (e as Error).message;
+    }
+
+    const isAdmin = vi.fn(() => false);
+    let notOwnerMessage: string;
+    try {
+      await resolveOwnerApp(deps(), { ...ctx(STRANGER), isAdmin }, "app-1");
+    } catch (e) {
+      notOwnerMessage = (e as Error).message;
+    }
+
+    expect(unknownMessage!).toBe(notOwnerMessage!);
+  });
+
+  it("matches the owner case-insensitively with uppercase owner_address", async () => {
+    const isAdmin = vi.fn(() => false);
+    await expect(
+      resolveOwnerApp(
+        deps({ owner_address: OWNER.toUpperCase() }),
+        { ...ctx(OWNER.toLowerCase()), isAdmin },
+        "app-1",
+      ),
+    ).resolves.toEqual({ appId: "app-1" });
+  });
+
+  it("does not call isAdmin when the caller is the owner", async () => {
+    const isAdmin = vi.fn(() => false);
+    await resolveOwnerApp(deps(), { ...ctx(OWNER), isAdmin }, "app-1");
+    expect(isAdmin).not.toHaveBeenCalled();
   });
 
   it("authorises a platform admin who is not the owner", async () => {
