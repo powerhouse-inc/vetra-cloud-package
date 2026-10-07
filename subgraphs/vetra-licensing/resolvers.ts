@@ -50,6 +50,23 @@ export class LicensingDisabledError extends Error {
   override name = "LicensingDisabledError";
 }
 
+/**
+ * The single licensing on/off gate, shared by the machine and publisher
+ * surfaces. Call it after authentication and authorisation, so a caller who
+ * fails those learns nothing about the deployment's configuration, and before
+ * anything is read or written. The flag keeps its historical name
+ * LICENSING_KEEPER_ENABLED although it gates the whole write path.
+ */
+export function makeRequireEnabled(cfg: { enabled: boolean }): () => void {
+  return () => {
+    if (!cfg.enabled) {
+      throw new LicensingDisabledError(
+        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
+      );
+    }
+  };
+}
+
 const toGql = (r: AppUserEnvironments) => ({
   appId: r.app_id,
   user: r.user_address,
@@ -77,17 +94,8 @@ export function createResolvers(
       .executeTakeFirst()
       .then((r) => r ?? null);
 
-  // Gate for every mutation. Called after resolveCallerApp so an
-  // unauthenticated caller learns nothing about the deployment's configuration,
-  // and before anything is read or written. The flag keeps its historical name
-  // LICENSING_KEEPER_ENABLED although it now gates the whole write path.
-  const requireEnabled = () => {
-    if (!deps.cfg.enabled) {
-      throw new LicensingDisabledError(
-        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
-      );
-    }
-  };
+  // Gate for every mutation; see makeRequireEnabled for ordering rules.
+  const requireEnabled = makeRequireEnabled(deps.cfg);
 
   const countForApp = (appId: string) =>
     db

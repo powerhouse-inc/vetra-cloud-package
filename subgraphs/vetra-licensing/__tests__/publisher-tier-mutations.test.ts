@@ -30,10 +30,17 @@ const APPS: Record<string, { owner: string }> = {
   "app-1": { owner: OWNER },
   "app-2": { owner: STRANGER },
 };
+// The fake auth canonicalises ids (as a real lookup may), so the authorised id
+// observably differs from what the client typed.
+const canonical = (id: string) => id.toLowerCase();
 // licence-type document id -> owning app
-const TYPES: Record<string, string> = { T1: "app-1", TX: "app-2" };
+const baseTypes = (): Record<string, string> => ({
+  T1: "app-1",
+  TX: "app-2",
+});
 
 function makeDeps(over: { enabled?: boolean } = {}) {
+  const TYPES = baseTypes();
   const dispatched: Array<{ id: string; actions: Action[] }> = [];
   const created: string[] = [];
   // A real reducer behind the gateway, so rejections surface as the gateway
@@ -66,8 +73,13 @@ function makeDeps(over: { enabled?: boolean } = {}) {
   };
   const auth = {
     findAppById: vi.fn(async (id: string) =>
-      APPS[id]
-        ? { id, name: id, status: "ACTIVE", owner_address: APPS[id].owner }
+      APPS[canonical(id)]
+        ? {
+            id: canonical(id),
+            name: id,
+            status: "ACTIVE",
+            owner_address: APPS[canonical(id)].owner,
+          }
         : null,
     ),
     listAppsForOwner: vi.fn(),
@@ -83,7 +95,7 @@ function makeDeps(over: { enabled?: boolean } = {}) {
     string,
     (p: unknown, a: unknown, c: unknown) => Promise<unknown>
   >;
-  return { m, dispatched, created, typeGateway, docs };
+  return { m, dispatched, created, typeGateway, docs, TYPES };
 }
 
 const CALLS: Array<[string, unknown]> = [
@@ -118,7 +130,7 @@ describe("publisher tier authoring", () => {
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0].actions[0].type).toBe("SET_LICENSE_TYPE_DETAILS");
     expect(dispatched[0].actions[0].input).toMatchObject({
-      app: "app-1",
+      app: "app-1", // authorised, not the client's "APP-1"
       kind: "pro",
       label: "Pro",
       validityDays: 30,
@@ -179,6 +191,26 @@ describe("publisher tier authoring", () => {
     }
   });
 
+  it("gate order: with licensing disabled, strangers and anonymous callers get the auth error, not LicensingDisabledError", async () => {
+    for (const [name, args] of CALLS) {
+      const foreignArgs = JSON.parse(
+        JSON.stringify(args).replace("T1", "TX").replace("app-1", "app-2"),
+      );
+      const a = makeDeps({ enabled: false });
+      const err = await a.m[name]({}, foreignArgs, ctx(OWNER)).catch(
+        (e: unknown) => e,
+      );
+      expect(err, name).toBeInstanceOf(Error);
+      expect(err, name).not.toBeInstanceOf(LicensingDisabledError);
+      expect(a.dispatched, name).toEqual([]);
+
+      const b = makeDeps({ enabled: false });
+      const anon = await b.m[name]({}, args, ctx()).catch((e: unknown) => e);
+      expect(anon, name).toBeInstanceOf(UnauthenticatedError);
+      expect(b.dispatched, name).toEqual([]);
+    }
+  });
+
   it("adds a service and a package with server-generated ids", async () => {
     const { m, dispatched } = makeDeps();
     await m.addLicenseTypeService(
@@ -208,7 +240,7 @@ describe("publisher tier authoring", () => {
   });
 
   it("publishes once a service exists, and retire follows", async () => {
-    const { m, docs } = makeDeps();
+    const { m, docs, TYPES } = makeDeps();
     // Seed T1 as a real document so the reducer has state to work on.
     const id = await m.createLicenseType(
       {},
@@ -228,6 +260,5 @@ describe("publisher tier authoring", () => {
     expect(
       await m.retireLicenseType({}, { licenseTypeId: id }, ctx(OWNER)),
     ).toBe(true);
-    delete TYPES[id as string];
   });
 });

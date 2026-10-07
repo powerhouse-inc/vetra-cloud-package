@@ -13,7 +13,7 @@ import type { LicensingConfig } from "./config.js";
 import type { LicenseTypeGateway } from "./license-type-gateway.js";
 import type { LicenseGateway } from "./license-gateway.js";
 import type { GrantDeps } from "./issuers/publisher-grant.js";
-import { LicensingDisabledError } from "./resolvers.js";
+import { makeRequireEnabled } from "./resolvers.js";
 import { actions } from "document-models/app-license-type";
 
 /**
@@ -67,13 +67,7 @@ export function createPublisherResolvers(
   db: Kysely<VetraLicensingDB>,
   deps: PublisherDeps,
 ): Record<string, unknown> {
-  const requireEnabled = () => {
-    if (!deps.cfg.enabled) {
-      throw new LicensingDisabledError(
-        "licensing is disabled on this deployment (set LICENSING_KEEPER_ENABLED=true to enable provisioning, applying and releasing)",
-      );
-    }
-  };
+  const requireEnabled = makeRequireEnabled(deps.cfg);
 
   /**
    * Gate for every field keyed on a licence type id. The app is read from the
