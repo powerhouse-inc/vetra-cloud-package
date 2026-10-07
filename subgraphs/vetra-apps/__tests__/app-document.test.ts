@@ -30,6 +30,9 @@ const fakeDocs = (existing = new Set<string>()) => ({
   async execute(id: string, actions: Action[]) {
     this.executed.push({ id, actions });
   },
+  async getState() {
+    return null;
+  },
 });
 
 describe("backfillAppDocuments", () => {
@@ -181,6 +184,9 @@ describe("dual-write", () => {
       },
       async execute() {
         throw new Error("reactor down");
+      },
+      async getState() {
+        return null;
       },
     };
 

@@ -16,6 +16,10 @@ import type { AppsDeps } from "./service.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
+  DRIFT_INTERVAL_MS,
+  reportAppDocumentDrift,
+} from "./app-document-drift.js";
+import {
   reportDeploymentToGithub,
   reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
@@ -146,6 +150,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       await runPreviewSweepOnce(deps);
       await runIdentityExpirySweepOnce(deps);
     });
+
+    every(DRIFT_INTERVAL_MS, "app document drift", () =>
+      reportAppDocumentDrift({ db, docs: deps.docs!, logger: console }),
+    );
 
     // One document per app row. Idempotent: a row whose document exists is
     // skipped. Not awaited — reads are served from the table, so startup must

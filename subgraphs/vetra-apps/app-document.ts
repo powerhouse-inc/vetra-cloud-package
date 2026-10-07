@@ -19,6 +19,8 @@ export interface AppDocStore {
   create(id: string): Promise<void>;
   exists(id: string): Promise<boolean>;
   execute(id: string, actions: Action[]): Promise<unknown>;
+  /** Current global state, or null when the document does not exist. */
+  getState(id: string): Promise<Record<string, unknown> | null>;
 }
 
 export interface AppDocDeps {
@@ -31,32 +33,69 @@ export interface AppDocDeps {
 const orNull = (value: string | null | undefined): string | null =>
   value === undefined || value === null || value === "" ? null : value;
 
-/** The actions that reproduce a row's facts in its document. */
-export function appDocumentActions(row: AppRow): Action[] {
-  return [
-    setAppDetails({
-      name: orNull(row.name),
-      slug: orNull(row.slug),
-      owner: orNull(row.owner_address),
-    }),
-    connectRepository({
+/**
+ * Everything about an app that its document is supposed to carry.
+ *
+ * Both the dual-write and the drift reconciler derive from this one function,
+ * so a field added to the mirror is automatically a field drift can see. Two
+ * separate derivations would silently stop agreeing.
+ */
+export interface AppDocumentFacts {
+  name: string | null;
+  slug: string | null;
+  owner: string | null;
+  repository: {
+    repositoryId: string | null;
+    fullName: string | null;
+    productionBranch: string | null;
+  };
+  identity: { did: string | null; expiresAt: string | null };
+  previews: { enabled: boolean; limit: number; ttlDays: number };
+  productionEnvironmentId: string | null;
+  status: AppRow["status"];
+}
+
+/** The row's facts, in the shape the document holds them. */
+export function appDocumentFacts(row: AppRow): AppDocumentFacts {
+  return {
+    name: orNull(row.name),
+    slug: orNull(row.slug),
+    owner: orNull(row.owner_address),
+    repository: {
       repositoryId: orNull(row.repository_id),
       fullName: orNull(row.repository_full_name),
       productionBranch: orNull(row.production_branch),
-    }),
-    setIdentity({
+    },
+    identity: {
       did: orNull(row.identity_did),
       expiresAt: orNull(row.identity_expires_at),
-    }),
-    setPreviews({
-      enabled: row.previews_enabled,
+    },
+    previews: {
+      enabled: Boolean(row.previews_enabled),
       limit: row.preview_limit,
       ttlDays: row.preview_ttl_days,
+    },
+    productionEnvironmentId: orNull(row.production_environment_id),
+    status: row.status,
+  };
+}
+
+/** The actions that reproduce a row's facts in its document. */
+export function appDocumentActions(row: AppRow): Action[] {
+  const facts = appDocumentFacts(row);
+  return [
+    setAppDetails({
+      name: facts.name,
+      slug: facts.slug,
+      owner: facts.owner,
     }),
+    connectRepository(facts.repository),
+    setIdentity(facts.identity),
+    setPreviews(facts.previews),
     setProductionEnvironment({
-      environmentId: orNull(row.production_environment_id),
+      environmentId: facts.productionEnvironmentId,
     }),
-    setStatus({ status: row.status }),
+    setStatus({ status: facts.status }),
   ] as Action[];
 }
 

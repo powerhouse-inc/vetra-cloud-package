@@ -18,7 +18,10 @@ type ReactorClientLike = {
   ): Promise<{ results: unknown[]; nextCursor?: string }>;
 };
 
-type DocLike = { header?: { revision?: Record<string, number> } };
+type DocLike = {
+  header?: { revision?: Record<string, number> };
+  state?: { global?: Record<string, unknown> };
+};
 type OpLike = { error?: string; action?: { id?: string; type?: string } };
 
 /**
@@ -49,6 +52,9 @@ export function createReactorAppDocStore(
     },
     async exists(id) {
       return (await getDoc(id)) !== null;
+    },
+    async getState(id) {
+      return (await getDoc(id))?.state?.global ?? null;
     },
     async execute(id, actions) {
       const before = await getDoc(id);
