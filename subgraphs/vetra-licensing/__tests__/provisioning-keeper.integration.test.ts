@@ -12,11 +12,16 @@ import {
 } from "../../vetra-apps/envs.js";
 import { generateSubdomain } from "../../../shared/subdomain-generator.js";
 import { up } from "../db/migrations.js";
-import type { AppUserEnvironments, VetraLicensingDB } from "../db/schema.js";
+import type { VetraLicensingDB } from "../db/schema.js";
 import { createReactorLicenseReads, LICENSE_DOC_TYPE } from "../reads.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
 import { createReactorLicenseTypeGateway } from "../license-type-gateway.js";
 import { applyEnvironmentTemplate, type ProvisionDeps } from "../provision.js";
+import { createEnvironmentRows } from "../rows.js";
+import {
+  createTypeSnapshots,
+  resolveTemplateForLicence,
+} from "../resolve-template.js";
 import { releaseEnvironment } from "../release.js";
 import { ProvisioningKeeper } from "../provisioning-keeper.js";
 import { templateHash, type TemplateShape } from "../template.js";
@@ -24,11 +29,13 @@ import type { LicensingConfig } from "../config.js";
 
 /**
  * The provisioning keeper against a REAL reactor and a REAL database (in-memory
- * PGlite). The reads, both gateways, the environment gateway and the reducers
- * are all real; only the two things the Task 9 wiring owns are supplied here:
- * resolving a template hash back to a TemplateShape, and the "stop" step of a
- * release (it needs the deployment processor to have made the environment
- * READY, which does not run in a reactor-only test).
+ * PGlite). The reads, both gateways, the environment gateway, the reducers, the
+ * row operations (createEnvironmentRows) and template resolution
+ * (resolveTemplateForLicence, createTypeSnapshots) are the production ones.
+ * What is still supplied here: the release step's two row helpers (inline in
+ * index.ts, not extracted) and the "stop" step of a release, a recorder,
+ * because it needs the deployment processor to have made the environment READY,
+ * which does not run in a reactor-only test.
  */
 
 const APP = "app-keeper-integration";
@@ -64,6 +71,8 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
   let envs: ReturnType<typeof createReactorEnvGateway>;
   let typeId: string;
   const stopped: string[] = [];
+  /** Full licence-type scans made by the keeper wiring. */
+  let typeScans = 0;
 
   const rows = () =>
     db
@@ -137,67 +146,25 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
       typeActions.publishLicenseType({}),
     ]);
 
+    // The production row operations, not copies: the lowercasing at the
+    // database boundary and the per-app cap are what is being exercised.
     const provision: ProvisionDeps = {
-      findRow: (appId, user) =>
-        db
-          .selectFrom("app_user_environments")
-          .selectAll()
-          .where("app_id", "=", appId)
-          .where("user_address", "=", user.toLowerCase())
-          .executeTakeFirst()
-          .then((r) => r ?? null),
-      countForApp: (appId) =>
-        db
-          .selectFrom("app_user_environments")
-          .select((eb) => eb.fn.countAll<number>().as("n"))
-          .where("app_id", "=", appId)
-          .executeTakeFirstOrThrow()
-          .then((r) => Number(r.n)),
-      maxForApp: async () => cfg.defaultMaxEnvironments,
-      claimRow: async (input: AppUserEnvironments) => {
-        await db
-          .insertInto("app_user_environments")
-          .values(input)
-          .onConflict((oc) =>
-            oc.columns(["app_id", "user_address"]).doNothing(),
-          )
-          .execute();
-        return db
-          .selectFrom("app_user_environments")
-          .selectAll()
-          .where("app_id", "=", input.app_id)
-          .where("user_address", "=", input.user_address)
-          .executeTakeFirstOrThrow();
-      },
-      upsertRow: async (input: AppUserEnvironments) => {
-        await db
-          .insertInto("app_user_environments")
-          .values(input)
-          .onConflict((oc) =>
-            oc.columns(["app_id", "user_address"]).doUpdateSet({
-              license_id: input.license_id,
-              template_hash: input.template_hash,
-              updated_at: input.updated_at,
-            }),
-          )
-          .execute();
-        return db
-          .selectFrom("app_user_environments")
-          .selectAll()
-          .where("app_id", "=", input.app_id)
-          .where("user_address", "=", input.user_address)
-          .executeTakeFirstOrThrow();
-      },
+      ...createEnvironmentRows(db, cfg),
       envs,
       generateSubdomain,
     };
 
-    // The wiring's job, done by hand: the test holds the template it created.
-    const templates = new Map([[typeId, TEMPLATE]]);
+    // The production snapshot and resolution, wrapped only to count scans.
+    const typeSnapshots = createTypeSnapshots({
+      licenseTypeDetails: (appId) => {
+        typeScans += 1;
+        return reads.licenseTypeDetails(appId);
+      },
+    });
 
     keeper = new ProvisioningKeeper({
       allLicenses: () => reads.allLicenses(),
-      licenseTypes: (appId) => reads.licenseTypes(appId),
+      licenseTypes: typeSnapshots.licenseTypes,
       environments: async (appId) =>
         (
           await db
@@ -212,12 +179,17 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
           templateHash: r.template_hash,
         })),
       applyFor: async (appId, licence) => {
+        const resolved = resolveTemplateForLicence(
+          await typeSnapshots.detailsFor(appId),
+          licence,
+        );
+        if (!resolved.ok) throw new Error(resolved.reason);
         await applyEnvironmentTemplate(provision, {
           appId,
           user: licence.user,
           licenseId: licence.licenseId,
-          template: templates.get(licence.licenseTypeId) ?? null,
-          label: "Pro",
+          template: resolved.template,
+          label: resolved.label,
           now: NOW,
         });
       },
@@ -240,7 +212,7 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
               await db
                 .deleteFrom("app_user_environments")
                 .where("app_id", "=", a)
-                .where("user_address", "=", u)
+                .where("user_address", "=", u.toLowerCase())
                 .execute();
             },
             deleteEnvironment: (id) => envs.delete(id),
@@ -292,7 +264,10 @@ describe("ProvisioningKeeper against a real reactor + real database", () => {
         ?.templateHash,
     ).toBe(templateHash(TEMPLATE));
 
+    typeScans = 0;
     await keeper.reconcileOnce();
+    // One app, one apply: one licence-type scan, not one per apply as well.
+    expect(typeScans).toBe(1);
 
     const created = await rows();
     expect(created).toHaveLength(1);
