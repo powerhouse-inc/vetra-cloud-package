@@ -1,3 +1,5 @@
+import { AppLicenseType as AppLicenseTypeV1 } from "document-models/app-license-type/v1";
+import { AppOwnerLicense as AppOwnerLicenseV1 } from "document-models/app-owner-license/v1";
 import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "document-models/vetra-cloud-environment/v1";
 
 /**
@@ -5,4 +7,8 @@ import { VetraCloudEnvironment as VetraCloudEnvironmentV1 } from "document-model
  * This file is auto-generated and updated by codegen
  */
 
-export const documentModels = [VetraCloudEnvironmentV1] as const;
+export const documentModels = [
+  AppLicenseTypeV1,
+  AppOwnerLicenseV1,
+  VetraCloudEnvironmentV1,
+] as const;

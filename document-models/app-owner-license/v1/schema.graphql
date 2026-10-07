@@ -1,0 +1,81 @@
+scalar Unknown
+scalar DateTime
+scalar Address
+scalar AttachmentRef
+scalar Amount_Tokens
+scalar EthereumAddress
+scalar EmailAddress
+scalar Amount_Percentage
+scalar Date
+scalar URL
+scalar Amount_Money
+scalar OLabel
+scalar Currency
+scalar PHID
+scalar OID
+scalar Amount_Fiat
+scalar Amount_Currency
+scalar Amount_Crypto
+scalar Amount
+scalar Upload
+
+type AppOwnerLicenseState {
+  app: PHID
+  licenseType: PHID
+  user: EthereumAddress
+  issuer: LicenseIssuerKind
+  issuedBy: EthereumAddress
+  stage: PHID
+  details: String
+  issued: DateTime
+  start: DateTime
+  end: DateTime
+  status: LicenseStatus!
+  replacedBy: PHID
+  revokedReason: String
+}
+
+enum LicenseIssuerKind {
+  INVITE_CODE
+  PUBLISHER_GRANT
+  ACHRA_SUBSCRIPTION
+}
+
+enum LicenseStatus {
+  ISSUED
+  ACTIVE
+  EXPIRED
+  REVOKED
+  REPLACED
+}
+
+# lifecycle
+
+input IssueLicenseInput {
+  app: PHID!
+  licenseType: PHID!
+  user: EthereumAddress!
+  issuer: LicenseIssuerKind!
+  issuedBy: EthereumAddress!
+  stage: PHID
+  details: String
+  issued: DateTime!
+  start: DateTime!
+  end: DateTime
+}
+
+input ActivateLicenseInput {
+  _: Boolean
+}
+
+input ExpireLicenseInput {
+  _: Boolean
+}
+
+input RevokeLicenseInput {
+  reason: String
+}
+
+input ReplaceLicenseInput {
+  replacedBy: PHID!
+}

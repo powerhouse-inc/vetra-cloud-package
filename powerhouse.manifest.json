@@ -10,6 +10,14 @@
     {
       "id": "powerhouse/vetra-cloud-environment",
       "name": "Vetra Cloud Environment"
+    },
+    {
+      "name": "AppLicenseType",
+      "id": "powerhouse/app-license-type"
+    },
+    {
+      "name": "AppOwnerLicense",
+      "id": "powerhouse/app-owner-license"
     }
   ],
   "apps": [],
@@ -19,6 +27,13 @@
       "name": "vetra-cloud-environment",
       "documentTypes": [
         "powerhouse/vetra-cloud-environment"
+      ]
+    },
+    {
+      "id": "app-license-type",
+      "name": "app-license-type",
+      "documentTypes": [
+        "powerhouse/app-license-type"
       ]
     }
   ],
@@ -62,6 +77,10 @@
     {
       "id": "vetra-github-auth",
       "name": "Vetra Github Auth"
+    },
+    {
+      "id": "vetra-licensing",
+      "name": "Vetra Licensing"
     },
     {
       "id": "vetra-apps",
