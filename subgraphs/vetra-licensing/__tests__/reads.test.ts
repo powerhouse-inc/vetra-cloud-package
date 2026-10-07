@@ -312,3 +312,38 @@ describe("findAll cursor guard", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("allLicenses", () => {
+  it("returns every licence across apps with app, user and type", async () => {
+    const client = fakeClient({
+      [L]: [
+        [
+          license("a", { app: "app-1", user: "0xAA", licenseType: "t-1", status: "ACTIVE" }),
+          license("b", { app: "app-2", user: "0xBB", licenseType: "t-2", status: "ISSUED" }),
+        ],
+      ],
+    });
+    const rows = await createReactorLicenseReads(client).allLicenses();
+
+    expect(rows).toHaveLength(2);
+    const a = rows.find((r) => r.id === "a")!;
+    expect(a.app).toBe("app-1");
+    expect(a.licenseTypeId).toBe("t-1");
+    expect(a.status).toBe("ACTIVE");
+    // Lowercased at the boundary, as every other read does.
+    expect(a.user).toBe("0xaa");
+  });
+
+  it("skips a licence with an unrecognised status rather than throwing", async () => {
+    const client = fakeClient({
+      [L]: [
+        [
+          license("a", { app: "app-1", user: "0xAA", licenseType: "t-1", status: "ACTIVE" }),
+          license("bad", { app: "app-1", user: "0xCC", licenseType: "t-1", status: "WAT" }),
+        ],
+      ],
+    });
+    const rows = await createReactorLicenseReads(client).allLicenses();
+    expect(rows.map((r) => r.id)).toEqual(["a"]);
+  });
+});

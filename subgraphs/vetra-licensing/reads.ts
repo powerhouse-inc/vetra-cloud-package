@@ -26,6 +26,16 @@ export interface LicenseClientLike {
   get(id: string): Promise<unknown>;
 }
 
+export interface LicenseFullRow {
+  id: string;
+  app: string;
+  user: string;
+  licenseTypeId: string;
+  status: LicenseStatusName;
+  start: string | null;
+  end: string | null;
+}
+
 export interface LicenseReads {
   licenses(appId: string, status: string | null): Promise<LicenseView[]>;
   licenseTypes(appId: string): Promise<LicenseTypeView[]>;
@@ -39,6 +49,8 @@ export interface LicenseReads {
   } | null>;
   /** Every licence across all apps; the keeper is global. */
   listLicenses(): Promise<LicenseRow[]>;
+  /** Every licence across all apps, with the fields provisioning needs. */
+  allLicenses(): Promise<LicenseFullRow[]>;
 }
 
 type Rec = Record<string, unknown>;
@@ -175,7 +187,7 @@ export function createReactorLicenseReads(
     }
   }
 
-  async function allLicenses(): Promise<ParsedLicense[]> {
+  async function parsedLicenses(): Promise<ParsedLicense[]> {
     const docs = await findAll(LICENSE_DOC_TYPE);
     return docs.flatMap((d) => {
       const l = parseLicense(d);
@@ -185,7 +197,7 @@ export function createReactorLicenseReads(
 
   return {
     async licenses(appId, status) {
-      return (await allLicenses())
+      return (await parsedLicenses())
         .filter((l) => l.app === appId && (status === null || l.status === status))
         .map((l) => ({
           id: l.id,
@@ -233,12 +245,31 @@ export function createReactorLicenseReads(
     },
 
     async listLicenses() {
-      return (await allLicenses()).map((l) => ({
+      return (await parsedLicenses()).map((l) => ({
         id: l.id,
         status: l.status,
         start: l.start,
         end: l.end,
       }));
+    },
+
+    async allLicenses() {
+      // parseLicense already validates status and lowercases user.
+      return (await parsedLicenses()).flatMap((l) =>
+        l.app === null
+          ? []
+          : [
+              {
+                id: l.id,
+                app: l.app,
+                user: l.user,
+                licenseTypeId: l.licenseTypeId ?? "",
+                status: l.status,
+                start: l.start,
+                end: l.end,
+              },
+            ],
+      );
     },
   };
 }
