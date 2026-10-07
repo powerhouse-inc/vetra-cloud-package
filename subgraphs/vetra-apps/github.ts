@@ -88,6 +88,15 @@ export interface GithubDeployApi {
     marker: string,
     body: string,
   ): Promise<void>;
+  /**
+   * Read a file from the repository's default branch. Returns null when it does
+   * not exist, so callers can probe for lockfiles without handling 404s.
+   */
+  getRepoFile(
+    installationId: string,
+    repoFullName: string,
+    path: string,
+  ): Promise<string | null>;
   /** Commit `path` on `branch` (created from the default branch) and open a PR; returns its URL. */
   openPullRequestWithFile(
     installationId: string,
@@ -382,6 +391,29 @@ export function createGithubDeployApi(
           body: full,
         });
       }
+    },
+
+    async getRepoFile(installationId, fullName, path) {
+      const token = await installationToken(installationId);
+      const filePath = path
+        .split("/")
+        .map((p) => encodeURIComponent(p))
+        .join("/");
+      const { status, data } = await call<{
+        content?: string;
+        encoding?: string;
+      } | null>(
+        token,
+        "GET",
+        `/repos/${repoPath(fullName)}/contents/${filePath}`,
+        undefined,
+        [404],
+      );
+      if (status === 404 || !data?.content) return null;
+      return Buffer.from(
+        data.content,
+        data.encoding === "base64" ? "base64" : "utf8",
+      ).toString("utf8");
     },
 
     async openPullRequestWithFile(installationId, fullName, input) {

@@ -147,8 +147,11 @@ export function fakeGithub(): GithubDeployApi & {
   calls: Record<string, unknown[][]>;
   /** PR number → state; "error" simulates GitHub being unreachable. Default open. */
   prStates: Map<number, "open" | "closed" | "error">;
+  /** Repo path → contents, for toolchain detection. Absent path reads as null. */
+  files: Map<string, string>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
+  const files = new Map<string, string>();
   const calls: Record<string, unknown[][]> = {};
   const rec =
     <T>(name: string, result: (...args: any[]) => T) =>
@@ -159,6 +162,10 @@ export function fakeGithub(): GithubDeployApi & {
   let deploymentSeq = 0;
   return {
     calls,
+    files,
+    getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>
+      files.has(path) ? files.get(path)! : null,
+    ),
     exchangeOAuthCode: rec("exchangeOAuthCode", (code: string) => {
       if (code === "bad") throw new Error("bad_verification_code");
       return {
