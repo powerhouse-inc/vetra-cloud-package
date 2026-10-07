@@ -11,6 +11,16 @@ import {
   type PublisherDeps,
 } from "../publisher-resolvers.js";
 import { LicensingDisabledError } from "../resolvers.js";
+import {
+  UnknownTemplateSizeError,
+  UnsupportedTemplateServiceError,
+  MissingPackageNameError,
+} from "../template.js";
+import {
+  InvalidHolderAddressError,
+  LicenseTypeNotIssuableError,
+} from "../issuers/publisher-grant.js";
+import { NegativeValidityError } from "../../../document-models/app-license-type/v1/gen/license-type/error.js";
 import type { VetraLicensingDB } from "../db/schema.js";
 
 const codeOf = (e: unknown) => (e as GraphQLError).extensions?.code;
@@ -31,6 +41,20 @@ describe("toPublisherGraphQLError", () => {
       expect(codeOf(out)).toBe(code);
       expect((out as GraphQLError).message).toBe(err.message);
     }
+  });
+
+  it.each([
+    ["UnknownTemplateSizeError", new UnknownTemplateSizeError("x")],
+    ["UnsupportedTemplateServiceError", new UnsupportedTemplateServiceError("x")],
+    ["MissingPackageNameError", new MissingPackageNameError("x")],
+    ["NegativeValidityError", new NegativeValidityError("validityDays must be positive")],
+    ["InvalidHolderAddressError", new InvalidHolderAddressError("bad address")],
+    ["LicenseTypeNotIssuableError", new LicenseTypeNotIssuableError("not issuable")],
+  ] as Array<[string, Error]>)("maps %s to INVALID_INPUT, message verbatim", (_n, err) => {
+    const out = toPublisherGraphQLError(err);
+    expect(out).toBeInstanceOf(GraphQLError);
+    expect(codeOf(out)).toBe("INVALID_INPUT");
+    expect((out as GraphQLError).message).toBe(err.message);
   });
 
   it("gives NotAppOwnerError the SAME code and message as UnknownAppError", () => {

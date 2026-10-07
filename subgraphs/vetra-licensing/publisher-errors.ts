@@ -3,6 +3,11 @@ import { UnauthenticatedError, AppIdentityInactiveError } from "./auth.js";
 import { NotAppOwnerError, UnknownAppError } from "./publisher-auth.js";
 import { LicensingDisabledError } from "./resolvers.js";
 import {
+  InvalidHolderAddressError,
+  LicenseTypeNotIssuableError,
+} from "./issuers/publisher-grant.js";
+import { NegativeValidityError } from "../../document-models/app-license-type/v1/gen/license-type/error.js";
+import {
   UnknownTemplateSizeError,
   UnsupportedTemplateServiceError,
   MissingPackageNameError,
@@ -54,7 +59,10 @@ function codeFor(err: unknown): string | null {
   if (
     err instanceof UnknownTemplateSizeError ||
     err instanceof UnsupportedTemplateServiceError ||
-    err instanceof MissingPackageNameError
+    err instanceof MissingPackageNameError ||
+    err instanceof NegativeValidityError ||
+    err instanceof InvalidHolderAddressError ||
+    err instanceof LicenseTypeNotIssuableError
   ) {
     return "INVALID_INPUT";
   }
