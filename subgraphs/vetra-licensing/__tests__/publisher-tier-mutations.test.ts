@@ -122,7 +122,7 @@ describe("publisher tier authoring", () => {
     const id = await m.createLicenseType(
       {},
       {
-        input: { appId: "app-1", kind: "pro", label: "Pro", validityDays: 30 },
+        input: { appId: "APP-1", kind: "pro", label: "Pro", validityDays: 30 },
       },
       ctx(OWNER),
     );
