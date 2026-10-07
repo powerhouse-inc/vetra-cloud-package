@@ -7,6 +7,9 @@ import {
 } from "graphql";
 import { machineSchema, schema } from "../schema.js";
 import { publisherSchema } from "../publisher-schema.js";
+import { createResolvers } from "../resolvers.js";
+import { createPublisherResolvers } from "../publisher-resolvers.js";
+import { mergeResolvers } from "../merge-resolvers.js";
 
 const fieldsOf = (built: ReturnType<typeof buildASTSchema>, name: string) => {
   const t = built.getType(name) as GraphQLObjectType | undefined;
@@ -77,5 +80,18 @@ describe("subgraph schema composition", () => {
     expect(clash).toEqual([]);
     const merged = definedNames(schema);
     expect(merged.filter((n, i) => merged.indexOf(n) !== i)).toEqual([]);
+  });
+
+  it("registers resolvers only for types the schema defines", () => {
+    const built = buildASTSchema(schema);
+    // The resolver factories only close over their deps; building them needs
+    // no database or reactor, so these are the real key sets.
+    const merged = mergeResolvers(
+      createResolvers({} as never, { cfg: { enabled: true } } as never) as never,
+      createPublisherResolvers({} as never, { cfg: { enabled: true } } as never) as never,
+    );
+    const unknown = Object.keys(merged).filter((k) => !built.getType(k));
+    expect(unknown).toEqual([]);
+    expect(Object.keys(merged).length).toBeGreaterThan(4);
   });
 });

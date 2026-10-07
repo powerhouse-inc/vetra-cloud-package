@@ -29,4 +29,13 @@ describe("mergeResolvers", () => {
     expect(m.VetraLicensingQueries).toBe(machine.VetraLicensingQueries);
     expect(m.VetraPublisherQueries).toBe(publisher.VetraPublisherQueries);
   });
+
+  it("throws when both maps define the same non-root key", () => {
+    expect(() =>
+      mergeResolvers(
+        { VetraLicensingQueries: { a: 1 } },
+        { VetraLicensingQueries: { b: 2 } },
+      ),
+    ).toThrow('resolver key "VetraLicensingQueries" is defined by both');
+  });
 });
