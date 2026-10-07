@@ -15,6 +15,7 @@ import {
   renownAuthorizeUrl,
   slugify,
   updateApp,
+  detectRepoToolchain,
 } from "../service.js";
 import { getApp } from "../repo.js";
 import {
@@ -26,6 +27,7 @@ import {
   admin,
   appIdentity,
   ciIdentity,
+  fakeGithub,
   makeHarness,
   owner,
   seedActiveApp,
@@ -577,5 +579,56 @@ describe("slugify", () => {
   it("kebab-cases and strips accents/symbols", () => {
     expect(slugify("Ça va? My  App__2")).toBe("ca-va-my-app-2");
     expect(slugify("!!!")).toBe("app");
+  });
+});
+
+describe("detectRepoToolchain", () => {
+  const gh = () => fakeGithub();
+
+  it("reads bun from bun.lock, not the pnpm house default", async () => {
+    const g = gh();
+    g.files.set("package.json", "{}");
+    g.files.set("bun.lock", "");
+    expect(await detectRepoToolchain(g, "i1", "o/r")).toEqual({
+      packageManager: "bun",
+      declaresPackageManager: false,
+    });
+  });
+
+  it("prefers the pnpm lockfile when several are present", async () => {
+    const g = gh();
+    g.files.set("package.json", '{"packageManager":"pnpm@9.1.0"}');
+    g.files.set("pnpm-lock.yaml", "");
+    g.files.set("package-lock.json", "");
+    expect(await detectRepoToolchain(g, "i1", "o/r")).toEqual({
+      packageManager: "pnpm",
+      declaresPackageManager: true,
+    });
+  });
+
+  it("reports no package manager when the repo ships no package.json", async () => {
+    // A Dockerfile-only app: the workflow must not try to install anything.
+    const g = gh();
+    g.files.set("Dockerfile", "FROM scratch");
+    expect(await detectRepoToolchain(g, "i1", "o/r")).toEqual({
+      packageManager: null,
+      declaresPackageManager: false,
+    });
+  });
+
+  it("falls back to pnpm for a package.json with no lockfile", async () => {
+    const g = gh();
+    g.files.set("package.json", "{}");
+    expect((await detectRepoToolchain(g, "i1", "o/r")).packageManager).toBe("pnpm");
+  });
+
+  it("survives an unparseable package.json", async () => {
+    const g = gh();
+    g.files.set("package.json", "{ not json");
+    g.files.set("yarn.lock", "");
+    expect(await detectRepoToolchain(g, "i1", "o/r")).toEqual({
+      packageManager: "yarn",
+      declaresPackageManager: false,
+    });
   });
 });

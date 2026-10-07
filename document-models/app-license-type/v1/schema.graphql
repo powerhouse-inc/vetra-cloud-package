@@ -37,7 +37,11 @@ enum LicenseTypeStatus {
 enum TemplateServiceType {
   CONNECT
   SWITCHBOARD
+  FUSION
   CLINT
+  DOCLING
+  PAPERLESS
+  SPECKLE
 }
 
 type EnvironmentTemplate {

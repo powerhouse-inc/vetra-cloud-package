@@ -107,6 +107,44 @@ describe("AppLicenseType", () => {
   });
 
   describe("ADD_TEMPLATE_SERVICE", () => {
+    // The Knowledge Vault template is a fusion app plus a switchboard, and some
+    // apps need docling. A licence type must be able to express every service an
+    // environment can actually run; when it could not, the reducer rejected the
+    // action and the publisher saw a raw schema error.
+    it("accepts every service type an environment can run", () => {
+      const types = [
+        "CONNECT",
+        "SWITCHBOARD",
+        "FUSION",
+        "CLINT",
+        "DOCLING",
+        "PAPERLESS",
+        "SPECKLE",
+      ] as const;
+      let doc = utils.createDocument();
+      types.forEach((type, i) => {
+        doc = reducer(doc, addTemplateService({ id: `svc-${i}`, type }));
+      });
+      const last = doc.operations.global.at(-1);
+      expect(last?.error).toBeUndefined();
+      expect(doc.state.global.template?.services.map((s) => s.type)).toStrictEqual([
+        ...types,
+      ]);
+    });
+
+    it("builds the Knowledge Vault shape: fusion app plus switchboard", () => {
+      let doc = reducer(
+        utils.createDocument(),
+        addTemplateService({ id: "svc-1", type: "SWITCHBOARD", prefix: "api" }),
+      );
+      doc = reducer(doc, addTemplateService({ id: "svc-2", type: "FUSION" }));
+      expect(doc.operations.global.at(-1)?.error).toBeUndefined();
+      expect(doc.state.global.template?.services).toStrictEqual([
+        { id: "svc-1", type: "SWITCHBOARD", prefix: "api" },
+        { id: "svc-2", type: "FUSION", prefix: null },
+      ]);
+    });
+
     it("adds a service, defaulting an omitted prefix to null", () => {
       let doc = reducer(
         utils.createDocument(),

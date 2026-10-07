@@ -13,7 +13,7 @@
       "changeLog": [],
       "state": {
         "global": {
-          "schema": "type AppLicenseTypeState {\n  app: PHID\n  kind: String\n  label: String\n  validityDays: Int\n  template: EnvironmentTemplate\n  status: LicenseTypeStatus!\n}\n\nenum LicenseTypeStatus {\n  DRAFT\n  ACTIVE\n  RETIRED\n}\n\nenum TemplateServiceType {\n  CONNECT\n  SWITCHBOARD\n  CLINT\n}\n\ntype EnvironmentTemplate {\n  services: [TemplateService!]!\n  packages: [TemplatePackage!]!\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n}\n\ntype TemplateService {\n  id: OID!\n  type: TemplateServiceType!\n  prefix: String\n}\n\ntype TemplatePackage {\n  id: OID!\n  packageName: String\n  version: String\n}",
+          "schema": "type AppLicenseTypeState {\n  app: PHID\n  kind: String\n  label: String\n  validityDays: Int\n  template: EnvironmentTemplate\n  status: LicenseTypeStatus!\n}\n\nenum LicenseTypeStatus {\n  DRAFT\n  ACTIVE\n  RETIRED\n}\n\nenum TemplateServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\ntype EnvironmentTemplate {\n  services: [TemplateService!]!\n  packages: [TemplatePackage!]!\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n}\n\ntype TemplateService {\n  id: OID!\n  type: TemplateServiceType!\n  prefix: String\n}\n\ntype TemplatePackage {\n  id: OID!\n  packageName: String\n  version: String\n}",
           "initialValue": "{\n  \"app\": null,\n  \"kind\": null,\n  \"label\": null,\n  \"validityDays\": null,\n  \"template\": null,\n  \"status\": \"DRAFT\"\n}",
           "examples": []
         },

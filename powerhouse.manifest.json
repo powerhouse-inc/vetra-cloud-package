@@ -12,12 +12,12 @@
       "name": "Vetra Cloud Environment"
     },
     {
-      "name": "AppLicenseType",
-      "id": "powerhouse/app-license-type"
+      "id": "powerhouse/app-license-type",
+      "name": "AppLicenseType"
     },
     {
-      "name": "AppOwnerLicense",
-      "id": "powerhouse/app-owner-license"
+      "id": "powerhouse/app-owner-license",
+      "name": "AppOwnerLicense"
     }
   ],
   "apps": [],

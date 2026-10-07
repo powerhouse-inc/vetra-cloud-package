@@ -303,6 +303,62 @@ describe("workflow template", () => {
     expect(t).toContain('production-branch: "release"');
     expect(t).toContain("app-id: app-1");
   });
+
+  // head.repo.fork is true for EVERY pull request when the repository is itself
+  // a fork, which silently skipped the job and killed preview environments.
+  it("gates pull requests on the head repo, not on whether it is a fork", () => {
+    const t = workflowTemplate("app-1");
+    expect(t).not.toContain("head.repo.fork");
+    expect(t).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    // pushes must still run: the guard is pull-request-only
+    expect(t).toContain("github.event_name != 'pull_request'");
+  });
+
+  it("pins a pnpm version when package.json does not declare one", () => {
+    // Without this, pnpm/action-setup@v4 fails: "No pnpm version is specified".
+    const t = workflowTemplate("app-1", "main", {
+      packageManager: "pnpm",
+      declaresPackageManager: false,
+    });
+    expect(t).toMatch(/pnpm\/action-setup@v4\n\s+with: \{ version: \d+ \}/);
+  });
+
+  it("passes no pnpm version when package.json declares one", () => {
+    // Passing a version that disagrees with packageManager is itself an error.
+    const t = workflowTemplate("app-1", "main", {
+      packageManager: "pnpm",
+      declaresPackageManager: true,
+    });
+    expect(t).toContain("- uses: pnpm/action-setup@v4\n");
+    // node-version: also contains "version:", so pin the pnpm input exactly
+    expect(t).not.toMatch(/with: \{ version:/);
+  });
+
+  it("sets up bun and its commands for a bun repository", () => {
+    const t = workflowTemplate("app-1", "main", { packageManager: "bun" });
+    expect(t).toContain("oven-sh/setup-bun@v2");
+    expect(t).not.toContain("pnpm");
+    expect(t).toContain('install-command: "bun install --frozen-lockfile"');
+    expect(t).toContain('build-command: "bun run build"');
+  });
+
+  it("sets up npm and its commands for an npm repository", () => {
+    const t = workflowTemplate("app-1", "main", { packageManager: "npm" });
+    expect(t).toContain("cache: npm");
+    expect(t).not.toContain("pnpm");
+    expect(t).toContain('install-command: "npm ci"');
+  });
+
+  it("skips setup and every command when the repo has no package.json", () => {
+    const t = workflowTemplate("app-1", "main", { packageManager: null });
+    expect(t).not.toContain("setup-node");
+    expect(t).not.toContain("action-setup");
+    expect(t).toContain("install-command: ''");
+    expect(t).toContain("build-command: ''");
+    expect(t).toContain("package-dirs: ''");
+  });
 });
 
 describe("HTTP clients", () => {
