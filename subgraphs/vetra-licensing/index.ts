@@ -20,7 +20,10 @@ import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
 import { mergeResolvers } from "./merge-resolvers.js";
 import { releaseEnvironment } from "./release.js";
 import { createEnvironmentRows } from "./rows.js";
-import { resolveTemplateForLicence } from "./resolve-template.js";
+import {
+  createTypeSnapshots,
+  resolveTemplateForLicence,
+} from "./resolve-template.js";
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -151,9 +154,10 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     // Inert unless cfg.enabled (default false); dry-run (default true) is
     // honoured inside the keeper. Same cfg object as everything above.
+    const typeSnapshots = createTypeSnapshots(reads);
     this.provisioningKeeper = new ProvisioningKeeper({
       allLicenses: reads.allLicenses,
-      licenseTypes: reads.licenseTypes,
+      licenseTypes: typeSnapshots.licenseTypes,
       environments: async (appId) =>
         (
           await db
@@ -168,8 +172,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           templateHash: r.template_hash,
         })),
       applyFor: async (appId, licence) => {
+        // The snapshot the keeper just planned from, not a fresh scan.
         const resolved = resolveTemplateForLicence(
-          await reads.licenseTypeDetails(appId),
+          await typeSnapshots.detailsFor(appId),
           licence,
         );
         if (!resolved.ok) {

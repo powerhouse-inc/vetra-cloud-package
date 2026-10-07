@@ -28,3 +28,30 @@ export function resolveTemplateForLicence(
   }
   return { ok: true, template: type.template, label: type.label ?? type.kind };
 }
+
+/**
+ * Hands the provisioning keeper one read of an app's licence types per tick.
+ * The keeper's `licenseTypes(appId)` is the read that starts reconciling an
+ * app; `detailsFor(appId)` returns that same snapshot to the `applyFor` calls
+ * that follow, so a tick costs one licence-type scan per app instead of one per
+ * app plus one per applied licence. `detailsFor` falls back to a fresh read
+ * when no snapshot exists, so it is correct when called on its own.
+ *
+ * Planning and applying now share one snapshot, so the template and the hash
+ * it is checked against can no longer disagree within a tick.
+ */
+export function createTypeSnapshots(reads: {
+  licenseTypeDetails(appId: string): Promise<LicenseTypeDetail[]>;
+}) {
+  const snapshots = new Map<string, LicenseTypeDetail[]>();
+  return {
+    async licenseTypes(appId: string): Promise<LicenseTypeDetail[]> {
+      const details = await reads.licenseTypeDetails(appId);
+      snapshots.set(appId, details);
+      return details;
+    },
+    async detailsFor(appId: string): Promise<LicenseTypeDetail[]> {
+      return snapshots.get(appId) ?? (await reads.licenseTypeDetails(appId));
+    },
+  };
+}
