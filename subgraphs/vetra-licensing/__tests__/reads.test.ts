@@ -272,6 +272,38 @@ describe("licenseType", () => {
   });
 });
 
+describe("license", () => {
+  it("returns one licence by id without listing every licence", async () => {
+    const client = fakeClient({}, { "lic-1": license("lic-1") });
+    const reads = createReactorLicenseReads(client);
+    expect(await reads.license("lic-1")).toEqual({
+      id: "lic-1",
+      app: "app-1",
+      user: "0xabc",
+      licenseTypeId: "lt-1",
+      status: "ACTIVE",
+      start: "2026-01-01T00:00:00Z",
+      end: "2027-01-01T00:00:00Z",
+    });
+    expect(client.findCalls).toEqual([]);
+  });
+
+  it("returns null for a missing document, one with no app, or a bad status", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient(
+        {},
+        {
+          "lic-2": license("lic-2", { app: null }),
+          "lic-3": license("lic-3", { status: "WAT" }),
+        },
+      ),
+    );
+    expect(await reads.license("nope")).toBeNull();
+    expect(await reads.license("lic-2")).toBeNull();
+    expect(await reads.license("lic-3")).toBeNull();
+  });
+});
+
 describe("licenseTypes", () => {
   it("scopes to the app and hashes with the real templateHash", async () => {
     const reads = createReactorLicenseReads(

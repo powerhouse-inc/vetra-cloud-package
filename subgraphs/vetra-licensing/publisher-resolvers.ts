@@ -15,6 +15,8 @@ import type { LicenseGateway } from "./license-gateway.js";
 import type { GrantDeps } from "./issuers/publisher-grant.js";
 import { makeRequireEnabled } from "./resolvers.js";
 import { actions } from "document-models/app-license-type";
+import { actions as licenseActions } from "document-models/app-owner-license";
+import { issuePublisherGrant } from "./issuers/publisher-grant.js";
 
 /**
  * Thrown by Tasks 6 and 7 for a licence type that is missing OR belongs to
@@ -90,6 +92,29 @@ export function createPublisherResolvers(
     }
     requireEnabled();
     return licenseTypeId;
+  };
+
+  /**
+   * Gate for revokeLicense. The app is read from the licence document itself,
+   * never from arguments: another publisher's licence fails exactly like a
+   * missing one.
+   */
+  const authoriseLicense = async (licenseId: string, ctx: Ctx) => {
+    if (!ctx.user?.address) {
+      throw new UnauthenticatedError("sign in to manage licences");
+    }
+    const license = await deps.reads.license(licenseId);
+    if (!license) throw new UnknownLicenseError();
+    try {
+      await resolveOwnerApp(deps.auth, ctx, license.app);
+    } catch (err) {
+      if (err instanceof NotAppOwnerError || err instanceof UnknownAppError) {
+        throw new UnknownLicenseError();
+      }
+      throw err;
+    }
+    requireEnabled();
+    return licenseId;
   };
 
   const dispatch = async (id: string, acts: Action[]) => {
@@ -267,6 +292,41 @@ export function createPublisherResolvers(
       ) => {
         const id = await authoriseType(args.licenseTypeId, ctx);
         return dispatch(id, [actions.retireLicenseType({})]);
+      },
+
+      issueGrant: async (
+        _p: unknown,
+        args: {
+          input: { appId: string; licenseTypeId: string; user: string };
+        },
+        ctx: Ctx,
+      ) => {
+        const { appId } = await resolveOwnerApp(
+          deps.auth,
+          ctx,
+          args.input.appId,
+        );
+        requireEnabled();
+        return issuePublisherGrant(deps.grant, {
+          appId,
+          licenseTypeId: args.input.licenseTypeId,
+          user: args.input.user,
+          // resolveOwnerApp has already refused an unauthenticated caller.
+          issuedBy: ctx.user!.address,
+          now: new Date().toISOString(),
+        });
+      },
+
+      revokeLicense: async (
+        _p: unknown,
+        args: { input: { licenseId: string; reason?: string | null } },
+        ctx: Ctx,
+      ) => {
+        const id = await authoriseLicense(args.input.licenseId, ctx);
+        await deps.licenseGateway.execute(id, [
+          licenseActions.revokeLicense({ reason: args.input.reason ?? null }),
+        ]);
+        return true;
       },
     },
   };

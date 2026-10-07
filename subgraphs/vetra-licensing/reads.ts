@@ -60,6 +60,8 @@ export interface LicenseReads {
     status: string;
     validityDays: number | null;
   } | null>;
+  /** One licence by document id; null when missing, malformed or without an app. */
+  license(id: string): Promise<LicenseFullRow | null>;
   /** Every licence across all apps; the keeper is global. */
   listLicenses(): Promise<LicenseRow[]>;
   /** Every licence across all apps, with the fields provisioning needs. */
@@ -276,6 +278,20 @@ export function createReactorLicenseReads(
         app: t.app,
         status: t.status,
         validityDays: t.validityDays,
+      };
+    },
+
+    async license(id) {
+      const l = parseLicense(await getDoc(id));
+      if (!l || l.app === null) return null;
+      return {
+        id: l.id,
+        app: l.app,
+        user: l.user,
+        licenseTypeId: l.licenseTypeId ?? "",
+        status: l.status,
+        start: l.start,
+        end: l.end,
       };
     },
 
