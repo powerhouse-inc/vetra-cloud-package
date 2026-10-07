@@ -215,7 +215,7 @@ describe("templateFor", () => {
     expect(await reads.templateFor("lic-1")).toBeNull();
   });
 
-  it("returns null when the licence type is RETIRED", async () => {
+  it("still resolves the template when the licence type is RETIRED (the licence is the entitlement)", async () => {
     const reads = createReactorLicenseReads(
       fakeClient(
         {},
@@ -225,7 +225,7 @@ describe("templateFor", () => {
         },
       ),
     );
-    expect(await reads.templateFor("lic-1")).toBeNull();
+    expect(await reads.templateFor("lic-1")).toEqual(TEMPLATE);
   });
 
   it("rethrows errors that are not document-not-found", async () => {

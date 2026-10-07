@@ -271,7 +271,11 @@ export function createReactorLicenseReads(
       const license = parseLicense(await getDoc(licenseId));
       if (!license?.licenseTypeId) return null;
       const type = parseLicenseType(await getDoc(license.licenseTypeId));
-      if (!type || type.status === "RETIRED") return null;
+      // A RETIRED type still resolves: the licence is the entitlement and the
+      // type is only where the template comes from. Retire means "no new
+      // grants"; it never ends service for existing holders. This must agree
+      // with the provisioning keeper (resolveTemplateForLicence).
+      if (!type) return null;
       return type.template;
     },
 
