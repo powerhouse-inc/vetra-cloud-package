@@ -1,6 +1,6 @@
 import type { Kysely } from "kysely";
 import type { VetraLicensingDB } from "./db/schema.js";
-import { addressOfDid } from "./did.js";
+import { addressOfDid, didForAddress } from "./did.js";
 
 export type GrantStore = ReturnType<typeof createGrantStore>;
 
@@ -11,6 +11,30 @@ export interface GrantProvenance {
   userAddress: string;
   /** The term kind; null on rows written before kinds existed. */
   kind: string | null;
+}
+
+/** One app_license_grants row, the holder as a DID (derived on legacy rows). */
+export interface GrantRow {
+  licenseId: string;
+  appId: string;
+  userDid: string;
+  /** Null on rows written before kinds existed. */
+  kind: string | null;
+}
+
+function toGrantRow(r: {
+  license_id: string;
+  app_id: string;
+  user_address: string;
+  user_did: string | null;
+  kind: string | null;
+}): GrantRow {
+  return {
+    licenseId: r.license_id,
+    appId: r.app_id,
+    userDid: r.user_did ?? didForAddress(r.user_address),
+    kind: r.kind,
+  };
 }
 
 /**
@@ -130,6 +154,32 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
           { appId: r.app_id, userAddress: r.user_address.toLowerCase(), kind: r.kind },
         ]),
       );
+    },
+
+    /**
+     * The grant row of one licence: which app it belongs to, for whom, on
+     * which kind. The publisher surface authorises a licence id against THIS
+     * app, never against the licence document's own `app` field.
+     */
+    async grantFor(licenseId: string): Promise<GrantRow | null> {
+      const row = await db
+        .selectFrom("app_license_grants")
+        .select(["license_id", "app_id", "user_address", "user_did", "kind"])
+        .where("license_id", "=", licenseId)
+        .executeTakeFirst();
+      return row ? toGrantRow(row) : null;
+    },
+
+    /** Every licence granted for one app, oldest first: the app's licences. */
+    async grantsForApp(appId: string): Promise<GrantRow[]> {
+      const rows = await db
+        .selectFrom("app_license_grants")
+        .select(["license_id", "app_id", "user_address", "user_did", "kind"])
+        .where("app_id", "=", appId)
+        .orderBy("created_at", "asc")
+        .orderBy("license_id", "asc")
+        .execute();
+      return rows.map(toGrantRow);
     },
 
     /** Licence ids with provenance: the only licences the keeper provisions. */

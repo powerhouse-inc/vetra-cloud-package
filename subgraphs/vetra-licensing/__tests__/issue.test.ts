@@ -247,11 +247,18 @@ describe("publisher grant issuer", () => {
   });
   it("replaces a holder's licence in place", async () => {
     const h = harness([lic({})]);
-    expect(await replaceGrant(h.deps, { licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).toBe("lic-1");
+    expect(await replaceGrant(h.deps, { appId: "app-1", licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).toBe("lic-1");
     expect(JSON.parse((h.executed[0]!.actions[0]!.input as { details: string }).details)).toMatchObject({ grantedBy: "0xowner", replaces: "old" });
     expect(h.executed[1]!.actions[0]!.type).toBe("REPLACE_LICENSE");
   });
   it("refuses to replace a missing licence", async () => {
-    await expect(replaceGrant(harness().deps, { licenseId: "nope", kind: "pro", issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
+    await expect(replaceGrant(harness().deps, { appId: "app-1", licenseId: "nope", kind: "pro", issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
+  });
+  it("issues under the authorised app, never the licence document's own app field", async () => {
+    // The caller was authorised for app-1 (from the grant row); the document
+    // claims app-2. The replacement must not be issued from app-2's terms.
+    const other = harness([lic({ app: "app-2" })]);
+    await expect(replaceGrant(other.deps, { appId: "app-1", licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
+    expect(other.created).toStrictEqual([]);
   });
 });

@@ -61,6 +61,23 @@ describe("grant store", () => {
     expect(await g.licenceIdsFor("a", DID)).toStrictEqual(["legacy", "l2"]);
   });
 
+  it("reads one grant, and an app's grants, with the holder as a DID", async () => {
+    const g = await open();
+    await g.recordGrant({ licenseId: "l1", appId: "a", kind: "pro", userDid: DID, issuedBy: "0xo", now: "t1" });
+    await g.recordGrant({ licenseId: "l2", appId: "b", kind: "pro", userDid: DID, issuedBy: "0xo", now: "t1" });
+    await db!.insertInto("app_license_grants").values({
+      license_id: "legacy", app_id: "a", license_type_id: "type-1",
+      user_address: "0xABCDEF0123456789ABCDEF0123456789ABCDEF01", issued_by: "0xo",
+      created_at: "t0", kind: null, user_did: null,
+    }).execute();
+    const legacy = { licenseId: "legacy", appId: "a", userDid: "did:pkh:eip155:1:0xabcdef0123456789abcdef0123456789abcdef01", kind: null };
+    expect(await g.grantFor("l1")).toStrictEqual({ licenseId: "l1", appId: "a", userDid: DID, kind: "pro" });
+    expect(await g.grantFor("legacy")).toStrictEqual(legacy);
+    expect(await g.grantFor("nope")).toBeNull();
+    expect(await g.grantsForApp("a")).toStrictEqual([legacy, { licenseId: "l1", appId: "a", userDid: DID, kind: "pro" }]);
+    expect(await g.grantsForApp("c")).toStrictEqual([]);
+  });
+
   it("resolves chain roots; an unchained licence is its own root", async () => {
     const g = await open();
     await g.linkChain({ licenseId: "l1", rootLicenseId: "l1", appId: "a", label: "Project", now: "t" });
