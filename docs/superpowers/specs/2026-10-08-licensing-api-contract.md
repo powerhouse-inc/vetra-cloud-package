@@ -308,7 +308,16 @@ audience is only renown-stats. It caches the token and sends it to
 FORBIDDEN (app in PENDING_IDENTITY, delegation expired/revoked) → relay returns
 `false` and logs. The relay coalesces reports per (user, metric) before sending.
 
-The first `upsertAppProfile` also requires the caller's wallet to hold a
-delegation to the app DID. Until
-renown-package with `renown-stats` is deployed, the Vetra relay is configured off
+Ownership is anchored on Renown's workload identity record (not on
+self-issued delegations, which any wallet can mint): `reportUserStat` requires
+the app DID to be a registered renown-workload identity and the token's subject
+wallet to be that identity's `ownerAddress` with a live delegation; an app DID
+that is not a workload identity is always FORBIDDEN. The first
+`upsertAppProfile` requires the caller wallet to be the identity's
+`ownerAddress`, and every upsert requires the calling app (`ctx.user.appKey`) to
+be in `RENOWN_STATS_PROFILE_APPS` (unset → profile edits refused). In
+`upsertAppProfile`, `null` leaves a field unchanged and `""` clears it (unlike
+the cloud package's detail operations, where `null` clears).
+
+Until renown-package with `renown-stats` is deployed, the Vetra relay is configured off
 (`RENOWN_STATS_URL` unset → `reportUserStat` returns `false` and logs).
