@@ -130,6 +130,10 @@ export async function createInviteCode(
       created_at: input.now,
     };
     // An existing code is refused, never returned: it may be ANOTHER app's.
+    // Refusing a taken custom code does reveal that the code exists (even an
+    // inactive or expired one of another app). That is inherent to globally
+    // unique codes and accepted by design: only owner-chosen vanity codes can
+    // be probed this way; generated codes carry ~57 bits.
     const res = await db
       .insertInto("invite_codes")
       .values(row)

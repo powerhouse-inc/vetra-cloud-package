@@ -79,7 +79,9 @@ beforeEach(async () => {
       linkChain: vi.fn(async () => {}),
       chainRootOf: async (id) => id,
       chainHead: async (id) => id,
+      grantFor: async () => null,
     },
+    lifecycle: { get: async () => null, record: vi.fn(async () => {}) },
     activeLicencesOf: async () => active,
     logger: { warn: vi.fn() },
   };

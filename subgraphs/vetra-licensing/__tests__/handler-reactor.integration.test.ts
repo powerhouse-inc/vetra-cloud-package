@@ -106,6 +106,7 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
       createLicenseDocument: licenseGateway.create,
       executeLicence: licenseGateway.execute,
       grants,
+      lifecycle,
       logger: console,
     };
 

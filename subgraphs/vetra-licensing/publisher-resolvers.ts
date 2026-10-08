@@ -22,7 +22,7 @@ import type { LicensingConfig } from "./config.js";
 import { makeRequireEnabled } from "./resolvers.js";
 import { normaliseUserDid } from "./did.js";
 import { grantLicense, replaceGrant, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
-import { TermNotIssuableError } from "./issue.js";
+import { TermNotIssuableError, withLicenceLock } from "./issue.js";
 import { createInviteCode, listInviteCodes, setInviteCodeActive } from "./invite-codes.js";
 import {
   AppTamperedError,
@@ -36,13 +36,19 @@ import {
 
 export interface PublisherDeps {
   auth: PublisherAuthDeps;
+  /**
+   * The environments the app owns besides its document's production
+   * environment, from the apps tables (production row, previews): what a
+   * SHARED template may point at.
+   */
+  appEnvironments(appId: string): Promise<string[]>;
   /** Ledger-checked app reads: `tampered` is filled in. */
   apps: Pick<AppReads, "app">;
   /** The ONLY route for template and term writes: keeps the app-state ledger valid. */
   appWriter: AppLicensingWriter;
   licences: Pick<LicenseReads, "licenceRecords">;
   /** The recorded lifecycle status, which wins over the licence document's. */
-  lifecycle: Pick<LifecycleStore, "all">;
+  lifecycle: Pick<LifecycleStore, "forIds">;
   /** The recording gateway: every lifecycle write also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   issue: PublisherGrantDeps;
@@ -207,7 +213,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
     const grants = await deps.grants.grantsForApp(appId);
     const [docs, lifecycle] = await Promise.all([
       deps.licences.licenceRecords(grants.map((g) => g.licenseId)),
-      deps.lifecycle.all(),
+      deps.lifecycle.forIds(grants.map((g) => g.licenseId)),
     ]);
     const byId = new Map(docs.map((d) => [d.id, d]));
     return grants.flatMap((g) => {
@@ -340,6 +346,20 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           ctx,
         ) => {
           const app = await withTemplate(a.input.appId, a.input.templateId, ctx);
+          const shared = a.input.sharedEnvironment;
+          if (shared !== null && shared !== undefined) {
+            // A SHARED template's holders are sent to this environment: it
+            // must be the app's own, never another app's.
+            const own = new Set([
+              ...(app.productionEnvironmentId ? [app.productionEnvironmentId] : []),
+              ...(await deps.appEnvironments(app.id)),
+            ]);
+            if (!own.has(shared)) {
+              throw new InvalidPublisherInputError(
+                "sharedEnvironment must be one of this app's own environments",
+              );
+            }
+          }
           const fields = present(a.input, [
             "name", "sharedEnvironment", "size", "baseDomain", "packageRegistry",
           ] as const);
@@ -505,8 +525,10 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
 
       replaceGrant: withCodes(async (a: In<{ licenseId: string; kind: string }>, ctx) => {
         const grant = await ownedLicence(a.input.licenseId, ctx);
+        // The holder is the grant row's, never the licence document's.
         return replaceGrant(deps.issue, {
           appId: grant.appId,
+          user: grant.userDid,
           licenseId: grant.licenseId,
           kind: a.input.kind,
           issuedBy: callerAddress(ctx),
@@ -516,9 +538,14 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
 
       revokeLicense: withCodes(async (a: In<{ licenseId: string; reason?: Opt<string> }>, ctx) => {
         const grant = await ownedLicence(a.input.licenseId, ctx);
-        await deps.licenseGateway.execute(grant.licenseId, [
-          licenseActions.revokeLicense({ reason: a.input.reason ?? null }),
-        ]);
+        // The licence's own lock (issue.ts): a replace in flight finishes
+        // first, and the revoke then fails cleanly on the REPLACED licence
+        // instead of revoking a licence whose successor keeps access.
+        await withLicenceLock(grant.licenseId, () =>
+          deps.licenseGateway.execute(grant.licenseId, [
+            licenseActions.revokeLicense({ reason: a.input.reason ?? null }),
+          ]),
+        );
         return true;
       }),
 

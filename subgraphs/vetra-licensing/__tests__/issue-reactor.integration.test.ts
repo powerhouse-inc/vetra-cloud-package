@@ -12,6 +12,7 @@ import { createAppReads } from "../app-reads.js";
 import { createReactorLicenseReads } from "../reads.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
 import { createGrantStore } from "../grants.js";
+import { createLifecycleStore } from "../lifecycle.js";
 import { issueLicense } from "../issue.js";
 
 /**
@@ -43,7 +44,8 @@ describe("issueLicense against a real reactor", () => {
       appActions.publishTerm({ id: "k2" }),
     ]);
     reads = createReactorLicenseReads(client as never);
-    const gateway = createReactorLicenseGateway(client as never);
+    const lifecycle = createLifecycleStore(db, () => "2026-10-08T00:00:00.000Z");
+    const gateway = createReactorLicenseGateway(client as never, { lifecycle });
     deps = {
       owners: {
         findAppById: async (id) =>
@@ -54,6 +56,7 @@ describe("issueLicense against a real reactor", () => {
       createLicenseDocument: gateway.create,
       executeLicence: gateway.execute,
       grants: createGrantStore(db),
+      lifecycle,
       logger: console,
     };
   }, 120_000);

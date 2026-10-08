@@ -167,8 +167,10 @@ with `UNSUPPORTED_DID`.
 
 Error codes (`extensions.code`, existing mechanism): `NOT_FOUND`, `FORBIDDEN`,
 `INVALID_INPUT`, `APP_NOT_ACTIVE`, `NOT_ON_ALLOW_LIST`, `TERM_NOT_ISSUABLE`,
-`UNSUPPORTED_DID`, `LICENSING_DISABLED`, plus reducer errors surfaced as
-`INVALID_INPUT` with the reducer message.
+`UNSUPPORTED_DID`, `LICENSING_DISABLED`, `ALREADY_HOLDS` (`replaceGrant` to the
+kind the licence already holds ACTIVE, where that cannot be a renewal: the
+term has no validity limit), plus reducer errors surfaced as `INVALID_INPUT`
+with the reducer message.
 
 ## vetraSubscriptions
 

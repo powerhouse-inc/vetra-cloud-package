@@ -103,6 +103,25 @@ describe("vetraPublisher end to end", () => {
     expect(t).toMatchObject({ size: null, baseDomain: "vetra.io" });
   });
 
+  it("a SHARED template may only point at one of the app's own environments", async () => {
+    h.ownedEnvironments.set(APP, ["env-prod", "env-preview-7"]);
+    h.ownedEnvironments.set(HELD, ["env-of-another-app"]);
+    const shared = (await m("addTemplate", { input: { appId: APP, mode: "SHARED" } })) as string;
+    const env = async () =>
+      ((await q("templates", { appId: APP })) as { id: string; sharedEnvironment: string | null }[])
+        .find((t) => t.id === shared)!.sharedEnvironment;
+    expect(await m("setTemplateDetails", { input: { appId: APP, templateId: shared, sharedEnvironment: "env-preview-7" } })).toBe(true);
+    expect(await env()).toBe("env-preview-7");
+    expect(await codeOf(m("setTemplateDetails", { input: { appId: APP, templateId: shared, sharedEnvironment: "env-of-another-app" } }))).toBe("INVALID_INPUT");
+    expect(await codeOf(m("setTemplateDetails", { input: { appId: APP, templateId: shared, sharedEnvironment: "made-up" } }))).toBe("INVALID_INPUT");
+    expect(await env()).toBe("env-preview-7");
+    expect(await m("setTemplateDetails", { input: { appId: APP, templateId: shared, sharedEnvironment: null } })).toBe(true);
+    expect(await env()).toBeNull();
+    // Unrelated edits never re-check (or need) an environment.
+    expect(await m("setTemplateDetails", { input: { appId: APP, templateId: shared, name: "Shared" } })).toBe(true);
+    await m("deleteTemplate", { appId: APP, templateId: shared });
+  });
+
   it("edits a term: omitted fields unchanged, an explicit null clears", async () => {
     await m("setTermDetails", { input: { appId: APP, termId, label: "Pro plan" } });
     await m("setTermDetails", { input: { appId: APP, termId, validityDays: null } });
@@ -194,9 +213,72 @@ describe("vetraPublisher end to end", () => {
     expect(await m("revokeLicense", { input: { licenseId: replacement, reason: "test" } })).toBe(true);
     expect(await codeOf(m("revokeLicense", { input: { licenseId: replacement } }))).toBe("INVALID_INPUT");
     // Revoked through the recording gateway: the lifecycle record says so.
-    expect((await h.deps.lifecycle.all()).get(replacement)?.status).toBe("REVOKED");
+    expect((await h.deps.lifecycle.forIds([replacement])).get(replacement)?.status).toBe("REVOKED");
     expect(await codeOf(m("revokeLicense", { input: { licenseId: "no-such-licence" } }))).toBe("NOT_FOUND");
     expect(await codeOf(m("replaceGrant", { input: { licenseId: "no-such-licence", kind: "2026-max" } }))).toBe("NOT_FOUND");
+  });
+
+  it("replace takes the holder from the grant row: a forged predecessor holder is refused", async () => {
+    const ATTACKER = "did:pkh:eip155:1:0x9999999999999999999999999999999999999999";
+    await m("addToAllowList", { appId: APP, user: HOLDER });
+    const victim = (await m("issueGrant", { input: { appId: APP, kind: "2026-pro", user: HOLDER } })) as string;
+    // The licence document reads as the attacker's (forged).
+    const forging = h.build({
+      issue: {
+        ...h.deps.issue,
+        licence: async (id) => {
+          const real = await h.reads.licenceRecord(id);
+          return real && id === victim ? { ...real, user: ATTACKER } : real;
+        },
+      },
+    });
+    const replace = forging.VetraPublisherMutations.replaceGrant!({}, { input: { licenseId: victim, kind: "2026-max" } }, asOwner);
+    expect(await codeOf(replace)).toBe("NOT_FOUND");
+    const holders = await h.db.selectFrom("app_license_grants").select("user_did").execute();
+    expect(holders.map((g) => g.user_did)).not.toContain(ATTACKER);
+    // Unforged, the same replace goes to the grant row's holder.
+    const next = (await m("replaceGrant", { input: { licenseId: victim, kind: "2026-max" } })) as string;
+    expect((await h.deps.grants.grantFor(next))?.userDid).toBe(HOLDER_DID);
+    await m("revokeLicense", { input: { licenseId: next } });
+  });
+
+  it("replace trusts the recorded status: a document forged to EXPIRED is still closed", async () => {
+    const victim = (await m("issueGrant", { input: { appId: APP, kind: "2026-pro", user: HOLDER } })) as string;
+    // Forged on the document only; license_lifecycle still says ACTIVE.
+    await h.client.execute(victim, "main", [licenseActions.expireLicense({})]);
+    const next = (await m("replaceGrant", { input: { licenseId: victim, kind: "2026-max" } })) as string;
+    const lifecycle = await h.deps.lifecycle.forIds([victim, next]);
+    expect(lifecycle.get(victim)).toStrictEqual({ status: "REPLACED", replacedBy: next });
+    expect(lifecycle.get(next)?.status).toBe("ACTIVE");
+    const chain = await h.db.selectFrom("license_chain").select("license_id").where("root_license_id", "=", victim).execute();
+    const active = [...(await h.deps.lifecycle.forIds(chain.map((c) => c.license_id))).values()].filter((r) => r.status === "ACTIVE");
+    expect(active).toHaveLength(1);
+    await m("revokeLicense", { input: { licenseId: next } });
+  });
+
+  it("a revoke overlapping a replace waits for it, then fails cleanly on the REPLACED licence", async () => {
+    const lic = (await m("issueGrant", { input: { appId: APP, kind: "2026-pro", user: HOLDER } })) as string;
+    let entered!: () => void;
+    const inside = new Promise<void>((res) => (entered = res));
+    const slow = h.build({
+      issue: {
+        ...h.deps.issue,
+        createLicenseDocument: async () => {
+          entered();
+          await new Promise((res) => setTimeout(res, 50));
+          return h.deps.issue.createLicenseDocument();
+        },
+      },
+    });
+    const replace = slow.VetraPublisherMutations.replaceGrant!({}, { input: { licenseId: lic, kind: "2026-max" } }, asOwner);
+    await inside;
+    const revoke = m("revokeLicense", { input: { licenseId: lic, reason: "overlap" } });
+    const next = (await replace) as string;
+    expect(await codeOf(revoke)).toBe("INVALID_INPUT");
+    const lifecycle = await h.deps.lifecycle.forIds([lic, next]);
+    expect(lifecycle.get(lic)).toStrictEqual({ status: "REPLACED", replacedBy: next });
+    expect(lifecycle.get(next)?.status).toBe("ACTIVE");
+    await m("revokeLicense", { input: { licenseId: next } });
   });
 
   it("lists licences by their grant rows and lifecycle records, not by what documents claim", async () => {

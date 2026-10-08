@@ -258,6 +258,25 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const grants = createGrantStore(db);
     const chainRows = createChainEnvironmentRows(db, cfg);
     const publisherResolvers = createPublisherResolvers({
+      // Ownership of environments comes from the apps tables, never documents.
+      appEnvironments: async (appId) => {
+        const [row, previews] = await Promise.all([
+          appsDb
+            .selectFrom("apps")
+            .select("production_environment_id")
+            .where("id", "=", appId)
+            .executeTakeFirst(),
+          appsDb
+            .selectFrom("app_previews")
+            .select("environment_id")
+            .where("app_id", "=", appId)
+            .execute(),
+        ]);
+        return [
+          ...(row ? [row.production_environment_id] : []),
+          ...previews.map((p) => p.environment_id),
+        ];
+      },
       auth: ownerLookup,
       apps: appReads,
       appWriter,
@@ -271,6 +290,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         createLicenseDocument: () => gateway.create(),
         executeLicence: (id, acts) => gateway.execute(id, acts),
         grants,
+        lifecycle,
         logger: console,
       },
       grants,

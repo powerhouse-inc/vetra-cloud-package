@@ -5,8 +5,9 @@ import { normaliseUserDid } from "./did.js";
 import type { GrantStore } from "./grants.js";
 import { keyedMutex } from "./keyed-mutex.js";
 import type { PublisherAuthDeps } from "./publisher-auth.js";
-import { UnknownLicenseError } from "./publisher-errors.js";
+import { OperationRejectedError, UnknownLicenseError } from "./publisher-errors.js";
 import type { LicenceRecord } from "./reads.js";
+import type { LifecycleStore } from "./lifecycle.js";
 
 export type IssuerKind = "INVITE_CODE" | "PUBLISHER_GRANT" | "ACHRA_SUBSCRIPTION";
 
@@ -38,7 +39,13 @@ export interface IssueDeps {
   licence(id: string): Promise<LicenceRecord | null>;
   createLicenseDocument(): Promise<string>;
   executeLicence(id: string, actions: Action[]): Promise<void>;
-  grants: Pick<GrantStore, "recordGrant" | "linkChain" | "chainRootOf" | "chainHead">;
+  grants: Pick<GrantStore, "recordGrant" | "linkChain" | "chainRootOf" | "chainHead" | "grantFor">;
+  /**
+   * The recorded lifecycle status (license_lifecycle), which decides a
+   * predecessor's status over its document; `record` closes a predecessor
+   * whose document refused REPLACE_LICENSE.
+   */
+  lifecycle: Pick<LifecycleStore, "get" | "record">;
   logger: Pick<Console, "warn">;
 }
 
@@ -51,7 +58,11 @@ export interface IssueInput {
   details: Record<string, unknown>;
   issuedBy: string;
   label?: string | null;
-  /** Replace this licence (same app, same holder) and keep its environment. */
+  /**
+   * Replace this licence (same app, same holder) and keep its environment.
+   * Its holder and app come from its grant row, its status from its lifecycle
+   * record: the document can only refuse, never decide.
+   */
   upgrades?: string | null;
   /** ISO-8601 UTC `Z`; the licence starts now. */
   now: string;
@@ -68,11 +79,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const UPGRADABLE = new Set(["ACTIVE", "EXPIRED", "REVOKED"]);
 
 /**
- * Upgrades of one licence run one at a time (in this process; production runs
- * a single replica), so a double-submitted upgrade sees the first one's
- * successor and is refused instead of forking the chain.
+ * Lifecycle writes to one licence run one at a time (in this process;
+ * production runs a single replica): an upgrade holds its predecessor's key,
+ * so a double-submitted upgrade sees the first one's successor and is refused
+ * instead of forking the chain, and a revoke (publisher-resolvers) waits for
+ * an upgrade in flight and then fails cleanly on the REPLACED licence.
  */
-const withPredecessorLock = keyedMutex();
+export const withLicenceLock = keyedMutex();
 
 /** Two holder spellings name the same wallet (legacy licences carry a bare address). */
 export function sameHolder(a: string, b: string): boolean {
@@ -91,7 +104,7 @@ export function sameHolder(a: string, b: string): boolean {
  */
 export async function issueLicense(deps: IssueDeps, input: IssueInput): Promise<IssuedLicence> {
   return input.upgrades
-    ? withPredecessorLock(input.upgrades, () => issueUnlocked(deps, input))
+    ? withLicenceLock(input.upgrades, () => issueUnlocked(deps, input))
     : issueUnlocked(deps, input);
 }
 
@@ -113,19 +126,36 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
   if (!term.issuers.includes(input.issuer)) throw notIssuable("the term does not allow this issuer");
 
   let previous: LicenceRecord | null = null;
+  let previousStatus: string | null = null;
   let root: string | null = null;
   if (input.upgrades) {
-    previous = await deps.licence(input.upgrades);
-    // Another holder's or another app's licence fails exactly like a missing one.
-    if (!previous || previous.app !== input.appId || !sameHolder(previous.user, user)) {
+    const doc = await deps.licence(input.upgrades);
+    const grant = doc ? await deps.grants.grantFor(doc.id) : null;
+    // Another holder's or another app's licence fails exactly like a missing
+    // one. The holder and app are the grant row's; the document's own fields
+    // can only add a refusal (a document disagreeing with its grant is not
+    // upgraded), never name the holder.
+    if (
+      !doc ||
+      !grant ||
+      grant.appId !== input.appId ||
+      grant.userDid !== user ||
+      doc.app !== input.appId ||
+      !sameHolder(doc.user, user)
+    ) {
       throw new UnknownLicenseError();
     }
-    if (!UPGRADABLE.has(previous.status)) {
+    // The status the system recorded; a licence from before the record
+    // existed (no row yet) falls back to its document.
+    const recorded = await deps.lifecycle.get(doc.id);
+    previous = { ...doc, user, kind: grant.kind ?? doc.kind };
+    previousStatus = recorded?.status ?? doc.status;
+    if (!UPGRADABLE.has(previousStatus)) {
       throw new LicenceNotUpgradableError(
-        `licence ${previous.id} is ${previous.status}; only an ACTIVE, EXPIRED or REVOKED licence can be upgraded`,
+        `licence ${previous.id} is ${previousStatus}; only an ACTIVE, EXPIRED or REVOKED licence can be upgraded`,
       );
     }
-    if (previous.status === "ACTIVE" && previous.kind === input.kind) {
+    if (previousStatus === "ACTIVE" && previous.kind === input.kind) {
       throw new AlreadyHoldsError(`licence ${previous.id} already is ${input.kind}`);
     }
     // Only the newest licence of a chain can be upgraded: an older EXPIRED or
@@ -182,15 +212,31 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
     now: start,
   });
 
-  if (previous?.status === "ACTIVE") {
+  if (previous && previousStatus === "ACTIVE") {
+    const replace = actions.replaceLicense({ replacedBy: licenseId });
     try {
-      await deps.executeLicence(previous.id, [actions.replaceLicense({ replacedBy: licenseId })]);
+      await deps.executeLicence(previous.id, [replace]);
     } catch (err) {
       // Safe to continue: both licences sit in one chain and the keeper serves
       // the newest ACTIVE one, so the holder never gets a second environment.
       deps.logger.warn(
         `[licensing] issued ${licenseId} but could not mark ${previous.id} REPLACED: ${String(err)}`,
       );
+      if (err instanceof OperationRejectedError) {
+        // The document refused although the record says ACTIVE: it was
+        // changed outside the system (and already disagrees with the record,
+        // so its chain is held for review). The record is the authority:
+        // close it, so the chain never has two ACTIVE licences. A failure
+        // that is not a refusal leaves the record alone, as the document may
+        // still be ACTIVE.
+        try {
+          await deps.lifecycle.record(previous.id, [replace]);
+        } catch (recordErr) {
+          deps.logger.warn(
+            `[licensing] could not record ${previous.id} REPLACED: ${String(recordErr)}`,
+          );
+        }
+      }
     }
   }
   return { licenseId, user, end, replaced: previous?.id ?? null };

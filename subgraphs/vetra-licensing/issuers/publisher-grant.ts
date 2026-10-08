@@ -164,20 +164,20 @@ export async function grantLicense(
 
 /**
  * Upgrade/downgrade a holder in place: same chain, same environment.
- * `appId` is the app the caller was authorised for, read by the resolver from
- * the licence's grant row. It is never taken from the licence document, whose
- * `app` field is not system-write-only: issueLicense refuses a licence whose
- * document names another app exactly like a missing one.
+ * `appId` and `user` are the licence's grant row's, read by the resolver. They
+ * are never taken from the licence document, which is not system-write-only:
+ * issueLicense checks both against the grant row again, and refuses a
+ * document that names another app or holder exactly like a missing licence.
  */
 export async function replaceGrant(
   deps: PublisherGrantDeps,
-  input: { appId: string; licenseId: string; kind: string; issuedBy: string; now: string },
+  input: { appId: string; user: string; licenseId: string; kind: string; issuedBy: string; now: string },
 ): Promise<string> {
   const previous = await deps.licence(input.licenseId);
   if (!previous) throw new UnknownLicenseError();
   const issued = await issueLicense(deps, {
     appId: input.appId,
-    user: previous.user,
+    user: input.user,
     kind: input.kind,
     issuer: "PUBLISHER_GRANT",
     details: { grantedBy: input.issuedBy.toLowerCase(), replaces: previous.id },

@@ -89,7 +89,10 @@ export async function createPublisherHarness() {
     decrypt: async (c) => c.slice(4),
   };
 
+  /** Environments each app owns (production, previews), as the apps tables record them. */
+  const ownedEnvironments = new Map<string, string[]>();
   const deps: PublisherDeps = {
+    appEnvironments: async (appId) => ownedEnvironments.get(appId) ?? [],
     auth,
     apps,
     appWriter,
@@ -103,6 +106,7 @@ export async function createPublisherHarness() {
       createLicenseDocument: licenseGateway.create,
       executeLicence: licenseGateway.execute,
       grants,
+      lifecycle,
       logger: console,
     },
     grants,
@@ -128,7 +132,7 @@ export async function createPublisherHarness() {
   const stateOf = async (id: string): Promise<unknown> =>
     ((await client.get(id)).state as unknown as { global: unknown }).global;
 
-  return { client, db, cfg, deps, build, addApp, ledger, apps, reads, licenseGateway, rows, revisionOf, stateOf };
+  return { client, db, cfg, deps, build, addApp, ledger, apps, reads, licenseGateway, rows, revisionOf, stateOf, ownedEnvironments };
 }
 
 export type PublisherHarness = Awaited<ReturnType<typeof createPublisherHarness>>;

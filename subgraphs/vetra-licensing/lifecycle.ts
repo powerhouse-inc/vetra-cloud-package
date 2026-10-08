@@ -80,6 +80,25 @@ export function createLifecycleStore(db: Kysely<VetraLicensingDB>, now: () => st
         .onConflict((oc) => oc.column("license_id").doUpdateSet(patch))
         .execute();
     },
+    /** The records of these licences only; ids without a record are absent. */
+    async forIds(ids: string[]): Promise<Map<string, LifecycleRecord>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectFrom("license_lifecycle")
+        .select(["license_id", "status", "replaced_by"])
+        .where("license_id", "in", ids)
+        .execute();
+      return new Map(rows.map((r) => [r.license_id, { status: r.status, replacedBy: r.replaced_by }]));
+    },
+    /** One licence's record; null when the system never recorded writing it. */
+    async get(licenseId: string): Promise<LifecycleRecord | null> {
+      const row = await db
+        .selectFrom("license_lifecycle")
+        .select(["status", "replaced_by"])
+        .where("license_id", "=", licenseId)
+        .executeTakeFirst();
+      return row ? { status: row.status, replacedBy: row.replaced_by } : null;
+    },
     async all(): Promise<Map<string, LifecycleRecord>> {
       const rows = await db
         .selectFrom("license_lifecycle")

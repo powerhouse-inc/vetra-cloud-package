@@ -9,7 +9,9 @@ import {
   type IssueDeps,
 } from "../issue.js";
 import { grantLicense, replaceGrant } from "../issuers/publisher-grant.js";
-import { NotOnAllowListError, UnknownLicenseError } from "../publisher-errors.js";
+import { NotOnAllowListError, OperationRejectedError, UnknownLicenseError } from "../publisher-errors.js";
+import { lifecycleOf, type LifecycleRecord } from "../lifecycle.js";
+import type { GrantRow } from "../grants.js";
 import { UnsupportedDidError } from "../did.js";
 import type { AppDocView } from "../app-reads.js";
 import type { LicenceRecord } from "../reads.js";
@@ -52,9 +54,27 @@ const ROWS = new Set(["app-1", "app-3"]);
  */
 function harness(
   initial: LicenceRecord[] = [],
-  opts: { allowed?: boolean; replaceFails?: boolean; linkFails?: boolean; delayMs?: number } = {},
+  opts: {
+    allowed?: boolean;
+    replaceFails?: boolean;
+    linkFails?: boolean;
+    delayMs?: number;
+    /** Grant rows; by default one per initial licence, matching its document. */
+    grantRows?: GrantRow[];
+    lifecycle?: [string, LifecycleRecord][];
+  } = {},
 ) {
   const licences = initial.map((l) => ({ ...l }));
+  const didOf = (u: string) => (u.startsWith("0x") ? `did:pkh:eip155:1:${u.toLowerCase()}` : u);
+  const grantRows = new Map<string, GrantRow>(
+    (opts.grantRows ?? initial.map((l) => ({ licenseId: l.id, appId: l.app, userDid: didOf(l.user), kind: l.kind })))
+      .map((g) => [g.licenseId, g]),
+  );
+  const lifecycleRows = new Map<string, LifecycleRecord>(opts.lifecycle ?? []);
+  const recordLifecycle = (id: string, actions: Action[]) => {
+    const c = lifecycleOf(actions);
+    if (c) lifecycleRows.set(id, { status: c.status, replacedBy: c.replacedBy ?? lifecycleRows.get(id)?.replacedBy ?? null });
+  };
   const executed: { id: string; actions: Action[] }[] = [];
   const created: string[] = [];
   // "old" sits in a chain rooted at root-0 and is authorised.
@@ -78,15 +98,29 @@ function harness(
       executed.push({ id, actions });
       if (actions[0]?.type === "REPLACE_LICENSE") {
         const prev = licences.find((l) => l.id === id);
+        // As the reducer: only an ACTIVE document can be replaced.
+        if (prev && prev.status !== "ACTIVE") {
+          throw new OperationRejectedError(`REPLACE_LICENSE rejected: cannot replace a license with status ${prev.status}`);
+        }
         if (prev) prev.status = "REPLACED";
       }
       if (actions[0]?.type === "ISSUE_LICENSE") {
         const input = actions[0].input as { app: string; user: string; kind: string };
         licences.push(lic({ id, app: input.app, user: input.user, kind: input.kind, status: "ACTIVE" }));
       }
+      // As the recording gateway: an applied write is recorded.
+      recordLifecycle(id, actions);
     }),
+    lifecycle: {
+      get: async (id: string) => lifecycleRows.get(id) ?? null,
+      record: vi.fn(async (id: string, actions: Action[]) => recordLifecycle(id, actions)),
+    },
     grants: {
-      recordGrant: vi.fn(async (r: { licenseId: string }) => { authorised.add(r.licenseId); }),
+      recordGrant: vi.fn(async (r: { licenseId: string; appId: string; userDid: string; kind: string }) => {
+        authorised.add(r.licenseId);
+        grantRows.set(r.licenseId, { licenseId: r.licenseId, appId: r.appId, userDid: r.userDid, kind: r.kind });
+      }),
+      grantFor: async (id: string) => grantRows.get(id) ?? null,
       linkChain: vi.fn(async (r: { licenseId: string; rootLicenseId: string }) => {
         if (opts.linkFails) throw new Error("db down");
         chain.set(r.licenseId, r.rootLicenseId);
@@ -98,7 +132,7 @@ function harness(
     },
     logger: { warn: vi.fn() },
   } satisfies IssueDeps & { grants: { isOnAllowList: unknown } };
-  return { deps, executed, created, licences };
+  return { deps, executed, created, licences, grantRows, lifecycleRows };
 }
 
 describe("issueLicense", () => {
@@ -182,6 +216,9 @@ describe("issueLicense", () => {
     const h = harness([lic({})], { replaceFails: true });
     await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW })).resolves.toMatchObject({ licenseId: "lic-1" });
     expect(h.deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not mark old REPLACED"));
+    // A failure that is not a refusal (network): the document may still be
+    // ACTIVE, so the record is not moved behind its back.
+    expect(h.deps.lifecycle.record).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -195,6 +232,44 @@ describe("issueLicense", () => {
     const h = harness(licences as LicenceRecord[]);
     await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW })).rejects.toBeInstanceOf(error);
     expect(h.created).toStrictEqual([]);
+  });
+});
+
+describe("the predecessor comes from DB authority", () => {
+  const ATTACKER = "did:pkh:eip155:1:0x9999999999999999999999999999999999999999";
+  const upgrade = (h: ReturnType<typeof harness>, user: string, kind = "pro") =>
+    issueLicense(h.deps, { appId: "app-1", user, kind, issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW });
+
+  it("a forged predecessor holder never becomes the successor's holder", async () => {
+    // The document claims the attacker; the grant row says DID.
+    const h = harness([lic({ user: ATTACKER })], { grantRows: [{ licenseId: "old", appId: "app-1", userDid: DID, kind: "free" }] });
+    await expect(upgrade(h, DID)).rejects.toBeInstanceOf(UnknownLicenseError);
+    await expect(upgrade(h, ATTACKER)).rejects.toBeInstanceOf(UnknownLicenseError);
+    expect(h.created).toStrictEqual([]);
+    expect([...h.grantRows.values()].map((g) => g.userDid)).not.toContain(ATTACKER);
+  });
+
+  it("a predecessor without a grant row, or granted for another app, is unknown", async () => {
+    await expect(upgrade(harness([lic({})], { grantRows: [] }), DID)).rejects.toBeInstanceOf(UnknownLicenseError);
+    const other = harness([lic({})], { grantRows: [{ licenseId: "old", appId: "app-3", userDid: DID, kind: "free" }] });
+    await expect(upgrade(other, DID)).rejects.toBeInstanceOf(UnknownLicenseError);
+  });
+
+  it("a document forged to EXPIRED while the record says ACTIVE is still replaced: one ACTIVE licence per chain", async () => {
+    const h = harness([lic({ status: "EXPIRED" })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null }]] });
+    await expect(upgrade(h, DID)).resolves.toMatchObject({ licenseId: "lic-1", replaced: "old" });
+    expect(h.executed.some((e) => e.id === "old" && e.actions[0]?.type === "REPLACE_LICENSE")).toBe(true);
+    expect(h.lifecycleRows.get("old")).toStrictEqual({ status: "REPLACED", replacedBy: "lic-1" });
+    expect([...h.lifecycleRows.values()].filter((r) => r.status === "ACTIVE")).toHaveLength(1);
+  });
+
+  it("the recorded status, not the document's, decides upgradability and the same-kind check", async () => {
+    const replaced = harness([lic({})], { lifecycle: [["old", { status: "REPLACED", replacedBy: "x" }]] });
+    await expect(upgrade(replaced, DID)).rejects.toBeInstanceOf(LicenceNotUpgradableError);
+    // The document says ACTIVE pro, the record EXPIRED: a same-kind re-licence, no replace.
+    const expired = harness([lic({ kind: "pro" })], { lifecycle: [["old", { status: "EXPIRED", replacedBy: null }]] });
+    await expect(upgrade(expired, DID)).resolves.toMatchObject({ licenseId: "lic-1" });
+    expect(expired.executed.map((e) => e.id)).toStrictEqual(["lic-1"]);
   });
 });
 
@@ -247,18 +322,18 @@ describe("publisher grant issuer", () => {
   });
   it("replaces a holder's licence in place", async () => {
     const h = harness([lic({})]);
-    expect(await replaceGrant(h.deps, { appId: "app-1", licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).toBe("lic-1");
+    expect(await replaceGrant(h.deps, { appId: "app-1", user: DID, licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).toBe("lic-1");
     expect(JSON.parse((h.executed[0]!.actions[0]!.input as { details: string }).details)).toMatchObject({ grantedBy: "0xowner", replaces: "old" });
     expect(h.executed[1]!.actions[0]!.type).toBe("REPLACE_LICENSE");
   });
   it("refuses to replace a missing licence", async () => {
-    await expect(replaceGrant(harness().deps, { appId: "app-1", licenseId: "nope", kind: "pro", issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
+    await expect(replaceGrant(harness().deps, { appId: "app-1", user: DID, licenseId: "nope", kind: "pro", issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
   });
   it("issues under the authorised app, never the licence document's own app field", async () => {
     // The caller was authorised for app-1 (from the grant row); the document
     // claims app-2. The replacement must not be issued from app-2's terms.
     const other = harness([lic({ app: "app-2" })]);
-    await expect(replaceGrant(other.deps, { appId: "app-1", licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
+    await expect(replaceGrant(other.deps, { appId: "app-1", user: DID, licenseId: "old", kind: "pro", issuedBy: "0xowner", now: NOW })).rejects.toBeInstanceOf(UnknownLicenseError);
     expect(other.created).toStrictEqual([]);
   });
 });

@@ -50,5 +50,9 @@ describe("lifecycle store", () => {
       ["l1", { status: "REPLACED", replacedBy: "l2" }],
       ["l2", { status: "EXPIRED", replacedBy: null }],
     ]));
+    expect(await store.forIds(["l2", "nope"])).toStrictEqual(new Map([["l2", { status: "EXPIRED", replacedBy: null }]]));
+    expect(await store.forIds([])).toStrictEqual(new Map());
+    expect(await store.get("l1")).toStrictEqual({ status: "REPLACED", replacedBy: "l2" });
+    expect(await store.get("nope")).toBeNull();
   });
 });
