@@ -36,6 +36,20 @@ describe("grant store", () => {
     expect(await g.licenceIdsFor("b", DID)).toStrictEqual([]);
   });
 
+  it("maps every grant to the app, holder and kind it authorised", async () => {
+    const g = await open();
+    await g.recordGrant({ licenseId: "l1", appId: "a", kind: "pro", userDid: DID, issuedBy: "0xo", now: "t" });
+    await db!.insertInto("app_license_grants").values({
+      license_id: "legacy", app_id: "b", license_type_id: "type-1",
+      user_address: "0xABCDEF0123456789ABCDEF0123456789ABCDEF01", issued_by: "0xo",
+      created_at: "t", kind: null, user_did: null,
+    }).execute();
+    expect(await g.provenance()).toStrictEqual(new Map([
+      ["l1", { appId: "a", userAddress: "0x1111111111111111111111111111111111111111", kind: "pro" }],
+      ["legacy", { appId: "b", userAddress: "0xabcdef0123456789abcdef0123456789abcdef01", kind: null }],
+    ]));
+  });
+
   it("finds a legacy grant row by the holder's address", async () => {
     const g = await open();
     await db!.insertInto("app_license_grants").values({

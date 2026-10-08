@@ -21,17 +21,17 @@ import {
 } from "../vetra-apps/app-doc-protection.js";
 import { createReactorLicenseGateway } from "./license-gateway.js";
 import { LicenseKeeper } from "./keeper.js";
-import { ProvisioningKeeper } from "./provisioning-keeper.js";
+import { AppLicenseHandler } from "./handler.js";
+import {
+  createChainEnvironmentRows,
+  provisionChain,
+  type ChainEnvDeps,
+} from "./environments.js";
+import { createGrantStore } from "./grants.js";
+import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
 import { createReactorLicenseTypeGateway } from "./license-type-gateway.js";
-import { applyEnvironmentTemplate, type ProvisionDeps } from "./provision.js";
 import { mergeResolvers } from "./merge-resolvers.js";
-import { releaseEnvironment } from "./release.js";
-import { createEnvironmentRows } from "./rows.js";
-import {
-  createTypeSnapshots,
-  resolveTemplateForLicence,
-} from "./resolve-template.js";
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -44,7 +44,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   resolvers: Record<string, unknown> = {};
   additionalContextFields = {};
   private keeper: LicenseKeeper | null = null;
-  private provisioningKeeper: ProvisioningKeeper | null = null;
+  private handler: AppLicenseHandler | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -213,68 +213,46 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       });
     }
 
-    // The same row operations the resolvers use, so the per-app environment
-    // cap is one implementation on both paths.
-    const provisionDeps: ProvisionDeps = {
-      ...deps.provision,
-      ...createEnvironmentRows(db, cfg),
-    };
-
-    // Inert unless cfg.enabled (default false); dry-run (default true) is
-    // honoured inside the keeper. Same cfg object as everything above.
-    const typeSnapshots = createTypeSnapshots(reads);
-    this.provisioningKeeper = new ProvisioningKeeper({
-      allLicenses: reads.allLicenses,
-      authorizedLicenseIds: async (appId: string) => {
-        const rows = await db
-          .selectFrom("app_license_grants")
-          .select("license_id")
-          .where("app_id", "=", appId)
-          .execute();
-        return new Set(rows.map((r) => r.license_id));
+    // Provisioning: one DEDICATED environment per licence chain. Inert unless
+    // cfg.enabled (default false); dry-run (default true) only logs. It does
+    // nothing at all until the startup migration has recorded `complete`.
+    // App documents are read through the same ledger-checked appReads as the
+    // publisher surface, so a tampered or unverified app is held. The old
+    // ProvisioningKeeper (app_user_environments) no longer runs; its tables
+    // stay in place, read-only.
+    const grants = createGrantStore(db);
+    const chainRows = createChainEnvironmentRows(db, cfg);
+    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    this.handler = new AppLicenseHandler({
+      licences: () => reads.allLicenceRecords(),
+      chainRoots: () => grants.chainRoots(),
+      grants: () => grants.provenance(),
+      chainLabel: (root) => grants.chainLabel(root),
+      app: (id) => appReads.app(id),
+      environments: (appId) => chainRows.forApp(appId),
+      environmentAppIds: () => chainRows.appIds(),
+      provision: (input) => provisionChain(chainEnvDeps, input),
+      setStage: (licenseId, stage) =>
+        gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
+      // Task 10 wires the offboarding clock here. Until then: report only.
+      onEnded: async (appId, env) => {
+        console.info(`[licensing] chain of environment ${env} (app ${appId}) ended`);
       },
-      licenseTypes: typeSnapshots.licenseTypes,
-      environments: async (appId) =>
-        (
-          await db
-            .selectFrom("app_user_environments")
-            .selectAll()
-            .where("app_id", "=", appId)
-            .execute()
-        ).map((r) => ({
-          user: r.user_address,
-          environmentId: r.environment_id,
-          licenseId: r.license_id,
-          templateHash: r.template_hash,
-        })),
-      applyFor: async (appId, licence) => {
-        // The snapshot the keeper just planned from, not a fresh scan.
-        const resolved = resolveTemplateForLicence(
-          await typeSnapshots.detailsFor(appId),
-          licence,
-        );
-        if (!resolved.ok) {
-          console.warn(
-            `[licensing] licence ${licence.licenseId} (app ${appId}): ${resolved.reason}; skipping`,
-          );
-          return;
-        }
-        await applyEnvironmentTemplate(provisionDeps, {
-          appId,
-          user: licence.user,
-          licenseId: licence.licenseId,
-          template: resolved.template,
-          label: resolved.label,
-          now: new Date().toISOString(),
-        });
+      onResumed: async (appId, env) => {
+        console.info(`[licensing] chain of environment ${env} (app ${appId}) resumed`);
       },
-      releaseFor: async (appId, environmentId) => {
-        await releaseEnvironment(deps.release, appId, environmentId);
-      },
+      afterApp: async () => {},
+      migrationComplete: async () =>
+        (await db
+          .selectFrom("licensing_migration_steps")
+          .select("step")
+          .where("step", "=", "complete")
+          .executeTakeFirst()) !== undefined,
       cfg,
       logger: console,
+      now: () => new Date().toISOString(),
     });
-    this.provisioningKeeper.start();
+    this.handler.start();
 
     // cfg.enabled gates the whole write path: the keeper below, and every
     // mutation in createResolvers (they refuse with LicensingDisabledError).
@@ -295,8 +273,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   async onDisconnect(): Promise<void> {
     this.keeper?.stop();
     this.keeper = null;
-    this.provisioningKeeper?.stop();
-    this.provisioningKeeper = null;
+    this.handler?.stop();
+    this.handler = null;
     await super.onDisconnect();
   }
 }

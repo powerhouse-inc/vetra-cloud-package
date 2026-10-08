@@ -4,6 +4,15 @@ import { addressOfDid } from "./did.js";
 
 export type GrantStore = ReturnType<typeof createGrantStore>;
 
+/** What one app_license_grants row authorised. */
+export interface GrantProvenance {
+  appId: string;
+  /** Lowercased 0x address of the holder. */
+  userAddress: string;
+  /** The term kind; null on rows written before kinds existed. */
+  kind: string | null;
+}
+
 /**
  * Provenance (`app_license_grants`), licence chains (`license_chain`) and the
  * per-app allow list (`app_allow_list`). Every write is idempotent: a retried
@@ -102,6 +111,25 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
         .where("license_id", "=", rootLicenseId)
         .executeTakeFirst();
       return row?.label ?? null;
+    },
+
+    /**
+     * What each grant authorised: the app, the holder's (lowercased) address
+     * and the kind (null on rows from before kinds). The keeper checks a
+     * licence document against this, never the other way round: licence
+     * documents are not system-write-only, the grant rows are.
+     */
+    async provenance(): Promise<Map<string, GrantProvenance>> {
+      const rows = await db
+        .selectFrom("app_license_grants")
+        .select(["license_id", "app_id", "user_address", "kind"])
+        .execute();
+      return new Map(
+        rows.map((r) => [
+          r.license_id,
+          { appId: r.app_id, userAddress: r.user_address.toLowerCase(), kind: r.kind },
+        ]),
+      );
     },
 
     /** Licence ids with provenance: the only licences the keeper provisions. */
