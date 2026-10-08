@@ -53,15 +53,15 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
       );
     }
     t.mode = mode;
-    // A field that is absent (undefined or null) is left unchanged, so an
-    // edit of one field cannot wipe another.
-    if (action.input.name != null) t.name = action.input.name;
-    if (action.input.sharedEnvironment != null)
-      t.sharedEnvironment = action.input.sharedEnvironment;
-    if (action.input.size != null) t.size = action.input.size;
-    if (action.input.baseDomain != null) t.baseDomain = action.input.baseDomain;
-    if (action.input.packageRegistry != null)
-      t.packageRegistry = action.input.packageRegistry;
+    // undefined = unchanged, explicit null = clear.
+    if (action.input.name !== undefined) t.name = action.input.name ?? null;
+    if (action.input.sharedEnvironment !== undefined)
+      t.sharedEnvironment = action.input.sharedEnvironment ?? null;
+    if (action.input.size !== undefined) t.size = action.input.size ?? null;
+    if (action.input.baseDomain !== undefined)
+      t.baseDomain = action.input.baseDomain ?? null;
+    if (action.input.packageRegistry !== undefined)
+      t.packageRegistry = action.input.packageRegistry ?? null;
   },
   addTemplateServiceOperation(state, action) {
     const t = findTemplate(state, action.input.templateId);
@@ -202,8 +202,8 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
       }
     }
     const templateId =
-      action.input.templateId != null
-        ? action.input.templateId
+      action.input.templateId !== undefined
+        ? (action.input.templateId ?? null)
         : term.templateId;
     if (templateId && !templates.some((t) => t.id === templateId)) {
       throw new TemplateNotFoundError(`template ${templateId} does not exist`);
@@ -221,10 +221,11 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
       );
     }
     if (kind != null) term.kind = kind;
-    if (action.input.label != null) term.label = action.input.label;
+    if (action.input.label !== undefined)
+      term.label = action.input.label ?? null;
     term.templateId = templateId;
-    if (action.input.validityDays != null)
-      term.validityDays = action.input.validityDays;
+    if (action.input.validityDays !== undefined)
+      term.validityDays = action.input.validityDays ?? null;
     term.issuers = issuers;
   },
   publishTermOperation(state, action) {

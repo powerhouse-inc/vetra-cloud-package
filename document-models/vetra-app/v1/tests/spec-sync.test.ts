@@ -9,8 +9,7 @@ import { describe, expect, it } from "vitest";
  */
 // Prettier (run by codegen and the lint step) reflows src and adds trailing
 // commas; neither is a semantic difference.
-const squash = (s: string) =>
-  s.replace(/\s+/g, "").replace(/,([)\]}])/g, "$1");
+const squash = (s: string) => s.replace(/\s+/g, "").replace(/,([)\]}])/g, "$1");
 const root = join(__dirname, "..", "..", "..");
 
 /**
@@ -48,12 +47,22 @@ describe("spec reducer strings match src reducers", () => {
     if (!existsSync(spec)) continue;
     const json = JSON.parse(readFileSync(spec, "utf8")) as {
       specifications: {
-        modules: { name: string; operations: { name: string; reducer: string }[] }[];
+        modules: {
+          name: string;
+          operations: { name: string; reducer: string }[];
+        }[];
       }[];
     };
     const latest = json.specifications.at(-1)!;
     for (const mod of latest.modules) {
-      const file = join(root, model.name, "v1", "src", "reducers", `${mod.name.replace(/_/g, "-")}.ts`);
+      const file = join(
+        root,
+        model.name,
+        "v1",
+        "src",
+        "reducers",
+        `${mod.name.replace(/_/g, "-")}.ts`,
+      );
       if (!existsSync(file)) continue;
       const src = squash(readFileSync(file, "utf8"));
       for (const op of mod.operations) {

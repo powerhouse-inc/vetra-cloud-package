@@ -8,8 +8,6 @@ import type {
   VetraAppState,
 } from "../gen/schema/types.js";
 
-
-
 /**
  * App documents created before the licensing module existed carry neither
  * list — their stored state predates the initial value that adds them. Every
