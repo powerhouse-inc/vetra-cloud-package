@@ -22,6 +22,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           "clintConfig is required when enabling a CLINT service",
         );
       }
+      if (!state.services) {
+        state.services = [];
+      }
       const collision = state.services.find(
         (s) => s.prefix === prefix && s.type !== type,
       );
@@ -85,6 +88,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     disableServiceOperation(state, action) {
       assertOwner(state, action);
       const { type, prefix } = action.input;
+      if (!state.services) {
+        state.services = [];
+      }
       // CLINT supports multiple services per env keyed by prefix; without
       // a prefix the lookup would silently disable whichever clint
       // happens to come first (a real bug for multi-agent envs). When a
@@ -157,6 +163,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     setServiceConfigOperation(state, action) {
       const { prefix, config } = action.input;
+      if (!state.services) {
+        state.services = [];
+      }
       const service = state.services.find((s) => s.prefix === prefix);
       if (!service) {
         throw new ServiceNotFoundError(`No service with prefix '${prefix}'`);
@@ -188,6 +197,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     setServiceSizeOperation(state, action) {
       assertOwner(state, action);
+      if (!state.services) {
+        state.services = [];
+      }
       const service = state.services.find(
         (s) => s.prefix === action.input.prefix,
       );
