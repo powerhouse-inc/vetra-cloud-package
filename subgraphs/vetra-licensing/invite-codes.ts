@@ -6,14 +6,14 @@ import type { InviteCodes, InviteRedemptions, VetraLicensingDB } from "./db/sche
  * Invite codes (tables `invite_codes`, `invite_redemptions`; moved from
  * vetra-access-codes). A code issues one term (kind) of one app.
  *
- * Codes are case-sensitive and URL-safe: 4 to 64 of [A-Za-z0-9_-], starting
- * with a letter or digit (vetra.io validates the same pattern). Only creation
- * checks the shape; a lookup is an exact match after trimming, so a code
- * carried over from vetra-access-codes still redeems.
+ * Codes are case-sensitive and URL-safe: 8 to 64 of [A-Za-z0-9_-], starting
+ * with a letter or digit. Only creation checks the shape; a lookup is an exact
+ * match after trimming, so a shorter code carried over from vetra-access-codes
+ * still redeems.
  */
-export const CODE_MIN_LENGTH = 4;
+export const CODE_MIN_LENGTH = 8;
 export const CODE_MAX_LENGTH = 64;
-export const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{3,63}$/;
+export const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 
 /** One error for unknown, inactive, expired and exhausted: codes cannot be probed for state. */
 export class InvalidCodeError extends Error {
@@ -47,10 +47,15 @@ export function normalizeCode(code: string): string {
   return code.trim();
 }
 
-/** `vetra-<adjective>-<noun>-<4 chars>`; the suffix is what makes it unguessable. */
+/** Random suffix length: 31^10 ≈ 2^49.5, times 2^8 for the words ≈ 57 bits. */
+const SUFFIX_LENGTH = 10;
+/** Attempts at a generated code before giving up on collisions. */
+const GENERATE_ATTEMPTS = 5;
+
+/** `vetra-<adjective>-<noun>-<10 chars>`; the suffix is what makes it unguessable. */
 export function generateCode(): string {
   const pick = (xs: readonly string[]) => xs[randomInt(xs.length)];
-  const suffix = Array.from({ length: 4 }, () => SUFFIX[randomInt(SUFFIX.length)]).join("");
+  const suffix = Array.from({ length: SUFFIX_LENGTH }, () => SUFFIX[randomInt(SUFFIX.length)]).join("");
   return `vetra-${pick(ADJECTIVES)}-${pick(NOUNS)}-${suffix}`;
 }
 
@@ -98,37 +103,41 @@ export async function createInviteCode(
     now: string;
   },
 ): Promise<InviteCodeView> {
-  const code = input.code === null ? generateCode() : normalizeCode(input.code);
-  if (!code) throw new InvalidCodeInputError("code must not be empty");
-  if (!CODE_PATTERN.test(code)) {
-    throw new InvalidCodeInputError(
-      `code must be ${CODE_MIN_LENGTH} to ${CODE_MAX_LENGTH} letters, digits, '-' or '_', starting with a letter or digit`,
-    );
+  if (input.code !== null) {
+    const code = normalizeCode(input.code);
+    if (!code) throw new InvalidCodeInputError("code must not be empty");
+    if (!CODE_PATTERN.test(code)) {
+      throw new InvalidCodeInputError(
+        `code must be ${CODE_MIN_LENGTH} to ${CODE_MAX_LENGTH} letters, digits, '-' or '_', starting with a letter or digit`,
+      );
+    }
   }
   if (input.maxUses !== null && !(Number.isInteger(input.maxUses) && input.maxUses > 0)) {
     throw new InvalidCodeInputError("maxUses must be a positive whole number");
   }
-  const row: InviteCodes = {
-    code,
-    app_id: input.appId,
-    kind: input.kind,
-    label: input.label,
-    active: true,
-    expires_at: normalizeExpiresAt(input.expiresAt),
-    max_uses: input.maxUses,
-    anthropic_key_ciphertext: input.anthropicKeyCiphertext,
-    created_at: input.now,
-  };
-  // An existing code is refused, never returned: it may be ANOTHER app's.
-  const res = await db
-    .insertInto("invite_codes")
-    .values(row)
-    .onConflict((oc) => oc.column("code").doNothing())
-    .executeTakeFirst();
-  if (Number(res.numInsertedOrUpdatedRows ?? 0n) === 0) {
-    throw new InvalidCodeInputError("code already exists");
+  const expiresAt = normalizeExpiresAt(input.expiresAt);
+  const attempts = input.code === null ? GENERATE_ATTEMPTS : 1;
+  for (let i = 0; i < attempts; i++) {
+    const row: InviteCodes = {
+      code: input.code === null ? generateCode() : normalizeCode(input.code),
+      app_id: input.appId,
+      kind: input.kind,
+      label: input.label,
+      active: true,
+      expires_at: expiresAt,
+      max_uses: input.maxUses,
+      anthropic_key_ciphertext: input.anthropicKeyCiphertext,
+      created_at: input.now,
+    };
+    // An existing code is refused, never returned: it may be ANOTHER app's.
+    const res = await db
+      .insertInto("invite_codes")
+      .values(row)
+      .onConflict((oc) => oc.column("code").doNothing())
+      .executeTakeFirst();
+    if (Number(res.numInsertedOrUpdatedRows ?? 0n) > 0) return view(row, 0);
   }
-  return view(row, 0);
+  throw new InvalidCodeInputError("code already exists");
 }
 
 /** False when the code does not exist or belongs to another app. */
@@ -209,7 +218,9 @@ export async function findRedemption(
 }
 
 /**
- * Takes one use of the code for `userDid`. The code row is locked (SELECT ...
+ * Takes one use of the code for `userDid`. True only when this call inserted
+ * the reservation: a holder who already has one (a concurrent redeem, possibly
+ * on another replica) gets false, so two redeems never both issue. The code row is locked (SELECT ...
  * FOR UPDATE) in the same explicit transaction as the count and the insert,
  * so two redeems cannot both take the last use. Everything happens inside
  * that one transaction: production reaches PostgreSQL through pgbouncer in
@@ -230,12 +241,12 @@ export async function reserveRedemption(
       .forUpdate()
       .executeTakeFirst();
     if (!row || !(await isUsable(trx, row, now))) return false;
-    await trx
+    const res = await trx
       .insertInto("invite_redemptions")
       .values({ code: c, user_did: userDid, redeemed_at: now, access_expires: null, license_id: null })
       .onConflict((oc) => oc.columns(["code", "user_did"]).doNothing())
-      .execute();
-    return true;
+      .executeTakeFirst();
+    return Number(res.numInsertedOrUpdatedRows ?? 0n) > 0;
   });
 }
 

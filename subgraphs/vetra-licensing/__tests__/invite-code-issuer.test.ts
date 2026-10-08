@@ -13,6 +13,7 @@ import {
 } from "../invite-codes.js";
 import { AlreadyHoldsError, TermNotIssuableError } from "../issue.js";
 import { UnsupportedDidError } from "../did.js";
+import { UnknownLicenseError } from "../publisher-errors.js";
 import { redeemInviteCode, type InviteCodeIssuerDeps } from "../issuers/invite-code.js";
 import type { AppDocView } from "../app-reads.js";
 import type { LicenceRecord } from "../reads.js";
@@ -85,7 +86,7 @@ beforeEach(async () => {
   const c = (code: string, kind: string, maxUses: number | null = null) =>
     createInviteCode(db, { appId: "app-1", kind, code, label: null, expiresAt: null, maxUses, anthropicKeyCiphertext: null, now: NOW });
   await c("dedicated", "pro", 1);
-  await c("shared", "free");
+  await c("shared-code", "free");
   await c("wrong-issuer", "grant-only");
   await c("uncapped", "pro");
 });
@@ -140,9 +141,9 @@ describe("redeemInviteCode", () => {
   });
 
   it("refuses unknown, differently cased, inactive and expired codes with the same error", async () => {
-    await createInviteCode(db, { appId: "app-1", kind: "pro", code: "expired", label: null, expiresAt: "2026-01-01T00:00:00Z", maxUses: null, anthropicKeyCiphertext: null, now: NOW });
-    await setInviteCodeActive(db, "app-1", "shared", false);
-    for (const code of ["nope", "DEDICATED", "shared", "expired"]) {
+    await createInviteCode(db, { appId: "app-1", kind: "pro", code: "expired-code", label: null, expiresAt: "2026-01-01T00:00:00Z", maxUses: null, anthropicKeyCiphertext: null, now: NOW });
+    await setInviteCodeActive(db, "app-1", "shared-code", false);
+    for (const code of ["nope", "DEDICATED", "shared-code", "expired-code"]) {
       await expect(redeem(code)).rejects.toThrow(new InvalidCodeError());
     }
     expect(created).toBe(0);
@@ -155,8 +156,64 @@ describe("redeemInviteCode", () => {
 
   it("refuses a SHARED kind the caller already holds", async () => {
     active = [lic({ kind: "free" })];
-    await expect(redeem("shared")).rejects.toBeInstanceOf(AlreadyHoldsError);
-    expect(await findRedemption(db, "shared", DID)).toBeNull();
+    await expect(redeem("shared-code")).rejects.toBeInstanceOf(AlreadyHoldsError);
+    expect(await findRedemption(db, "shared-code", DID)).toBeNull();
+  });
+
+  it("refuses an unusable SHARED code with INVALID_CODE even to a holder of its kind", async () => {
+    active = [lic({ kind: "free" })];
+    await setInviteCodeActive(db, "app-1", "shared-code", false);
+    await expect(redeem("shared-code")).rejects.toThrow(new InvalidCodeError());
+  });
+
+  it("does not issue twice when another replica reserved for the same holder first", async () => {
+    // The other replica's redeem lands between this one's read and its reserve.
+    deps.apps = {
+      app: async (id) => {
+        await db.insertInto("invite_redemptions").values({ code: "uncapped", user_did: DID, redeemed_at: NOW, access_expires: null, license_id: "lic-other" }).execute();
+        return id === "app-1" ? app : null;
+      },
+    };
+    await expect(redeem("uncapped")).resolves.toStrictEqual({ licenseId: "lic-other", appId: "app-1", fresh: false });
+    expect(created).toBe(0);
+  });
+
+  it("refuses with INVALID_CODE when another replica's reservation has no licence yet", async () => {
+    deps.apps = {
+      app: async (id) => {
+        await db.insertInto("invite_redemptions").values({ code: "uncapped", user_did: DID, redeemed_at: NOW, access_expires: null, license_id: null }).execute();
+        return id === "app-1" ? app : null;
+      },
+    };
+    await expect(redeem("uncapped")).rejects.toThrow(new InvalidCodeError());
+    expect(created).toBe(0);
+  });
+
+  it("attaches the licence instead of releasing when it exists despite the issue error", async () => {
+    deps.executeLicence = vi.fn(async () => {
+      active = [lic({ id: "lic-1", kind: "pro", details: JSON.stringify({ code: "dedicated" }) })];
+      throw new Error("timeout after apply");
+    });
+    await expect(redeem("dedicated")).resolves.toStrictEqual({ licenseId: "lic-1", appId: "app-1", fresh: true });
+    expect(await findRedemption(db, "dedicated", DID)).toMatchObject({ license_id: "lic-1" });
+  });
+
+  it("releases when the post-failure lookup fails too, and never logs the code", async () => {
+    createFails = 1;
+    let calls = 0;
+    deps.activeLicencesOf = async () => {
+      calls += 1;
+      throw new Error("reads down");
+    };
+    const release = vi.spyOn(db, "deleteFrom").mockImplementationOnce(() => {
+      throw new Error("db down");
+    });
+    await expect(redeem("dedicated")).rejects.toThrow("reactor down");
+    release.mockRestore();
+    expect(calls).toBe(1);
+    const logged = vi.mocked(deps.logger.warn).mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).toMatch(/code#[0-9a-f]{12}/);
+    expect(logged).not.toContain("dedicated");
   });
 
   it("lets a caller hold a DEDICATED kind more than once", async () => {
@@ -167,8 +224,8 @@ describe("redeemInviteCode", () => {
   it("leaves the SHARED check to issueLicense when the caller upgrades", async () => {
     active = [lic({ kind: "free" })];
     // issueLicense looks the predecessor up; this one does not exist.
-    await expect(redeem("shared", { upgrades: "missing" })).rejects.toThrow();
-    expect(await findRedemption(db, "shared", DID)).toBeNull();
+    await expect(redeem("shared-code", { upgrades: "missing" })).rejects.toBeInstanceOf(UnknownLicenseError);
+    expect(await findRedemption(db, "shared-code", DID)).toBeNull();
   });
 
   it("releases the reservation when issuing fails, so the cap is not consumed", async () => {
@@ -208,10 +265,10 @@ describe("redeemInviteCode", () => {
   });
 
   it("refuses to complete a crashed SHARED reservation the caller meanwhile holds, and gives the use back", async () => {
-    await db.insertInto("invite_redemptions").values({ code: "shared", user_did: DID, redeemed_at: NOW, access_expires: null, license_id: null }).execute();
+    await db.insertInto("invite_redemptions").values({ code: "shared-code", user_did: DID, redeemed_at: NOW, access_expires: null, license_id: null }).execute();
     active = [lic({ kind: "free", details: JSON.stringify({ code: "another-code" }) })];
-    await expect(redeem("shared")).rejects.toBeInstanceOf(AlreadyHoldsError);
-    expect(await findRedemption(db, "shared", DID)).toBeNull();
+    await expect(redeem("shared-code")).rejects.toBeInstanceOf(AlreadyHoldsError);
+    expect(await findRedemption(db, "shared-code", DID)).toBeNull();
   });
 
   it("reports the issue failure even when giving the use back fails too", async () => {

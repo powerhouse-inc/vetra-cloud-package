@@ -327,7 +327,9 @@ type Settled =
  * healing, the actions of intents completed since the oldest pending base
  * count as system writes too, but never an abandoned intent's: its actions
  * were not seen applied, so an operation carrying one of its ids (a late
- * landing, or a forger reusing it) reads as foreign.
+ * landing, or a forger reusing it) reads as foreign. Intents abandoned
+ * before `abandoned_at` existed look completed and stay allowed until pruned
+ * (INTENT_RETENTION_MS after done_at).
  */
 export function createAppLedger(deps: {
   db: Kysely<VetraLicensingDB>;

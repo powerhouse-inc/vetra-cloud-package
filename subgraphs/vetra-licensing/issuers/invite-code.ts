@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { VetraLicensingDB } from "../db/schema.js";
 import { normaliseUserDid } from "../did.js";
@@ -7,6 +8,7 @@ import {
   attachLicence,
   findRedemption,
   getCode,
+  isUsable,
   releaseReservation,
   reserveRedemption,
 } from "../invite-codes.js";
@@ -41,13 +43,29 @@ function codeOf(l: LicenceRecord): string | null {
   }
 }
 
+/** Codes are redeemable secrets: logs carry a short sha256 prefix, never the code. */
+function codeRef(code: string): string {
+  return `code#${createHash("sha256").update(code).digest("hex").slice(0, 12)}`;
+}
+
+/** The ACTIVE, authorised licence this code already issued to the holder, if any. */
+async function licenceIssuedBy(
+  deps: InviteCodeIssuerDeps,
+  row: { app_id: string; kind: string; code: string },
+  user: string,
+): Promise<LicenceRecord | undefined> {
+  return (await deps.activeLicencesOf(row.app_id, user)).find(
+    (l) => l.issuer === "INVITE_CODE" && l.kind === row.kind && codeOf(l) === row.code,
+  );
+}
+
 /** Gives the use back; a failure is logged, never masks the error being reported. */
 async function release(deps: InviteCodeIssuerDeps, code: string, user: string): Promise<void> {
   try {
     await releaseReservation(deps.db, code, user);
   } catch (err) {
     deps.logger.warn(
-      `[licensing] could not release the reservation of ${code} for ${user}; a retry completes it: ${String(err)}`,
+      `[licensing] could not release the reservation of ${codeRef(code)} for ${user}; a retry completes it: ${String(err)}`,
     );
   }
 }
@@ -77,13 +95,16 @@ export async function redeemInviteCode(
     if (existing?.license_id) return { licenseId: existing.license_id, appId, fresh: false };
 
     if (existing) {
-      const issued = (await deps.activeLicencesOf(appId, user)).find(
-        (l) => l.issuer === "INVITE_CODE" && l.kind === row.kind && codeOf(l) === code,
-      );
+      const issued = await licenceIssuedBy(deps, row, user);
       if (issued) {
         await attachLicence(deps.db, code, user, issued.id, issued.end);
         return { licenseId: issued.id, appId, fresh: false };
       }
+    } else if (!(await isUsable(deps.db, row, input.now))) {
+      // Before anything else can answer: an unusable code reveals nothing
+      // about itself (not even its kind's mode) to someone who never redeemed
+      // it. reserveRedemption re-checks under the row lock.
+      throw new InvalidCodeError();
     }
 
     // A SHARED term grants one thing: an account on one environment. Holding
@@ -104,6 +125,10 @@ export async function redeemInviteCode(
       }
     }
     if (!existing && !(await reserveRedemption(deps.db, code, user, input.now))) {
+      // Exhausted under the lock, or another redeem of this holder (another
+      // replica) reserved first: hand back its licence if it has one.
+      const raced = await findRedemption(deps.db, code, user);
+      if (raced?.license_id) return { licenseId: raced.license_id, appId, fresh: false };
       throw new InvalidCodeError();
     }
 
@@ -121,7 +146,21 @@ export async function redeemInviteCode(
         now: input.now,
       });
     } catch (err) {
-      // Nothing was authorised: give the use back so the cap is not consumed.
+      // A licence this code issued to the holder may exist despite the error:
+      // keep the use and attach it. Otherwise nothing was authorised: give the
+      // use back so the cap is not consumed.
+      let issuedAnyway: LicenceRecord | undefined;
+      try {
+        issuedAnyway = await licenceIssuedBy(deps, row, user);
+      } catch (lookupErr) {
+        deps.logger.warn(
+          `[licensing] redeem of ${codeRef(code)} for ${user} failed and its licence could not be looked up: ${String(lookupErr)}`,
+        );
+      }
+      if (issuedAnyway) {
+        await attachLicence(deps.db, code, user, issuedAnyway.id, issuedAnyway.end);
+        return { licenseId: issuedAnyway.id, appId, fresh: true };
+      }
       await release(deps, code, user);
       throw err;
     }
