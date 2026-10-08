@@ -7,7 +7,7 @@ import type { VetraLicensingDB } from "./db/schema.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
-import { sleepEnvironment } from "document-models/vetra-cloud-environment";
+import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
 import { createReactorLicenseReads } from "./reads.js";
@@ -32,6 +32,12 @@ import {
   provisionChain,
   type ChainEnvDeps,
 } from "./environments.js";
+import {
+  markEnded,
+  markResumed,
+  tickOffboarding,
+  type OffboardingDeps,
+} from "./offboarding.js";
 import { createGrantStore } from "./grants.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
@@ -255,6 +261,20 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const grants = createGrantStore(db);
     const chainRows = createChainEnvironmentRows(db, cfg);
     const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    const offboarding: OffboardingDeps = {
+      rows: chainRows,
+      envStatus: async (id) => (await envs.getState(id))?.status ?? null,
+      sleep: async (id) => {
+        await envs.execute(id, [sleepEnvironment({})]);
+      },
+      wake: async (id) => {
+        await envs.execute(id, [wakeEnvironment({})]);
+      },
+      destroy: (id) => envs.delete(id),
+      cfg,
+      logger: console,
+      now: () => new Date().toISOString(),
+    };
     this.handler = new AppLicenseHandler({
       licences: () => reads.allLicenceRecords(),
       chainRoots: () => grants.chainRoots(),
@@ -267,14 +287,13 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       provision: (input) => provisionChain(chainEnvDeps, input),
       setStage: (licenseId, stage) =>
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
-      // Task 10 wires the offboarding clock here. Until then: report only.
-      onEnded: async (appId, env) => {
-        console.info(`[licensing] chain of environment ${env} (app ${appId}) ended`);
-      },
-      onResumed: async (appId, env) => {
-        console.info(`[licensing] chain of environment ${env} (app ${appId}) resumed`);
-      },
-      afterApp: async () => {},
+      onEnded: (_appId, env) => markEnded(offboarding, env),
+      onResumed: (_appId, env) => markResumed(offboarding, env),
+      afterApp: (_appId, rows) =>
+        tickOffboarding(
+          offboarding,
+          rows.filter((r) => r.ended_at !== null),
+        ),
       migrationComplete: async () =>
         (await db
           .selectFrom("licensing_migration_steps")
