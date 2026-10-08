@@ -71,15 +71,14 @@ export type AppOwnerLicenseState = {
   details: Maybe<Scalars["String"]["output"]>;
   end: Maybe<Scalars["DateTime"]["output"]>;
   issued: Maybe<Scalars["DateTime"]["output"]>;
-  issuedBy: Maybe<Scalars["EthereumAddress"]["output"]>;
   issuer: Maybe<LicenseIssuerKind>;
-  licenseType: Maybe<Scalars["PHID"]["output"]>;
+  kind: Maybe<Scalars["String"]["output"]>;
   replacedBy: Maybe<Scalars["PHID"]["output"]>;
   revokedReason: Maybe<Scalars["String"]["output"]>;
   stage: Maybe<Scalars["PHID"]["output"]>;
   start: Maybe<Scalars["DateTime"]["output"]>;
   status: LicenseStatus;
-  user: Maybe<Scalars["EthereumAddress"]["output"]>;
+  user: Maybe<Scalars["String"]["output"]>;
 };
 
 export type ExpireLicenseInput = {
@@ -91,12 +90,13 @@ export type IssueLicenseInput = {
   details?: InputMaybe<Scalars["String"]["input"]>;
   end?: InputMaybe<Scalars["DateTime"]["input"]>;
   issued: Scalars["DateTime"]["input"];
-  issuedBy: Scalars["EthereumAddress"]["input"];
+  issuedBy?: InputMaybe<Scalars["String"]["input"]>;
   issuer: LicenseIssuerKind;
-  licenseType: Scalars["PHID"]["input"];
+  kind?: InputMaybe<Scalars["String"]["input"]>;
+  licenseType?: InputMaybe<Scalars["PHID"]["input"]>;
   stage?: InputMaybe<Scalars["PHID"]["input"]>;
   start: Scalars["DateTime"]["input"];
-  user: Scalars["EthereumAddress"]["input"];
+  user: Scalars["String"]["input"];
 };
 
 export type LicenseIssuerKind =
@@ -111,10 +111,20 @@ export type LicenseStatus =
   | "REPLACED"
   | "REVOKED";
 
+export type MigrateLicenseInput = {
+  details?: InputMaybe<Scalars["String"]["input"]>;
+  kind: Scalars["String"]["input"];
+  user: Scalars["String"]["input"];
+};
+
 export type ReplaceLicenseInput = {
   replacedBy: Scalars["PHID"]["input"];
 };
 
 export type RevokeLicenseInput = {
   reason?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type SetStageInput = {
+  stage?: InputMaybe<Scalars["PHID"]["input"]>;
 };

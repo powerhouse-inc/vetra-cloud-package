@@ -47,7 +47,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
               // a reference to the env name. The actual encrypted value
               // lives in tenant_secrets (written separately via the
               // vetra-cloud-secrets `setSecret` mutation).
-              env: (clintConfig.env ?? []).map((e) => ({
+              env: clintConfig.env.map((e) => ({
                 name: e.name,
                 value: e.isSecret === true ? null : (e.value ?? null),
                 isSecret: e.isSecret ?? null,
@@ -182,7 +182,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           version: config.package.version ?? null,
         },
         // Same secret-value drop as enableService — see comment there.
-        env: (config.env ?? []).map((e) => ({
+        env: config.env.map((e) => ({
           name: e.name,
           value: e.isSecret === true ? null : (e.value ?? null),
           isSecret: e.isSecret ?? null,
@@ -241,7 +241,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           throw new InvalidFusionConfigError(`Invalid auto-update tag pattern '${pattern}'`);
         }
       }
-      for (const e of env ?? []) {
+      for (const e of env) {
         // Names become YAML keys and env var names in the rendered values.
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.name)) {
           throw new InvalidFusionConfigError(`Invalid env name '${e.name}'`);
@@ -256,7 +256,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         image: repo,
         // Secret values never live in the document — the UI writes them to the
         // tenant secrets store; the pod gets them via envFrom <tenant>-secrets.
-        env: (env ?? []).map((e) => ({
+        env: env.map((e) => ({
           name: e.name,
           value: e.isSecret === true ? null : (e.value ?? null),
           isSecret: e.isSecret ?? null,

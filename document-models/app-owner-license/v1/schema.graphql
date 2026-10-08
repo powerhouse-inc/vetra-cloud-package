@@ -20,12 +20,11 @@ scalar Amount
 scalar Upload
 
 type AppOwnerLicenseState {
-  app: PHID
-  licenseType: PHID
-  user: EthereumAddress
   issuer: LicenseIssuerKind
-  issuedBy: EthereumAddress
+  user: String
+  app: PHID
   stage: PHID
+  kind: String
   details: String
   issued: DateTime
   start: DateTime
@@ -53,15 +52,16 @@ enum LicenseStatus {
 
 input IssueLicenseInput {
   app: PHID!
-  licenseType: PHID!
-  user: EthereumAddress!
+  user: String!
   issuer: LicenseIssuerKind!
-  issuedBy: EthereumAddress!
+  kind: String
   stage: PHID
   details: String
   issued: DateTime!
   start: DateTime!
   end: DateTime
+  licenseType: PHID
+  issuedBy: String
 }
 
 input ActivateLicenseInput {
@@ -78,4 +78,14 @@ input RevokeLicenseInput {
 
 input ReplaceLicenseInput {
   replacedBy: PHID!
+}
+
+input SetStageInput {
+  stage: PHID
+}
+
+input MigrateLicenseInput {
+  kind: String!
+  user: String!
+  details: String
 }

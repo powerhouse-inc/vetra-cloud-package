@@ -1,8 +1,11 @@
 import type { AppOwnerLicenseLifecycleOperations } from "document-models/app-owner-license/v1";
 import {
   AlreadyIssuedError,
+  AlreadyMigratedError,
   EndBeforeStartError,
   InvalidStatusTransitionError,
+  MissingKindError,
+  NotIssuedError,
 } from "../../gen/lifecycle/error.js";
 
 export const appOwnerLicenseLifecycleOperations: AppOwnerLicenseLifecycleOperations =
@@ -11,16 +14,27 @@ export const appOwnerLicenseLifecycleOperations: AppOwnerLicenseLifecycleOperati
       if (state.user) {
         throw new AlreadyIssuedError("this license is already issued");
       }
+      if (!action.input.kind && !action.input.licenseType) {
+        throw new MissingKindError("a licence needs a kind");
+      }
       if (action.input.end && action.input.end < action.input.start) {
         throw new EndBeforeStartError("end must not precede start");
       }
       state.app = action.input.app;
-      state.licenseType = action.input.licenseType;
       state.user = action.input.user.toLowerCase();
       state.issuer = action.input.issuer;
-      state.issuedBy = action.input.issuedBy.toLowerCase();
+      state.kind = action.input.kind ?? null;
       state.stage = action.input.stage ?? null;
-      state.details = action.input.details ?? null;
+      // A pre-terms ISSUE_LICENSE (replayed from history) carries licenseType
+      // and issuedBy; both survive in details so MIGRATE_LICENSE can map them.
+      state.details =
+        action.input.details ??
+        (action.input.licenseType
+          ? JSON.stringify({
+              legacyLicenseType: action.input.licenseType,
+              issuedBy: action.input.issuedBy ?? null,
+            })
+          : null);
       state.issued = action.input.issued;
       state.start = action.input.start;
       state.end = action.input.end ?? null;
@@ -59,5 +73,26 @@ export const appOwnerLicenseLifecycleOperations: AppOwnerLicenseLifecycleOperati
       }
       state.status = "REPLACED";
       state.replacedBy = action.input.replacedBy;
+    },
+    setStageOperation(state, action) {
+      if (!state.user) {
+        throw new NotIssuedError("this license has not been issued");
+      }
+      state.stage = action.input.stage ?? null;
+    },
+    migrateLicenseOperation(state, action) {
+      if (!state.user) {
+        throw new NotIssuedError("this license has not been issued");
+      }
+      if (state.kind) {
+        throw new AlreadyMigratedError("this license already carries a kind");
+      }
+      state.kind = action.input.kind;
+      state.user = action.input.user.toLowerCase();
+      state.details = action.input.details ?? null;
+      // A snapshot stored before the reshape still carries the old keys; a
+      // replay never has them. Drop both so the two converge.
+      Reflect.deleteProperty(state, "licenseType");
+      Reflect.deleteProperty(state, "issuedBy");
     },
   };

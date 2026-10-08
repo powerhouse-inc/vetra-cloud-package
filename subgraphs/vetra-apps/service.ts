@@ -52,6 +52,7 @@ import {
 import {
   mirrorAppById,
   mirrorAppRow,
+  protectNewAppDocument,
   type AppDocStore,
 } from "./app-document.js";
 import {
@@ -436,7 +437,8 @@ export async function appForOwner(
 
 /**
  * First free slug for `name`. Every row counts, DELETED ones included, so a
- * slug (and its Harbor project app-<slug>) is never handed out twice.
+ * slug (and its Harbor project app-<slug>) is never handed out twice. The
+ * studio app's slug is reserved: it has no row, and no app may take it.
  */
 async function uniqueSlug(
   deps: AppsDeps,
@@ -456,6 +458,7 @@ async function uniqueSlug(
     ).map((r) => r.slug),
   );
   for (const t of alsoTaken) taken.add(t);
+  taken.add(deps.cfg.studioAppSlug);
   if (!taken.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
@@ -1726,8 +1729,10 @@ export async function ciRecordArtifact(
 
   // Create-on-demand: an App registered before the document backfill ran still
   // has to be able to publish.
-  if (!(await deps.docs.exists(app.id))) await deps.docs.create(app.id);
+  const created = !(await deps.docs.exists(app.id));
+  if (created) await deps.docs.create(app.id);
   await deps.docs.execute(app.id, actions);
+  if (created) await protectNewAppDocument(deps.docs, app.id, deps.logger);
 
   deps.logger.info(
     `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +

@@ -1,0 +1,156 @@
+import type { Action } from "document-model";
+import type { Kysely } from "kysely";
+import type { VetraLicensingDB } from "./db/schema.js";
+import type { LicenseStatusName } from "./transitions.js";
+
+/** What a batch of lifecycle actions leaves a licence as. */
+export interface LifecycleChange {
+  status: LicenseStatusName;
+  /** Present only when the batch issued the licence. */
+  end?: string | null;
+  replacedBy?: string | null;
+}
+
+const input = (a: Action): Record<string, unknown> =>
+  typeof a.input === "object" && a.input !== null ? (a.input as Record<string, unknown>) : {};
+
+/**
+ * Derived from the actions the system sent, never from the document: the
+ * final lifecycle status of the batch, or null when it carries no lifecycle
+ * action (SET_STAGE, MIGRATE_LICENSE).
+ */
+export function lifecycleOf(actions: Action[]): LifecycleChange | null {
+  let change: LifecycleChange | null = null;
+  for (const a of actions) {
+    switch (a.type) {
+      case "ISSUE_LICENSE": {
+        const end = input(a).end;
+        change = { status: "ISSUED", end: typeof end === "string" ? end : null };
+        break;
+      }
+      case "ACTIVATE_LICENSE":
+        change = { ...(change ?? {}), status: "ACTIVE" };
+        break;
+      case "EXPIRE_LICENSE":
+        change = { ...(change ?? {}), status: "EXPIRED" };
+        break;
+      case "REVOKE_LICENSE":
+        change = { ...(change ?? {}), status: "REVOKED" };
+        break;
+      case "REPLACE_LICENSE": {
+        const by = input(a).replacedBy;
+        change = { ...(change ?? {}), status: "REPLACED", replacedBy: typeof by === "string" ? by : null };
+        break;
+      }
+    }
+  }
+  return change;
+}
+
+export interface LifecycleRecord {
+  status: string;
+  replacedBy: string | null;
+}
+
+/** A record with the recorded end and the moment of the last status change. */
+export interface LifecycleEntry extends LifecycleRecord {
+  /** The end the licence was issued with; null for an open-ended licence (or a row the issue never wrote). */
+  endAt: string | null;
+  /** When the system last recorded a lifecycle write: for a terminal licence, when it ended. */
+  updatedAt: string;
+}
+
+/**
+ * Whether a recorded licence is live now: its lifecycle row is ACTIVE and its
+ * recorded end (end_at) is open or still ahead. Expiry does not wait for the
+ * keeper to record EXPIRED. No row, or an end that does not parse, is not live.
+ */
+export function isLiveEntry(entry: Pick<LifecycleEntry, "status" | "endAt"> | null | undefined, now: string): boolean {
+  if (entry?.status !== "ACTIVE") return false;
+  if (entry.endAt === null) return true;
+  const end = Date.parse(entry.endAt);
+  return !Number.isNaN(end) && end > Date.parse(now);
+}
+
+const toEntry = (r: { status: string; replaced_by: string | null; end_at: string | null; updated_at: string }): LifecycleEntry => ({
+  status: r.status,
+  replacedBy: r.replaced_by,
+  endAt: r.end_at,
+  updatedAt: r.updated_at,
+});
+
+export type LifecycleStore = ReturnType<typeof createLifecycleStore>;
+
+/** `license_lifecycle`: the authoritative lifecycle status of every licence the system wrote. */
+export function createLifecycleStore(db: Kysely<VetraLicensingDB>, now: () => string) {
+  return {
+    /** Records what `actions` (already applied) left the licence as. No-op for non-lifecycle batches. */
+    async record(licenseId: string, actions: Action[]): Promise<void> {
+      const change = lifecycleOf(actions);
+      if (!change) return;
+      const at = now();
+      const patch: { status: string; updated_at: string; end_at?: string | null; replaced_by?: string | null } = {
+        status: change.status,
+        updated_at: at,
+      };
+      if (change.end !== undefined) patch.end_at = change.end;
+      if (change.replacedBy !== undefined) patch.replaced_by = change.replacedBy;
+      await db
+        .insertInto("license_lifecycle")
+        .values({
+          license_id: licenseId,
+          status: change.status,
+          end_at: change.end ?? null,
+          replaced_by: change.replacedBy ?? null,
+          updated_at: at,
+        })
+        .onConflict((oc) => oc.column("license_id").doUpdateSet(patch))
+        .execute();
+    },
+    /** The records of these licences only; ids without a record are absent. */
+    async forIds(ids: string[]): Promise<Map<string, LifecycleRecord>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectFrom("license_lifecycle")
+        .select(["license_id", "status", "replaced_by"])
+        .where("license_id", "in", ids)
+        .execute();
+      return new Map(rows.map((r) => [r.license_id, { status: r.status, replacedBy: r.replaced_by }]));
+    },
+    /** One licence's record; null when the system never recorded writing it. */
+    async get(licenseId: string): Promise<LifecycleRecord | null> {
+      const row = await db
+        .selectFrom("license_lifecycle")
+        .select(["status", "replaced_by"])
+        .where("license_id", "=", licenseId)
+        .executeTakeFirst();
+      return row ? { status: row.status, replacedBy: row.replaced_by } : null;
+    },
+    /** One licence's full entry; null when the system never recorded writing it. */
+    async entry(licenseId: string): Promise<LifecycleEntry | null> {
+      const row = await db
+        .selectFrom("license_lifecycle")
+        .select(["status", "replaced_by", "end_at", "updated_at"])
+        .where("license_id", "=", licenseId)
+        .executeTakeFirst();
+      return row ? toEntry(row) : null;
+    },
+    /** The full entries of these licences only; ids without a record are absent. */
+    async entries(ids: string[]): Promise<Map<string, LifecycleEntry>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectFrom("license_lifecycle")
+        .select(["license_id", "status", "replaced_by", "end_at", "updated_at"])
+        .where("license_id", "in", ids)
+        .execute();
+      return new Map(rows.map((r) => [r.license_id, toEntry(r)]));
+    },
+    async all(): Promise<Map<string, LifecycleRecord>> {
+      const rows = await db
+        .selectFrom("license_lifecycle")
+        .select(["license_id", "status", "replaced_by"])
+        .execute();
+      return new Map(rows.map((r) => [r.license_id, { status: r.status, replacedBy: r.replaced_by }]));
+    },
+  };
+}

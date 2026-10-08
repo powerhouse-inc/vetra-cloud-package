@@ -7,12 +7,14 @@ import {
   type StudioCandidate,
   type StudioPowerStateResult,
 } from "./resolvers.js";
-import { findStudioByHost, listReadyStudios, type StudioRow } from "./db.js";
+import { findStudioByHost, listReadyStudios } from "./db.js";
 import {
   deriveStudioPowerState,
   isEligibleForSleep,
-  type StudioPowerStatus,
 } from "./policy.js";
+import { createWake, studioPowerResult } from "./wake.js";
+import { isLicenceStopped } from "../vetra-licensing/offboarding.js";
+import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
 import { createLokiClient } from "./loki.js";
 import { HousekeepingKeeper, loadKeeperConfig, studioHost } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
@@ -51,17 +53,7 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
         .execute(documentId, "main", [action] as never)
         .then(() => undefined);
 
-    const result = (
-      host: string,
-      row: StudioRow | null,
-      status: StudioPowerStatus,
-    ): StudioPowerStateResult => ({
-      host,
-      envId: row?.envId ?? null,
-      subdomain: row?.subdomain ?? null,
-      owner: row?.owner ?? null,
-      status,
-    });
+    const result = studioPowerResult;
 
     const powerState = async (host: string): Promise<StudioPowerStateResult> => {
       const row = await findStudioByHost(envDb, host);
@@ -81,15 +73,14 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
       return result(host, row, "SLEEPING");
     };
 
-    const wake = async (host: string): Promise<StudioPowerStateResult> => {
-      const row = await findStudioByHost(envDb, host);
-      if (!row) throw new Error("STUDIO_NOT_FOUND");
-      const current = deriveStudioPowerState(row);
-      // Idempotent: only a SLEEPING studio is woken; otherwise report state.
-      if (current !== "SLEEPING") return result(host, row, current);
-      await dispatch(row.envId, wakeEnvironment({}));
-      return result(host, row, "WAKING");
-    };
+    const licensingDb = (await this.relationalDb.createNamespace(
+      "vetra-licensing",
+    )) as unknown as Kysely<VetraLicensingDB>;
+    const wake = createWake({
+      findStudioByHost: (h) => findStudioByHost(envDb, h),
+      dispatchWake: (id) => dispatch(id, wakeEnvironment({})),
+      isLicenceStopped: (id) => isLicenceStopped(licensingDb, id),
+    });
 
     // Raw candidate rows for the external idle detector (Task 1.1): same source
     // rows as the in-process keeper, just unfiltered/unclassified — the external

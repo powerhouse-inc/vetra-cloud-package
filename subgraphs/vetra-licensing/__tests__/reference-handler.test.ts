@@ -4,133 +4,133 @@ import { LicenseHandler } from "../reference-handler/handler.js";
 const logger = { info: vi.fn(), warn: vi.fn() };
 
 /** Dry run is the default; every behavioural test opts out of it explicitly. */
-const acting = (c: unknown) =>
-  new LicenseHandler(c as never, logger, { dryRun: false });
+const acting = (c: unknown) => new LicenseHandler(c as never, logger, { dryRun: false });
 
 beforeEach(() => {
   logger.info.mockClear();
   logger.warn.mockClear();
 });
 
+const DID = "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
 const client = (over: Record<string, unknown> = {}) => ({
-  appLicenses: vi.fn(async () => [
-    {
-      id: "lic-1",
-      user: "0xaaa",
-      licenseTypeId: "type-1",
-      status: "ACTIVE",
-      start: null,
-      end: null,
-    },
-  ]),
-  appLicenseTypes: vi.fn(async () => [
-    {
-      id: "type-1",
-      kind: "2026-free-tier",
-      status: "ACTIVE",
-      templateHash: "hash-1",
-    },
+  appLicenses: vi.fn(async () => [{ id: "lic-1", user: DID, kind: "pro", status: "ACTIVE" }]),
+  appTerms: vi.fn(async () => [
+    { id: "term-1", kind: "pro", status: "ACTIVE", templateHash: "hash-1" },
+    // SHARED: no environment of its own, so no hash.
+    { id: "term-2", kind: "free", status: "ACTIVE", templateHash: null },
+    { id: "term-3", kind: "beta", status: "DRAFT", templateHash: "hash-3" },
   ]),
   appUserEnvironments: vi.fn(async () => []),
   applyEnvironmentTemplate: vi.fn(async () => ({ environmentId: "env-1" })),
-  releaseEnvironment: vi.fn(async () => true),
   ...over,
 });
 
-const env = (templateHash: string) => ({
-  user: "0xaaa",
-  environmentId: "env-1",
-  templateHash,
-  licenseId: "lic-1",
-  appId: "app-1",
-});
+const env = (licenseId: string, templateHash: string) => ({ environmentId: "env-1", licenseId, templateHash });
 
-describe("LicenseHandler", () => {
+describe("LicenseHandler (reference client)", () => {
   // The handler a publisher just generated logs its plan before it is trusted
   // to act, so the default must change nothing.
-  it("defaults to a dry run that only logs the plan", async () => {
+  it("defaults to a dry run that only logs the plan, naming the licences", async () => {
     const c = client();
     await new LicenseHandler(c as never, logger).reconcileOnce();
     expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
-    expect(c.releaseEnvironment).not.toHaveBeenCalled();
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("dry run"),
-    );
-  });
-
-  it("names the licence it would apply in the dry-run log", async () => {
-    const c = client();
-    await new LicenseHandler(c as never, logger).reconcileOnce();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("dry run"));
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("lic-1"));
   });
 
-  // The licence document may carry a checksummed address; the environment
-  // table stores it lowercased. Both must mean the same user.
-  it("matches a checksummed licence address to a lowercased environment", async () => {
-    const mixed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
-    const c = client({
-      appLicenses: vi.fn(async () => [
-        {
-          id: "lic-1",
-          user: mixed,
-          licenseTypeId: "type-1",
-          status: "ACTIVE",
-          start: null,
-          end: null,
-        },
-      ]),
-      appUserEnvironments: vi.fn(async () => [
-        { ...env("hash-1"), user: mixed.toLowerCase() },
-      ]),
-    });
-    await acting(c).reconcileOnce();
-    expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
-    expect(c.releaseEnvironment).not.toHaveBeenCalled();
-  });
-
-  it("applies a template for an active licence with no environment", async () => {
+  it("asks only for ACTIVE licences", async () => {
     const c = client();
     await acting(c).reconcileOnce();
-    expect(c.applyEnvironmentTemplate).toHaveBeenCalledWith({
-      licenseId: "lic-1",
-      label: "2026-free-tier",
-    });
+    expect(c.appLicenses).toHaveBeenCalledWith({ status: "ACTIVE" });
   });
 
-  it("is a no-op on the second run", async () => {
-    const c = client({ appUserEnvironments: vi.fn(async () => [env("hash-1")]) });
+  it("applies the template for an ACTIVE licence with no environment, labelled with its kind", async () => {
+    const c = client();
+    await acting(c).reconcileOnce();
+    expect(c.applyEnvironmentTemplate).toHaveBeenCalledExactlyOnceWith({ licenseId: "lic-1", label: "pro" });
+  });
+
+  it("is a no-op when the environment is current", async () => {
+    const c = client({ appUserEnvironments: vi.fn(async () => [env("lic-1", "hash-1")]) });
     await acting(c).reconcileOnce();
     expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
-    expect(c.releaseEnvironment).not.toHaveBeenCalled();
   });
 
-  // The environment's hash is stale, so a handler that merely dropped the
-  // licence but kept the environment would see "no licence justifies env-1"
-  // and release it. Parking the user must prevent that.
-  it("skips a licence whose type is retired and releases nothing", async () => {
+  it("re-applies a stale template", async () => {
+    const c = client({ appUserEnvironments: vi.fn(async () => [env("lic-1", "old-hash")]) });
+    await acting(c).reconcileOnce();
+    expect(c.applyEnvironmentTemplate).toHaveBeenCalledExactlyOnceWith({ licenseId: "lic-1", label: "pro" });
+  });
+
+  it("applies a renewal, whose chain's environment still names its predecessor (Vetra repoints it)", async () => {
     const c = client({
-      appLicenseTypes: vi.fn(async () => [
-        {
-          id: "type-1",
-          kind: "2026-free-tier",
-          status: "RETIRED",
-          templateHash: "hash-1",
-        },
+      appLicenses: vi.fn(async () => [{ id: "lic-2", user: DID, kind: "pro", status: "ACTIVE" }]),
+      appUserEnvironments: vi.fn(async () => [env("lic-1", "hash-1")]),
+    });
+    await acting(c).reconcileOnce();
+    expect(c.applyEnvironmentTemplate).toHaveBeenCalledExactlyOnceWith({ licenseId: "lic-2", label: "pro" });
+  });
+
+  it("logs and skips a licence whose kind has no usable term, and leaves SHARED licences alone", async () => {
+    const c = client({
+      appLicenses: vi.fn(async () => [
+        { id: "lic-x", user: DID, kind: "gone", status: "ACTIVE" },
+        { id: "lic-b", user: DID, kind: "beta", status: "ACTIVE" },
+        { id: "lic-f", user: DID, kind: "free", status: "ACTIVE" },
       ]),
-      appUserEnvironments: vi.fn(async () => [env("stale")]),
     });
     await acting(c).reconcileOnce();
     expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
-    expect(c.releaseEnvironment).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("lic-1"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("lic-x"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("lic-b"));
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("lic-f"));
   });
 
-  it("releases an environment whose licence is gone", async () => {
+  it("never releases: an environment without a licence is left to Vetra's offboarding clock", async () => {
+    // A client that still offers release (the old API): never called.
+    const releaseEnvironment = vi.fn(async () => true);
     const c = client({
       appLicenses: vi.fn(async () => []),
-      appUserEnvironments: vi.fn(async () => [env("hash-1")]),
+      appUserEnvironments: vi.fn(async () => [env("lic-gone", "hash-1")]),
+      releaseEnvironment,
     });
     await acting(c).reconcileOnce();
-    expect(c.releaseEnvironment).toHaveBeenCalledWith({ environmentId: "env-1" });
+    expect(releaseEnvironment).not.toHaveBeenCalled();
+    expect(c.applyEnvironmentTemplate).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed apply and carries on with the next licence", async () => {
+    const apply = vi.fn(async (input: { licenseId: string }) => {
+      if (input.licenseId === "lic-1") throw new Error("boom");
+      return { environmentId: "env-2" };
+    });
+    const c = client({
+      appLicenses: vi.fn(async () => [
+        { id: "lic-1", user: DID, kind: "pro", status: "ACTIVE" },
+        { id: "lic-2", user: DID, kind: "pro", status: "ACTIVE" },
+      ]),
+      applyEnvironmentTemplate: apply,
+    });
+    await acting(c).reconcileOnce();
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
+  });
+
+  it("treats BUSY as retry-next-tick, not a failure", async () => {
+    const busy = Object.assign(new Error("this licence chain is busy; retry shortly"), { extensions: { code: "BUSY" } });
+    const wrapped = { message: "request failed", response: { errors: [{ extensions: { code: "BUSY" } }] } };
+    const apply = vi.fn().mockRejectedValueOnce(busy).mockRejectedValueOnce(wrapped);
+    const c = client({
+      appLicenses: vi.fn(async () => [
+        { id: "lic-1", user: DID, kind: "pro", status: "ACTIVE" },
+        { id: "lic-2", user: DID, kind: "pro", status: "ACTIVE" },
+      ]),
+      applyEnvironmentTemplate: apply,
+    });
+    await acting(c).reconcileOnce();
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("retry on the next tick"));
   });
 });

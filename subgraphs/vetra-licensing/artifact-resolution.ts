@@ -72,7 +72,7 @@ export function resolveTemplateArtifacts(
  * the tag — so `cr.vetra.io/p/app:1.2.3` has to become `cr.vetra.io/p/app`.
  */
 export function repositoryOf(reference: string): string {
-  const atDigest = reference.split("@")[0]!;
+  const atDigest = reference.split("@")[0];
   const lastSlash = atDigest.lastIndexOf("/");
   const colon = atDigest.indexOf(":", lastSlash + 1);
   return colon === -1 ? atDigest : atDigest.slice(0, colon);

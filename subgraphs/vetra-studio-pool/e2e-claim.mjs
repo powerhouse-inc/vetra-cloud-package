@@ -3,7 +3,8 @@
  * E2E: invite-code → claim a warm Studio environment → it becomes reachable.
  *
  * Exercises the real studio-pool flow against a LIVE switchboard:
- *   createInviteCode (admin) → redeemInviteCode → claimStudioEnvironment,
+ *   vetraPublisher.createInviteCode (admin) → vetraSubscriptions.redeemInviteCode
+ *   → claimStudioEnvironment,
  *   then polls the claimed env's URL until it is externally reachable.
  * Deactivates the test code at the end. Exits 0 on PASS, 1 on FAIL.
  *
@@ -25,6 +26,9 @@ const SWITCHBOARD_URL =
   process.env.SWITCHBOARD_URL ?? "https://switchboard.staging.vetra.io/graphql";
 const BEARER_TOKEN = process.env.BEARER_TOKEN ?? "";
 const BASE_DOMAIN = process.env.ENV_BASE_DOMAIN ?? "vetra.io";
+// The vetra-studio app and its invite-code term (subgraphs/vetra-licensing/migration/studio.ts).
+const STUDIO_APP_ID = "5f0e7a1c-3b2d-4c8e-9a6f-0d1e2f3a4b5c";
+const STUDIO_KIND = "studio-early-access-30d";
 const AGENT_PREFIX = "vetra-agent";
 const REACHABLE_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 5_000;
@@ -73,20 +77,20 @@ async function main() {
   try {
     console.log(`\n[1] createInviteCode (${code})`);
     const created = await gql(
-      `mutation($c:String!,$k:String){ VetraAccessCodes{ createInviteCode(code:$c,label:"e2e claim test",maxUses:3,anthropicApiKey:$k){ active hasAnthropicKey } } }`,
-      { c: code, k: exampleKey },
+      `mutation($i:CreateInviteCodeInput!){ vetraPublisher{ createInviteCode(input:$i){ active hasAnthropicKey } } }`,
+      { i: { appId: STUDIO_APP_ID, kind: STUDIO_KIND, code, label: "e2e claim test", maxUses: 3, anthropicKey: exampleKey } },
     );
-    const ci = created.VetraAccessCodes.createInviteCode;
+    const ci = created.vetraPublisher.createInviteCode;
     check("code is active", ci.active === true);
     check("code carries a Claude key", ci.hasAnthropicKey === true);
 
     console.log("\n[2] redeemInviteCode");
     const redeemed = await gql(
-      `mutation($c:String!){ VetraAccessCodes{ redeemInviteCode(code:$c){ allowed hasAttachedKey } } }`,
+      `mutation($c:String!){ vetraSubscriptions{ redeemInviteCode(input:{code:$c}){ licenseId hasAttachedKey } } }`,
       { c: code },
     );
-    const r = redeemed.VetraAccessCodes.redeemInviteCode;
-    check("redemption allowed", r.allowed === true);
+    const r = redeemed.vetraSubscriptions.redeemInviteCode;
+    check("redemption issued a licence", !!r.licenseId);
     check("caller has the attached key", r.hasAttachedKey === true);
 
     console.log("\n[3] claimStudioEnvironment");
@@ -119,8 +123,8 @@ async function main() {
     check("env is reachable (serving, not 502/000)", REACHABLE_STATUSES.has(status), `last HTTP ${status}`);
   } finally {
     await gql(
-      `mutation($c:String!){ VetraAccessCodes{ setInviteCodeActive(code:$c,active:false){ active } } }`,
-      { c: code },
+      `mutation($a:String!,$c:String!){ vetraPublisher{ setInviteCodeActive(appId:$a,code:$c,active:false) } }`,
+      { a: STUDIO_APP_ID, c: code },
     ).catch(() => {});
     console.log(`\n[cleanup] deactivated ${code}`);
   }

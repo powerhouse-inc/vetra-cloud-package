@@ -8,8 +8,10 @@ import type {
   IssueLicenseInput,
   LicenseIssuerKind,
   LicenseStatus,
+  MigrateLicenseInput,
   ReplaceLicenseInput,
   RevokeLicenseInput,
+  SetStageInput,
 } from "./types.js";
 
 type Properties<T> = Required<{
@@ -56,25 +58,14 @@ export function AppOwnerLicenseStateSchema(): z.ZodObject<
     details: z.string().nullish(),
     end: z.iso.datetime().nullish(),
     issued: z.iso.datetime().nullish(),
-    issuedBy: z
-      .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, {
-        message: "Invalid Ethereum address format",
-      })
-      .nullish(),
     issuer: LicenseIssuerKindSchema.nullish(),
-    licenseType: z.string().nullish(),
+    kind: z.string().nullish(),
     replacedBy: z.string().nullish(),
     revokedReason: z.string().nullish(),
     stage: z.string().nullish(),
     start: z.iso.datetime().nullish(),
     status: LicenseStatusSchema,
-    user: z
-      .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, {
-        message: "Invalid Ethereum address format",
-      })
-      .nullish(),
+    user: z.string().nullish(),
   });
 }
 
@@ -94,20 +85,23 @@ export function IssueLicenseInputSchema(): z.ZodObject<
     details: z.string().nullish(),
     end: z.iso.datetime().nullish(),
     issued: z.iso.datetime(),
-    issuedBy: z
-      .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, {
-        message: "Invalid Ethereum address format",
-      }),
+    issuedBy: z.string().nullish(),
     issuer: LicenseIssuerKindSchema,
-    licenseType: z.string(),
+    kind: z.string().nullish(),
+    licenseType: z.string().nullish(),
     stage: z.string().nullish(),
     start: z.iso.datetime(),
-    user: z
-      .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, {
-        message: "Invalid Ethereum address format",
-      }),
+    user: z.string(),
+  });
+}
+
+export function MigrateLicenseInputSchema(): z.ZodObject<
+  Properties<MigrateLicenseInput>
+> {
+  return z.object({
+    details: z.string().nullish(),
+    kind: z.string(),
+    user: z.string(),
   });
 }
 
@@ -124,5 +118,11 @@ export function RevokeLicenseInputSchema(): z.ZodObject<
 > {
   return z.object({
     reason: z.string().nullish(),
+  });
+}
+
+export function SetStageInputSchema(): z.ZodObject<Properties<SetStageInput>> {
+  return z.object({
+    stage: z.string().nullish(),
   });
 }

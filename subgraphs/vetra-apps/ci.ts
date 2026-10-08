@@ -224,7 +224,10 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       run(request, async (ci) => {
         const body = await jsonBody(request);
         const str = (k: string) =>
-          typeof body[k] === "string" ? (body[k] as string) : null;
+          {
+            const v = body[k];
+            return typeof v === "string" ? v : null;
+          };
         return ciRecordArtifact(deps, ci, {
           appId: requireString(body, "appId"),
           kind: requireString(body, "kind") as RecordArtifactInput["kind"],

@@ -1,11 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { PGlite } from "@electric-sql/pglite";
+import { Kysely } from "kysely";
+import { PGliteDialect } from "kysely-pglite-dialect";
 import { ReactorBuilder, ReactorClientBuilder } from "@powerhousedao/reactor";
 import { actions } from "document-models/app-owner-license";
+import { actions as appActions } from "document-models/vetra-app";
+import { createReactorAppDocStore } from "../../vetra-apps/app-doc-store.js";
+import { up } from "../db/migrations.js";
+import type { VetraLicensingDB } from "../db/schema.js";
+import { createAppReads } from "../app-reads.js";
+import { createGrantStore } from "../grants.js";
+import { createLifecycleStore } from "../lifecycle.js";
+import { issueLicense } from "../issue.js";
 import { documentModels } from "../../../document-models/document-models.js";
-import { createReactorLicenseReads, LICENSE_DOC_TYPE } from "../reads.js";
+import { createReactorLicenseReads } from "../reads.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
 import { LicenseKeeper } from "../keeper.js";
-import type { LicensingConfig } from "../config.js";
+import { loadLicensingConfig, type LicensingConfig } from "../config.js";
 
 /**
  * The seam every other test on this branch mocks.
@@ -36,6 +47,7 @@ const BASE = Date.parse("2026-06-01T12:00:00.000Z");
 let clock = BASE;
 
 const cfg: LicensingConfig = {
+  ...loadLicensingConfig({}),
   enabled: true,
   dryRun: false,
   scanIntervalMs: 1_000,
@@ -44,11 +56,10 @@ const cfg: LicensingConfig = {
 
 const silentLogger = { info: () => {}, warn: () => {} };
 
-// A licence's `app` and `licenseType` are PHIDs; the keeper never dereferences
-// them, so fixed strings are honest here.
-const APP = "app-integration";
-const TYPE = "type-integration";
-const USER = "0x1111111111111111111111111111111111111111";
+// The keeper never dereferences a licence's `app`, so a fixed id is honest for
+// the hand-built licences; the issueLicense test uses a real vetra-app document.
+const APP = "7d1f6f5c-1f0e-4a8b-9d55-0c3b9b8f2a11";
+const USER = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 
 type Client = Awaited<ReturnType<ReactorClientBuilder["build"]>>;
 
@@ -56,6 +67,9 @@ describe("LicenseKeeper against a real reactor", () => {
   let client: Client;
   let reads: ReturnType<typeof createReactorLicenseReads>;
   let keeper: LicenseKeeper;
+  let db: Kysely<VetraLicensingDB>;
+  let gateway: ReturnType<typeof createReactorLicenseGateway>;
+  let issueDeps: Parameters<typeof issueLicense>[0];
 
   beforeAll(async () => {
     clock = BASE;
@@ -65,8 +79,33 @@ describe("LicenseKeeper against a real reactor", () => {
       )
       .build();
 
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    const lifecycle = createLifecycleStore(db, () => iso(clock));
     reads = createReactorLicenseReads(client as never);
-    const gateway = createReactorLicenseGateway(client as never);
+    gateway = createReactorLicenseGateway(client as never, { lifecycle });
+
+    const appDocs = createReactorAppDocStore(client as never);
+    await appDocs.create(APP);
+    await appDocs.execute(APP, [
+      appActions.addTemplate({ id: "t", name: null, mode: "DEDICATED" }),
+      appActions.addTerm({ id: "k", kind: "pro", label: null, templateId: "t", validityDays: 1, issuers: ["PUBLISHER_GRANT"] }),
+      appActions.publishTerm({ id: "k" }),
+    ]);
+    issueDeps = {
+      owners: {
+        findAppById: async (id) =>
+          id === APP ? { id, name: "KV", status: "ACTIVE", owner_address: "0xowner" } : null,
+      },
+      apps: createAppReads(client as never),
+      licence: (id) => reads.licenceRecord(id),
+      createLicenseDocument: gateway.create,
+      executeLicence: gateway.execute,
+      grants: createGrantStore(db),
+      lifecycle,
+      migrationComplete: async () => false,
+      logger: console,
+    };
 
     keeper = new LicenseKeeper({
       listLicenses: () => reads.listLicenses(),
@@ -83,20 +122,22 @@ describe("LicenseKeeper against a real reactor", () => {
     await c.shutdown?.();
   });
 
-  /** Creates a licence document and issues it through the real reducer. */
+  /**
+   * Creates a licence document and issues it (ISSUE_LICENSE only, no
+   * ACTIVATE_LICENSE) through the real reducer, recording the lifecycle as the
+   * gateway does for every system write.
+   */
   async function issue(opts: {
     start: string;
     end: string | null;
   }): Promise<string> {
-    const doc = await client.createEmpty(LICENSE_DOC_TYPE);
-    const id = (doc as { header: { id: string } }).header.id;
-    await client.execute(id, "main", [
+    const id = await gateway.create();
+    await gateway.execute(id, [
       actions.issueLicense({
         app: APP,
-        licenseType: TYPE,
         user: USER,
         issuer: "PUBLISHER_GRANT",
-        issuedBy: USER,
+        kind: "pro",
         stage: null,
         details: null,
         issued: opts.start,
@@ -106,6 +147,9 @@ describe("LicenseKeeper against a real reactor", () => {
     ]);
     return id;
   }
+
+  const recorded = async (id: string) =>
+    (await db.selectFrom("license_lifecycle").select("status").where("license_id", "=", id).executeTakeFirst())?.status ?? null;
 
   async function statusOf(id: string): Promise<string | null> {
     const rows = await reads.listLicenses();
@@ -140,6 +184,10 @@ describe("LicenseKeeper against a real reactor", () => {
     expect(await statusOf(lapsed)).toBe("EXPIRED");
     // Not started yet: untouched.
     expect(await statusOf(future)).toBe("ISSUED");
+    // Every keeper write is recorded in license_lifecycle.
+    expect(await recorded(started)).toBe("ACTIVE");
+    expect(await recorded(lapsed)).toBe("EXPIRED");
+    expect(await recorded(future)).toBe("ISSUED");
   }, 120_000);
 
   it("is a no-op on a second tick", async () => {
@@ -181,7 +229,23 @@ describe("LicenseKeeper against a real reactor", () => {
     await keeper.reconcileOnce();
     expect(await statusOf(id)).toBe("EXPIRED");
 
-    const gateway = createReactorLicenseGateway(client as never);
     await expect(gateway.expire(id)).rejects.toThrow();
+  }, 120_000);
+
+  it("expires a licence issued through issueLicense once its term's end passes", async () => {
+    // issueLicense issues AND activates, ending validityDays (1) after `now`.
+    const issued = await issueLicense(issueDeps, {
+      appId: APP, user: USER, kind: "pro", issuer: "PUBLISHER_GRANT", details: {},
+      issuedBy: "0xowner", label: null, now: iso(BASE),
+    });
+    clock = BASE;
+    expect(await statusOf(issued.licenseId)).toBe("ACTIVE");
+    await keeper.reconcileOnce();
+    expect(await statusOf(issued.licenseId)).toBe("ACTIVE");
+
+    clock = BASE + 25 * HOUR;
+    await keeper.reconcileOnce();
+    expect(await statusOf(issued.licenseId)).toBe("EXPIRED");
+    expect(await recorded(issued.licenseId)).toBe("EXPIRED");
   }, 120_000);
 });

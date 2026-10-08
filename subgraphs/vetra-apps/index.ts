@@ -16,6 +16,18 @@ import type { AppsDeps } from "./service.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
+  createAppDocOwnerResolver,
+  createAppDocProtector,
+} from "./app-doc-protection.js";
+import { studioPublisherAddress } from "../vetra-licensing/studio-app.js";
+import {
+  createAppLedger,
+  ensureLedgerTables,
+  lazyLedger,
+  reactorLedgerSource,
+} from "../vetra-licensing/licensing-ledger.js";
+import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
+import {
   DRIFT_INTERVAL_MS,
   reportAppDocumentDrift,
 } from "./app-document-drift.js";
@@ -61,6 +73,52 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
     }
 
+    // App documents are system-write-only: protect each one the moment it is
+    // created. Without document permissions there is nothing to protect with.
+    const perm = this.documentPermissionService;
+    const appDocProtect = perm
+      ? createAppDocProtector(
+          perm,
+          createAppDocOwnerResolver(
+            (id) =>
+              db
+                .selectFrom("apps")
+                .select("owner_address")
+                .where("id", "=", id)
+                .executeTakeFirst()
+                .then((r) => r?.owner_address ?? null),
+            studioPublisherAddress(),
+          ),
+          this.reactorClient as never,
+          console,
+        )
+      : undefined;
+
+    // The app-state ledger lives in the "vetra-licensing" namespace
+    // (app_licensing_state + app_licensing_intent). Every system write to an
+    // app document from here records into it, so artifacts registered by CI
+    // read as clean. Its tables are ensured here too because subgraph boot
+    // order is not fixed. Initialised on first use and retried after a
+    // failure: a ledger unreachable at boot is never disabled for good.
+    const appLedger = lazyLedger(async () => {
+      try {
+        const ledgerDb = (await this.relationalDb.createNamespace(
+          "vetra-licensing",
+        )) as unknown as Kysely<VetraLicensingDB>;
+        await ensureLedgerTables(ledgerDb as Kysely<any>);
+        return createAppLedger({
+          db: ledgerDb,
+          source: reactorLedgerSource(this.reactorClient as never),
+          now: () => new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(
+          `[vetra-apps] app-state ledger unavailable (retried on the next write): ${String(err)}`,
+        );
+        throw err;
+      }
+    });
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -72,7 +130,12 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
-      docs: createReactorAppDocStore(this.reactorClient as never),
+      docs: createReactorAppDocStore(
+        this.reactorClient as never,
+        appDocProtect,
+        appLedger,
+        console,
+      ),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     deps.onPreviewRemoved = (app, preview, reason) =>

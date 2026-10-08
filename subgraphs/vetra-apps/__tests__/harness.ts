@@ -316,6 +316,7 @@ export function testConfig(
       "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps",
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
+    studioAppSlug: "vetra-studio",
     ...over,
   };
 }
