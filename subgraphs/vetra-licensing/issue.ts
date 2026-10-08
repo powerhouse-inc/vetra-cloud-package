@@ -23,6 +23,11 @@ export class TermNotIssuableError extends Error {
 export class LicenceNotUpgradableError extends Error {
   override name = "LicenceNotUpgradableError";
 }
+/**
+ * The licence already is this kind, ACTIVE, on a term without a validity
+ * limit: there is nothing to renew. (The same kind on a time-limited term is a
+ * renewal, not a refusal.)
+ */
 export class AlreadyHoldsError extends Error {
   override name = "AlreadyHoldsError";
 }
@@ -41,11 +46,11 @@ export interface IssueDeps {
   executeLicence(id: string, actions: Action[]): Promise<void>;
   grants: Pick<GrantStore, "recordGrant" | "linkChain" | "chainRootOf" | "chainHead" | "grantFor">;
   /**
-   * The recorded lifecycle status (license_lifecycle), which decides a
-   * predecessor's status over its document; `record` closes a predecessor
-   * whose document refused REPLACE_LICENSE.
+   * The recorded lifecycle (license_lifecycle), which decides a predecessor's
+   * status and end over its document; `record` closes a predecessor whose
+   * document refused REPLACE_LICENSE.
    */
-  lifecycle: Pick<LifecycleStore, "get" | "record">;
+  lifecycle: Pick<LifecycleStore, "entry" | "record">;
   logger: Pick<Console, "warn">;
 }
 
@@ -60,11 +65,12 @@ export interface IssueInput {
   label?: string | null;
   /**
    * Replace this licence (same app, same holder) and keep its environment.
-   * Its holder and app come from its grant row, its status from its lifecycle
-   * record: the document can only refuse, never decide.
+   * Its holder and app come from its grant row, its status and end from its
+   * lifecycle record: the document can only refuse, never decide. The same
+   * kind on an ACTIVE licence is a renewal when the term is time-limited.
    */
   upgrades?: string | null;
-  /** ISO-8601 UTC `Z`; the licence starts now. */
+  /** ISO-8601 UTC `Z`; the licence starts now (a renewal's end counts on from the predecessor's). */
   now: string;
 }
 
@@ -127,6 +133,9 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
 
   let previous: LicenceRecord | null = null;
   let previousStatus: string | null = null;
+  /** The predecessor's end, by the record; null when open-ended or unknown. */
+  let previousEnd: string | null = null;
+  let renewal = false;
   let root: string | null = null;
   if (input.upgrades) {
     const doc = await deps.licence(input.upgrades);
@@ -147,16 +156,25 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
     }
     // The status the system recorded; a licence from before the record
     // existed (no row yet) falls back to its document.
-    const recorded = await deps.lifecycle.get(doc.id);
+    const recorded = await deps.lifecycle.entry(doc.id);
     previous = { ...doc, user, kind: grant.kind ?? doc.kind };
     previousStatus = recorded?.status ?? doc.status;
+    // Never the document's end when a record exists: a forged far-future end
+    // would otherwise be carried into the renewal (and recorded as authority).
+    previousEnd = recorded ? recorded.endAt : doc.end;
     if (!UPGRADABLE.has(previousStatus)) {
       throw new LicenceNotUpgradableError(
         `licence ${previous.id} is ${previousStatus}; only an ACTIVE, EXPIRED or REVOKED licence can be upgraded`,
       );
     }
     if (previousStatus === "ACTIVE" && previous.kind === input.kind) {
-      throw new AlreadyHoldsError(`licence ${previous.id} already is ${input.kind}`);
+      // The same kind again: a time-limited term renews (the successor gets
+      // the remaining time plus a full term); an unlimited one has nothing
+      // to add.
+      if (term.validityDays === null) {
+        throw new AlreadyHoldsError(`licence ${previous.id} already is ${input.kind}, without an end`);
+      }
+      renewal = true;
     }
     // Only the newest licence of a chain can be upgraded: an older EXPIRED or
     // REVOKED one would otherwise fork the chain a second time.
@@ -170,10 +188,15 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
   }
 
   const start = new Date(Date.parse(input.now)).toISOString();
+  // A renewal counts on from max(predecessor's end, now): unused time is kept,
+  // an end already past (the keeper has not expired it yet) adds nothing.
+  const prevEndMs = previousEnd === null ? Number.NaN : Date.parse(previousEnd);
+  const from =
+    renewal && !Number.isNaN(prevEndMs) ? Math.max(prevEndMs, Date.parse(start)) : Date.parse(start);
   const end =
     term.validityDays === null
       ? null
-      : new Date(Date.parse(start) + term.validityDays * DAY_MS).toISOString();
+      : new Date(from + term.validityDays * DAY_MS).toISOString();
 
   // Built before create(): the creator validates the input, so a malformed
   // action refuses here instead of after an empty document exists.

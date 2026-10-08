@@ -54,5 +54,10 @@ describe("lifecycle store", () => {
     expect(await store.forIds([])).toStrictEqual(new Map());
     expect(await store.get("l1")).toStrictEqual({ status: "REPLACED", replacedBy: "l2" });
     expect(await store.get("nope")).toBeNull();
+    // The full entry: the recorded end and when the status last changed.
+    expect(await store.entry("l1")).toStrictEqual({ status: "REPLACED", replacedBy: "l2", endAt: "2026-11-07T00:00:00.000Z", updatedAt: "t2" });
+    expect(await store.entry("nope")).toBeNull();
+    expect(await store.entries(["l2", "nope"])).toStrictEqual(new Map([["l2", { status: "EXPIRED", replacedBy: null, endAt: null, updatedAt: "t3" }]]));
+    expect(await store.entries([])).toStrictEqual(new Map());
   });
 });

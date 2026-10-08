@@ -215,8 +215,8 @@ type SubscriptionWarning {
 
 type StudioAccess {
   allowed: Boolean!
-  licenseId: String
-  expires: String
+  licenseId: String                 # the usable studio licence; when not allowed, the caller's newest studio licence (so its warnings can be shown); null only if the caller never held one
+  expires: String                   # the end of the licence named by licenseId
   hasAttachedKey: Boolean!
 }
 
@@ -245,8 +245,28 @@ type VetraSubscriptionsMutations {
 
 Errors: `INVALID_CODE` (unknown, inactive, expired or exhausted — one code, so
 codes cannot be probed for state), `ALREADY_HOLDS` (redeeming a code for a kind
-the caller already holds ACTIVE on that chain), `NOT_FOUND`, `FORBIDDEN`,
-`UNSUPPORTED_DID`.
+the caller already holds ACTIVE where that cannot be a renewal: with `upgrades`,
+the licence it names is already that kind and the term has no validity limit;
+without `upgrades`, a SHARED kind the caller already holds ACTIVE), `NOT_FOUND`,
+`FORBIDDEN`, `UNSUPPORTED_DID`. `upgrades` naming a licence that is not the
+newest of its chain, or is ISSUED or REPLACED, is `INVALID_INPUT`.
+
+Renewal: `upgrades` naming an ACTIVE licence of the code's own kind on a
+time-limited term issues the successor on the same chain (same environment),
+starting now and ending at max(previous end, now) + validityDays; the
+predecessor becomes REPLACED. An EXPIRED or REVOKED newest licence is
+re-licensed on the same chain and environment and is left as it was.
+
+`inviteCode` answers `valid: false` with every other field null for unknown,
+inactive, expired and exhausted codes, and for codes whose term or app cannot
+issue them; it needs no login. `mySubscriptions` lists the newest licence of
+each of the caller's chains (by grant row): always while ISSUED or ACTIVE; once
+ended, while the chain's environment still exists (offboarding) and otherwise
+for 90 days after it ended. `cancelSubscription` revokes an ISSUED or ACTIVE
+licence of the caller's (`INVALID_INPUT` otherwise). `applyStudioKey` returns
+`false` when the caller has no usable studio licence with a key (or keys are
+not configured) and `FORBIDDEN` when the tenant belongs to an environment the
+caller does not own.
 
 The studio app is found by slug `vetra-studio` (config `VETRA_STUDIO_APP_SLUG`,
 default `vetra-studio`).

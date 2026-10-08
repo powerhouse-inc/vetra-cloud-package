@@ -289,3 +289,22 @@ export async function keyCiphertextForCode(
 ): Promise<string | null> {
   return (await getCode(db, code))?.anthropic_key_ciphertext ?? null;
 }
+
+/**
+ * The code a holder redeemed for one licence, from the redemption row (never
+ * from the licence document's details, which a forged document could point at
+ * someone else's code). Null when the licence was not redeemed by this holder.
+ */
+export async function redeemedCodeOf(
+  db: Kysely<VetraLicensingDB>,
+  licenseId: string,
+  userDid: string,
+): Promise<string | null> {
+  const row = await db
+    .selectFrom("invite_redemptions")
+    .select("code")
+    .where("license_id", "=", licenseId)
+    .where("user_did", "=", userDid)
+    .executeTakeFirst();
+  return row?.code ?? null;
+}

@@ -21,6 +21,7 @@ import { KeyStorageUnavailableError, type KeyVault } from "./key-vault.js";
 import type { LicensingConfig } from "./config.js";
 import { makeRequireEnabled } from "./resolvers.js";
 import { normaliseUserDid } from "./did.js";
+import { authorisedLicences } from "./licence-view.js";
 import { grantLicense, replaceGrant, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
 import { TermNotIssuableError, withLicenceLock } from "./issue.js";
 import { createInviteCode, listInviteCodes, setInviteCodeActive } from "./invite-codes.js";
@@ -47,8 +48,8 @@ export interface PublisherDeps {
   /** The ONLY route for template and term writes: keeps the app-state ledger valid. */
   appWriter: AppLicensingWriter;
   licences: Pick<LicenseReads, "licenceRecords">;
-  /** The recorded lifecycle status, which wins over the licence document's. */
-  lifecycle: Pick<LifecycleStore, "forIds">;
+  /** The recorded lifecycle status and end, which win over the licence document's. */
+  lifecycle: Pick<LifecycleStore, "entries">;
   /** The recording gateway: every lifecycle write also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   issue: PublisherGrantDeps;
@@ -206,34 +207,21 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
 
   /**
    * The app's licences: those with a grant row for it (a licence document
-   * naming the app proves nothing), with the lifecycle status the system
-   * recorded over the document's.
+   * naming the app proves nothing), with the lifecycle status and end the
+   * system recorded over the document's.
    */
-  const licencesOf = async (appId: string) => {
-    const grants = await deps.grants.grantsForApp(appId);
-    const [docs, lifecycle] = await Promise.all([
-      deps.licences.licenceRecords(grants.map((g) => g.licenseId)),
-      deps.lifecycle.forIds(grants.map((g) => g.licenseId)),
-    ]);
-    const byId = new Map(docs.map((d) => [d.id, d]));
-    return grants.flatMap((g) => {
-      const doc = byId.get(g.licenseId);
-      if (!doc) return [];
-      const rec = lifecycle.get(g.licenseId);
-      const status = rec?.status ?? doc.status;
-      return [{
-        id: g.licenseId,
-        user: g.userDid,
-        kind: g.kind ?? doc.kind ?? "",
-        issuer: doc.issuer ?? "PUBLISHER_GRANT",
-        status,
-        start: doc.start,
-        end: doc.end,
-        environmentId: doc.stage,
-        replacedBy: status === "REPLACED" ? (rec?.replacedBy ?? doc.replacedBy) : null,
-      }];
-    });
-  };
+  const licencesOf = async (appId: string) =>
+    (await authorisedLicences(deps, await deps.grants.grantsForApp(appId))).map((l) => ({
+      id: l.id,
+      user: l.userDid,
+      kind: l.kind ?? "",
+      issuer: l.issuer ?? "PUBLISHER_GRANT",
+      status: l.status,
+      start: l.start,
+      end: l.end,
+      environmentId: l.stage,
+      replacedBy: l.replacedBy,
+    }));
 
   return {
     Query: { vetraPublisher: () => ({}) },

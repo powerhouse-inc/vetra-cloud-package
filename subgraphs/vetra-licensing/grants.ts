@@ -128,6 +128,18 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
       return new Map(rows.map((r) => [r.license_id, r.root_license_id]));
     },
 
+    /** The chain roots of these licences; an unchained licence is its own root. */
+    async chainRootsFor(ids: string[]): Promise<Map<string, string>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectFrom("license_chain")
+        .select(["license_id", "root_license_id"])
+        .where("license_id", "in", ids)
+        .execute();
+      const found = new Map(rows.map((r) => [r.license_id, r.root_license_id]));
+      return new Map(ids.map((id) => [id, found.get(id) ?? id]));
+    },
+
     async chainLabel(rootLicenseId: string): Promise<string | null> {
       const row = await db
         .selectFrom("license_chain")
@@ -176,6 +188,23 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
         .selectFrom("app_license_grants")
         .select(["license_id", "app_id", "user_address", "user_did", "kind"])
         .where("app_id", "=", appId)
+        .orderBy("created_at", "asc")
+        .orderBy("license_id", "asc")
+        .execute();
+      return rows.map(toGrantRow);
+    },
+
+    /**
+     * Every grant row of one holder, across apps, oldest first: what the
+     * holder owns. Rows from before DIDs were stored match on the address.
+     */
+    async grantsForHolder(userDid: string): Promise<GrantRow[]> {
+      const rows = await db
+        .selectFrom("app_license_grants")
+        .select(["license_id", "app_id", "user_address", "user_did", "kind"])
+        .where((eb) =>
+          eb.or([eb("user_did", "=", userDid), eb("user_address", "=", addressOfDid(userDid))]),
+        )
         .orderBy("created_at", "asc")
         .orderBy("license_id", "asc")
         .execute();

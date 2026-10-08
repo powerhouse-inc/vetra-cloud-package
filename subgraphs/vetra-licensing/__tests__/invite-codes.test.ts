@@ -19,6 +19,7 @@ import {
   keyCiphertextForCode,
   listInviteCodes,
   normalizeCode,
+  redeemedCodeOf,
   releaseReservation,
   reserveRedemption,
   setInviteCodeActive,
@@ -208,5 +209,16 @@ describe("invite codes", () => {
     expect(await reserveRedemption(d, "code-ccc", "did:a", NOW)).toBe(true);
     expect(await reserveRedemption(d, "code-ccc", "did:a", NOW)).toBe(false);
     expect((await listInviteCodes(d, "app-1"))[0]!.redemptions).toBe(1);
+  });
+
+  it("names the code a holder redeemed for a licence, from the redemption row only", async () => {
+    const d = await open();
+    await createInviteCode(d, { ...base, code: "code-ddd" });
+    await reserveRedemption(d, "code-ddd", "did:a", NOW);
+    expect(await redeemedCodeOf(d, "lic-a", "did:a")).toBeNull();
+    await attachLicence(d, "code-ddd", "did:a", "lic-a", null);
+    expect(await redeemedCodeOf(d, "lic-a", "did:a")).toBe("code-ddd");
+    // Another holder naming the licence gets nothing.
+    expect(await redeemedCodeOf(d, "lic-a", "did:b")).toBeNull();
   });
 });

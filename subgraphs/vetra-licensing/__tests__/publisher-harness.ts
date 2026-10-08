@@ -132,7 +132,7 @@ export async function createPublisherHarness() {
   const stateOf = async (id: string): Promise<unknown> =>
     ((await client.get(id)).state as unknown as { global: unknown }).global;
 
-  return { client, db, cfg, deps, build, addApp, ledger, apps, reads, licenseGateway, rows, revisionOf, stateOf, ownedEnvironments };
+  return { client, db, cfg, deps, lifecycle, build, addApp, ledger, apps, reads, licenseGateway, rows, revisionOf, stateOf, ownedEnvironments };
 }
 
 export type PublisherHarness = Awaited<ReturnType<typeof createPublisherHarness>>;

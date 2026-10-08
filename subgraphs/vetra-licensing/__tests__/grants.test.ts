@@ -78,6 +78,30 @@ describe("grant store", () => {
     expect(await g.grantsForApp("c")).toStrictEqual([]);
   });
 
+  it("lists a holder's grants across apps, oldest first, legacy rows by address", async () => {
+    const g = await open();
+    await db!.insertInto("app_license_grants").values({
+      license_id: "legacy", app_id: "a", license_type_id: "type-1",
+      user_address: "0x1111111111111111111111111111111111111111", issued_by: "0xo",
+      created_at: "t0", kind: null, user_did: null,
+    }).execute();
+    await g.recordGrant({ licenseId: "l1", appId: "b", kind: "pro", userDid: DID, issuedBy: "0xo", now: "t1" });
+    await g.recordGrant({ licenseId: "other", appId: "b", kind: "pro", userDid: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", issuedBy: "0xo", now: "t1" });
+    expect(await g.grantsForHolder(DID)).toStrictEqual([
+      { licenseId: "legacy", appId: "a", userDid: DID, kind: null },
+      { licenseId: "l1", appId: "b", userDid: DID, kind: "pro" },
+    ]);
+  });
+
+  it("resolves the chain roots of some licences only", async () => {
+    const g = await open();
+    await g.linkChain({ licenseId: "l1", rootLicenseId: "l1", appId: "a", label: null, now: "t" });
+    await g.linkChain({ licenseId: "l2", rootLicenseId: "l1", appId: "a", label: null, now: "t" });
+    await g.linkChain({ licenseId: "x", rootLicenseId: "x", appId: "a", label: null, now: "t" });
+    expect(await g.chainRootsFor(["l2", "lx"])).toStrictEqual(new Map([["l2", "l1"], ["lx", "lx"]]));
+    expect(await g.chainRootsFor([])).toStrictEqual(new Map());
+  });
+
   it("resolves chain roots; an unchained licence is its own root", async () => {
     const g = await open();
     await g.linkChain({ licenseId: "l1", rootLicenseId: "l1", appId: "a", label: "Project", now: "t" });

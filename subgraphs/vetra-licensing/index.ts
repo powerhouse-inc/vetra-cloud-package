@@ -52,28 +52,37 @@ import { APP_DOC_TYPE } from "./app-reads.js";
 import { createReactorDocGateway } from "./doc-gateway.js";
 import { createKeyVault } from "./key-vault.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
+import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
+import { keyCiphertextForCode, redeemedCodeOf } from "./invite-codes.js";
+import { createHolderLicences } from "./licence-view.js";
+import type { StudioAccessDeps } from "./studio-access.js";
+import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 
 /** As vetra-access-codes: the same role and key prefix, so stored keys still decrypt. */
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
 
 /**
- * Encrypts the Claude keys attached to invite codes. Null (keys refused, the
- * subgraph still loads) when OPENBAO_ADDR is unset.
+ * The OpenBao transit client, built exactly as vetra-access-codes built it
+ * (OPENBAO_TRANSIT_ROLE, OPENBAO_TRANSIT_KEY_PREFIX): it encrypts and
+ * decrypts the Claude keys attached to invite codes and writes tenant
+ * secrets. Null (keys refused, the subgraph still loads) when OPENBAO_ADDR is
+ * unset.
  */
-function inviteKeyVault() {
+function openBaoTransit(): OpenBaoTransitClient | null {
   const addr = process.env.OPENBAO_ADDR;
   if (!addr) {
     console.warn("[licensing] OPENBAO_ADDR unset — invite-code Claude keys disabled");
     return null;
   }
-  return createKeyVault(
-    new OpenBaoTransitClient({
-      addr,
-      role: process.env.OPENBAO_TRANSIT_ROLE ?? DEFAULT_TRANSIT_ROLE,
-      keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
-    }),
-  );
+  return new OpenBaoTransitClient({
+    addr,
+    role: process.env.OPENBAO_TRANSIT_ROLE ?? DEFAULT_TRANSIT_ROLE,
+    keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
+  });
 }
+
+const UNDEFINED_TABLE = "42P01";
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -257,6 +266,18 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     });
     const grants = createGrantStore(db);
     const chainRows = createChainEnvironmentRows(db, cfg);
+    const transit = openBaoTransit();
+    const keyVault = createKeyVault(transit);
+    const issueDeps = {
+      owners: ownerLookup,
+      apps: appReads,
+      licence: (id: string) => reads.licenceRecord(id),
+      createLicenseDocument: () => gateway.create(),
+      executeLicence: (id: string, acts: Parameters<typeof gateway.execute>[1]) => gateway.execute(id, acts),
+      grants,
+      lifecycle,
+      logger: console,
+    };
     const publisherResolvers = createPublisherResolvers({
       // Ownership of environments comes from the apps tables, never documents.
       appEnvironments: async (appId) => {
@@ -283,26 +304,79 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       licences: reads,
       lifecycle,
       licenseGateway: gateway,
-      issue: {
-        owners: ownerLookup,
-        apps: appReads,
-        licence: (id) => reads.licenceRecord(id),
-        createLicenseDocument: () => gateway.create(),
-        executeLicence: (id, acts) => gateway.execute(id, acts),
-        grants,
-        lifecycle,
-        logger: console,
-      },
+      issue: issueDeps,
       grants,
       envRows: chainRows,
       codes: db,
-      keyVault: inviteKeyVault(),
+      keyVault,
       cfg,
       newId: () => randomUUID(),
       now: () => new Date().toISOString(),
     }) as Record<string, Record<string, unknown>>;
 
-    this.resolvers = mergeResolvers(machineResolvers, publisherResolvers);
+    // Owner surface. Everything a holder owns is read from grant rows and the
+    // lifecycle record (licence-view.ts), never from licence documents.
+    const holderLicences = createHolderLicences({ licences: reads, lifecycle, grants });
+    const studio: StudioAccessDeps = {
+      studioAppId: async () => (await appReads.appBySlug(cfg.studioAppSlug))?.id ?? null,
+      licencesOf: holderLicences,
+      redeemedCode: (licenseId, userDid) => redeemedCodeOf(db, licenseId, userDid),
+      keyCiphertextForCode: (code) => keyCiphertextForCode(db, code),
+      keyVault,
+      now: () => new Date().toISOString(),
+    };
+    // Tenant secrets are written through the vetra-cloud-secrets service
+    // in-process (its subgraph owns the schema), as vetra-access-codes did.
+    const secretsService = transit
+      ? createSecretsService({
+          db: (await this.relationalDb.createNamespace(
+            "vetra-cloud-secrets",
+          )) as unknown as Kysely<SecretsDB>,
+          transit,
+        })
+      : null;
+    // The environment processor's projection: which environment owns a tenant.
+    const envDb = (await this.relationalDb.createNamespace(
+      "vetra-cloud-environments",
+    )) as unknown as Kysely<{ environments: { tenantId: string | null; owner: string | null } }>;
+    const subscriptionResolvers = createSubscriptionResolvers({
+      issuer: {
+        ...issueDeps,
+        db,
+        activeLicencesOf: async (appId, userDid) =>
+          (await holderLicences(appId, userDid)).filter((l) => l.status === "ACTIVE"),
+      },
+      apps: appReads,
+      licences: reads,
+      lifecycle,
+      grants,
+      envRows: chainRows,
+      envState: (id) => envs.getState(id),
+      licenseGateway: gateway,
+      studio,
+      secrets: secretsService,
+      tenantOwners: async (tenantId) => {
+        try {
+          const rows = await envDb
+            .selectFrom("environments")
+            .select("owner")
+            .where("tenantId", "=", tenantId)
+            .execute();
+          return rows.map((r) => r.owner?.toLowerCase() ?? null);
+        } catch (err) {
+          // The processor has not created its table in this deployment yet.
+          if ((err as { code?: string }).code === UNDEFINED_TABLE) return [];
+          throw err;
+        }
+      },
+      logger: console,
+      now: () => new Date().toISOString(),
+    }) as Record<string, Record<string, unknown>>;
+
+    this.resolvers = mergeResolvers(
+      mergeResolvers(machineResolvers, publisherResolvers),
+      subscriptionResolvers,
+    );
 
     // vetra-app and licence documents are system-write-only. Protect every
     // existing one; best-effort and in the background, so it never blocks or

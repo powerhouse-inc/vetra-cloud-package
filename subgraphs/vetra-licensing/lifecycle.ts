@@ -52,6 +52,21 @@ export interface LifecycleRecord {
   replacedBy: string | null;
 }
 
+/** A record with the recorded end and the moment of the last status change. */
+export interface LifecycleEntry extends LifecycleRecord {
+  /** The end the licence was issued with; null for an open-ended licence (or a row the issue never wrote). */
+  endAt: string | null;
+  /** When the system last recorded a lifecycle write: for a terminal licence, when it ended. */
+  updatedAt: string;
+}
+
+const toEntry = (r: { status: string; replaced_by: string | null; end_at: string | null; updated_at: string }): LifecycleEntry => ({
+  status: r.status,
+  replacedBy: r.replaced_by,
+  endAt: r.end_at,
+  updatedAt: r.updated_at,
+});
+
 export type LifecycleStore = ReturnType<typeof createLifecycleStore>;
 
 /** `license_lifecycle`: the authoritative lifecycle status of every licence the system wrote. */
@@ -98,6 +113,25 @@ export function createLifecycleStore(db: Kysely<VetraLicensingDB>, now: () => st
         .where("license_id", "=", licenseId)
         .executeTakeFirst();
       return row ? { status: row.status, replacedBy: row.replaced_by } : null;
+    },
+    /** One licence's full entry; null when the system never recorded writing it. */
+    async entry(licenseId: string): Promise<LifecycleEntry | null> {
+      const row = await db
+        .selectFrom("license_lifecycle")
+        .select(["status", "replaced_by", "end_at", "updated_at"])
+        .where("license_id", "=", licenseId)
+        .executeTakeFirst();
+      return row ? toEntry(row) : null;
+    },
+    /** The full entries of these licences only; ids without a record are absent. */
+    async entries(ids: string[]): Promise<Map<string, LifecycleEntry>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectFrom("license_lifecycle")
+        .select(["license_id", "status", "replaced_by", "end_at", "updated_at"])
+        .where("license_id", "in", ids)
+        .execute();
+      return new Map(rows.map((r) => [r.license_id, toEntry(r)]));
     },
     async all(): Promise<Map<string, LifecycleRecord>> {
       const rows = await db

@@ -10,7 +10,7 @@ import {
 } from "../issue.js";
 import { grantLicense, replaceGrant } from "../issuers/publisher-grant.js";
 import { NotOnAllowListError, OperationRejectedError, UnknownLicenseError } from "../publisher-errors.js";
-import { lifecycleOf, type LifecycleRecord } from "../lifecycle.js";
+import { lifecycleOf, type LifecycleEntry, type LifecycleRecord } from "../lifecycle.js";
 import type { GrantRow } from "../grants.js";
 import { UnsupportedDidError } from "../did.js";
 import type { AppDocView } from "../app-reads.js";
@@ -61,7 +61,8 @@ function harness(
     delayMs?: number;
     /** Grant rows; by default one per initial licence, matching its document. */
     grantRows?: GrantRow[];
-    lifecycle?: [string, LifecycleRecord][];
+    /** Recorded lifecycle rows; endAt defaults to null, updatedAt to NOW. */
+    lifecycle?: [string, LifecycleRecord & { endAt?: string | null }][];
   } = {},
 ) {
   const licences = initial.map((l) => ({ ...l }));
@@ -70,10 +71,20 @@ function harness(
     (opts.grantRows ?? initial.map((l) => ({ licenseId: l.id, appId: l.app, userDid: didOf(l.user), kind: l.kind })))
       .map((g) => [g.licenseId, g]),
   );
-  const lifecycleRows = new Map<string, LifecycleRecord>(opts.lifecycle ?? []);
+  const lifecycleRows = new Map<string, LifecycleEntry>(
+    (opts.lifecycle ?? []).map(([id, r]) => [id, { endAt: null, updatedAt: NOW, ...r }]),
+  );
   const recordLifecycle = (id: string, actions: Action[]) => {
     const c = lifecycleOf(actions);
-    if (c) lifecycleRows.set(id, { status: c.status, replacedBy: c.replacedBy ?? lifecycleRows.get(id)?.replacedBy ?? null });
+    const prev = lifecycleRows.get(id);
+    if (c) {
+      lifecycleRows.set(id, {
+        status: c.status,
+        replacedBy: c.replacedBy ?? prev?.replacedBy ?? null,
+        endAt: c.end !== undefined ? c.end : (prev?.endAt ?? null),
+        updatedAt: NOW,
+      });
+    }
   };
   const executed: { id: string; actions: Action[] }[] = [];
   const created: string[] = [];
@@ -112,7 +123,7 @@ function harness(
       recordLifecycle(id, actions);
     }),
     lifecycle: {
-      get: async (id: string) => lifecycleRows.get(id) ?? null,
+      entry: async (id: string) => lifecycleRows.get(id) ?? null,
       record: vi.fn(async (id: string, actions: Action[]) => recordLifecycle(id, actions)),
     },
     grants: {
@@ -227,11 +238,68 @@ describe("issueLicense", () => {
     ["another app's licence", [lic({ app: "app-2" })], UnknownLicenseError],
     ["a REPLACED predecessor", [lic({ status: "REPLACED" })], LicenceNotUpgradableError],
     ["an ISSUED predecessor", [lic({ status: "ISSUED" })], LicenceNotUpgradableError],
-    ["the same kind, still ACTIVE", [lic({ kind: "pro" })], AlreadyHoldsError],
-  ])("refuses an upgrade of %s", async (_n, licences, error) => {
+    ["the same unlimited kind, still ACTIVE", [lic({ kind: "free" })], AlreadyHoldsError, "free"],
+  ])("refuses an upgrade of %s", async (_n, licences, error, kind = "pro") => {
     const h = harness(licences as LicenceRecord[]);
-    await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW })).rejects.toBeInstanceOf(error);
+    await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind, issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW })).rejects.toBeInstanceOf(error);
     expect(h.created).toStrictEqual([]);
+  });
+});
+
+describe("renewal: the same time-limited kind on an ACTIVE licence", () => {
+  const renew = (h: ReturnType<typeof harness>, now = NOW) =>
+    issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "INVITE_CODE", details: {}, issuedBy: DID, upgrades: "old", now });
+  const DAY = 24 * 60 * 60 * 1000;
+  const plus = (iso: string, days: number) => new Date(Date.parse(iso) + days * DAY).toISOString();
+
+  it("adds the term to the remaining time: 10 days left on 30 ends at old end + 30, same chain, predecessor REPLACED", async () => {
+    const oldEnd = plus(NOW, 10);
+    const h = harness([lic({ kind: "pro", end: oldEnd })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null, endAt: oldEnd }]] });
+    const out = await renew(h);
+    expect(out).toStrictEqual({ licenseId: "lic-1", user: DID, end: plus(oldEnd, 30), replaced: "old" });
+    expect(h.executed[0]!.actions[0]!.input).toMatchObject({ start: NOW, end: plus(oldEnd, 30), stage: "env-7" });
+    expect(h.deps.grants.linkChain).toHaveBeenCalledWith(expect.objectContaining({ licenseId: "lic-1", rootLicenseId: "root-0" }));
+    expect(h.lifecycleRows.get("old")).toMatchObject({ status: "REPLACED", replacedBy: "lic-1" });
+    expect(h.lifecycleRows.get("lic-1")).toMatchObject({ status: "ACTIVE", endAt: plus(oldEnd, 30) });
+  });
+
+  it("follows the record: ACTIVE past its end (not yet expired by the keeper) renews from now", async () => {
+    const oldEnd = plus(NOW, -3);
+    const h = harness([lic({ kind: "pro", end: oldEnd })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null, endAt: oldEnd }]] });
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30), replaced: "old" });
+    expect(h.lifecycleRows.get("old")?.status).toBe("REPLACED");
+  });
+
+  it("follows the record: recorded EXPIRED is a re-licence from now, nothing replaced", async () => {
+    const h = harness([lic({ kind: "pro", status: "ACTIVE", end: plus(NOW, 20) })], { lifecycle: [["old", { status: "EXPIRED", replacedBy: null, endAt: plus(NOW, -1) }]] });
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30), replaced: "old" });
+    expect(h.executed.map((e) => e.id)).toStrictEqual(["lic-1"]);
+  });
+
+  it("never takes the end from the document when a record exists: a forged far end adds nothing", async () => {
+    const h = harness([lic({ kind: "pro", end: "2099-01-01T00:00:00.000Z" })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null, endAt: null }]] });
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30) });
+  });
+
+  it("uses the document's end for a licence from before the record existed", async () => {
+    const oldEnd = plus(NOW, 5);
+    const h = harness([lic({ kind: "pro", end: oldEnd })]);
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(oldEnd, 30) });
+    const junk = harness([lic({ kind: "pro", end: "not a date" })]);
+    await expect(renew(junk)).resolves.toMatchObject({ end: plus(NOW, 30) });
+  });
+
+  it("an ISSUED predecessor is still refused", async () => {
+    const h = harness([lic({ kind: "pro" })], { lifecycle: [["old", { status: "ISSUED", replacedBy: null }]] });
+    await expect(renew(h)).rejects.toBeInstanceOf(LicenceNotUpgradableError);
+    expect(h.created).toStrictEqual([]);
+  });
+
+  it("a double-submitted renewal creates one successor", async () => {
+    const h = harness([lic({ kind: "pro", end: plus(NOW, 10) })], { delayMs: 5 });
+    const results = await Promise.allSettled([renew(h), renew(h)]);
+    expect(results.map((r) => r.status).sort()).toStrictEqual(["fulfilled", "rejected"]);
+    expect(h.created).toStrictEqual(["lic-1"]);
   });
 });
 
@@ -259,7 +327,7 @@ describe("the predecessor comes from DB authority", () => {
     const h = harness([lic({ status: "EXPIRED" })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null }]] });
     await expect(upgrade(h, DID)).resolves.toMatchObject({ licenseId: "lic-1", replaced: "old" });
     expect(h.executed.some((e) => e.id === "old" && e.actions[0]?.type === "REPLACE_LICENSE")).toBe(true);
-    expect(h.lifecycleRows.get("old")).toStrictEqual({ status: "REPLACED", replacedBy: "lic-1" });
+    expect(h.lifecycleRows.get("old")).toMatchObject({ status: "REPLACED", replacedBy: "lic-1" });
     expect([...h.lifecycleRows.values()].filter((r) => r.status === "ACTIVE")).toHaveLength(1);
   });
 

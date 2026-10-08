@@ -203,8 +203,9 @@ describe("vetraPublisher end to end", () => {
   it("replaces a grant in place and revokes", async () => {
     const termB = (await m("addTerm", { input: { appId: APP, kind: "2026-max", templateId, issuers: ["PUBLISHER_GRANT"] } })) as string;
     await m("publishTerm", { appId: APP, termId: termB });
-    expect(await codeOf(m("replaceGrant", { input: { licenseId, kind: "2026-pro" } }))).toBe("ALREADY_HOLDS");
     replacement = (await m("replaceGrant", { input: { licenseId, kind: "2026-max" } })) as string;
+    // The same kind again on a term without an end: nothing to renew.
+    expect(await codeOf(m("replaceGrant", { input: { licenseId: replacement, kind: "2026-max" } }))).toBe("ALREADY_HOLDS");
     const list = (await q("licenses", { appId: APP })) as { id: string; status: string; replacedBy: string | null }[];
     expect(list.find((x) => x.id === licenseId)).toMatchObject({ status: "REPLACED", replacedBy: replacement });
     expect(list.find((x) => x.id === replacement)).toMatchObject({ status: "ACTIVE", kind: "2026-max" });
@@ -213,9 +214,21 @@ describe("vetraPublisher end to end", () => {
     expect(await m("revokeLicense", { input: { licenseId: replacement, reason: "test" } })).toBe(true);
     expect(await codeOf(m("revokeLicense", { input: { licenseId: replacement } }))).toBe("INVALID_INPUT");
     // Revoked through the recording gateway: the lifecycle record says so.
-    expect((await h.deps.lifecycle.forIds([replacement])).get(replacement)?.status).toBe("REVOKED");
+    expect((await h.lifecycle.forIds([replacement])).get(replacement)?.status).toBe("REVOKED");
     expect(await codeOf(m("revokeLicense", { input: { licenseId: "no-such-licence" } }))).toBe("NOT_FOUND");
     expect(await codeOf(m("replaceGrant", { input: { licenseId: "no-such-licence", kind: "2026-max" } }))).toBe("NOT_FOUND");
+  });
+
+  it("replacing to the same time-limited kind renews: same chain, end counted on from the predecessor's", async () => {
+    await m("addToAllowList", { appId: APP, user: HOLDER });
+    const first = (await m("issueGrant", { input: { appId: APP, kind: "2026-pro", user: HOLDER } })) as string;
+    const renewed = (await m("replaceGrant", { input: { licenseId: first, kind: "2026-pro" } })) as string;
+    const [prev, next] = await Promise.all([h.reads.licenceRecord(first), h.reads.licenceRecord(renewed)]);
+    // Both issued at NOW: the predecessor's 30 days are kept and 30 more added.
+    expect(next).toMatchObject({ kind: "2026-pro", status: "ACTIVE", start: NOW, end: "2026-12-07T00:00:00.000Z" });
+    expect(prev).toMatchObject({ status: "REPLACED", replacedBy: renewed, end: "2026-11-07T00:00:00.000Z" });
+    expect(await h.deps.issue.grants.chainRootOf(renewed)).toBe(first);
+    await m("revokeLicense", { input: { licenseId: renewed } });
   });
 
   it("replace takes the holder from the grant row: a forged predecessor holder is refused", async () => {
@@ -247,11 +260,11 @@ describe("vetraPublisher end to end", () => {
     // Forged on the document only; license_lifecycle still says ACTIVE.
     await h.client.execute(victim, "main", [licenseActions.expireLicense({})]);
     const next = (await m("replaceGrant", { input: { licenseId: victim, kind: "2026-max" } })) as string;
-    const lifecycle = await h.deps.lifecycle.forIds([victim, next]);
+    const lifecycle = await h.lifecycle.forIds([victim, next]);
     expect(lifecycle.get(victim)).toStrictEqual({ status: "REPLACED", replacedBy: next });
     expect(lifecycle.get(next)?.status).toBe("ACTIVE");
     const chain = await h.db.selectFrom("license_chain").select("license_id").where("root_license_id", "=", victim).execute();
-    const active = [...(await h.deps.lifecycle.forIds(chain.map((c) => c.license_id))).values()].filter((r) => r.status === "ACTIVE");
+    const active = [...(await h.lifecycle.forIds(chain.map((c) => c.license_id))).values()].filter((r) => r.status === "ACTIVE");
     expect(active).toHaveLength(1);
     await m("revokeLicense", { input: { licenseId: next } });
   });
@@ -275,7 +288,7 @@ describe("vetraPublisher end to end", () => {
     const revoke = m("revokeLicense", { input: { licenseId: lic, reason: "overlap" } });
     const next = (await replace) as string;
     expect(await codeOf(revoke)).toBe("INVALID_INPUT");
-    const lifecycle = await h.deps.lifecycle.forIds([lic, next]);
+    const lifecycle = await h.lifecycle.forIds([lic, next]);
     expect(lifecycle.get(lic)).toStrictEqual({ status: "REPLACED", replacedBy: next });
     expect(lifecycle.get(next)?.status).toBe("ACTIVE");
     await m("revokeLicense", { input: { licenseId: next } });
