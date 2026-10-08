@@ -323,13 +323,69 @@ step, like the app backfill:
 
 ## vetra.io
 
-- **Publisher dashboard** — term and template editors with artifact/channel
-  dropdowns and a SHARED/DEDICATED switch; invite-code manager; allow list.
-- **Owner: My apps** — licences with their environments, status and warnings;
-  redeem a code (new environment, or as an upgrade of a held licence). *Upgrade* /
-  *Buy another* as paid flows wait for Achra.
-- **Early-access gate and create-studio** — move from `VetraAccessCodes` to
-  `hasLicense(vetra-studio)`; `modules/invites` rewritten onto the licensing API.
+Today an app lives in two places: `/user/apps/[id]` (overview, deployments,
+settings via `modules/apps`) and `/user/publisher` ("Licensing", `modules/publisher`,
+with its own app picker and its own `myApps`). Neither links to the other — the UI
+mirror of the document split this spec removes. The redesign follows the model:
+one place per app for the publisher, one place for what an owner holds.
+
+### Publisher: one app page
+
+`/user/apps/[id]` absorbs `modules/publisher`. The "Licensing" nav item,
+`/user/publisher` (redirects to the app list) and the app picker go away; the
+"app not ACTIVE" alert becomes a banner on the app page. Licensing tabs show only
+to the app's owner.
+
+| Tab | Content | From |
+|---|---|---|
+| Overview | URLs, App Environment, previews | existing |
+| Deployments | as today | existing |
+| Artifacts | published versions and channel pointers | the tier editor's artifact picker |
+| Templates | list + editor: SHARED/DEDICATED switch, shared environment, services and packages with artifact/channel dropdowns, size; "affects N environments" before saving | `tier-detail.tsx` |
+| Plans | terms: kind, label, template dropdown, validity, issuer checkboxes, publish/retire | Tiers tab |
+| Holders | licences with status filters; grant (allow list managed here), replace (upgrade/downgrade), revoke; each row links its environment | Holders + Environments tabs |
+| Invite codes | create (term, max uses, expiry, optional Claude key), deactivate, redemption counts, copyable `/redeem/<code>` link | new; replaces the `ADMINS` access-code admin |
+| Settings | existing | existing |
+
+`modules/publisher` hooks and components move under `modules/apps` (or stay a
+module rendered by the app page); its typed `PublisherApiError` handling stays.
+
+### Owner: subscriptions
+
+- New nav item **Subscriptions**, `/user/subscriptions`: my licences grouped by
+  app — kind, validity, status, offboarding banners (expiring, stops on, deleted
+  on), *Open* (my environment for DEDICATED, the app URL for SHARED), *Cancel*.
+- **`/redeem/<code>`** — shareable; validates the code, Renown login, then
+  "new environment (name the project)" or "upgrade my existing licence" when the
+  owner already holds one for that app. Replaces the code-entry step of the gate.
+- Paid *Upgrade* / *Buy another* wait for Achra.
+
+### Environments
+
+Environments provisioned from a licence show the app name and offboarding state
+and link back to the subscription. Creation and edits keep using the reactor
+document controllers.
+
+### Gate
+
+`modules/invites` and `EarlyAccessGate` are replaced by a licence check for the
+`vetra-studio` app (`hasLicense`). It gates **Studio and creating/publishing
+apps** — the Vetra builder product. Subscriptions, owner environments and
+`/redeem` need only a Renown login, so a Knowledge Vault buyer never needs a Vetra
+code. Without the licence, gated pages show "redeem a code" pointing at
+`/redeem`.
+
+Studio creation: `use-studio-products` reads `hasAttachedKey` from the studio
+licence; `applyInviteCodeSecret` becomes a licensing call resolving the key from
+`details.code`; the warm-pool claim path is unchanged.
+
+### Conventions
+
+Unchanged stack: shadcn/Radix, react-hook-form + zod, TanStack Query via
+`useAuthedQuery`, sonner toasts, typed API errors. Unit tests (vitest) per tab and
+for the redeem flow; a Playwright pass over publisher (template → plan → code) and
+owner (redeem → subscription → environment) journeys. vetra.io changes land on
+staging first, then main.
 
 ## Error handling
 
