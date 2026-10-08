@@ -16,6 +16,11 @@ import type { AppsDeps } from "./service.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
+  createAppDocOwnerResolver,
+  createAppDocProtector,
+} from "./app-doc-protection.js";
+import { studioPublisherAddress } from "../vetra-licensing/studio-app.js";
+import {
   DRIFT_INTERVAL_MS,
   reportAppDocumentDrift,
 } from "./app-document-drift.js";
@@ -61,6 +66,25 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
     }
 
+    // App documents are system-write-only: protect each one the moment it is
+    // created. Without document permissions there is nothing to protect with.
+    const perm = this.documentPermissionService;
+    const appDocProtect = perm
+      ? createAppDocProtector(
+          perm,
+          createAppDocOwnerResolver(
+            (id) =>
+              db
+                .selectFrom("apps")
+                .select("owner_address")
+                .where("id", "=", id)
+                .executeTakeFirst()
+                .then((r) => r?.owner_address ?? null),
+            studioPublisherAddress(),
+          ),
+        )
+      : undefined;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -72,7 +96,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
-      docs: createReactorAppDocStore(this.reactorClient as never),
+      docs: createReactorAppDocStore(this.reactorClient as never, appDocProtect),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     deps.onPreviewRemoved = (app, preview, reason) =>

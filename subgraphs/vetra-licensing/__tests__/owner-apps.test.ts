@@ -1,51 +1,82 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOwnerAppLookup } from "../owner-apps.js";
 import type { AppDocView } from "../app-reads.js";
+import { STUDIO_APP_ID } from "../studio-app.js";
+import type { OwnerAppRecord } from "../publisher-auth.js";
 
 const doc = (id: string, owner: string | null, over: Partial<AppDocView> = {}): AppDocView => ({
   id, name: `doc ${id}`, slug: id, owner, status: "ACTIVE", identityDid: null,
   productionEnvironmentId: null, templates: [], terms: [], artifacts: [], ...over,
 });
 
-const lookup = createOwnerAppLookup({
-  table: {
-    byId: async (id) => (id === "row-app" ? { id, name: "row", status: "ACTIVE", owner_address: "0xa" } : null),
-    byOwner: async (a) => (a === "0xa" ? [{ id: "row-app", name: "row", status: "ACTIVE", owner_address: "0xa" }] : []),
-  },
-  apps: {
-    app: async (id) => (id === "studio" ? doc("studio", "0xa") : id === "row-app" ? doc("row-app", "0xb") : id === "ownerless" ? doc("ownerless", null) : null),
-    appsOwnedBy: async (a) => (a === "0xa" ? [doc("studio", "0xa"), doc("row-app", "0xb")] : []),
-  },
-});
+const ROW: OwnerAppRecord = { id: "row-app", name: "row", status: "ACTIVE", owner_address: "0xa" };
+
+// Documents anyone could have written: a forged app claiming 0xvictim, a row
+// app whose document drifted to another owner, and the studio document
+// claiming an attacker owns it.
+const DOCS: Record<string, AppDocView> = {
+  forged: doc("forged", "0xvictim"),
+  "row-app": doc("row-app", "0xb"),
+  [STUDIO_APP_ID]: doc(STUDIO_APP_ID, "0xattacker", { name: "Vetra Studio", status: "SUSPENDED" }),
+};
+
+const make = (over: { studioPublisher?: string | null; app?: (id: string) => Promise<AppDocView | null> } = {}) =>
+  createOwnerAppLookup({
+    table: {
+      byId: async (id) => (id === "row-app" ? ROW : null),
+      byOwner: async (a) => (a === "0xa" ? [ROW] : []),
+    },
+    apps: { app: over.app ?? (async (id) => DOCS[id] ?? null) },
+    studioPublisher: over.studioPublisher === undefined ? "0xstudio" : over.studioPublisher,
+  });
 
 describe("owner lookup", () => {
   it("prefers the table row: its owner wins over a drifted document", async () => {
-    expect(await lookup.findAppById("row-app")).toMatchObject({ owner_address: "0xa", name: "row" });
+    expect(await make().findAppById("row-app")).toStrictEqual(ROW);
   });
-  it("falls back to the document for a document-only app", async () => {
-    expect(await lookup.findAppById("studio")).toStrictEqual({ id: "studio", name: "doc studio", status: "ACTIVE", owner_address: "0xa" });
+
+  it("never trusts a forged document's owner: an id with no row is unknown", async () => {
+    expect(await make().findAppById("forged")).toBeNull();
+    expect(await make().findAppById("nope")).toBeNull();
   });
-  it("never resolves an ownerless document as owned", async () => {
-    expect(await lookup.findAppById("ownerless")).toMatchObject({ owner_address: "" });
-    expect(await lookup.findAppById("nope")).toBeNull();
+
+  it("does not list a forged document in its claimed owner's apps", async () => {
+    expect(await make().listAppsForOwner("0xvictim")).toStrictEqual([]);
+    expect((await make().listAppsForOwner("0xa")).map((a) => a.id)).toStrictEqual(["row-app"]);
   });
-  it("lists table rows plus document-only apps, without duplicates", async () => {
-    expect((await lookup.listAppsForOwner("0xa")).map((a) => a.id)).toStrictEqual(["row-app", "studio"]);
+
+  it("resolves the studio app to the configured publisher, ACTIVE, ignoring document owner and status", async () => {
+    expect(await make().findAppById(STUDIO_APP_ID)).toStrictEqual({
+      id: STUDIO_APP_ID, name: "Vetra Studio", status: "ACTIVE", owner_address: "0xstudio",
+    });
   });
-  it("keeps the table rows when the document scan fails", async () => {
+
+  it("lists the studio app only for the studio publisher", async () => {
+    expect((await make().listAppsForOwner("0xSTUDIO")).map((a) => a.id)).toStrictEqual([STUDIO_APP_ID]);
+    expect(await make().listAppsForOwner("0xattacker")).toStrictEqual([]);
+  });
+
+  it("leaves the studio app unknown when no publisher is configured or its document is missing", async () => {
+    expect(await make({ studioPublisher: null }).findAppById(STUDIO_APP_ID)).toBeNull();
+    const missing = make({ app: async () => null });
+    expect(await missing.findAppById(STUDIO_APP_ID)).toBeNull();
+    expect(await missing.listAppsForOwner("0xstudio")).toStrictEqual([]);
+  });
+
+  it("rethrows a document read error rather than reading the studio app as unknown", async () => {
+    const failing = make({ app: async () => { throw new Error("reactor down"); } });
+    await expect(failing.findAppById(STUDIO_APP_ID)).rejects.toThrow("reactor down");
+  });
+
+  it("keeps the publisher's table rows when the studio document read fails", async () => {
     const warn = vi.fn();
-    const failing = createOwnerAppLookup({
-      table: {
-        byId: async () => null,
-        byOwner: async () => [{ id: "row-app", name: "row", status: "ACTIVE", owner_address: "0xa" }],
-      },
-      apps: {
-        app: async () => null,
-        appsOwnedBy: async () => { throw new Error("reactor down"); },
-      },
+    const lookup = createOwnerAppLookup({
+      table: { byId: async () => null, byOwner: async () => [{ ...ROW, owner_address: "0xstudio" }] },
+      apps: { app: async () => { throw new Error("reactor down"); } },
+      studioPublisher: "0xstudio",
       logger: { warn },
     });
-    expect((await failing.listAppsForOwner("0xa")).map((a) => a.id)).toStrictEqual(["row-app"]);
+    expect((await lookup.listAppsForOwner("0xstudio")).map((a) => a.id)).toStrictEqual(["row-app"]);
     expect(warn).toHaveBeenCalledOnce();
   });
 });

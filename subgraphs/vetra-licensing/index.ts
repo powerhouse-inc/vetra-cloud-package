@@ -13,6 +13,11 @@ import { loadLicensingConfig } from "./config.js";
 import { createReactorLicenseReads } from "./reads.js";
 import { createAppReads } from "./app-reads.js";
 import { createOwnerAppLookup } from "./owner-apps.js";
+import { STUDIO_APP_ID, studioPublisherAddress } from "./studio-app.js";
+import {
+  createAppDocOwnerResolver,
+  sweepAppDocumentProtection,
+} from "../vetra-apps/app-doc-protection.js";
 import { createReactorLicenseGateway } from "./license-gateway.js";
 import { LicenseKeeper } from "./keeper.js";
 import { ProvisioningKeeper } from "./provisioning-keeper.js";
@@ -138,7 +143,24 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // wins where one exists; an app that exists only as a document (the
     // vetra-studio app) falls back to the document's owner. Platform admins
     // (the ADMINS env) pass via resolveOwnerApp.
-    const appReads = createAppReads(this.reactorClient as never);
+    const studioPublisher = studioPublisherAddress();
+    const rowOwner = (id: string) =>
+      appsDb
+        .selectFrom("apps")
+        .select("owner_address")
+        .where("id", "=", id)
+        .executeTakeFirst()
+        .then((r) => r?.owner_address ?? null);
+    const appReads = createAppReads(this.reactorClient as never, {
+      // Only an app with a row, or the studio app, is trusted by slug.
+      trustedIds: async () =>
+        new Set([
+          ...(await appsDb.selectFrom("apps").select("id").execute()).map(
+            (r) => r.id,
+          ),
+          STUDIO_APP_ID,
+        ]),
+    });
     const publisherResolvers = createPublisherResolvers(db, {
       auth: createOwnerAppLookup({
         table: {
@@ -157,6 +179,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
               .execute(),
         },
         apps: appReads,
+        studioPublisher,
       }),
       reads,
       cfg,
@@ -166,6 +189,18 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     }) as Record<string, Record<string, unknown>>;
 
     this.resolvers = mergeResolvers(machineResolvers, publisherResolvers);
+
+    // vetra-app documents are system-write-only. Protect every existing one;
+    // best-effort and in the background, so it never blocks or fails setup.
+    const perm = this.documentPermissionService;
+    if (perm) {
+      void sweepAppDocumentProtection({
+        perm,
+        listAppDocumentIds: () => appReads.allIds(),
+        ownerFor: createAppDocOwnerResolver(rowOwner, studioPublisher),
+        logger: console,
+      });
+    }
 
     // The same row operations the resolvers use, so the per-app environment
     // cap is one implementation on both paths.

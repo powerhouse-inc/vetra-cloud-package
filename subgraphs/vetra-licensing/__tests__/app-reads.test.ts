@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAppReads, parseAppDocument, resolveKind, APP_DOC_TYPE } from "../app-reads.js";
 
 const appDoc = (id: string, global: Record<string, unknown>) => ({
@@ -97,13 +97,54 @@ describe("createAppReads", () => {
       return d;
     },
   };
-  const reads = createAppReads(client);
+  const reads = createAppReads(client, {
+    trustedIds: async () => new Set(["app-kv", "app-other"]),
+  });
   it("gets by id, null when missing", async () => {
     expect((await reads.app("app-kv"))?.name).toBe("Knowledge Vault");
     expect(await reads.app("missing")).toBeNull();
   });
-  it("finds by slug and by owner (case-insensitive)", async () => {
+  it("rethrows a read error that is not not-found", async () => {
+    const failing = createAppReads({ ...client, get: async () => { throw new Error("connection reset"); } });
+    await expect(failing.app("app-kv")).rejects.toThrow("connection reset");
+  });
+  it("finds by slug among trusted ids", async () => {
     expect((await reads.appBySlug("other"))?.id).toBe("app-other");
-    expect((await reads.appsOwnedBy("0xowner")).map((a) => a.id).sort()).toStrictEqual(["app-kv", "app-other"]);
+    expect(await reads.appBySlug("nope")).toBeNull();
+  });
+  it("ignores an untrusted document claiming a trusted app's slug", async () => {
+    const forged = appDoc("forged", { slug: "knowledge-vault", owner: "0xattacker", status: "ACTIVE" });
+    const r = createAppReads(
+      { ...client, find: async () => ({ results: [forged, ...docs] }) },
+      { trustedIds: async () => new Set(["app-kv"]) },
+    );
+    expect((await r.appBySlug("knowledge-vault"))?.id).toBe("app-kv");
+  });
+  it("refuses an ambiguous slug shared by two trusted apps, and logs", async () => {
+    const twin = appDoc("app-twin", { slug: "knowledge-vault", status: "ACTIVE" });
+    const warn = vi.fn();
+    const r = createAppReads(
+      { ...client, find: async () => ({ results: [twin, ...docs] }) },
+      { trustedIds: async () => new Set(["app-kv", "app-twin"]), logger: { warn } },
+    );
+    expect(await r.appBySlug("knowledge-vault")).toBeNull();
+    expect(warn).toHaveBeenCalledOnce();
+  });
+  it("refuses to look up by slug without trusted ids", async () => {
+    await expect(createAppReads(client).appBySlug("other")).rejects.toThrow(/trustedIds/);
+  });
+  it("lists every app document id, following the cursor", async () => {
+    let calls = 0;
+    const paged = createAppReads({
+      ...client,
+      find: async (_s: unknown, _v: unknown, p?: { cursor: string }) => {
+        calls++;
+        return p?.cursor === "0"
+          ? { results: [docs[0], { header: { id: "lic", documentType: "powerhouse/app-owner-license" } }], nextCursor: "1" }
+          : { results: [docs[1]] };
+      },
+    });
+    expect(await paged.allIds()).toStrictEqual(["app-kv", "app-other"]);
+    expect(calls).toBe(2);
   });
 });

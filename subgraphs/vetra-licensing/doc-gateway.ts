@@ -1,5 +1,6 @@
 import type { Action } from "document-model";
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
+import { APP_DOC_TYPE } from "./app-reads.js";
 import type { LicenseGatewayClientLike } from "./license-gateway.js";
 import { OperationRejectedError } from "./publisher-errors.js";
 
@@ -21,7 +22,17 @@ export function createReactorDocGateway(
   client: LicenseGatewayClientLike,
   docType: string,
   noun: string,
+  /**
+   * Runs right after create(), before the id is handed out. For vetra-app
+   * documents this makes them system-write-only (app-doc-protection.ts); a
+   * failure propagates.
+   */
+  protect?: (id: string) => Promise<void>,
 ): DocGateway {
+  if (docType === APP_DOC_TYPE && !protect) {
+    // Pass an explicit no-op only where document permissions are off.
+    throw new Error("a vetra-app document gateway must protect what it creates");
+  }
   async function getDoc(id: string): Promise<DocLike | null> {
     try {
       return ((await client.get(id)) as DocLike | null) ?? null;
@@ -33,7 +44,9 @@ export function createReactorDocGateway(
   return {
     async create() {
       const doc = await client.createEmpty(docType, {});
-      return (doc.header as { id: string }).id;
+      const id = (doc.header as { id: string }).id;
+      if (protect) await protect(id);
+      return id;
     },
     async execute(id, acts) {
       const before = await getDoc(id);

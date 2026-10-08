@@ -1,56 +1,66 @@
 import type { AppReads } from "./app-reads.js";
 import type { OwnerAppRecord, PublisherAuthDeps } from "./publisher-auth.js";
+import { STUDIO_APP_ID } from "./studio-app.js";
 
 /**
- * Ownership for the publisher surface. The apps table still wins for every app
- * that has a row (apps-as-documents step 2 has not moved reads yet). An app
- * that exists only as a document — the vetra-studio app — falls back to the
- * document. A document without an owner resolves with an empty owner, which
- * resolveOwnerApp can never match: unowned must not read as yours.
+ * Ownership for the publisher surface. Ownership is NEVER read from document
+ * state: with document permissions on, any signed-in user can create or write
+ * an unprotected vetra-app document, so a document claiming an owner proves
+ * nothing.
+ *
+ * - An app with an `apps` row: the row, unchanged.
+ * - The studio app (STUDIO_APP_ID, document-only): owned by the configured
+ *   studio publisher, ACTIVE, once its document exists.
+ * - Any other document-only id: unknown.
  */
 export function createOwnerAppLookup(deps: {
   table: {
     byId(id: string): Promise<OwnerAppRecord | null>;
     byOwner(address: string): Promise<OwnerAppRecord[]>;
   };
-  apps: Pick<AppReads, "app" | "appsOwnedBy">;
+  apps: Pick<AppReads, "app">;
+  /** Lowercased; null when unconfigured, which leaves the studio app unknown. */
+  studioPublisher: string | null;
   logger?: Pick<Console, "warn">;
 }): PublisherAuthDeps {
-  const fromDoc = (d: { id: string; name: string | null; slug: string | null; status: string; owner: string | null }): OwnerAppRecord => ({
-    id: d.id,
-    name: d.name ?? d.slug ?? d.id,
-    status: d.status,
-    owner_address: d.owner?.toLowerCase() ?? "",
-  });
+  async function studioApp(): Promise<OwnerAppRecord | null> {
+    if (!deps.studioPublisher) return null;
+    // Only the name comes from the document; a read error propagates.
+    const doc = await deps.apps.app(STUDIO_APP_ID);
+    if (!doc) return null;
+    return {
+      id: STUDIO_APP_ID,
+      name: doc.name ?? doc.slug ?? STUDIO_APP_ID,
+      status: "ACTIVE",
+      owner_address: deps.studioPublisher,
+    };
+  }
+
   return {
     async findAppById(id) {
       const row = await deps.table.byId(id);
       if (row) return row;
-      const doc = await deps.apps.app(id);
-      return doc ? fromDoc(doc) : null;
+      return id === STUDIO_APP_ID ? studioApp() : null;
     },
     async listAppsForOwner(address) {
       const rows = await deps.table.byOwner(address);
-      const seen = new Set(rows.map((r) => r.id));
-      let owned: Awaited<ReturnType<AppReads["appsOwnedBy"]>>;
+      if (
+        !deps.studioPublisher ||
+        address.toLowerCase() !== deps.studioPublisher ||
+        rows.some((r) => r.id === STUDIO_APP_ID)
+      ) {
+        return rows;
+      }
       try {
-        owned = await deps.apps.appsOwnedBy(address);
+        const studio = await studioApp();
+        return studio ? [...rows, studio] : rows;
       } catch (err) {
-        // The table rows are still the truth for every app that has one: a
-        // reactor hiccup must not blank the publisher's own app list.
+        // A reactor hiccup must not blank the publisher's table-backed apps.
         (deps.logger ?? console).warn(
-          `[licensing] app document scan for ${address} failed; listing table rows only: ${err instanceof Error ? err.message : String(err)}`,
+          `[licensing] reading the studio app document failed; listing table rows only: ${err instanceof Error ? err.message : String(err)}`,
         );
-        owned = [];
+        return rows;
       }
-      const docs = owned.filter((d) => !seen.has(d.id));
-      // A document whose row exists but names another owner is not listed:
-      // the row is the truth for that app.
-      const docOnly: OwnerAppRecord[] = [];
-      for (const d of docs) {
-        if (!(await deps.table.byId(d.id))) docOnly.push(fromDoc(d));
-      }
-      return [...rows, ...docOnly];
     },
   };
 }

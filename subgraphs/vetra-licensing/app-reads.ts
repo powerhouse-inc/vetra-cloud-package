@@ -196,22 +196,35 @@ export function resolveKind(app: AppDocView, kind: string | null): KindResolutio
 
 export interface AppReads {
   app(id: string): Promise<AppDocView | null>;
+  /**
+   * The trusted app with this slug: only documents whose id is trusted (an
+   * `apps` row, or the studio app) are considered, because anyone signed in
+   * can write an unprotected document claiming any slug. More than one
+   * trusted match is ambiguous: null, logged.
+   */
   appBySlug(slug: string): Promise<AppDocView | null>;
-  appsOwnedBy(address: string): Promise<AppDocView[]>;
+  /** Every app document id, trusted or not; for the protection sweep. */
+  allIds(): Promise<string[]>;
 }
 
 const PAGE_SIZE = 200;
 
-export function createAppReads(client: LicenseClientLike): AppReads {
-  async function all(): Promise<AppDocView[]> {
-    const out: AppDocView[] = [];
+export interface AppReadsOptions {
+  /** Ids an app document must have to be trusted by slug. */
+  trustedIds?: () => Promise<ReadonlySet<string>>;
+  logger?: Pick<Console, "warn">;
+}
+
+export function createAppReads(
+  client: LicenseClientLike,
+  opts: AppReadsOptions = {},
+): AppReads {
+  async function allDocs(): Promise<unknown[]> {
+    const out: unknown[] = [];
     let cursor = "0";
     for (;;) {
       const page = await client.find({ type: APP_DOC_TYPE }, undefined, { cursor, limit: PAGE_SIZE });
-      for (const d of page.results) {
-        const v = parseAppDocument(d);
-        if (v) out.push(v);
-      }
+      out.push(...page.results);
       if (!page.nextCursor || page.nextCursor === cursor) return out;
       cursor = page.nextCursor;
     }
@@ -226,11 +239,27 @@ export function createAppReads(client: LicenseClientLike): AppReads {
       }
     },
     async appBySlug(slug) {
-      return (await all()).find((a) => a.slug === slug) ?? null;
+      if (!opts.trustedIds) {
+        throw new Error("appBySlug needs trustedIds: an untrusted document can claim any slug");
+      }
+      const trusted = await opts.trustedIds();
+      const matches = (await allDocs()).flatMap((d) => {
+        const v = parseAppDocument(d);
+        return v && v.slug === slug && trusted.has(v.id) ? [v] : [];
+      });
+      if (matches.length > 1) {
+        (opts.logger ?? console).warn(
+          `[licensing] slug ${slug} matches ${matches.length} trusted apps (${matches.map((m) => m.id).join(", ")}); refusing`,
+        );
+        return null;
+      }
+      return matches[0] ?? null;
     },
-    async appsOwnedBy(address) {
-      const want = address.toLowerCase();
-      return (await all()).filter((a) => a.owner?.toLowerCase() === want);
+    async allIds() {
+      return (await allDocs()).flatMap((d) => {
+        const id = isDocType(d, APP_DOC_TYPE) ? docId(d) : null;
+        return id ? [id] : [];
+      });
     },
   };
 }
