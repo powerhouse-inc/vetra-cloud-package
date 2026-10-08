@@ -37,6 +37,7 @@ function fakeDeps(over: Partial<MigrationDeps> = {}): MigrationDeps {
     ledger: { lookup: refuse(), seed: refuse() },
     createAppDocument: refuse(),
     protectAppDocument: null,
+    protectLicenceDocument: null,
     licenseGateway: { activate: refuse(), expire: refuse(), create: refuse(), execute: refuse() },
     envState: refuse(),
     deleteDocument: refuse(),
@@ -227,6 +228,31 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect((deps.deleteDocument as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
     handle.stop();
+  });
+
+  it("stop() ends an in-flight pass at the next step boundary, without completing", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let licenceReads = 0;
+    const deps = cleanWorld({
+      // The first step (licence types) blocks until the test stops the migration.
+      legacyTypeDocs: vi.fn(async () => {
+        await gate;
+        return [];
+      }),
+      licences: vi.fn(async () => {
+        licenceReads++;
+        return [];
+      }),
+    });
+    const handle = startLicensingMigration(deps, 60_000);
+    await new Promise((r) => setTimeout(r, 50));
+    handle.stop();
+    release();
+    await vi.waitFor(() => expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration problem: step stopped before licences: shutting down"));
+    expect(await steps()).toStrictEqual([]);
+    // licence-types read the licences to find referenced types; nothing after it ran.
+    expect(licenceReads).toBe(1);
   });
 
   it("logs a dry-run's findings in full once, then only its summary while they do not change", async () => {

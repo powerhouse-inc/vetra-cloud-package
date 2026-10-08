@@ -94,6 +94,12 @@ export interface InviteCodes {
   /** OpenBao transit ciphertext of an attached Claude key; never returned. */
   anthropic_key_ciphertext: string | null;
   created_at: string;
+  /**
+   * Moved from vetra-access-codes, which trimmed and lowercased every input:
+   * an exact lookup that misses falls back to lower(trim(input)) on these
+   * rows only. Codes created here stay exactly case-sensitive.
+   */
+  legacy_case_insensitive: boolean;
 }
 
 export interface InviteRedemptions {

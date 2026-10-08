@@ -465,6 +465,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
               console,
             )
           : null,
+        protectLicenceDocument: perm
+          ? createAppDocProtector(perm, platformOwner, this.reactorClient as never, console, "licence document")
+          : null,
         licenseGateway: gateway,
         envState: (id) => envs.getState(id),
         deleteDocument: async (id) => {

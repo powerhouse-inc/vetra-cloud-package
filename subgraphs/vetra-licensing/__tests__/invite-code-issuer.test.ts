@@ -214,8 +214,24 @@ describe("redeemInviteCode", () => {
     release.mockRestore();
     expect(calls).toBe(1);
     const logged = vi.mocked(deps.logger.warn).mock.calls.map((c) => String(c[0])).join("\n");
-    expect(logged).toMatch(/code#[0-9a-f]{12}/);
-    expect(logged).not.toContain("dedicated");
+    // Nothing derived from the code either: a hash of a human-chosen code reverses.
+    expect(logged).toContain("invite-code");
+    expect(logged).not.toMatch(/code#|dedicated/);
+  });
+
+  it("redeems a migrated legacy code however it is cased or padded, and a new code only exactly", async () => {
+    await db.insertInto("invite_codes").values({
+      code: "cohort-1", app_id: "app-1", kind: "free", label: null, active: true, expires_at: null, max_uses: null,
+      anthropic_key_ciphertext: null, created_at: NOW, legacy_case_insensitive: true,
+    }).execute();
+    const legacy = await redeemInviteCode(deps, { code: "  Cohort-1 ", user: DID, label: null, upgrades: null, now: NOW });
+    expect(legacy).toMatchObject({ appId: "app-1", fresh: true });
+    expect(await findRedemption(db, "cohort-1", DID)).toMatchObject({ license_id: legacy.licenseId });
+    // A code created here is exactly case-sensitive.
+    await createInviteCode(db, { appId: "app-1", kind: "pro", code: "NewCode-2026", label: null, expiresAt: null, maxUses: null, anthropicKeyCiphertext: null, now: NOW });
+    await expect(
+      redeemInviteCode(deps, { code: "newcode-2026", user: DID, label: null, upgrades: null, now: NOW }),
+    ).rejects.toBeInstanceOf(InvalidCodeError);
   });
 
   it("lets a caller hold a DEDICATED kind more than once", async () => {
@@ -279,7 +295,7 @@ describe("redeemInviteCode", () => {
       throw new Error("db down");
     });
     await expect(redeem("dedicated")).rejects.toThrow("reactor down");
-    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not release the reservation"));
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not release an invite-code reservation"));
     release.mockRestore();
     // The reservation left behind is completed by the retry.
     await expect(redeem("dedicated")).resolves.toMatchObject({ licenseId: "lic-1", fresh: true });

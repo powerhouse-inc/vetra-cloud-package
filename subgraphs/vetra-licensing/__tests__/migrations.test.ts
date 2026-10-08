@@ -195,7 +195,7 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     await d.insertInto("app_allow_list").values({ app_id: "a", user_did: "u", added_at: "t" }).execute();
     await d.insertInto("invite_codes").values({
       code: "c", app_id: "a", kind: "k", label: null, active: true, expires_at: null, max_uses: null,
-      anthropic_key_ciphertext: null, created_at: "t",
+      anthropic_key_ciphertext: null, created_at: "t", legacy_case_insensitive: false,
     }).execute();
     await d.insertInto("invite_redemptions").values({ code: "c", user_did: "u", redeemed_at: "t", access_expires: null, license_id: null }).execute();
     await d.insertInto("environment_reporting_tokens").values({ environment_id: "e", token_hash: "h", created_at: "t" }).execute();

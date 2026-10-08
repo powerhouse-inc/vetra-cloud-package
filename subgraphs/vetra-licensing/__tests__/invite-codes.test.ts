@@ -222,6 +222,23 @@ describe("invite codes", () => {
     expect(await redeemedCodeOf(d, "lic-a", "did:b")).toBeNull();
   });
 
+  it("matches migrated legacy codes on lower(trim(input)) only, after an exact miss", async () => {
+    const d = await open();
+    await d.insertInto("invite_codes").values({
+      code: "cohort-1", app_id: "studio", kind: "k", label: null, active: true, expires_at: null, max_uses: null,
+      anthropic_key_ciphertext: null, created_at: NOW, legacy_case_insensitive: true,
+    }).execute();
+    await createInviteCode(d, { ...base, code: "Mixed-Case-1" });
+    expect((await getCode(d, " COHORT-1\t"))?.code).toBe("cohort-1");
+    expect((await getCode(d, "Mixed-Case-1"))?.code).toBe("Mixed-Case-1");
+    expect(await getCode(d, "mixed-case-1")).toBeNull();
+    expect(await getCode(d, "MIXED-CASE-1")).toBeNull();
+    expect(await getCode(d, "cohort-2")).toBeNull();
+    // Rows created here get the flag off.
+    expect((await d.selectFrom("invite_codes").select(["code", "legacy_case_insensitive"]).orderBy("code").execute()))
+      .toStrictEqual([{ code: "Mixed-Case-1", legacy_case_insensitive: false }, { code: "cohort-1", legacy_case_insensitive: true }]);
+  });
+
   it("picks, among several redemptions behind one licence, the newest live one whose code has a key", async () => {
     // A studio licence the migration built from several legacy redemptions:
     // as vetra-access-codes did, the key comes from the newest unexpired

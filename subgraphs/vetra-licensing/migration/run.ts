@@ -6,6 +6,7 @@ import {
   migrateLicenseTypes,
   migrateStudio,
   newContext,
+  recordLifecycles,
   seedLedger,
   type MigrationContext,
   type MigrationDeps,
@@ -15,11 +16,15 @@ import {
 
 type Step = (deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext) => Promise<void>;
 
-/** In order: licences need the type map, environments need kinds, the ledger comes last. */
+/**
+ * In order: licences need the type map, environments need kinds, lifecycle
+ * needs the chains environments link, the ledger comes last.
+ */
 const STEPS: [string, Step][] = [
   ["license-types", migrateLicenseTypes],
   ["licences", migrateLicences],
   ["environments", migrateEnvironments],
+  ["lifecycle", recordLifecycles],
   ["studio", migrateStudio],
   ["ledger", seedLedger],
 ];
@@ -38,15 +43,27 @@ const withMigrationLock = keyedMutex();
 
 const report = (mode: MigrationMode): MigrationReport => ({ mode, actions: [], problems: [], warnings: [] });
 
-async function runSteps(deps: MigrationDeps, r: MigrationReport, label: string): Promise<void> {
+export interface RunOptions {
+  quietIfUnchanged?: (r: MigrationReport) => boolean;
+  /** Checked between steps: true once the subgraph is shutting down. */
+  stopped?: () => boolean;
+}
+
+/** False when the run was stopped part-way (a problem says so). */
+async function runSteps(deps: MigrationDeps, r: MigrationReport, label: string, opts: RunOptions): Promise<boolean> {
   const ctx = newContext();
   for (const [name, step] of STEPS) {
+    if (opts.stopped?.()) {
+      r.problems.push(`${label} stopped before ${name}: shutting down`);
+      return false;
+    }
     try {
       await step(deps, r, ctx);
     } catch (err) {
       r.problems.push(`${label} ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  return true;
 }
 
 async function isComplete(deps: MigrationDeps): Promise<boolean> {
@@ -74,7 +91,7 @@ function log(deps: MigrationDeps, r: MigrationReport, extra: string, quiet: bool
   for (const p of r.problems) deps.logger.warn(`[licensing] migration problem: ${p}`);
 }
 
-async function runUnlocked(deps: MigrationDeps, opts: { quietIfUnchanged?: (r: MigrationReport) => boolean }): Promise<MigrationResult> {
+async function runUnlocked(deps: MigrationDeps, opts: RunOptions): Promise<MigrationResult> {
   const mode = deps.cfg.migration;
   if (mode === "off") {
     return { ...report("dry-run"), complete: false, deletionComplete: false };
@@ -82,13 +99,13 @@ async function runUnlocked(deps: MigrationDeps, opts: { quietIfUnchanged?: (r: M
   const r = report(mode);
   let complete = await isComplete(deps);
   if (!complete) {
-    await runSteps(deps, r, "step");
+    await runSteps(deps, r, "step", opts);
     // Verification: a dry-run pass over what apply left must find nothing.
     // `complete` is written only in apply mode and only after it is clean.
     if (mode === "apply" && r.problems.length === 0) {
       const verify = report("dry-run");
-      await runSteps(deps, verify, "verify");
-      if (verify.actions.length === 0 && verify.problems.length === 0) {
+      const ran = await runSteps(deps, verify, "verify", opts);
+      if (ran && verify.actions.length === 0 && verify.problems.length === 0 && !opts.stopped?.()) {
         await deps.db
           .insertInto("licensing_migration_steps")
           .values({ step: COMPLETE_STEP, completed_at: deps.now(), detail: `${r.actions.length} actions in the completing run` })
@@ -103,7 +120,7 @@ async function runUnlocked(deps: MigrationDeps, opts: { quietIfUnchanged?: (r: M
   // The legacy licence types go only once everything else is complete, and
   // only when asked (LICENSING_MIGRATION_DELETE_LICENSE_TYPES=true).
   let deletionComplete = false;
-  if (complete && deps.cfg.deleteLicenseTypes) {
+  if (complete && deps.cfg.deleteLicenseTypes && !opts.stopped?.()) {
     try {
       deletionComplete = await deleteLegacyLicenseTypes(deps, r);
     } catch (err) {
@@ -115,10 +132,7 @@ async function runUnlocked(deps: MigrationDeps, opts: { quietIfUnchanged?: (r: M
 }
 
 /** One full pass. Never throws: every failure is a problem in the result. */
-export async function runLicensingMigration(
-  deps: MigrationDeps,
-  opts: { quietIfUnchanged?: (r: MigrationReport) => boolean } = {},
-): Promise<MigrationResult> {
+export async function runLicensingMigration(deps: MigrationDeps, opts: RunOptions = {}): Promise<MigrationResult> {
   try {
     return await withMigrationLock("licensing-migration", () => runUnlocked(deps, opts));
   } catch (err) {
@@ -166,7 +180,10 @@ export function startLicensingMigration(deps: MigrationDeps, intervalMs = 600_00
   let timer: ReturnType<typeof setInterval> | null = null;
   let busy = false;
   let lastFindings: string | null = null;
+  let stopped = false;
+  /** Also ends an in-flight pass at its next step boundary. */
   const stop = () => {
+    stopped = true;
     if (timer) clearInterval(timer);
     timer = null;
   };
@@ -185,7 +202,8 @@ export function startLicensingMigration(deps: MigrationDeps, intervalMs = 600_00
     if (busy) return;
     busy = true;
     try {
-      const result = await runLicensingMigration(deps, { quietIfUnchanged });
+      if (stopped) return;
+      const result = await runLicensingMigration(deps, { quietIfUnchanged, stopped: () => stopped });
       if (result.complete && (!deps.cfg.deleteLicenseTypes || result.deletionComplete)) stop();
     } finally {
       busy = false;

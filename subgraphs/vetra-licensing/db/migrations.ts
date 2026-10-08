@@ -1,4 +1,4 @@
-import { type Kysely, sql } from "kysely";
+import { type ColumnDefinitionBuilderCallback, type Kysely, sql } from "kysely";
 import { ensureLedgerTables } from "../licensing-ledger.js";
 
 /** Postgres SQLSTATE for "column already exists". */
@@ -30,7 +30,8 @@ async function addColumnIfMissing(
   db: Kysely<any>,
   table: string,
   column: string,
-  type: "varchar(255)" | "text",
+  type: "varchar(255)" | "text" | "boolean",
+  build?: ColumnDefinitionBuilderCallback,
 ): Promise<void> {
   const schema = namespaceSchema(db, table);
   const { rows } = await sql<{ present: number }>`
@@ -41,7 +42,7 @@ async function addColumnIfMissing(
   `.execute(db);
   if (rows.length > 0) return;
   try {
-    await db.schema.alterTable(table).addColumn(column, type).execute();
+    await db.schema.alterTable(table).addColumn(column, type, build).execute();
   } catch (error) {
     if ((error as { code?: string })?.code !== DUPLICATE_COLUMN) throw error;
   }
@@ -190,6 +191,11 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists().execute();
   await db.schema.createIndex("invite_codes_app_id_idx").on("invite_codes")
     .column("app_id").ifNotExists().execute();
+  // Codes moved from vetra-access-codes, which trimmed and lowercased every
+  // input: those (and only those) still match case-insensitively.
+  await addColumnIfMissing(db, "invite_codes", "legacy_case_insensitive", "boolean", (c) =>
+    c.notNull().defaultTo(false),
+  );
 
   await db.schema.createTable("invite_redemptions")
     .addColumn("code", "varchar(255)", (c) => c.notNull())

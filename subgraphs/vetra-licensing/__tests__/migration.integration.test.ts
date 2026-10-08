@@ -227,6 +227,9 @@ beforeAll(async () => {
   ids.T_DEL = await legacyType({ app: APP_DEL, kind: "Gone", label: "Gone", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE" });
   ids.T_PRO = await legacyType({ app: APP_KV, kind: "PRO", label: "Pro", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE" });
   ids.T_OLD = await legacyType({ app: APP_KV, kind: "PRO", label: "Pro (old)", validityDays: 30, template: OLD_TEMPLATE, status: "RETIRED" });
+  // Anyone can create a licence-type document naming any app: no licence was
+  // ever issued on this one, so it must not become a live term (nor take the kind).
+  ids.T_FORGED = await legacyType({ app: APP_KV, kind: "PRO", label: "Forged", validityDays: 9999, template: PRO_TEMPLATE, status: "ACTIVE" });
 
   // Legacy licences of APP_KV.
   ids.L1 = await legacyLicence({ app: APP_KV, type: ids.T_PRO, holder: HOLDER_A, start: at(-40), end: at(20), status: "ACTIVE" });
@@ -324,6 +327,7 @@ beforeAll(async () => {
     ledger: appLedger,
     createAppDocument: (id) => appDocs.create(id),
     protectAppDocument: protect,
+    protectLicenceDocument: null,
     licenseGateway: createReactorLicenseGateway(client as never, { lifecycle }),
     envState: (id) => createReactorEnvGateway(client as never).getState(id),
     deleteDocument: async (id) => {
@@ -354,18 +358,24 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect(report.actions).toContain(
       `licence type ${ids.T_DEL} ("Gone"): app ${APP_DEL} is DELETED; skipped, recorded in the type map without a term`,
     );
-    expect(report.actions.filter((a) => a.startsWith(`app ${APP_KV}: licence type`))).toHaveLength(2);
+    expect(report.actions.filter((a) => a.startsWith(`app ${APP_KV}: licence type`))).toHaveLength(3);
     // Planned kinds carry into the licence plan: nothing is "not mapped yet".
-    expect(report.actions).toContain(`licence ${ids.L1}: MIGRATE_LICENSE onto kind PRO, holder ${didOf(HOLDER_A)}`);
+    expect(report.actions).toContain(`licence ${ids.L1}: MIGRATE_LICENSE onto kind "PRO", holder ${didOf(HOLDER_A)}`);
     expect(report.actions.filter((a) => a.startsWith("studio: holder "))).toHaveLength(46);
-    expect(report.actions.filter((a) => a.startsWith("studio: move code "))).toHaveLength(23);
-    expect(report.actions.some((a) => a.includes("cohort-1"))).toBe(false); // codes are logged by reference
+    const moves = report.actions.filter((a) => a.startsWith("studio: move "));
+    expect(moves).toHaveLength(23);
+    expect(moves).toContain(`studio: move the code labelled "Cohort 1" created "${at(-200)}" (active, max uses 100, 27 use(s), no expiry, key attached)`);
+    // Codes are bearer secrets: nothing derived from them is logged, not even a hash.
+    const logged = [...report.actions, ...report.problems, ...report.warnings].join("\n");
+    for (const code of ["cohort-1", "cohort-2", "lapsed", "filler-0"]) expect(logged).not.toContain(code);
+    expect(logged).not.toContain("code#");
     expect(report.warnings.some((w) => w.includes("squatted"))).toBe(true);
+    expect(report.warnings).toContain(
+      `licence type ${ids.T_FORGED} is "ACTIVE" but no authorised licence was issued on it: its term stays DRAFT until the app's owner publishes it`,
+    );
 
     const lines = logger.warn.mock.calls.map((c) => String(c[0]));
-    expect(lines).toContain(
-      `[licensing] migration dry-run: studio: move code ${report.actions.find((a) => a.startsWith("studio: move code "))!.slice("studio: move code ".length)}`,
-    );
+    expect(lines).toContain(`[licensing] migration dry-run: ${moves[0]!}`);
     expect(logger.warn.mock.calls.map((c) => String(c[0]))).toContain(
       `[licensing] migration (dry-run): ${report.actions.length} actions, 1 problems, ${report.warnings.length} warnings`,
     );
@@ -389,6 +399,10 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     });
     const old = app.terms.find((t) => t.id === `term-${ids.T_OLD}`)!;
     expect(old).toMatchObject({ kind: `PRO-${ids.T_OLD.slice(0, 8)}`, status: "RETIRED", label: "Pro (old)" });
+    // Unreferenced: DRAFT whatever the document says, and it never takes a referenced type's kind.
+    expect(app.terms.find((t) => t.id === `term-${ids.T_FORGED}`)).toMatchObject({
+      kind: `PRO-${ids.T_FORGED!.slice(0, 8)}`, status: "DRAFT", label: "Forged",
+    });
     const tpl = app.templates.find((t) => t.id === `tpl-${ids.T_PRO}`)!;
     expect(tpl).toMatchObject({ mode: "DEDICATED", name: "Pro" });
     expect(tpl.template.services.map((s) => [s.type, s.prefix])).toStrictEqual([["CONNECT", "connect"], ["SWITCHBOARD", "switchboard"]]);
@@ -396,6 +410,7 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect(await db.selectFrom("licensing_migration_type_map").select(["license_type_id", "app_id", "kind", "term_id"]).orderBy("license_type_id").execute())
       .toStrictEqual([
         { license_type_id: ids.T_DEL, app_id: APP_DEL, kind: "Gone", term_id: "" },
+        { license_type_id: ids.T_FORGED, app_id: APP_KV, kind: `PRO-${ids.T_FORGED!.slice(0, 8)}`, term_id: `term-${ids.T_FORGED}` },
         { license_type_id: ids.T_OLD, app_id: APP_KV, kind: `PRO-${ids.T_OLD.slice(0, 8)}`, term_id: `term-${ids.T_OLD}` },
         { license_type_id: ids.T_PRO, app_id: APP_KV, kind: "PRO", term_id: `term-${ids.T_PRO}` },
       ].sort((a, b) => a.license_type_id.localeCompare(b.license_type_id)));
@@ -516,7 +531,7 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     const report = await runLicensingMigration(deps);
     expect(report.problems).toStrictEqual([]);
     expect(report.actions).toStrictEqual([
-      `app ${APP_DT}: licence type ${ids.T_FREE} ("Friday") -> term term-${ids.T_FREE} (kind Free, DRAFT, 365 days, no template)`,
+      `app ${APP_DT}: licence type ${ids.T_FREE} ("Friday") -> term term-${ids.T_FREE} (kind "Free", DRAFT, 365 days, no template)`,
     ]);
     expect(report.complete).toBe(true);
     expect(await db.selectFrom("licensing_migration_steps").select("step").execute()).toStrictEqual([{ step: "complete" }]);
@@ -563,21 +578,21 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
   });
 
   it("deletes the legacy licence types only when asked, after completion, archiving each one", async () => {
-    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(4);
+    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(5);
     await runLicensingMigration({ ...deps, cfg: { ...deps.cfg, migration: "dry-run", deleteLicenseTypes: true } });
-    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(4);
+    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(5);
     const report = await runLicensingMigration({ ...deps, cfg: { ...deps.cfg, deleteLicenseTypes: true } });
     expect(report.problems).toStrictEqual([]);
-    expect(report.actions.filter((a) => a.startsWith("delete licence type document "))).toHaveLength(4);
+    expect(report.actions.filter((a) => a.startsWith("delete licence type document "))).toHaveLength(5);
     expect(report.deletionComplete).toBe(true);
     expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(0);
     const archived = await db.selectFrom("licensing_migration_steps").selectAll().where("step", "like", "legacy-license-type:%").execute();
     expect(archived.map((r) => r.step).sort()).toStrictEqual(
-      [ids.T_FREE, ids.T_DEL, ids.T_PRO, ids.T_OLD].map((id) => `legacy-license-type:${id}`).sort(),
+      [ids.T_FREE, ids.T_DEL, ids.T_PRO, ids.T_OLD, ids.T_FORGED].map((id) => `legacy-license-type:${id}`).sort(),
     );
     expect(JSON.parse(archived.find((r) => r.step.endsWith(ids.T_FREE!))!.detail!)).toMatchObject({ kind: "Free", label: "Friday", validityDays: 365, template: null });
     expect(logger.warn.mock.calls.map((c) => String(c[0]))).toContain(
-      "[licensing] migration: deleted 4 app-license-type document(s); none remain",
+      "[licensing] migration: deleted 5 app-license-type document(s); none remain",
     );
     // Licences and environments are untouched by the deletion.
     expect(await db.selectFrom("license_environments").selectAll().execute()).toHaveLength(2);

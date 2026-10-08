@@ -4,6 +4,10 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { ReactorBuilder, ReactorClientBuilder } from "@powerhousedao/reactor";
 import { actions as licenseActions } from "document-models/app-owner-license";
+import { actions as appActions, utils as appUtils } from "document-models/vetra-app";
+import { actions as typeActions } from "document-models/app-license-type";
+import { createPresignedHeader } from "document-model";
+import { createReactorLicenseTypeGateway } from "../license-type-gateway.js";
 import { documentModels } from "../../../document-models/document-models.js";
 import { createReactorAppDocStore } from "../../vetra-apps/app-doc-store.js";
 import { createReactorEnvGateway } from "../../vetra-apps/envs.js";
@@ -30,7 +34,7 @@ const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}`;
 const didOf = (a: string) => `did:pkh:eip155:1:${a}`;
 
 /** A fresh reactor + licensing db, and the migration's deps over them. */
-async function world(input: { legacy: "none" | "empty-namespace" | "tables" }) {
+async function world(input: { legacy: "none" | "empty-namespace" | "tables"; appRows?: { id: string; status: string }[] }) {
   const client = await new ReactorClientBuilder()
     .withReactorBuilder(new ReactorBuilder().withDocumentModelSources([...documentModels]))
     .build();
@@ -65,13 +69,17 @@ async function world(input: { legacy: "none" | "empty-namespace" | "tables" }) {
   const gateway = createReactorLicenseGateway(client as never, { lifecycle });
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const protect = vi.fn(async (_id: string) => {});
+  const protectLicence = vi.fn(async (_id: string) => {});
   const deps: MigrationDeps = {
     db,
     accessDb,
-    appRows: async () => [],
+    appRows: async () => input.appRows ?? [],
     legacyTypeDocs: () => findAllOfType(client as never, LEGACY_LICENSE_TYPE_DOC_TYPE),
     licences: () => reads.allLicenceRecords(),
-    apps: createAppReads(client as never, { ledger: ledger.lookup, trustedIds: async () => new Set([STUDIO_APP_ID]) }),
+    apps: createAppReads(client as never, {
+      ledger: ledger.lookup,
+      trustedIds: async () => new Set([...(input.appRows ?? []).map((r) => r.id), STUDIO_APP_ID]),
+    }),
     appWriter: createAppLicensingWriter({
       docs: createReactorDocGateway(client as never, APP_DOC_TYPE, "app", async () => {}),
       ledger,
@@ -79,6 +87,7 @@ async function world(input: { legacy: "none" | "empty-namespace" | "tables" }) {
     ledger,
     createAppDocument: (id) => appDocs.create(id),
     protectAppDocument: protect,
+    protectLicenceDocument: protectLicence,
     licenseGateway: gateway,
     envState: (id) => createReactorEnvGateway(client as never).getState(id),
     deleteDocument: async (id) => {
@@ -89,7 +98,7 @@ async function world(input: { legacy: "none" | "empty-namespace" | "tables" }) {
     now: () => NOW,
     logger,
   };
-  return { client, db, accessDb, deps, reads, gateway, protect, logger };
+  return { client, db, accessDb, deps, reads, gateway, protect, protectLicence, logger, appDocs, ledger };
 }
 
 describe("startup migration: edges", { timeout: 60_000 }, () => {
@@ -131,9 +140,9 @@ describe("startup migration: edges", { timeout: 60_000 }, () => {
     const report = await runLicensingMigration(w.deps);
     expect(report.complete).toBe(false);
     expect(report.problems).toStrictEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^studio: holder ${didOf(addr(2))}: redemption of code#[0-9a-f]{12} has an unreadable date`)),
-      expect.stringMatching(/^studio: redemption of code#[0-9a-f]{12} by did:key:.*: not an EVM wallet DID, not migrated$/),
-      expect.stringMatching(/^studio: code code#[0-9a-f]{12}: expires_at "next tuesday" does not parse; not moved$/),
+      expect.stringMatching(new RegExp(`^studio: holder ${didOf(addr(2))}: redemption of the code labelled null created "${at(-50)}" has an unreadable date`)),
+      `studio: redemption of the code labelled null created "${at(-50)}" by "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK": not an EVM wallet DID, not migrated`,
+      'studio: the code labelled null created "whenever": expires_at "next tuesday" does not parse; not moved',
     ]));
     expect(report.problems).toHaveLength(3);
     const grants = await w.db.selectFrom("app_license_grants").select(["user_did", "license_id"]).orderBy("user_did").execute();
@@ -187,9 +196,12 @@ describe("startup migration: edges", { timeout: 60_000 }, () => {
     expect(grants.get(didOf(A))).toBe(crashed);
     expect(grants.get(didOf(B))).not.toBe(forged);
     expect(await w.reads.licenceRecord(grants.get(didOf(B))!)).toMatchObject({ end: at(20), status: "ACTIVE" });
-    expect(report.actions.find((a) => a.includes(didOf(A)))).toMatch(
-      new RegExp(`^studio: holder ${didOf(A)}: chain; grant for adopted licence ${crashed}; link 1 redemption\\(s\\) \\(newest of 1: code#[0-9a-f]{12}\\)$`),
+    expect(report.actions).toContain(
+      `studio: holder ${didOf(A)}: adopt licence ${crashed}; chain; grant; link 1 redemption(s) (from 1 redemption(s), newest ${at(-10)})`,
     );
+    // Re-protected, as at create: protecting may be what the crashed run never got to.
+    expect(w.protectLicence).toHaveBeenCalledWith(crashed);
+    expect(w.protectLicence).toHaveBeenCalledTimes(1);
     expect(await findAllOfType(w.client as never, LICENSE_DOC_TYPE)).toHaveLength(3);
   });
 
@@ -212,9 +224,91 @@ describe("startup migration: edges", { timeout: 60_000 }, () => {
       license_id: granted, app_id: "app-x", license_type_id: "ghost-type", user_address: addr(5), issued_by: PUBLISHER,
       created_at: at(-5), kind: null, user_did: null,
     }).execute();
+    // A chain member whose document is gone.
+    await w.db.insertInto("license_chain").values({ license_id: "gone-licence", root_license_id: granted, app_id: "app-x", label: null, created_at: at(-1) }).execute();
     const report = await runLicensingMigration(w.deps);
-    expect(report.problems).toStrictEqual([`licence ${granted}: its licence type ghost-type is not migrated yet`]);
-    expect(report.warnings).toContain(`licence ${stray} (no provenance; held regardless): its licence type ghost-type is not migrated yet`);
+    expect(report.problems).toStrictEqual([`licence ${granted}: its licence type "ghost-type" is not migrated yet`]);
+    expect(report.warnings).toContain(`licence ${stray} (no provenance; held regardless): its licence type "ghost-type" is not migrated yet`);
+    expect(report.warnings).toContain("licence gone-licence is in a licence chain but has no readable document; the handler holds its chain");
     expect(report.complete).toBe(false);
+  });
+
+  it("never records a squatted studio document in the ledger, so the squat is still caught once the publisher is set", async () => {
+    const w = await world({ legacy: "none" });
+    const squat = appUtils.createDocument();
+    squat.header = createPresignedHeader(STUDIO_APP_ID, APP_DOC_TYPE);
+    await w.client.create(squat);
+    await w.client.execute(STUDIO_APP_ID, "main", [
+      appActions.setAppDetails({ name: "Not Studio", slug: "vetra-studio", owner: addr(0xbad) }),
+      appActions.addTemplate({ id: "evil", name: null, mode: "SHARED" }),
+    ]);
+    const blocked = await runLicensingMigration({ ...w.deps, cfg: { ...w.deps.cfg, studioPublisher: null } });
+    expect(blocked.problems).toStrictEqual(["studio: set VETRA_STUDIO_PUBLISHER_ADDRESS (or ADMINS) to create the vetra-studio app"]);
+    expect(await w.ledger.lookup(STUDIO_APP_ID)).toBeNull();
+    expect(w.protect).not.toHaveBeenCalled();
+
+    const report = await runLicensingMigration(w.deps);
+    expect(report.problems).toStrictEqual([]);
+    expect(report.complete).toBe(true);
+    expect(w.logger.error.mock.calls.map((c) => String(c[0])).some((m) => m.includes("squatted") && m.includes("template evil"))).toBe(true);
+    expect(w.protect).toHaveBeenCalledWith(STUDIO_APP_ID);
+    expect(await w.deps.apps.app(STUDIO_APP_ID)).toMatchObject({
+      unverified: false, tampered: false, name: "Vetra Studio", owner: PUBLISHER,
+      templates: [expect.objectContaining({ id: "studio" })],
+    });
+  });
+
+  it("keeps a holder ACTIVE while any redemption is live, until the latest of them ends", async () => {
+    const w = await world({ legacy: "tables" });
+    await w.accessDb!.insertInto("invite_codes").values([
+      { code: "long", label: "Long", active: true, expires_at: null, max_uses: null, created_at: at(-90), anthropic_key_ciphertext: null },
+      { code: "short", label: "Short", active: true, expires_at: null, max_uses: null, created_at: at(-90), anthropic_key_ciphertext: null },
+      { code: "open", label: "Open", active: true, expires_at: null, max_uses: null, created_at: at(-90), anthropic_key_ciphertext: null },
+    ]).execute();
+    const A = addr(0x1a);
+    const B = addr(0x1b);
+    await w.accessDb!.insertInto("invite_redemptions").values([
+      // A's older redemption outlasts the newest one, which has already lapsed.
+      { code: "long", user_did: didOf(A), redeemed_at: at(-40), access_expires: at(50) },
+      { code: "short", user_did: didOf(A), redeemed_at: at(-10), access_expires: at(-2) },
+      // B once got access with no end.
+      { code: "open", user_did: didOf(B), redeemed_at: at(-80), access_expires: null },
+      { code: "short", user_did: didOf(B), redeemed_at: at(-30), access_expires: at(-1) },
+    ]).execute();
+    expect((await runLicensingMigration(w.deps)).complete).toBe(true);
+    const licenceOf = async (a: string) => {
+      const g = await w.db.selectFrom("app_license_grants").select("license_id").where("user_did", "=", didOf(a)).executeTakeFirstOrThrow();
+      return w.reads.licenceRecord(g.license_id);
+    };
+    expect(await licenceOf(A)).toMatchObject({ status: "ACTIVE", start: at(-10), end: at(50) });
+    expect(await licenceOf(B)).toMatchObject({ status: "ACTIVE", start: at(-30), end: null });
+  });
+
+  it("records the lifecycle of an environment's root licence without a grant in the same apply pass", async () => {
+    const APP = "7d1f6f5c-1f0e-4a8b-9d55-0c3b9b8f2a99";
+    const w = await world({ legacy: "none", appRows: [{ id: APP, status: "ACTIVE" }] });
+    await w.appDocs.create(APP);
+    const types = createReactorLicenseTypeGateway(w.client as never);
+    const type = await types.create();
+    await types.execute(type, [typeActions.setLicenseTypeDetails({ app: APP, kind: "pro", label: "Pro", validityDays: 30 })]);
+    const plain = createReactorLicenseGateway(w.client as never);
+    const licence = await plain.create();
+    await plain.execute(licence, [
+      licenseActions.issueLicense({
+        app: APP, licenseType: type, kind: null, user: addr(7), issuer: "PUBLISHER_GRANT", issuedBy: PUBLISHER,
+        stage: null, details: null, issued: at(-5), start: at(-5), end: at(25),
+      }),
+      licenseActions.activateLicense({}),
+    ]);
+    const env = await createReactorEnvGateway(w.client as never).create();
+    await w.db.insertInto("app_user_environments").values({
+      app_id: APP, user_address: addr(7), environment_id: env, license_id: licence, template_hash: "old", created_at: at(-5), updated_at: at(-5),
+    }).execute();
+    const report = await runLicensingMigration(w.deps);
+    expect(report.problems).toStrictEqual([]);
+    expect(report.complete).toBe(true);
+    expect(await w.db.selectFrom("license_lifecycle").select(["license_id", "status", "end_at"]).execute()).toStrictEqual([
+      { license_id: licence, status: "ACTIVE", end_at: at(25) },
+    ]);
   });
 });

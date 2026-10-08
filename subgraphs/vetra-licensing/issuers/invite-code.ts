@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { VetraLicensingDB } from "../db/schema.js";
 import { normaliseUserDid } from "../did.js";
@@ -44,10 +43,6 @@ function codeOf(l: LicenceRecord): string | null {
   }
 }
 
-/** Codes are redeemable secrets: logs carry a short sha256 prefix, never the code. */
-export function codeRef(code: string): string {
-  return `code#${createHash("sha256").update(code).digest("hex").slice(0, 12)}`;
-}
 
 /** The ACTIVE, authorised licence this code already issued to the holder, if any. */
 async function licenceIssuedBy(
@@ -66,7 +61,8 @@ async function release(deps: InviteCodeIssuerDeps, code: string, user: string): 
     await releaseReservation(deps.db, code, user);
   } catch (err) {
     deps.logger.warn(
-      `[licensing] could not release the reservation of ${codeRef(code)} for ${user}; a retry completes it: ${String(err)}`,
+      // Codes are bearer secrets, often human-chosen: never logged, not even hashed.
+      `[licensing] could not release an invite-code reservation for ${user}; a retry completes it: ${String(err)}`,
     );
   }
 }
@@ -155,7 +151,7 @@ export async function redeemInviteCode(
         issuedAnyway = await licenceIssuedBy(deps, row, user);
       } catch (lookupErr) {
         deps.logger.warn(
-          `[licensing] redeem of ${codeRef(code)} for ${user} failed and its licence could not be looked up: ${String(lookupErr)}`,
+          `[licensing] an invite-code redeem for ${user} failed and its licence could not be looked up: ${String(lookupErr)}`,
         );
       }
       if (issuedAnyway) {

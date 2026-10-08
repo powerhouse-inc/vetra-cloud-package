@@ -10,7 +10,7 @@ import { didForAddress, normaliseUserDid } from "../did.js";
 import { docId, globalState } from "../doc-parse.js";
 import type { GrantStore } from "../grants.js";
 import { withLicenceLock } from "../issue.js";
-import { codeRef, withHolderLock } from "../issuers/invite-code.js";
+import { withHolderLock } from "../issuers/invite-code.js";
 import type { LicenseGateway } from "../license-gateway.js";
 import type { AppLedger, AppLicensingWriter } from "../licensing-ledger.js";
 import type { LicenceRecord } from "../reads.js";
@@ -66,6 +66,8 @@ export interface MigrationDeps {
   createAppDocument(id: string): Promise<void>;
   /** Makes an app document system-write-only and detaches its parents; null without document permissions. */
   protectAppDocument: ((id: string) => Promise<void>) | null;
+  /** The same for a licence document (what the licence gateway does at create); null without permissions. */
+  protectLicenceDocument: ((id: string) => Promise<void>) | null;
   /** Licence writes, each recorded in license_lifecycle. */
   licenseGateway: LicenseGateway;
   envState(id: string): Promise<VetraCloudEnvironmentState | null>;
@@ -89,10 +91,12 @@ export interface MigrationContext {
   types: Map<string, TypeMapping>;
   /** Kinds a dry-run would add per app, so planned kinds never collide. */
   plannedKinds: Map<string, Set<string>>;
+  /** Licences the environments step linked (or would link) into a chain. */
+  plannedChained: Set<string>;
 }
 
 export function newContext(): MigrationContext {
-  return { types: new Map(), plannedKinds: new Map() };
+  return { types: new Map(), plannedKinds: new Map(), plannedChained: new Set() };
 }
 
 /** Grants of migrated studio licences carry this as issuer, which marks them in the audit trail. */
@@ -171,22 +175,25 @@ async function migrateOneType(
   ctx: MigrationContext,
   t: LegacyLicenseType,
   rows: Map<string, { id: string; status: string }>,
+  referenced: boolean,
 ): Promise<void> {
   const row = t.app ? rows.get(t.app) : undefined;
-  const label = t.label ?? "";
+  // Everything read from the type document is forgeable: quoted in logs.
+  const label = JSON.stringify(t.label ?? "");
+  const app = JSON.stringify(t.app);
   if (!t.app || !row || row.status === "DELETED") {
     // Nothing will ever provision for it: no term, but mapped, so the type
     // can be deleted with the others and its licences still get a kind.
-    const why = !t.app ? "has no app" : !row ? `app ${t.app} has no apps row` : `app ${t.app} is DELETED`;
+    const why = !t.app ? "has no app" : !row ? `app ${app} has no apps row` : `app ${t.app} is DELETED`;
     const m: TypeMapping = { appId: t.app ?? "", kind: legacyKind(t), templateId: null, termId: null };
-    await act(report, `licence type ${t.id} ("${label}"): ${why}; skipped, recorded in the type map without a term`, () =>
+    await act(report, `licence type ${t.id} (${label}): ${why}; skipped, recorded in the type map without a term`, () =>
       recordTypeMapping(deps, t.id, m),
     );
     ctx.types.set(t.id, m);
     return;
   }
-  const app = await deps.apps.app(t.app);
-  if (!app) {
+  const appDoc = await deps.apps.app(t.app);
+  if (!appDoc) {
     report.problems.push(`licence type ${t.id}: app ${t.app} has no document yet (waiting for the vetra-apps backfill)`);
     return;
   }
@@ -194,20 +201,20 @@ async function migrateOneType(
     report.problems.push(`licence type ${t.id}: validityDays ${t.validityDays} is not positive; fix the licence type`);
     return;
   }
-  if (app.tampered) {
-    report.warnings.push(`licence type ${t.id}: app ${app.id} reads as tampered (${app.tamperReason ?? "?"}); its term is written but the app stays held`);
+  if (appDoc.tampered) {
+    report.warnings.push(`licence type ${t.id}: app ${appDoc.id} reads as tampered (${JSON.stringify(appDoc.tamperReason)}); its term is written but the app stays held`);
   }
   const templateId = t.template ? `tpl-${t.id}` : null;
   const termId = `term-${t.id}`;
-  const existingTerm = app.terms.find((x) => x.id === termId);
-  const planned = ctx.plannedKinds.get(app.id) ?? new Set<string>();
+  const existingTerm = appDoc.terms.find((x) => x.id === termId);
+  const planned = ctx.plannedKinds.get(appDoc.id) ?? new Set<string>();
   let kind = existingTerm?.kind ?? legacyKind(t);
-  if (!existingTerm && (app.terms.some((x) => x.kind === kind) || planned.has(kind))) {
+  if (!existingTerm && (appDoc.terms.some((x) => x.kind === kind) || planned.has(kind))) {
     kind = `${kind}-${t.id.slice(0, 8)}`;
   }
 
   const acts: Action[] = [];
-  if (templateId && !app.templates.some((x) => x.id === templateId)) {
+  if (templateId && !appDoc.templates.some((x) => x.id === templateId)) {
     acts.push(...templateActions(t, templateId, t.label ?? kind, report));
   }
   if (!existingTerm) {
@@ -216,10 +223,18 @@ async function migrateOneType(
     );
   }
   // A term is published only with a template: an ACTIVE or RETIRED type
-  // without one (which the old reducers never allowed) stays DRAFT.
+  // without one (which the old reducers never allowed) stays DRAFT. And only
+  // for a type some authorised licence was issued on: anyone could create a
+  // licence-type document naming any app, so an unreferenced one becomes a
+  // DRAFT term its owner publishes deliberately.
   let target = TERM_STATUSES.has(t.status) ? t.status : "DRAFT";
   if (!templateId && target !== "DRAFT") {
-    report.warnings.push(`licence type ${t.id} is ${t.status} but has no template: its term stays DRAFT`);
+    report.warnings.push(`licence type ${t.id} is ${JSON.stringify(t.status)} but has no template: its term stays DRAFT`);
+    target = "DRAFT";
+  } else if (!referenced && target !== "DRAFT") {
+    report.warnings.push(
+      `licence type ${t.id} is ${JSON.stringify(t.status)} but no authorised licence was issued on it: its term stays DRAFT until the app's owner publishes it`,
+    );
     target = "DRAFT";
   }
   const current = existingTerm?.status ?? "DRAFT";
@@ -231,18 +246,18 @@ async function migrateOneType(
     ? `template ${templateId}: ${tpl.services.length} service(s), ${tpl.packages.length} package(s)`
     : "no template";
   const validity = t.validityDays === null ? "no end" : `${t.validityDays} days`;
-  const m: TypeMapping = { appId: app.id, kind, templateId, termId };
+  const m: TypeMapping = { appId: appDoc.id, kind, templateId, termId };
   await act(
     report,
-    `app ${app.id}: licence type ${t.id} ("${label}") -> term ${termId} (kind ${kind}, ${target}, ${validity}, ${shape})`,
+    `app ${appDoc.id}: licence type ${t.id} (${label}) -> term ${termId} (kind ${JSON.stringify(kind)}, ${target}, ${validity}, ${shape})`,
     async () => {
-      if (acts.length > 0) await deps.appWriter.appendLicensingOps(app.id, acts);
+      if (acts.length > 0) await deps.appWriter.appendLicensingOps(appDoc.id, acts);
       await recordTypeMapping(deps, t.id, m);
     },
   );
   ctx.types.set(t.id, m);
   planned.add(kind);
-  ctx.plannedKinds.set(app.id, planned);
+  ctx.plannedKinds.set(appDoc.id, planned);
 }
 
 export async function migrateLicenseTypes(deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext): Promise<void> {
@@ -262,15 +277,26 @@ export async function migrateLicenseTypes(deps: MigrationDeps, report: Migration
     if (t) types.push(t);
     else report.problems.push(`licence type document ${docId(doc) ?? "(no id)"} is unreadable; it can be neither migrated nor deleted`);
   }
-  // Two types of one app may share a kind; the one that keeps it plain is
-  // the live one (ACTIVE, then RETIRED, which has holders, then DRAFT), and
-  // the order never depends on how the reactor lists documents.
-  const rank = (t: LegacyLicenseType) => ["ACTIVE", "RETIRED", "DRAFT"].indexOf(t.status) >>> 0;
+  // Types some authorised licence was issued on: a grant row's
+  // license_type_id, or the type of a licence with a grant or chain row.
+  const grants = await deps.db.selectFrom("app_license_grants").select(["license_id", "license_type_id"]).execute();
+  const chained = new Set((await deps.db.selectFrom("license_chain").select("license_id").execute()).map((r) => r.license_id));
+  const granted = new Set(grants.map((g) => g.license_id));
+  const referenced = new Set(grants.map((g) => g.license_type_id).filter(Boolean));
+  for (const l of await deps.licences()) {
+    if (l.legacyLicenseTypeId && (granted.has(l.id) || chained.has(l.id))) referenced.add(l.legacyLicenseTypeId);
+  }
+  // Two types of one app may share a kind; the one that keeps it plain is a
+  // referenced one first, then the live one (ACTIVE, then RETIRED, which has
+  // holders, then DRAFT); the order never depends on how the reactor lists
+  // documents.
+  const STATUS_RANK: Record<string, number> = { ACTIVE: 0, RETIRED: 1, DRAFT: 2 };
+  const rank = (t: LegacyLicenseType) => (referenced.has(t.id) ? 0 : 10) + (STATUS_RANK[t.status] ?? 3);
   types.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
   for (const t of types) {
     if (ctx.types.has(t.id)) continue;
     try {
-      await migrateOneType(deps, report, ctx, t, rows);
+      await migrateOneType(deps, report, ctx, t, rows, referenced.has(t.id));
     } catch (err) {
       report.problems.push(`licence type ${t.id}: ${msg(err)}`);
     }
@@ -309,7 +335,6 @@ async function migrateOneLicence(
   l: LicenceRecord,
   grant: GrantRowDb | undefined,
   chained: boolean,
-  recorded: LifecycleRowDb | undefined,
   envOf: (licenseId: string, appId: string) => string | null,
 ): Promise<void> {
   // Licences the system authorised (a grant or a chain row) must end up
@@ -322,7 +347,7 @@ async function migrateOneLicence(
 
   const kind = kindOf(l, ctx, grant?.license_type_id || null);
   if (!kind) {
-    fail(`its licence type ${l.legacyLicenseTypeId ?? grant?.license_type_id ?? "(none)"} is not migrated yet`);
+    fail(`its licence type ${JSON.stringify(l.legacyLicenseTypeId ?? grant?.license_type_id ?? null)} is not migrated yet`);
     return;
   }
   if (!l.kind) {
@@ -330,12 +355,12 @@ async function migrateOneLicence(
     try {
       user = normaliseUserDid(l.user);
     } catch {
-      fail(`holder ${l.user} is not a wallet`);
+      fail(`holder ${JSON.stringify(l.user)} is not a wallet`);
       return;
     }
     const typeId = l.legacyLicenseTypeId ?? (grant?.license_type_id || null);
     const details = JSON.stringify({ legacyLicenseType: typeId, issuedBy: issuedByOf(l.details) ?? grant?.issued_by ?? null });
-    await act(report, `licence ${l.id}: MIGRATE_LICENSE onto kind ${kind}, holder ${user}`, () =>
+    await act(report, `licence ${l.id}: MIGRATE_LICENSE onto kind ${JSON.stringify(kind)}, holder ${user}`, () =>
       withLicenceLock(l.id, () => deps.licenseGateway.execute(l.id, [licenseActions.migrateLicense({ kind, user, details })])),
     );
   }
@@ -351,7 +376,7 @@ async function migrateOneLicence(
     const patch: { kind?: string; user_did?: string } = {};
     if (grant.kind === null) patch.kind = kind;
     else if (grant.kind !== kind) {
-      report.warnings.push(`licence ${l.id}: granted kind ${grant.kind} differs from its document's ${kind}; the grant stands and the handler holds the chain`);
+      report.warnings.push(`licence ${l.id}: granted kind ${JSON.stringify(grant.kind)} differs from its document's ${JSON.stringify(kind)}; the grant stands and the handler holds the chain`);
     }
     // The holder is the grant row's (authority), never the document's.
     const did = grant.user_did ?? didForAddress(grant.user_address);
@@ -359,22 +384,88 @@ async function migrateOneLicence(
     try {
       normalised = normaliseUserDid(did);
     } catch {
-      fail(`its grant names holder ${did}, which is not a wallet`);
+      fail(`its grant names holder ${JSON.stringify(did)}, which is not a wallet`);
       return;
     }
     if (grant.user_did !== normalised) patch.user_did = normalised;
-    const fields = Object.entries(patch).map(([k, v]) => `${k} ${v}`);
+    const fields = Object.entries(patch).map(([k, v]) => `${k} ${JSON.stringify(v)}`);
     if (fields.length > 0) {
       await act(report, `grant ${l.id}: ${fields.join(", ")}`, () =>
         deps.db.updateTable("app_license_grants").set(patch).where("license_id", "=", l.id).execute(),
       );
     }
   }
+}
 
-  if (!tracked) return;
+export async function migrateLicences(deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext): Promise<void> {
+  const grants = new Map((await deps.db.selectFrom("app_license_grants").selectAll().execute()).map((r) => [r.license_id, r]));
+  const chained = new Set((await deps.db.selectFrom("license_chain").select("license_id").execute()).map((r) => r.license_id));
+  const envRows = await deps.db.selectFrom("app_user_environments").selectAll().execute();
+  const envOf = (licenseId: string, appId: string) =>
+    envRows.find((e) => e.license_id === licenseId && e.app_id === appId)?.environment_id ?? null;
+  const licences = await deps.licences();
+  for (const l of licences) {
+    try {
+      await migrateOneLicence(deps, report, ctx, l, grants.get(l.id), chained.has(l.id), envOf);
+    } catch (err) {
+      report.problems.push(`licence ${l.id}: ${msg(err)}`);
+    }
+  }
+  const read = new Set(licences.map((l) => l.id));
+  for (const id of grants.keys()) {
+    if (!read.has(id)) report.warnings.push(`licence ${id} has a grant row but no readable document; the handler holds its chain`);
+  }
+  for (const id of chained) {
+    if (!read.has(id) && !grants.has(id)) {
+      report.warnings.push(`licence ${id} is in a licence chain but has no readable document; the handler holds its chain`);
+    }
+  }
+  // Rows written before DIDs were normalised everywhere.
+  for (const row of await deps.db.selectFrom("license_environments").select(["environment_id", "user_did"]).execute()) {
+    let did: string;
+    try {
+      did = normaliseUserDid(row.user_did);
+    } catch {
+      report.problems.push(`environment ${row.environment_id}: holder ${JSON.stringify(row.user_did)} is not a wallet`);
+      continue;
+    }
+    if (did === row.user_did) continue;
+    await act(report, `environment ${row.environment_id}: holder ${JSON.stringify(row.user_did)} -> ${did}`, () =>
+      deps.db.updateTable("license_environments").set({ user_did: did }).where("environment_id", "=", row.environment_id).execute(),
+    );
+  }
+}
+
+/**
+ * license_lifecycle for every licence the system authorised (a grant or a
+ * chain row, including chains the environments step just linked), whatever
+ * its status: after `complete`, a missing record holds its chain. Runs after
+ * the environments step so one apply pass covers chain roots linked there.
+ */
+export async function recordLifecycles(deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext): Promise<void> {
+  const granted = new Set((await deps.db.selectFrom("app_license_grants").select("license_id").execute()).map((r) => r.license_id));
+  const chained = new Set((await deps.db.selectFrom("license_chain").select("license_id").execute()).map((r) => r.license_id));
+  const recorded = new Map((await deps.db.selectFrom("license_lifecycle").selectAll().execute()).map((r) => [r.license_id, r]));
+  for (const l of await deps.licences()) {
+    if (!granted.has(l.id) && !chained.has(l.id) && !ctx.plannedChained.has(l.id)) continue;
+    try {
+      await recordOneLifecycle(deps, report, l, recorded.get(l.id));
+    } catch (err) {
+      report.problems.push(`licence ${l.id}: ${msg(err)}`);
+    }
+  }
+}
+
+async function recordOneLifecycle(
+  deps: MigrationDeps,
+  report: MigrationReport,
+  l: LicenceRecord,
+  recorded: LifecycleRowDb | undefined,
+): Promise<void> {
+  const end = JSON.stringify(l.end);
   if (!recorded) {
-    const replaced = l.replacedBy ? `, replaced by ${l.replacedBy}` : "";
-    await act(report, `licence ${l.id}: record lifecycle ${l.status}, end ${l.end ?? "none"}${replaced}`, () =>
+    const replaced = l.replacedBy ? `, replaced by ${JSON.stringify(l.replacedBy)}` : "";
+    await act(report, `licence ${l.id}: record lifecycle ${l.status}, end ${end}${replaced}`, () =>
       deps.db
         .insertInto("license_lifecycle")
         .values({ license_id: l.id, status: l.status, end_at: l.end, replaced_by: l.replacedBy, updated_at: deps.now() })
@@ -387,46 +478,11 @@ async function migrateOneLicence(
     report.warnings.push(`licence ${l.id}: its document says ${l.status} but the system recorded ${recorded.status}; the record stands and the handler holds the chain`);
   } else if (recorded.end_at === null && l.end !== null) {
     // A record written by a status change alone (activate/expire) has no end.
-    await act(report, `licence ${l.id}: record end ${l.end}`, () =>
+    await act(report, `licence ${l.id}: record end ${end}`, () =>
       deps.db.updateTable("license_lifecycle").set({ end_at: l.end }).where("license_id", "=", l.id).where("end_at", "is", null).execute(),
     );
   } else if (recorded.end_at !== null && l.end !== null && recorded.end_at !== l.end) {
-    report.warnings.push(`licence ${l.id}: its document ends ${l.end} but the system recorded ${recorded.end_at}; the record stands`);
-  }
-}
-
-export async function migrateLicences(deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext): Promise<void> {
-  const grants = new Map((await deps.db.selectFrom("app_license_grants").selectAll().execute()).map((r) => [r.license_id, r]));
-  const chained = new Set((await deps.db.selectFrom("license_chain").select("license_id").execute()).map((r) => r.license_id));
-  const recorded = new Map((await deps.db.selectFrom("license_lifecycle").selectAll().execute()).map((r) => [r.license_id, r]));
-  const envRows = await deps.db.selectFrom("app_user_environments").selectAll().execute();
-  const envOf = (licenseId: string, appId: string) =>
-    envRows.find((e) => e.license_id === licenseId && e.app_id === appId)?.environment_id ?? null;
-  const licences = await deps.licences();
-  for (const l of licences) {
-    try {
-      await migrateOneLicence(deps, report, ctx, l, grants.get(l.id), chained.has(l.id), recorded.get(l.id), envOf);
-    } catch (err) {
-      report.problems.push(`licence ${l.id}: ${msg(err)}`);
-    }
-  }
-  const read = new Set(licences.map((l) => l.id));
-  for (const id of grants.keys()) {
-    if (!read.has(id)) report.warnings.push(`licence ${id} has a grant row but no readable document; the handler holds its chain`);
-  }
-  // Rows written before DIDs were normalised everywhere.
-  for (const row of await deps.db.selectFrom("license_environments").select(["environment_id", "user_did"]).execute()) {
-    let did: string;
-    try {
-      did = normaliseUserDid(row.user_did);
-    } catch {
-      report.problems.push(`environment ${row.environment_id}: holder ${row.user_did} is not a wallet`);
-      continue;
-    }
-    if (did === row.user_did) continue;
-    await act(report, `environment ${row.environment_id}: holder ${row.user_did} -> ${did}`, () =>
-      deps.db.updateTable("license_environments").set({ user_did: did }).where("environment_id", "=", row.environment_id).execute(),
-    );
+    report.warnings.push(`licence ${l.id}: its document ends ${end} but the system recorded ${recorded.end_at}; the record stands`);
   }
 }
 
@@ -516,6 +572,7 @@ export async function migrateEnvironments(deps: MigrationDeps, report: Migration
             .execute();
         });
         claimedRoots.add(row.license_id);
+        ctx.plannedChained.add(row.license_id);
       }
       // The old keeper gave a holder ONE environment however many licences
       // they held. Every other authorised ACTIVE licence of that holder joins
@@ -530,6 +587,7 @@ export async function migrateEnvironments(deps: MigrationDeps, report: Migration
           deps.grants.linkChain({ licenseId: other.id, rootLicenseId: row.license_id, appId: row.app_id, label: null, now: deps.now() }),
         );
         roots.set(other.id, row.license_id);
+        ctx.plannedChained.add(other.id);
       }
     } catch (err) {
       report.problems.push(`environment ${row.environment_id}: ${msg(err)}`);
@@ -561,6 +619,19 @@ interface StudioHolder {
   redemptions: { code: string; redeemedAt: string; accessExpires: string | null }[];
 }
 
+type LegacyCode = LegacyAccessDB["invite_codes"];
+
+/**
+ * How a code appears in logs. Codes are bearer secrets and legacy ones were
+ * chosen by people, so nothing derived from the code itself (not even a
+ * hash, which a dictionary reverses) is ever logged: only its label, when it
+ * was created, and its state.
+ */
+function describeCode(c: LegacyCode | undefined): string {
+  if (!c) return "an unknown code";
+  return `the code labelled ${JSON.stringify(c.label)} created ${JSON.stringify(c.created_at)}`;
+}
+
 /**
  * Groups legacy redemptions by wallet (chain spellings normalised away). A
  * holder with any unreadable row is a problem and is left out entirely.
@@ -568,6 +639,7 @@ interface StudioHolder {
 function studioHolders(
   rows: LegacyAccessDB["invite_redemptions"][],
   report: MigrationReport,
+  codeOf: (code: string) => LegacyCode | undefined,
 ): StudioHolder[] {
   const byDid = new Map<string, StudioHolder>();
   const broken = new Set<string>();
@@ -576,14 +648,14 @@ function studioHolders(
     try {
       did = normaliseUserDid(r.user_did);
     } catch {
-      report.problems.push(`studio: redemption of ${codeRef(r.code)} by ${r.user_did}: not an EVM wallet DID, not migrated`);
+      report.problems.push(`studio: redemption of ${describeCode(codeOf(r.code))} by ${JSON.stringify(r.user_did)}: not an EVM wallet DID, not migrated`);
       continue;
     }
     const redeemedAt = isoInstant(r.redeemed_at);
     const accessExpires = r.access_expires === null ? null : isoInstant(r.access_expires);
     if (redeemedAt === null || (r.access_expires !== null && accessExpires === null)) {
       report.problems.push(
-        `studio: holder ${did}: redemption of ${codeRef(r.code)} has an unreadable date (redeemed_at ${JSON.stringify(r.redeemed_at)}, access_expires ${JSON.stringify(r.access_expires)}); holder not migrated`,
+        `studio: holder ${did}: redemption of ${describeCode(codeOf(r.code))} has an unreadable date (redeemed_at ${JSON.stringify(r.redeemed_at)}, access_expires ${JSON.stringify(r.access_expires)}); holder not migrated`,
       );
       broken.add(did);
       continue;
@@ -630,11 +702,24 @@ function adoptable(l: LicenceRecord, did: string, start: string, end: string | n
 }
 
 /**
- * Brings one holder to: one studio licence (from their newest redemption),
- * its grant, chain and lifecycle rows, and every redemption of theirs in the
- * new table pointing at it. Returns what was (dry-run: would be) done; does
- * it only with `apply`. Re-reads the DB, so under the holder lock it never
- * races a redeem of the same holder.
+ * One holder's studio licence: as vetra-access-codes granted access while
+ * ANY redemption was live, it is ACTIVE when any is, and ends with the
+ * latest of them (null: one never ends). It starts with the newest
+ * redemption, which (redeemedCodeOf) also decides the key.
+ */
+export function studioLicenceTerms(h: StudioHolder, now: string): { start: string; end: string | null; status: "ACTIVE" | "EXPIRED" } {
+  const start = h.redemptions.at(-1)!.redeemedAt;
+  const ends = h.redemptions.map((r) => r.accessExpires);
+  const end = ends.includes(null) ? null : ends.reduce((a, b) => (b! > a! ? b : a));
+  return { start, end, status: end === null || end > now ? "ACTIVE" : "EXPIRED" };
+}
+
+/**
+ * Brings one holder to: one studio licence (studioLicenceTerms), its grant,
+ * chain and lifecycle rows, and every redemption of theirs in the new table
+ * pointing at it. Returns what was (dry-run: would be) done; does it only
+ * with `apply`. Re-reads the DB, so under the holder lock it never races a
+ * redeem of the same holder.
  */
 async function ensureStudioHolder(
   deps: MigrationDeps,
@@ -642,12 +727,11 @@ async function ensureStudioHolder(
   h: StudioHolder,
   studioDocs: LicenceRecord[],
   apply: boolean,
+  codeOf: (code: string) => LegacyCode | undefined,
 ): Promise<string[]> {
   const db = deps.db;
   const newest = h.redemptions.at(-1)!;
-  const start = newest.redeemedAt;
-  const end = newest.accessExpires;
-  const status = end === null || end > deps.now() ? "ACTIVE" : "EXPIRED";
+  const { start, end, status } = studioLicenceTerms(h, deps.now());
   const done: string[] = [];
 
   const grant = await db
@@ -658,7 +742,13 @@ async function ensureStudioHolder(
     .where("issued_by", "=", MIGRATED_FROM)
     .orderBy("license_id")
     .executeTakeFirst();
-  let licenseId = grant?.license_id ?? studioDocs.find((l) => adoptable(l, h.did, start, end))?.id ?? null;
+  const adopted = grant ? undefined : studioDocs.find((l) => adoptable(l, h.did, start, end));
+  let licenseId = grant?.license_id ?? adopted?.id ?? null;
+  if (adopted) {
+    // Left by a crashed run: protected as at create, in case that is what failed.
+    done.push(`adopt licence ${adopted.id}`);
+    if (apply && deps.protectLicenceDocument) await deps.protectLicenceDocument(adopted.id);
+  }
 
   if (!licenseId) {
     done.push(`issue ${status} licence ${start} - ${end ?? "open"}`);
@@ -687,24 +777,24 @@ async function ensureStudioHolder(
   if (licenseId) {
     const chain = await db.selectFrom("license_chain").select("license_id").where("license_id", "=", licenseId).executeTakeFirst();
     if (!chain) {
-      if (grant || studioDocs.some((l) => l.id === licenseId)) done.push("chain");
+      if (grant || adopted) done.push("chain");
       if (apply) await deps.grants.linkChain({ licenseId, rootLicenseId: licenseId, appId: STUDIO_APP_ID, label: null, now: start });
     }
     if (!grant) {
-      if (studioDocs.some((l) => l.id === licenseId)) done.push(`grant for adopted licence ${licenseId}`);
+      if (adopted) done.push("grant");
       if (apply) {
         await deps.grants.recordGrant({ licenseId, appId: STUDIO_APP_ID, kind: STUDIO_KIND, userDid: h.did, issuedBy: MIGRATED_FROM, now: start });
       }
     }
     const rec = await db.selectFrom("license_lifecycle").select("license_id").where("license_id", "=", licenseId).executeTakeFirst();
     if (!rec) {
-      // Only reachable for a licence whose issue was applied but not recorded.
-      const doc = studioDocs.find((l) => l.id === licenseId);
-      done.push(`record lifecycle ${doc?.status ?? status}`);
+      // Only reachable for a licence whose issue was applied but not
+      // recorded. The computed status, never the (forgeable) document's.
+      done.push(`record lifecycle ${status}`);
       if (apply) {
         await db
           .insertInto("license_lifecycle")
-          .values({ license_id: licenseId, status: doc?.status ?? status, end_at: end, replaced_by: null, updated_at: deps.now() })
+          .values({ license_id: licenseId, status, end_at: end, replaced_by: null, updated_at: deps.now() })
           .onConflict((oc) => oc.column("license_id").doNothing())
           .execute();
       }
@@ -718,7 +808,7 @@ async function ensureStudioHolder(
   for (const r of h.redemptions) {
     const row = existing.get(r.code);
     if (row && row.license_id === null) {
-      report.warnings.push(`studio: holder ${h.did}: a redeem of ${codeRef(r.code)} is in flight (reserved, no licence); left to it`);
+      report.warnings.push(`studio: holder ${h.did}: a redeem of ${describeCode(codeOf(r.code))} is in flight (reserved, no licence); left to it`);
     }
   }
   if (missing.length > 0) {
@@ -804,20 +894,25 @@ export async function migrateStudio(deps: MigrationDeps, report: MigrationReport
   if (!deps.accessDb) return;
   const access = deps.accessDb;
 
+  const codes = await legacyRows(deps, report, () => access.selectFrom("invite_codes").selectAll().execute());
   const redemptions = await legacyRows(deps, report, () => access.selectFrom("invite_redemptions").selectAll().execute());
+  const byCode = new Map((codes ?? []).map((c) => [c.code, c]));
+  const codeOf = (code: string) => byCode.get(code);
+  const uses = new Map<string, number>();
+  for (const r of redemptions ?? []) uses.set(r.code, (uses.get(r.code) ?? 0) + 1);
+
   if (redemptions) {
     const studioDocs = (await deps.licences()).filter((l) => l.app === STUDIO_APP_ID);
-    for (const h of studioHolders(redemptions, report)) {
+    for (const h of studioHolders(redemptions, report, codeOf)) {
       try {
-        const newest = h.redemptions.at(-1)!;
-        const summary = `newest of ${h.redemptions.length}: ${codeRef(newest.code)}`;
+        const summary = `from ${h.redemptions.length} redemption(s), newest ${h.redemptions.at(-1)!.redeemedAt}`;
         if (report.mode === "dry-run") {
-          const would = await ensureStudioHolder(deps, report, h, studioDocs, false);
+          const would = await ensureStudioHolder(deps, report, h, studioDocs, false, codeOf);
           if (would.length > 0) report.actions.push(`studio: holder ${h.did}: ${would.join("; ")} (${summary})`);
           continue;
         }
         await withHolderLock(`${STUDIO_APP_ID}\u0000${h.did}`, async () => {
-          const did = await ensureStudioHolder(deps, report, h, studioDocs, true);
+          const did = await ensureStudioHolder(deps, report, h, studioDocs, true, codeOf);
           if (did.length > 0) report.actions.push(`studio: holder ${h.did}: ${did.join("; ")} (${summary})`);
         });
       } catch (err) {
@@ -828,27 +923,27 @@ export async function migrateStudio(deps: MigrationDeps, report: MigrationReport
 
   // Codes after holders: a migrated holder re-redeeming an old code then
   // finds their redemption (and licence) instead of a fresh reservation.
-  const codes = await legacyRows(deps, report, () => access.selectFrom("invite_codes").selectAll().execute());
   for (const c of codes ?? []) {
+    const what = describeCode(c);
     try {
       const expires = c.expires_at === null ? null : isoInstant(c.expires_at);
       if (c.expires_at !== null && expires === null) {
-        report.problems.push(`studio: code ${codeRef(c.code)}: expires_at ${JSON.stringify(c.expires_at)} does not parse; not moved`);
+        report.problems.push(`studio: ${what}: expires_at ${JSON.stringify(c.expires_at)} does not parse; not moved`);
         continue;
       }
       const there = await deps.db.selectFrom("invite_codes").select("app_id").where("code", "=", c.code).executeTakeFirst();
       if (there) {
-        if (there.app_id !== STUDIO_APP_ID) report.problems.push(`studio: code ${codeRef(c.code)} already exists for app ${there.app_id}; not moved`);
+        if (there.app_id !== STUDIO_APP_ID) report.problems.push(`studio: ${what} already exists for app ${there.app_id}; not moved`);
         continue;
       }
       const facts = [
-        c.label === null ? "no label" : `label ${JSON.stringify(c.label)}`,
         c.active ? "active" : "inactive",
         c.max_uses === null ? "no cap" : `max uses ${c.max_uses}`,
+        `${uses.get(c.code) ?? 0} use(s)`,
         expires === null ? "no expiry" : `expires ${expires}`,
         c.anthropic_key_ciphertext === null ? "no key" : "key attached",
       ];
-      await act(report, `studio: move code ${codeRef(c.code)} (${facts.join(", ")})`, () =>
+      await act(report, `studio: move ${what} (${facts.join(", ")})`, () =>
         deps.db
           .insertInto("invite_codes")
           .values({
@@ -862,12 +957,14 @@ export async function migrateStudio(deps: MigrationDeps, report: MigrationReport
             // Same OpenBao transit key (prefix, role, tenant): moved, never re-encrypted.
             anthropic_key_ciphertext: c.anthropic_key_ciphertext,
             created_at: isoInstant(c.created_at) ?? c.created_at,
+            // vetra-access-codes matched lower(trim(input)): these keep doing so.
+            legacy_case_insensitive: true,
           })
           .onConflict((oc) => oc.column("code").doNothing())
           .execute(),
       );
     } catch (err) {
-      report.problems.push(`studio: code ${codeRef(c.code)}: ${msg(err)}`);
+      report.problems.push(`studio: ${what}: ${msg(err)}`);
     }
   }
 }
@@ -877,7 +974,10 @@ export async function migrateStudio(deps: MigrationDeps, report: MigrationReport
 // ---------------------------------------------------------------------------
 
 export async function seedLedger(deps: MigrationDeps, report: MigrationReport): Promise<void> {
-  const ids = new Set([...(await deps.appRows()).map((r) => r.id), STUDIO_APP_ID]);
+  // Not the studio app: ensureStudioApp owns that document. Recording it here
+  // would make a squatted one (left alone when that step could not run) read
+  // as Vetra's on the next pass, hiding the squat.
+  const ids = new Set((await deps.appRows()).map((r) => r.id).filter((id) => id !== STUDIO_APP_ID));
   for (const id of [...ids].sort()) {
     try {
       if ((await deps.ledger.lookup(id)) !== null) continue;

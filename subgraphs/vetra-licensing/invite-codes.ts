@@ -128,6 +128,7 @@ export async function createInviteCode(
       max_uses: input.maxUses,
       anthropic_key_ciphertext: input.anthropicKeyCiphertext,
       created_at: input.now,
+      legacy_case_insensitive: false,
     };
     // An existing code is refused, never returned: it may be ANOTHER app's.
     // Refusing a taken custom code does reveal that the code exists (even an
@@ -182,15 +183,29 @@ export async function listInviteCodes(
   return rows.map(({ redemptions, ...r }) => view(r, Number(redemptions ?? 0)));
 }
 
+/**
+ * The code row an input names: an exact match first; failing that, a code
+ * moved from vetra-access-codes (flagged legacy_case_insensitive) matched as
+ * that subgraph did, on lower(trim(input)). Codes created here never match
+ * case-insensitively. Every miss is the same null.
+ */
 export async function getCode(
   db: Kysely<VetraLicensingDB>,
   code: string,
 ): Promise<InviteCodes | null> {
+  const exact = await db
+    .selectFrom("invite_codes")
+    .selectAll()
+    .where("code", "=", normalizeCode(code))
+    .executeTakeFirst();
+  if (exact) return exact;
   return (
     (await db
       .selectFrom("invite_codes")
       .selectAll()
-      .where("code", "=", normalizeCode(code))
+      .where((eb) => eb(eb.fn("lower", ["code"]), "=", normalizeCode(code).toLowerCase()))
+      .where("legacy_case_insensitive", "=", true)
+      .orderBy("code")
       .executeTakeFirst()) ?? null
   );
 }
