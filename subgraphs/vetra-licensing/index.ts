@@ -33,6 +33,7 @@ import {
   type ChainEnvDeps,
 } from "./environments.js";
 import {
+  confirmedEndedRows,
   markEnded,
   markResumed,
   tickOffboarding,
@@ -289,11 +290,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
       onEnded: (_appId, env) => markEnded(offboarding, env),
       onResumed: (_appId, env) => markResumed(offboarding, env),
-      afterApp: (_appId, rows) =>
-        tickOffboarding(
-          offboarding,
-          rows.filter((r) => r.ended_at !== null),
-        ),
+      afterApp: (_appId, rows, confirmedEndedRoots) =>
+        tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots)),
       migrationComplete: async () =>
         (await db
           .selectFrom("licensing_migration_steps")

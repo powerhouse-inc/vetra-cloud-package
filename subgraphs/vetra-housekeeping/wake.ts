@@ -16,6 +16,11 @@ export function studioPowerResult(
   };
 }
 
+/**
+ * NOTE: this guard covers the housekeeping wake path only. A WAKE_ENVIRONMENT
+ * dispatched directly on the environment document bypasses it; offboarding
+ * re-sleeps such an environment on its next tick (stopped_at stays set).
+ */
 export function createWake(deps: {
   findStudioByHost(host: string): Promise<StudioRow | null>;
   dispatchWake(envId: string): Promise<void>;

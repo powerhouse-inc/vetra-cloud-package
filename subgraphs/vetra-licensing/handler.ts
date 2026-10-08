@@ -44,8 +44,18 @@ export interface HandlerDeps {
   /** Task 10 wires the offboarding clock here; until then they only log. */
   onEnded(appId: string, environmentId: string): Promise<void>;
   onResumed(appId: string, environmentId: string): Promise<void>;
-  /** Runs after an app's steps (offboarding ticks, reporting tokens); never for a held app. */
-  afterApp(appId: string, environments: LicenseEnvironments[]): Promise<void>;
+  /**
+   * Runs after an app's steps (offboarding ticks, reporting tokens); never for a held app.
+   * `confirmedEndedRoots` are the chains this tick affirmatively confirmed as
+   * ended (no head, all terminal, not held, not backed off, evaluated and
+   * settled this tick). An environment row with ended_at set whose root is not
+   * in it is FROZEN: it must be neither stopped nor destroyed.
+   */
+  afterApp(
+    appId: string,
+    environments: LicenseEnvironments[],
+    confirmedEndedRoots: ReadonlySet<string>,
+  ): Promise<void>;
   /** True once the startup migration recorded `complete`. */
   migrationComplete(): Promise<boolean>;
   cfg: LicensingConfig;
@@ -421,12 +431,24 @@ export class AppLicenseHandler {
         rootOfStep(step, rootById) ?? (step.kind === "set-stage" ? step.licenseId : "");
       groups.set(root, [...(groups.get(root) ?? []), step]);
     }
+    const confirmedEnded = new Set<string>();
     for (const [root, group] of rotate([...groups], this.tickNo)) {
-      await this.runChain(app, root, group, provisionKind);
+      if (await this.runChain(app, root, group, provisionKind)) confirmedEnded.add(root);
     }
     if (!held) {
       const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
-      await this.timed(this.d.afterApp(appId, after), `after-app work of app ${appId}`);
+      for (const row of after) {
+        if (row.ended_at === null || confirmedEnded.has(row.root_license_id)) continue;
+        this.notices.note(
+          `frozen:${row.environment_id}`,
+          "warn",
+          `[licensing] offboarding of environment ${row.environment_id} (chain ${row.root_license_id}) is frozen: this tick did not confirm the chain as ended`,
+        );
+      }
+      await this.timed(
+        this.d.afterApp(appId, after, confirmedEnded),
+        `after-app work of app ${appId}`,
+      );
     }
   }
 
@@ -435,23 +457,25 @@ export class AppLicenseHandler {
    * step is still running (it timed out earlier) is skipped until that step
    * settles; a chain that failed is skipped for 1, 2, 4… ticks (at most
    * BACKOFF_CAP_TICKS), reset by a tick on which it succeeds.
+   * Returns true only when the chain was confirmed ended this tick: it has an
+   * ended / still-ended step and every step settled.
    */
   private async runChain(
     app: AppDocView,
     root: string,
     steps: ChainStep[],
     provisionKind: (step: Extract<ChainStep, { kind: "provision" }>) => ProvisionKind,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const appId = app.id;
     const key = `${appId}:${root}`;
-    if (!steps.some((s) => s.kind !== "hold" && s.kind !== "anomaly")) return;
+    if (!steps.some((s) => s.kind !== "hold" && s.kind !== "anomaly")) return false;
     if (this.inFlight.has(key)) {
       this.notices.note(
         `inflight:${key}`,
         "info",
         `[licensing] chain ${root} of app ${appId}: a step from an earlier tick is still running; skipping`,
       );
-      return;
+      return false;
     }
     const backoff = this.backoff.get(key);
     if (backoff && this.tickNo <= backoff.until) {
@@ -460,14 +484,14 @@ export class AppLicenseHandler {
         "info",
         `[licensing] chain ${root} of app ${appId} failed ${backoff.failures} time(s) in a row; retrying on tick ${backoff.until + 1}`,
       );
-      return;
+      return false;
     }
     for (const step of steps) {
       let budgeted = false;
       if (step.kind === "provision" && provisionKind(step) === "retemplate") {
         if (this.retemplateBudget <= 0) {
           this.deferredRetemplates++;
-          return; // not a failure: the chain waits its turn
+          return false; // not a failure: the chain waits its turn
         }
         this.retemplateBudget--;
         budgeted = true;
@@ -494,10 +518,11 @@ export class AppLicenseHandler {
           "warn",
           `[licensing] ${step.kind} of ${root} for app ${appId} failed: ${String(err)}`,
         );
-        return;
+        return false;
       }
     }
     this.backoff.delete(key);
+    return steps.some((s) => s.kind === "ended" || s.kind === "still-ended");
   }
 
   private noteHoldsAndAnomalies(appId: string, steps: ChainStep[]): void {
@@ -550,6 +575,7 @@ export class AppLicenseHandler {
     switch (step.kind) {
       case "hold":
       case "anomaly":
+      case "still-ended":
         return; // logged; never acted on
       case "set-stage":
         await this.d.setStage(step.licenseId, step.stage);

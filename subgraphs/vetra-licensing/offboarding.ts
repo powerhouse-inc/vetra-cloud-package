@@ -56,22 +56,32 @@ export function subscriptionWarnings(
         : {
             kind: "STOPPED_DELETE_PENDING",
             at: input.deleteAfter,
-            message: `Your environment is stopped; its data is deleted on ${day(input.deleteAfter)}.`,
+            message: `Your environment is stopped; its data is deleted on ${day(input.deleteAfter)}. Renew your licence to bring it back.`,
           },
     );
   } else if (input.mode === "DEDICATED" && input.endedAt) {
     const stop = addDays(input.endedAt, STOP_AFTER_DAYS);
-    out.push({
+    // Once the stop time has passed the stop is imminent or done; no banner
+    // promises a date in the past.
+    if (now < stop) out.push({
       kind: "ENDED_STOP_PENDING",
       at: stop,
       message: `Your environment stops on ${day(stop)}. Renew to keep it running.`,
     });
   }
-  if (input.status === "ACTIVE" && input.end && now < input.end && now >= addDays(input.end, -EXPIRY_WARNING_DAYS)) {
-    const days = Math.ceil((Date.parse(input.end) - Date.parse(now)) / DAY_MS);
+  // `end` may be date-only or carry an offset: compare instants, not strings.
+  const endMs = input.end === null ? Number.NaN : Date.parse(input.end);
+  const nowMs = Date.parse(now);
+  if (
+    input.status === "ACTIVE" &&
+    !Number.isNaN(endMs) &&
+    nowMs < endMs &&
+    nowMs >= endMs - EXPIRY_WARNING_DAYS * DAY_MS
+  ) {
+    const days = Math.ceil((endMs - nowMs) / DAY_MS);
     out.push({
       kind: "EXPIRING",
-      at: input.end,
+      at: new Date(endMs).toISOString(),
       message: `Your licence expires in ${days} ${days === 1 ? "day" : "days"}.`,
     });
   }
@@ -92,7 +102,6 @@ export interface OffboardingDeps {
 
 // "DEPLOYMENt_FAILED" is the environment model's own (misspelt) status value.
 const SLEEPABLE = new Set(["READY", "DEPLOYMENt_FAILED"]);
-const ALREADY_DOWN = new Set(["STOPPED", "TERMINATING", "DESTROYED", "ARCHIVED"]);
 
 /**
  * Called only when the lifecycle record says the chain ended. Idempotent: a
@@ -138,16 +147,27 @@ function infoOnce(deps: OffboardingDeps, message: string): void {
   deps.logger.info(message);
 }
 
+/**
+ * The rows the clock may act on: ended AND confirmed ended by the handler this
+ * tick. Every other ended row is frozen (neither stopped nor destroyed).
+ */
+export function confirmedEndedRows(
+  rows: LicenseEnvironments[],
+  confirmedEndedRoots: ReadonlySet<string>,
+): LicenseEnvironments[] {
+  return rows.filter((r) => r.ended_at !== null && confirmedEndedRoots.has(r.root_license_id));
+}
+
 export async function tickOffboarding(deps: OffboardingDeps, rows: LicenseEnvironments[]): Promise<void> {
   for (const row of rows) {
     const id = row.environment_id;
     try {
+      // Only an ended chain is ever stopped or destroyed.
+      if (!row.ended_at) continue;
       const action = offboardingAction(
         { endedAt: row.ended_at, stoppedAt: row.stopped_at, deleteAfter: row.delete_after },
         deps.now(),
       );
-      // Only an ended chain is ever stopped or destroyed.
-      if (!row.ended_at) continue;
       const status = await deps.envStatus(id);
       if (action === "destroy") {
         if (!deps.cfg.destroyEnabled) {
@@ -164,11 +184,10 @@ export async function tickOffboarding(deps: OffboardingDeps, rows: LicenseEnviro
       }
       const shouldBeDown = action === "stop" || row.stopped_at !== null;
       if (!shouldBeDown) continue;
-      if (status !== null && SLEEPABLE.has(status)) {
-        await deps.sleep(id);
-      } else if (status !== null && !ALREADY_DOWN.has(status)) {
-        continue; // mid-transition: next tick
-      }
+      if (status === null || !SLEEPABLE.has(status)) continue; // gone, already down, or mid-transition
+      await deps.sleep(id);
+      // Stamped only when offboarding itself put it to sleep: an environment
+      // the holder stopped is theirs, and markResumed must never wake it.
       if (!row.stopped_at) await deps.rows.update(id, { stopped_at: deps.now(), updated_at: deps.now() });
     } catch (err) {
       deps.logger.warn(`[licensing] offboarding of ${id} failed: ${String(err)}`);

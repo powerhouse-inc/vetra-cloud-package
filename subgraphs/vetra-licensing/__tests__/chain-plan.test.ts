@@ -104,7 +104,7 @@ describe("planChains: never release on doubt", () => {
 describe("planChains: ending and resuming", () => {
   it("reports a chain with no live licence as ended, once", () => {
     expect(plan([L("l1", { status: "EXPIRED" })], [E("e1", "l1")])).toStrictEqual([{ kind: "ended", root: "l1", environmentId: "e1" }]);
-    expect(plan([L("l1", { status: "REVOKED" })], [E("e1", "l1", { endedAt: "t" })])).toStrictEqual([]);
+    expect(plan([L("l1", { status: "REVOKED" })], [E("e1", "l1", { endedAt: "t" })])).toStrictEqual([{ kind: "still-ended", root: "l1", environmentId: "e1" }]);
   });
   it("an ended licence without an environment needs nothing (SHARED never ends anything)", () => {
     expect(plan([L("l1", { kind: "free", status: "EXPIRED" })])).toStrictEqual([]);

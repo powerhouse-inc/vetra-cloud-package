@@ -41,6 +41,8 @@ export type ChainStep =
   | { kind: "hold"; root: string; reason: string }
   | { kind: "ended"; root: string; environmentId: string }
   | { kind: "resumed"; root: string; environmentId: string }
+  /** The chain is affirmatively still ended (no head, every licence terminal). The offboarding clock runs only for these. */
+  | { kind: "still-ended"; root: string; environmentId: string }
   /** Informational: nothing to do, but worth logging (e.g. an ACTIVE licence without provenance beside the head). */
   | { kind: "anomaly"; root: string; reason: string };
 
@@ -149,6 +151,8 @@ export function planChains(input: {
         steps.push({ kind: "hold", root, reason: "licence issued but not yet active" });
       } else if (env.endedAt === null) {
         steps.push({ kind: "ended", root, environmentId: env.environmentId });
+      } else {
+        steps.push({ kind: "still-ended", root, environmentId: env.environmentId });
       }
       continue;
     }

@@ -7,6 +7,7 @@ import type { LicenceRecord } from "../reads.js";
 import type { LicenseEnvironments } from "../db/schema.js";
 import { EnvironmentNotReadyError } from "../environments.js";
 import type { LifecycleRecord } from "../lifecycle.js";
+import { addDays, confirmedEndedRows, tickOffboarding, type OffboardingDeps } from "../offboarding.js";
 
 const ADDR = "0x1111111111111111111111111111111111111111";
 const DID = `did:pkh:eip155:1:${ADDR}`;
@@ -97,7 +98,7 @@ describe("AppLicenseHandler", () => {
     await h.handler.reconcileOnce();
     expect(h.deps.provision).toHaveBeenCalledWith(expect.objectContaining({ appId: "app-1", root: "l1", licenseId: "l1", userDid: DID, templateId: "ded", templateHash: "h-ded", label: "Project A", now: "2026-10-08T00:00:00.000Z" }));
     expect(h.staged).toStrictEqual([["l1", "env-l1"]]);
-    expect(h.deps.afterApp).toHaveBeenCalledWith("app-1", []);
+    expect(h.deps.afterApp).toHaveBeenCalledWith("app-1", [], new Set());
   });
 
   it("does not rebind a stage that already points at the environment", async () => {
@@ -631,6 +632,79 @@ describe("AppLicenseHandler", () => {
       await vi.advanceTimersByTimeAsync(200_000);
       h.handler.stop();
       expect(h.provisioned).toStrictEqual(["l1"]);
+    });
+  });
+
+  describe("offboarding clock only runs for chains confirmed ended this tick", () => {
+    const END = "2026-10-01T00:00:00.000Z";
+    const DEL = addDays(END, 90);
+    function clock(initial: LicenseEnvironments, over: Partial<HandlerDeps> = {}, licences: LicenceRecord[] = [lic("l1", { status: "EXPIRED" })]) {
+      const rowsState = new Map<string, LicenseEnvironments>([[initial.environment_id, initial]]);
+      const nowRef = { v: END };
+      const sleep = vi.fn(async () => {});
+      const destroy = vi.fn(async () => {});
+      const off = {
+        rows: {
+          byEnvironment: async (id: string) => rowsState.get(id) ?? null,
+          update: async (id: string, patch: Partial<LicenseEnvironments>) => { rowsState.set(id, { ...rowsState.get(id)!, ...patch }); },
+          remove: async (id: string) => { rowsState.delete(id); },
+        },
+        envStatus: async () => "READY", sleep, wake: vi.fn(async () => {}), destroy,
+        cfg: { destroyEnabled: true }, logger: { info: vi.fn(), warn: vi.fn() }, now: () => nowRef.v,
+      } as unknown as OffboardingDeps;
+      const h = harness({
+        environmentAppIds: async () => ["app-1"],
+        environments: async () => [...rowsState.values()],
+        afterApp: async (_a, rows, confirmed) => tickOffboarding(off, confirmedEndedRows(rows, confirmed)),
+        ...over,
+      }, licences);
+      return { h, sleep, destroy, nowRef, rowsState };
+    }
+    const ended = (over: Partial<LicenseEnvironments> = {}) =>
+      envRow({ ended_at: END, delete_after: DEL, ...over });
+
+    it("stops a confirmed-ended chain at day 14", async () => {
+      const c = clock(ended());
+      c.nowRef.v = addDays(END, 14);
+      await c.h.handler.reconcileOnce();
+      expect(c.sleep).toHaveBeenCalledWith("e1");
+      expect(c.rowsState.get("e1")!.stopped_at).toBe(addDays(END, 14));
+    });
+
+    it("freezes a renewed chain that is held (lifecycle disagrees): no stop at day 14, no destroy at day 90", async () => {
+      const licences = [lic("l1", { status: "EXPIRED" }), lic("l2")];
+      const c = clock(ended(), {
+        chainRoots: async () => new Map([["l2", "l1"]]),
+        // the DB says l2 is already terminal while its document claims ACTIVE
+        lifecycle: async () => new Map<string, LifecycleRecord>([["l1", { status: "EXPIRED", replacedBy: null }], ["l2", { status: "EXPIRED", replacedBy: null }]]),
+      }, licences);
+      c.nowRef.v = addDays(END, 14);
+      await c.h.handler.reconcileOnce();
+      c.nowRef.v = DEL;
+      await c.h.handler.reconcileOnce();
+      expect(c.sleep).not.toHaveBeenCalled();
+      expect(c.destroy).not.toHaveBeenCalled();
+      expect(c.rowsState.has("e1")).toBe(true);
+      warned(c.h, "offboarding of environment e1 (chain l1) is frozen");
+    });
+
+    it("freezes a row whose chain root no longer matches any licence", async () => {
+      const c = clock(ended({ root_license_id: "old" }));
+      c.nowRef.v = DEL;
+      await c.h.handler.reconcileOnce();
+      expect(c.sleep).not.toHaveBeenCalled();
+      expect(c.destroy).not.toHaveBeenCalled();
+      warned(c.h, "frozen");
+    });
+
+    it("freezes a backed-off chain", async () => {
+      const c = clock(envRow({ ended_at: null }), { onEnded: vi.fn(async () => { throw new Error("db down"); }) });
+      await c.h.handler.reconcileOnce(); // onEnded fails: chain backs off
+      c.rowsState.set("e1", ended()); // the row is ended by some other path
+      c.nowRef.v = addDays(END, 14);
+      await c.h.handler.reconcileOnce();
+      expect(c.sleep).not.toHaveBeenCalled();
+      warned(c.h, "frozen");
     });
   });
 });

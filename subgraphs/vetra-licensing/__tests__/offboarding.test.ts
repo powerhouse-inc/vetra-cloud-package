@@ -7,7 +7,7 @@ import type { VetraLicensingDB } from "../db/schema.js";
 import { loadLicensingConfig } from "../config.js";
 import { createChainEnvironmentRows } from "../environments.js";
 import {
-  addDays, isLicenceStopped, markEnded, markResumed, offboardingAction,
+  addDays, confirmedEndedRows, isLicenceStopped, markEnded, markResumed, offboardingAction,
   subscriptionWarnings, tickOffboarding, type OffboardingDeps,
 } from "../offboarding.js";
 
@@ -29,6 +29,19 @@ describe("offboardingAction (the timeline)", () => {
 
 describe("subscriptionWarnings", () => {
   const ded = { status: "ACTIVE", end: END, mode: "DEDICATED" as const, endedAt: null, stoppedAt: null, deleteAfter: null };
+  it("compares instants: a date-only or offset end", () => {
+    const dateOnly = { ...ded, end: "2026-10-01" };
+    expect(subscriptionWarnings(dateOnly, at(-8))).toStrictEqual([]);
+    expect(subscriptionWarnings(dateOnly, at(-7))).toStrictEqual([{ kind: "EXPIRING", at: END, message: "Your licence expires in 7 days." }]);
+    const offset = { ...ded, end: "2026-10-01T02:00:00.000+02:00" }; // = END
+    expect(subscriptionWarnings(offset, at(-1))[0]).toMatchObject({ at: END, message: "Your licence expires in 1 day." });
+    expect(subscriptionWarnings({ ...ded, end: "garbage" }, at(-1))).toStrictEqual([]);
+  });
+  it("shows no stop banner once the stop time has passed, and a renewal call to action once stopped", () => {
+    const off = { ...ded, status: "EXPIRED", endedAt: END, deleteAfter: at(90) };
+    expect(subscriptionWarnings(off, at(14))).toStrictEqual([]);
+    expect(subscriptionWarnings({ ...off, stoppedAt: at(14) }, at(20))[0]!.message).toContain("Renew");
+  });
   it("warns from end - 7 days, with the days left", () => {
     expect(subscriptionWarnings(ded, at(-8))).toStrictEqual([]);
     expect(subscriptionWarnings(ded, at(-7))).toStrictEqual([{ kind: "EXPIRING", at: END, message: "Your licence expires in 7 days." }]);
@@ -171,13 +184,14 @@ describe("offboarding against rows", () => {
     expect(deps.logger.info).toHaveBeenCalledTimes(1);
   });
 
-  it("removes the row of an environment whose document is already gone; records already-down envs as stopped", async () => {
+  it("removes the row of an environment whose document is already gone; never stamps an already-down env", async () => {
     await markEnded(deps, "e1");
     status.set("e1", "STOPPED");
     now = at(14);
     await tickOffboarding(deps, [(await row())!]);
     expect(deps.sleep).not.toHaveBeenCalled();
-    expect((await row())!.stopped_at).toBe(at(14));
+    expect((await row())!.stopped_at).toBeNull();
+    expect(await isLicenceStopped(db, "e1")).toBe(false);
     status.delete("e1");
     now = at(90);
     await tickOffboarding(deps, [(await row())!]);
@@ -202,5 +216,35 @@ describe("offboarding against rows", () => {
     await bare.destroy();
     const broken = { selectFrom: () => { throw Object.assign(new Error("x"), { code: "XX" }); } } as unknown as Kysely<VetraLicensingDB>;
     await expect(isLicenceStopped(broken, "e1")).rejects.toThrow("x");
+  });
+
+  it("an environment the holder stopped is not woken by markResumed after the clock ran", async () => {
+    await markEnded(deps, "e1");
+    status.set("e1", "STOPPED"); // the holder sleeps it
+    now = at(14);
+    await tickOffboarding(deps, [(await row())!]);
+    await markResumed(deps, "e1");
+    expect(deps.wake).not.toHaveBeenCalled();
+    expect(await row()).toMatchObject({ ended_at: null, stopped_at: null, delete_after: null });
+  });
+
+  it("a holder-stopped environment someone wakes is re-stopped and then stamped", async () => {
+    await markEnded(deps, "e1");
+    status.set("e1", "STOPPED");
+    now = at(14);
+    await tickOffboarding(deps, [(await row())!]);
+    status.set("e1", "READY");
+    now = at(15);
+    await tickOffboarding(deps, [(await row())!]);
+    expect(deps.sleep).toHaveBeenCalledTimes(1);
+    expect((await row())!.stopped_at).toBe(at(15));
+  });
+
+  it("confirmedEndedRows keeps only ended rows whose root was confirmed", async () => {
+    await markEnded(deps, "e1");
+    const r = (await row())!;
+    expect(confirmedEndedRows([r], new Set(["r"]))).toStrictEqual([r]);
+    expect(confirmedEndedRows([r], new Set())).toStrictEqual([]);
+    expect(confirmedEndedRows([{ ...r, ended_at: null }], new Set(["r"]))).toStrictEqual([]);
   });
 });
