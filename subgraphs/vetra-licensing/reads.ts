@@ -1,5 +1,5 @@
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
-import { createAppReads } from "./app-reads.js";
+import { parseAppDocument } from "./app-reads.js";
 import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
 import type { LicenseRow, LicenseStatusName } from "./transitions.js";
 import type { LicenseTypeView, LicenseView } from "./resolvers.js";
@@ -268,8 +268,6 @@ export function createReactorLicenseReads(
     }
   }
 
-  const appReads = createAppReads(client);
-
   async function getDoc(id: string): Promise<unknown> {
     try {
       return (await client.get(id)) ?? null;
@@ -328,7 +326,9 @@ export function createReactorLicenseReads(
       // The app document's id is the app id, so this is a direct get. A missing
       // document means the app has published nothing yet — an empty list, not
       // an error: the builder says so rather than showing an empty dropdown.
-      return (await appReads.app(appId))?.artifacts ?? [];
+      // Artifacts only, for the template builder and the legacy type hash; the
+      // integrity check (createAppReads) guards templates and terms.
+      return parseAppDocument(await getDoc(appId))?.artifacts ?? [];
     },
 
     async licenseTypeDetails(appId) {

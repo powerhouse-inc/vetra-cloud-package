@@ -1,4 +1,8 @@
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
+import {
+  incomingParentIds,
+  type RelationshipClient,
+} from "../vetra-apps/app-doc-protection.js";
 import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
 import type { AppArtifact, LicenseClientLike } from "./reads.js";
 import { templateHash, type TemplateService, type TemplateShape } from "./template.js";
@@ -39,6 +43,20 @@ export interface AppDocView {
   templates: AppTemplateView[];
   terms: AppTermView[];
   artifacts: AppArtifact[];
+  /**
+   * The document may have been written by someone other than the system:
+   * anything read from it (templates, terms, artifacts) is untrusted, and
+   * callers must HOLD — never provision or release from a tampered app.
+   *
+   * Operations do not record their origin reliably (the server's reactor
+   * client signs every unsigned action with the server key, including actions
+   * users submit through GraphQL), so the signal is structural: an app
+   * document never legitimately has a parent, and a parent's grants are the
+   * one way around its protection. parseAppDocument alone cannot see
+   * relationships and reports false; createAppReads fills this in.
+   */
+  tampered: boolean;
+  tamperReason: string | null;
 }
 
 const TERM_STATUSES = ["DRAFT", "ACTIVE", "RETIRED"] as const;
@@ -161,6 +179,8 @@ export function parseAppDocument(doc: unknown): AppDocView | null {
       return v ? [v] : [];
     }),
     artifacts,
+    tampered: false,
+    tamperReason: null,
   };
 }
 
@@ -174,6 +194,9 @@ export type KindResolution =
  * a reason to HOLD, never to release.
  */
 export function resolveKind(app: AppDocView, kind: string | null): KindResolution {
+  if (app.tampered) {
+    return { ok: false, reason: `app ${app.id} is tampered: ${app.tamperReason ?? "unknown"}` };
+  }
   if (!kind) return { ok: false, reason: "licence has no kind" };
   const term = app.terms.find((t) => t.kind === kind);
   if (!term) return { ok: false, reason: `kind ${kind} is not a term of app ${app.id}` };
@@ -209,16 +232,29 @@ export interface AppReads {
 
 const PAGE_SIZE = 200;
 
+/** What createAppReads needs: document reads plus incoming relationships. */
+export type AppReadsClient = LicenseClientLike &
+  Pick<RelationshipClient, "getIncomingRelationships">;
+
 export interface AppReadsOptions {
   /** Ids an app document must have to be trusted by slug. */
   trustedIds?: () => Promise<ReadonlySet<string>>;
-  logger?: Pick<Console, "warn">;
+  logger?: Pick<Console, "warn" | "error">;
 }
 
 export function createAppReads(
-  client: LicenseClientLike,
+  client: AppReadsClient,
   opts: AppReadsOptions = {},
 ): AppReads {
+  const logger = opts.logger ?? console;
+  /** Fills in `tampered`. A failed relationship read propagates: unknown is not clean. */
+  async function withIntegrity(view: AppDocView): Promise<AppDocView> {
+    const parents = await incomingParentIds(client, view.id);
+    if (parents.length === 0) return view;
+    const reason = `has parent document(s) ${parents.join(", ")}, whose grants can write it`;
+    logger.error(`[licensing] app document ${view.id} is TAMPERED (${reason}); holding everything read from it`);
+    return { ...view, tampered: true, tamperReason: reason };
+  }
   async function allDocs(): Promise<unknown[]> {
     const out: unknown[] = [];
     let cursor = "0";
@@ -231,12 +267,15 @@ export function createAppReads(
   }
   return {
     async app(id) {
+      let doc: unknown;
       try {
-        return parseAppDocument(await client.get(id));
+        doc = await client.get(id);
       } catch (err) {
         if (isDocumentNotFound(err)) return null;
         throw err;
       }
+      const view = parseAppDocument(doc);
+      return view ? withIntegrity(view) : null;
     },
     async appBySlug(slug) {
       if (!opts.trustedIds) {
@@ -248,12 +287,12 @@ export function createAppReads(
         return v && v.slug === slug && trusted.has(v.id) ? [v] : [];
       });
       if (matches.length > 1) {
-        (opts.logger ?? console).warn(
+        logger.warn(
           `[licensing] slug ${slug} matches ${matches.length} trusted apps (${matches.map((m) => m.id).join(", ")}); refusing`,
         );
         return null;
       }
-      return matches[0] ?? null;
+      return matches[0] ? withIntegrity(matches[0]) : null;
     },
     async allIds() {
       return (await allDocs()).flatMap((d) => {

@@ -82,6 +82,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
                 .then((r) => r?.owner_address ?? null),
             studioPublisherAddress(),
           ),
+          this.reactorClient as never,
+          console,
         )
       : undefined;
 

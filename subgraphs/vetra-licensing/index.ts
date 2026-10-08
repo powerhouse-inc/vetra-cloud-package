@@ -196,6 +196,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     if (perm) {
       void sweepAppDocumentProtection({
         perm,
+        relationships: this.reactorClient as never,
         listAppDocumentIds: () => appReads.allIds(),
         ownerFor: createAppDocOwnerResolver(rowOwner, studioPublisher),
         logger: console,

@@ -35,9 +35,9 @@ type OpLike = { error?: string; action?: { id?: string; type?: string } };
 export function createReactorAppDocStore(
   client: ReactorClientLike,
   /**
-   * Makes the new document system-write-only (see app-doc-protection.ts).
-   * Absent when document permissions are off. A failure propagates: the
-   * licensing setup sweep re-protects on the next boot.
+   * Makes a new document system-write-only (see app-doc-protection.ts).
+   * Absent when document permissions are off. Callers run it AFTER populating
+   * the document, so a failure never leaves an empty document behind.
    */
   protect?: (id: string) => Promise<void>,
 ): AppDocStore {
@@ -55,8 +55,8 @@ export function createReactorAppDocStore(
       const doc = utils.createDocument();
       doc.header = createPresignedHeader(id, APP_DOC_TYPE);
       await client.create(doc);
-      if (protect) await protect(id);
     },
+    protect,
     async exists(id) {
       return (await getDoc(id)) !== null;
     },

@@ -28,6 +28,9 @@ export function createOwnerAppLookup(deps: {
     // Only the name comes from the document; a read error propagates.
     const doc = await deps.apps.app(STUDIO_APP_ID);
     if (!doc) return null;
+    // Ownership never came from the document, so a tampered studio document
+    // does not change who manages it; app-reads has already logged it, and
+    // anything that provisions from it holds via resolveKind.
     return {
       id: STUDIO_APP_ID,
       name: doc.name ?? doc.slug ?? STUDIO_APP_ID,

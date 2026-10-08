@@ -6,7 +6,7 @@ import type { OwnerAppRecord } from "../publisher-auth.js";
 
 const doc = (id: string, owner: string | null, over: Partial<AppDocView> = {}): AppDocView => ({
   id, name: `doc ${id}`, slug: id, owner, status: "ACTIVE", identityDid: null,
-  productionEnvironmentId: null, templates: [], terms: [], artifacts: [], ...over,
+  productionEnvironmentId: null, templates: [], terms: [], artifacts: [], tampered: false, tamperReason: null, ...over,
 });
 
 const ROW: OwnerAppRecord = { id: "row-app", name: "row", status: "ACTIVE", owner_address: "0xa" };

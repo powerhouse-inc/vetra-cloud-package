@@ -90,6 +90,52 @@ describe("backfillAppDocuments", () => {
   });
 });
 
+describe("protecting new app documents", () => {
+  const protectingDocs = (fail = false) => {
+    const docs = fakeDocs();
+    const order: string[] = [];
+    return Object.assign(docs, {
+      order,
+      async create(id: string) {
+        order.push(`create ${id}`);
+        docs.created.push(id);
+      },
+      async execute(id: string, actions: Action[]) {
+        order.push(`execute ${id}`);
+        docs.executed.push({ id, actions });
+      },
+      async protect(id: string) {
+        order.push(`protect ${id}`);
+        if (fail) throw new Error("permission db down");
+      },
+    });
+  };
+
+  it("backfill populates the document before protecting it", async () => {
+    const app = await seedActiveApp(h);
+    const docs = protectingDocs();
+    await backfillAppDocuments({ db: h.db, docs, logger: { warn: vi.fn() } });
+    expect(docs.order).toStrictEqual([`create ${app.id}`, `execute ${app.id}`, `protect ${app.id}`]);
+  });
+
+  it("a protect failure keeps the populated document and is only logged", async () => {
+    const app = await seedActiveApp(h);
+    const docs = protectingDocs(true);
+    const warn = vi.fn();
+    expect(await backfillAppDocuments({ db: h.db, docs, logger: { warn } })).toEqual({ created: 1, skipped: 0 });
+    expect(docs.executed.map((e) => e.id)).toStrictEqual([app.id]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("permission db down"));
+  });
+
+  it("the dual-write protects a document it had to create, after mirroring", async () => {
+    const app = await seedActiveApp(h);
+    const docs = protectingDocs();
+    h.deps.docs = docs;
+    await updateApp(h.deps, owner, app.id, { name: "healed" });
+    expect(docs.order).toStrictEqual([`create ${app.id}`, `execute ${app.id}`, `protect ${app.id}`]);
+  });
+});
+
 describe("mirrorAppToDocument", () => {
   it("mirrors an app change into the document", async () => {
     const docs = fakeDocs(new Set(["a1"]));

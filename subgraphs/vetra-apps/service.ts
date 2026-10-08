@@ -52,6 +52,7 @@ import {
 import {
   mirrorAppById,
   mirrorAppRow,
+  protectNewAppDocument,
   type AppDocStore,
 } from "./app-document.js";
 import {
@@ -1726,8 +1727,10 @@ export async function ciRecordArtifact(
 
   // Create-on-demand: an App registered before the document backfill ran still
   // has to be able to publish.
-  if (!(await deps.docs.exists(app.id))) await deps.docs.create(app.id);
+  const created = !(await deps.docs.exists(app.id));
+  if (created) await deps.docs.create(app.id);
   await deps.docs.execute(app.id, actions);
+  if (created) await protectNewAppDocument(deps.docs, app.id, deps.logger);
 
   deps.logger.info(
     `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +

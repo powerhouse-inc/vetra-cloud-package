@@ -12,6 +12,64 @@
  * Mirrors the env protection reconciler in vetra-cloud-observability.
  */
 
+/**
+ * The slice of the reactor client that reads and removes relationships.
+ *
+ * reactor-api inherits permissions down "child" relationships: a WRITE/ADMIN
+ * grant on any ancestor (a source of an incoming "child" relationship) lets a
+ * caller write the document, and addRelationship only checks the SOURCE. So
+ * anyone could make their own drive the parent of a protected app document and
+ * write it. App documents never legitimately have a parent.
+ */
+export interface RelationshipClient {
+  getIncomingRelationships(
+    targetIdentifier: string,
+    relationshipType: string,
+    view?: undefined,
+    paging?: { cursor: string; limit: number },
+  ): Promise<{ results: unknown[]; nextCursor?: string }>;
+  removeRelationship(
+    sourceIdentifier: string,
+    targetIdentifier: string,
+    relationshipType: string,
+  ): Promise<unknown>;
+}
+
+/** Ids of every document with a "child" relationship to `id`. Errors propagate. */
+export async function incomingParentIds(
+  rel: Pick<RelationshipClient, "getIncomingRelationships">,
+  id: string,
+): Promise<string[]> {
+  const out: string[] = [];
+  let cursor = "0";
+  for (let page = 0; page < 50; page++) {
+    const res = await rel.getIncomingRelationships(id, "child", undefined, { cursor, limit: 100 });
+    for (const d of res.results) {
+      const header = (d as { header?: { id?: unknown } } | null)?.header;
+      out.push(typeof header?.id === "string" ? header.id : "<unknown>");
+    }
+    if (!res.nextCursor || res.nextCursor === cursor || res.results.length === 0) break;
+    cursor = res.nextCursor;
+  }
+  return out;
+}
+
+/** Removes every incoming "child" relationship of an app document, logging each. */
+export async function detachAppDocumentParents(
+  rel: RelationshipClient,
+  id: string,
+  logger: Pick<Console, "warn">,
+): Promise<number> {
+  const parents = await incomingParentIds(rel, id);
+  for (const parent of parents) {
+    logger.warn(
+      `[app-doc-protection] app document ${id} had parent ${parent} (its grants could write the app); removing the relationship`,
+    );
+    await rel.removeRelationship(parent, id, "child");
+  }
+  return parents.length;
+}
+
 /** The slice of reactor-api's DocumentPermissionService used here. */
 export interface DocProtectionService {
   getDocumentProtection(
@@ -62,6 +120,7 @@ export async function protectAppDocument(
  */
 export async function sweepAppDocumentProtection(deps: {
   perm: DocProtectionService;
+  relationships: RelationshipClient;
   listAppDocumentIds(): Promise<string[]>;
   ownerFor(id: string): Promise<string | null>;
   logger: Pick<Console, "warn" | "info">;
@@ -83,6 +142,7 @@ export async function sweepAppDocumentProtection(deps: {
         continue;
       }
       await protectAppDocument(deps.perm, id, owner);
+      await detachAppDocumentParents(deps.relationships, id, deps.logger);
       result.protected++;
     } catch (err) {
       deps.logger.warn(`[app-doc-protection] ${id}: protection failed: ${String(err)}`);
@@ -110,14 +170,17 @@ export function createAppDocOwnerResolver(
   };
 }
 
-/** The create-time hook: protect a freshly created app document. */
+/** The create-time hook: protect a freshly created app document and detach any parent. */
 export function createAppDocProtector(
   perm: DocProtectionService,
   ownerFor: (id: string) => Promise<string | null>,
+  relationships: RelationshipClient,
+  logger: Pick<Console, "warn">,
 ): (id: string) => Promise<void> {
   return async (id) => {
     const owner = await ownerFor(id);
     if (!owner) throw new Error(`no owner to protect app document ${id} with`);
     await protectAppDocument(perm, id, owner);
+    await detachAppDocumentParents(relationships, id, logger);
   };
 }

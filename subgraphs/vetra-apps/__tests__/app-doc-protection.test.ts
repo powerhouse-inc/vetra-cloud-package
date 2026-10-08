@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createAppDocOwnerResolver,
+  detachAppDocumentParents,
   createAppDocProtector,
   protectAppDocument,
   sweepAppDocumentProtection,
@@ -38,6 +39,33 @@ function fakePerm(seed: Record<string, { protected: boolean; owner: string | nul
   return { perm, rows };
 }
 
+/** In-memory relationship store: parent -> children. */
+function fakeRel(seed: Record<string, string[]> = {}) {
+  const parentsOf = new Map(Object.entries(seed).map(([k, v]) => [k, [...v]]));
+  return {
+    parentsOf,
+    async getIncomingRelationships(id: string, type: string) {
+      expect(type).toBe("child");
+      return { results: (parentsOf.get(id) ?? []).map((p) => ({ header: { id: p } })) };
+    },
+    async removeRelationship(source: string, target: string, type: string) {
+      expect(type).toBe("child");
+      parentsOf.set(target, (parentsOf.get(target) ?? []).filter((p) => p !== source));
+    },
+  };
+}
+
+describe("detachAppDocumentParents", () => {
+  it("removes every incoming child relationship and warns with each source id", async () => {
+    const rel = fakeRel({ app: ["drive-a", "drive-b"] });
+    const warn = vi.fn();
+    expect(await detachAppDocumentParents(rel, "app", { warn })).toBe(2);
+    expect(rel.parentsOf.get("app")).toStrictEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("drive-a"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("drive-b"));
+  });
+});
+
 describe("protectAppDocument", () => {
   it("protects, sets the owner, and revokes the creator's grant on a forged document", async () => {
     const { perm, rows } = fakePerm({ d: { protected: false, owner: "0xattacker", grants: ["0xattacker"] } });
@@ -60,8 +88,10 @@ describe("sweepAppDocumentProtection", () => {
     const { perm, rows } = fakePerm();
     perm.failOn = "broken";
     const warn = vi.fn();
+    const rel = fakeRel({ a1: ["attacker-drive"] });
     const result = await sweepAppDocumentProtection({
       perm,
+      relationships: rel,
       listAppDocumentIds: async () => ["a1", "broken", "studio", "orphan"],
       ownerFor: createAppDocOwnerResolver(async (id) => (id === "a1" ? "0xOwner" : null), "0xstudio"),
       logger: { warn, info: vi.fn() },
@@ -71,6 +101,8 @@ describe("sweepAppDocumentProtection", () => {
     expect(rows.get("studio")).toMatchObject({ protected: true, owner: "0xstudio" });
     expect(rows.get("orphan")).toMatchObject({ protected: true, owner: "0xstudio" });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("broken"));
+    expect(rel.parentsOf.get("a1")).toStrictEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("attacker-drive"));
   });
 
   it("skips a document with no owner to protect with, and never throws on a listing failure", async () => {
@@ -78,12 +110,12 @@ describe("sweepAppDocumentProtection", () => {
     const log = { warn: vi.fn(), info: vi.fn() };
     expect(
       await sweepAppDocumentProtection({
-        perm, listAppDocumentIds: async () => ["x"], ownerFor: async () => null, logger: log,
+        perm, relationships: fakeRel(), listAppDocumentIds: async () => ["x"], ownerFor: async () => null, logger: log,
       }),
     ).toStrictEqual({ protected: 0, failed: 0, skipped: 1 });
     await expect(
       sweepAppDocumentProtection({
-        perm, listAppDocumentIds: async () => { throw new Error("reactor down"); },
+        perm, relationships: fakeRel(), listAppDocumentIds: async () => { throw new Error("reactor down"); },
         ownerFor: async () => "0xa", logger: log,
       }),
     ).resolves.toStrictEqual({ protected: 0, failed: 0, skipped: 0 });
@@ -91,16 +123,19 @@ describe("sweepAppDocumentProtection", () => {
 });
 
 describe("createAppDocProtector", () => {
-  it("protects with the row owner, and refuses when there is no owner", async () => {
+  it("protects with the row owner, detaches parents, and refuses when there is no owner", async () => {
     const { perm, rows } = fakePerm();
-    await createAppDocProtector(perm, async () => "0xowner")("d");
+    const rel = fakeRel({ d: ["racer"] });
+    const log = { warn: vi.fn() };
+    await createAppDocProtector(perm, async () => "0xowner", rel, log)("d");
     expect(rows.get("d")).toMatchObject({ protected: true, owner: "0xowner" });
-    await expect(createAppDocProtector(perm, async () => null)("e")).rejects.toThrow(/no owner/);
+    expect(rel.parentsOf.get("d")).toStrictEqual([]);
+    await expect(createAppDocProtector(perm, async () => null, rel, log)("e")).rejects.toThrow(/no owner/);
   });
 });
 
 describe("createReactorAppDocStore", () => {
-  it("protects the document right after creating it", async () => {
+  it("exposes protect separately from create, so callers populate first", async () => {
     const { createReactorAppDocStore } = await import("../app-doc-store.js");
     const order: string[] = [];
     const store = createReactorAppDocStore(
@@ -113,6 +148,8 @@ describe("createReactorAppDocStore", () => {
       async (id) => { order.push(`protect ${id}`); },
     );
     await store.create("app-1");
+    expect(order).toStrictEqual(["create"]);
+    await store.protect?.("app-1");
     expect(order).toStrictEqual(["create", "protect app-1"]);
   });
 });

@@ -21,6 +21,28 @@ export interface AppDocStore {
   execute(id: string, actions: Action[]): Promise<unknown>;
   /** Current global state, or null when the document does not exist. */
   getState(id: string): Promise<Record<string, unknown> | null>;
+  /** Makes a document system-write-only; absent when permissions are off. */
+  protect?: (id: string) => Promise<void>;
+}
+
+/**
+ * Protects a document this process just created and populated. Best-effort: a
+ * failure is logged, never thrown, so the populated document stays and the
+ * licensing setup sweep re-protects it on the next boot.
+ */
+export async function protectNewAppDocument(
+  docs: AppDocStore,
+  id: string,
+  logger: Pick<Console, "warn">,
+): Promise<void> {
+  if (!docs.protect) return;
+  try {
+    await docs.protect(id);
+  } catch (err) {
+    logger.warn(
+      `[vetra-apps] protecting the document for app ${id} failed (the next sweep retries): ${String(err)}`,
+    );
+  }
 }
 
 export interface AppDocDeps {
@@ -127,6 +149,7 @@ export async function backfillAppDocuments(
       }
       await deps.docs.create(row.id);
       await deps.docs.execute(row.id, appDocumentActions(row));
+      await protectNewAppDocument(deps.docs, row.id, deps.logger);
       created++;
     } catch (err) {
       deps.logger.warn(
@@ -186,8 +209,12 @@ export async function mirrorAppRow(
 ): Promise<void> {
   const docs = deps.docs;
   if (!docs) return;
+  let created = false;
   try {
-    if (!(await docs.exists(row.id))) await docs.create(row.id);
+    if (!(await docs.exists(row.id))) {
+      await docs.create(row.id);
+      created = true;
+    }
   } catch (err) {
     deps.logger.warn(
       `[vetra-apps] creating the document for app ${row.id} failed: ${String(err)}`,
@@ -199,6 +226,7 @@ export async function mirrorAppRow(
     row.id,
     appDocumentActions(row),
   );
+  if (created) await protectNewAppDocument(docs, row.id, deps.logger);
 }
 
 /** Mirrors an app by id, when the caller has the id but not the row. */

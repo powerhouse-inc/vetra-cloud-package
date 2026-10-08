@@ -89,8 +89,12 @@ describe("resolveKind", () => {
 
 describe("createAppReads", () => {
   const docs = [KV, appDoc("app-other", { slug: "other", owner: "0xOWNER", status: "ACTIVE" })];
+  const parents: Record<string, string[]> = {};
   const client = {
     async find() { return { results: docs }; },
+    async getIncomingRelationships(id: string) {
+      return { results: (parents[id] ?? []).map((p) => ({ header: { id: p } })) };
+    },
     async get(id: string) {
       const d = docs.find((x) => x.header.id === id);
       if (!d) { const e = new Error(`Document not found: ${id}`); throw e; }
@@ -125,7 +129,7 @@ describe("createAppReads", () => {
     const warn = vi.fn();
     const r = createAppReads(
       { ...client, find: async () => ({ results: [twin, ...docs] }) },
-      { trustedIds: async () => new Set(["app-kv", "app-twin"]), logger: { warn } },
+      { trustedIds: async () => new Set(["app-kv", "app-twin"]), logger: { warn, error: vi.fn() } },
     );
     expect(await r.appBySlug("knowledge-vault")).toBeNull();
     expect(warn).toHaveBeenCalledOnce();
@@ -146,5 +150,28 @@ describe("createAppReads", () => {
     });
     expect(await paged.allIds()).toStrictEqual(["app-kv", "app-other"]);
     expect(calls).toBe(2);
+  });
+  it("flags an app document with a parent as tampered, and logs an error", async () => {
+    parents["app-kv"] = ["attacker-drive"];
+    try {
+      const error = vi.fn();
+      const r = createAppReads(client, { trustedIds: async () => new Set(["app-kv"]), logger: { warn: vi.fn(), error } });
+      const app = (await r.app("app-kv"))!;
+      expect(app).toMatchObject({ tampered: true, tamperReason: expect.stringContaining("attacker-drive") });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("TAMPERED"));
+      expect((await r.appBySlug("knowledge-vault"))?.tampered).toBe(true);
+      // Anything that provisions from it is held.
+      expect(resolveKind(app, "2026-pro")).toStrictEqual({
+        ok: false,
+        reason: expect.stringContaining("app app-kv is tampered: has parent document(s) attacker-drive"),
+      });
+      expect((await r.app("app-other"))?.tampered).toBe(false);
+    } finally {
+      delete parents["app-kv"];
+    }
+  });
+  it("propagates a failed relationship read: unknown integrity is not clean", async () => {
+    const r = createAppReads({ ...client, getIncomingRelationships: async () => { throw new Error("relationship store down"); } });
+    await expect(r.app("app-kv")).rejects.toThrow("relationship store down");
   });
 });
