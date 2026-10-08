@@ -121,6 +121,27 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     expect(cols.rows.map((r) => r.column_name).sort()).toStrictEqual(["kind", "user_did"]);
   });
 
+  it("runs entirely inside a namespace schema, with no tables in public", async () => {
+    // Production namespaces never have these tables in public: every statement,
+    // including the grants backfill's subquery, must resolve through the schema.
+    const pg = new PGlite();
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });
+    await pg.exec(`CREATE SCHEMA ns_only`);
+    const ns = db.withSchema("ns_only") as unknown as Kysely<any>;
+    await up(ns);
+    await ns
+      .insertInto("app_user_environments")
+      .values({ app_id: "a1", user_address: "0xabc", environment_id: "e1", license_id: "l1", template_hash: "h", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" })
+      .execute();
+    await up(ns);
+    const grants = await pg.query<{ license_id: string }>(`SELECT license_id FROM ns_only.app_license_grants`);
+    expect(grants.rows.map((r) => r.license_id)).toStrictEqual(["l1"]);
+    const publicTables = await pg.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+    );
+    expect(publicTables.rows).toStrictEqual([]);
+  });
+
   it("migrates a production database that already holds old-shape rows", async () => {
     const pg = new PGlite();
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });
