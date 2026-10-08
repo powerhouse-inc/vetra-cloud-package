@@ -187,7 +187,9 @@ describe("startup migration: edges", { timeout: 60_000 }, () => {
     expect(grants.get(didOf(A))).toBe(crashed);
     expect(grants.get(didOf(B))).not.toBe(forged);
     expect(await w.reads.licenceRecord(grants.get(didOf(B))!)).toMatchObject({ end: at(20), status: "ACTIVE" });
-    expect(report.actions).toContain(`studio: holder ${didOf(A)}: chain; grant for adopted licence ${crashed}; 1 redemption(s) (1 redemption(s), newest ${report.actions.find((a) => a.includes(didOf(A)))!.split("newest ")[1]!.slice(0, -1)})`);
+    expect(report.actions.find((a) => a.includes(didOf(A)))).toMatch(
+      new RegExp(`^studio: holder ${didOf(A)}: chain; grant for adopted licence ${crashed}; link 1 redemption\\(s\\) \\(newest of 1: code#[0-9a-f]{12}\\)$`),
+    );
     expect(await findAllOfType(w.client as never, LICENSE_DOC_TYPE)).toHaveLength(3);
   });
 

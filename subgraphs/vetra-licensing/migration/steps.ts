@@ -722,7 +722,7 @@ async function ensureStudioHolder(
     }
   }
   if (missing.length > 0) {
-    done.push(`${missing.length} redemption(s)`);
+    done.push(`link ${missing.length} redemption(s)`);
     if (apply && licenseId) {
       await db
         .insertInto("invite_redemptions")
@@ -810,7 +810,7 @@ export async function migrateStudio(deps: MigrationDeps, report: MigrationReport
     for (const h of studioHolders(redemptions, report)) {
       try {
         const newest = h.redemptions.at(-1)!;
-        const summary = `${h.redemptions.length} redemption(s), newest ${codeRef(newest.code)}`;
+        const summary = `newest of ${h.redemptions.length}: ${codeRef(newest.code)}`;
         if (report.mode === "dry-run") {
           const would = await ensureStudioHolder(deps, report, h, studioDocs, false);
           if (would.length > 0) report.actions.push(`studio: holder ${h.did}: ${would.join("; ")} (${summary})`);
@@ -937,7 +937,7 @@ export async function deleteLegacyLicenseTypes(deps: MigrationDeps, report: Migr
   if (report.mode !== "apply") return false;
   const remaining = (await deps.legacyTypeDocs()).length;
   if (remaining === 0) {
-    deps.logger.info(`[licensing] migration: deleted ${deleted} app-license-type document(s); none remain`);
+    deps.logger.warn(`[licensing] migration: deleted ${deleted} app-license-type document(s); none remain`);
     return true;
   }
   report.problems.push(`${remaining} app-license-type document(s) remain after deleting ${deleted}`);

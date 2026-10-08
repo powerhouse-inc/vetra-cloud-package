@@ -59,11 +59,17 @@ async function isComplete(deps: MigrationDeps): Promise<boolean> {
   );
 }
 
+/**
+ * Everything at warn: production runs with LOG_LEVEL=warn, which hides
+ * info from subgraphs, and these lines are what operators read before
+ * switching to apply.
+ */
 function log(deps: MigrationDeps, r: MigrationReport, extra: string, quiet: boolean): void {
-  const summary = `[licensing] migration (${r.mode}): ${r.actions.length} actions, ${r.problems.length} problems, ${r.warnings.length} warnings${extra}`;
-  (r.problems.length > 0 ? deps.logger.warn : deps.logger.info)(summary);
+  deps.logger.warn(
+    `[licensing] migration (${r.mode}): ${r.actions.length} actions, ${r.problems.length} problems, ${r.warnings.length} warnings${extra}`,
+  );
   if (quiet) return;
-  for (const a of r.actions) deps.logger.info(`[licensing] migration ${r.mode}: ${a}`);
+  for (const a of r.actions) deps.logger.warn(`[licensing] migration ${r.mode}: ${a}`);
   for (const w of r.warnings) deps.logger.warn(`[licensing] migration warning: ${w}`);
   for (const p of r.problems) deps.logger.warn(`[licensing] migration problem: ${p}`);
 }

@@ -362,7 +362,7 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect(report.actions.some((a) => a.includes("cohort-1"))).toBe(false); // codes are logged by reference
     expect(report.warnings.some((w) => w.includes("squatted"))).toBe(true);
 
-    const lines = logger.info.mock.calls.map((c) => String(c[0]));
+    const lines = logger.warn.mock.calls.map((c) => String(c[0]));
     expect(lines).toContain(
       `[licensing] migration dry-run: studio: move code ${report.actions.find((a) => a.startsWith("studio: move code "))!.slice("studio: move code ".length)}`,
     );
@@ -576,7 +576,7 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
       [ids.T_FREE, ids.T_DEL, ids.T_PRO, ids.T_OLD].map((id) => `legacy-license-type:${id}`).sort(),
     );
     expect(JSON.parse(archived.find((r) => r.step.endsWith(ids.T_FREE!))!.detail!)).toMatchObject({ kind: "Free", label: "Friday", validityDays: 365, template: null });
-    expect(logger.info.mock.calls.map((c) => String(c[0]))).toContain(
+    expect(logger.warn.mock.calls.map((c) => String(c[0]))).toContain(
       "[licensing] migration: deleted 4 app-license-type document(s); none remain",
     );
     // Licences and environments are untouched by the deletion.

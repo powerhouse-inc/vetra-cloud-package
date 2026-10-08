@@ -113,7 +113,7 @@ describe("runLicensingMigration", { timeout: 30_000 }, () => {
     const report = await runLicensingMigration(deps);
     expect(report).toMatchObject({ mode: "apply", complete: true, problems: [], actions: [] });
     expect(await steps()).toStrictEqual([{ step: "complete" }]);
-    expect(deps.logger.info).toHaveBeenCalledWith("[licensing] migration (apply): 0 actions, 0 problems, 0 warnings, complete");
+    expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration (apply): 0 actions, 0 problems, 0 warnings, complete");
 
     // Once complete, a run does no work at all.
     const after = cleanWorld({ appRows: refuse(), legacyTypeDocs: refuse(), licences: refuse() });
@@ -222,7 +222,7 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     failDelete = false;
     await vi.advanceTimersByTimeAsync(1_000);
     expect(docs).toStrictEqual([]);
-    expect(deps.logger.info).toHaveBeenCalledWith("[licensing] migration: deleted 1 app-license-type document(s); none remain");
+    expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration: deleted 1 app-license-type document(s); none remain");
     const calls = (deps.deleteDocument as ReturnType<typeof vi.fn>).mock.calls.length;
     await vi.advanceTimersByTimeAsync(5_000);
     expect((deps.deleteDocument as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
@@ -238,7 +238,7 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     const handle = startLicensingMigration(deps, 1_000);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1_000);
-    const lines = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    const lines = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(lines.filter((l) => l.startsWith("[licensing] migration dry-run: studio: create app document"))).toHaveLength(1);
     expect(lines.filter((l) => l.startsWith("[licensing] migration (dry-run): 1 actions"))).toHaveLength(2);
     handle.stop();
