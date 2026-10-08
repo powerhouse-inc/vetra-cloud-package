@@ -5,7 +5,7 @@ const U1 = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 const U2 = "did:pkh:eip155:1:0x2222222222222222222222222222222222222222";
 const L = (id: string, over: Partial<PlanLicence> = {}): PlanLicence => ({
   id, user: U1, kind: "pro", status: "ACTIVE", issued: "2026-10-01T00:00:00.000Z",
-  stage: null, root: id, authorised: true, ...over,
+  stage: null, root: id, authorised: true, replacedBy: null, ...over,
 });
 const E = (environmentId: string, rootLicenseId: string, over: Partial<PlanEnvironment> = {}): PlanEnvironment => ({
   environmentId, rootLicenseId, licenseId: rootLicenseId, templateHash: "h-pro", endedAt: null, ...over,
@@ -17,7 +17,8 @@ const RES: Record<string, PlanResolution> = {
   freeNoEnv: { ok: true, mode: "SHARED", templateId: "t-free", templateHash: "h-free", sharedStage: null, label: "Free" },
 };
 const resolve = (k: string | null): PlanResolution => (k && RES[k]) || { ok: false, reason: `no term ${k}` };
-const plan = (licences: PlanLicence[], environments: PlanEnvironment[] = []) => planChains({ licences, environments, resolve });
+const CLEAN = { tampered: false, tamperReason: null, unverified: false };
+const plan = (licences: PlanLicence[], environments: PlanEnvironment[] = []) => planChains({ licences, environments, resolve, app: CLEAN });
 
 describe("planChains: the matrix", () => {
   it("single owner, SHARED: provisions nothing, binds the licence to the App Environment", () => {
@@ -48,7 +49,7 @@ describe("planChains: chains", () => {
   });
   it("upgrade re-templates the same environment", () => {
     const head = L("l2", { kind: "max", root: "l1", issued: "2026-10-05T00:00:00.000Z", stage: "e1" });
-    expect(plan([L("l1", { status: "REPLACED", stage: "e1" }), head], [E("e1", "l1")])).toStrictEqual([
+    expect(plan([L("l1", { status: "REPLACED", stage: "e1", replacedBy: "l2" }), head], [E("e1", "l1")])).toStrictEqual([
       { kind: "provision", root: "l1", licence: head, templateId: "t-max", templateHash: "h-max", label: "Max", environmentId: "e1" },
     ]);
   });
@@ -149,7 +150,36 @@ describe("planChains: the head of a chain", () => {
   it("an unauthorised newer ACTIVE licence does not displace the authorised head", () => {
     const a = L("la", { root: "r", stage: "e1" });
     const b = L("lb", { root: "r", issued: "2026-10-02T00:00:00.000Z", authorised: false });
-    expect(plan([a, b], [E("e1", "r", { licenseId: "la" })])).toStrictEqual([]);
+    expect(plan([a, b], [E("e1", "r", { licenseId: "la" })])).toStrictEqual([
+      { kind: "anomaly", root: "r", reason: "ACTIVE licence lb has no provenance; serving la" },
+    ]);
+  });
+  it("reports an older unauthorised ACTIVE licence too, then plans the head", () => {
+    const a = L("la", { root: "r", authorised: false });
+    const b = L("lb", { root: "r", issued: "2026-10-02T00:00:00.000Z" });
+    expect(plan([a, b])).toStrictEqual([
+      { kind: "anomaly", root: "r", reason: "ACTIVE licence la has no provenance; serving lb" },
+      { kind: "provision", root: "r", licence: b, templateId: "t-pro", templateHash: "h-pro", label: "Pro", environmentId: null },
+    ]);
+  });
+  it("compares issued as instants, not text", () => {
+    const a = L("la", { root: "r", issued: "2026-10-02T00:00:00Z" });
+    const b = L("lb", { root: "r", issued: "2026-10-01T23:59:59.000Z" });
+    expect(plan([a, b])[0]).toMatchObject({ kind: "provision", licence: { id: "la" } });
+    expect(plan([b, a])[0]).toMatchObject({ kind: "provision", licence: { id: "la" } });
+    const c = L("lc", { root: "s", issued: "2026-10-02T00:00:00Z" });
+    const d = L("ld", { root: "s", issued: "2026-10-02T00:00:00.000Z" });
+    expect(plan([c, d])[0]).toMatchObject({ kind: "provision", licence: { id: "ld" } });
+    expect(plan([d, c])[0]).toMatchObject({ kind: "provision", licence: { id: "ld" } });
+  });
+  it("treats an unparseable issued as oldest", () => {
+    const a = L("la", { root: "r", issued: "not a date" });
+    const b = L("lb", { root: "r", issued: "2020-01-01T00:00:00.000Z" });
+    const c = L("lc", { root: "s", issued: "garbage" });
+    const d = L("ld", { root: "s", issued: null });
+    expect(plan([b, a])[0]).toMatchObject({ licence: { id: "lb" } });
+    expect(plan([a, b])[0]).toMatchObject({ licence: { id: "lb" } });
+    expect(plan([c, d])[0]).toMatchObject({ licence: { id: "ld" } });
   });
   it("serves the ACTIVE head while a successor is still ISSUED", () => {
     const head = L("l1", { stage: "e1" });
@@ -194,12 +224,43 @@ describe("planChains: more doubt is held", () => {
     ]);
   });
   it("treats every terminal status as ended, and only those", () => {
-    for (const status of ["EXPIRED", "REVOKED", "REPLACED"] as const) {
+    for (const status of ["EXPIRED", "REVOKED"] as const) {
       expect(plan([L("l1", { status })], [E("e1", "l1")])).toStrictEqual([{ kind: "ended", root: "l1", environmentId: "e1" }]);
     }
     expect(plan([L("l1", { status: "ISSUED" })], [E("e1", "l1")])).toStrictEqual([
       { kind: "hold", root: "l1", reason: "licence issued but not yet active" },
     ]);
+  });
+  it("holds a lone REPLACED licence: its successor is unknown, not ended", () => {
+    expect(plan([L("l1", { status: "REPLACED", replacedBy: "l9" })], [E("e1", "l1")])).toStrictEqual([
+      { kind: "hold", root: "l1", reason: "replaced by l9, which is not in this chain" },
+    ]);
+    expect(plan([L("l1", { status: "REPLACED" })], [E("e1", "l1")])).toStrictEqual([
+      { kind: "hold", root: "l1", reason: "replaced by an unknown licence, which is not in this chain" },
+    ]);
+  });
+  it("ends a chain REPLACED -> EXPIRED whose successor is in the chain", () => {
+    expect(plan([L("l1", { status: "REPLACED", replacedBy: "l2" }), L("l2", { status: "EXPIRED", root: "l1" })], [E("e1", "l1")])).toStrictEqual([
+      { kind: "ended", root: "l1", environmentId: "e1" },
+    ]);
+  });
+  it("holds an ACTIVE chain whose REPLACED licence points outside it (the successor may be newer)", () => {
+    expect(plan([L("l1", { status: "REPLACED", replacedBy: "l9" }), L("l2", { root: "l1", stage: "e1" })], [E("e1", "l1", { licenseId: "l2" })])).toStrictEqual([
+      { kind: "hold", root: "l1", reason: "replaced by l9, which is not in this chain" },
+    ]);
+  });
+  it("reports the same orphan and anomalies whatever the input order", () => {
+    const chain = [
+      L("l1", { status: "REPLACED", replacedBy: "x9" }),
+      L("l2", { status: "REPLACED", replacedBy: "x8", root: "l1" }),
+      L("l3", { root: "l1" }),
+    ];
+    expect(plan(chain, [E("e1", "l1")])).toStrictEqual(plan([...chain].reverse(), [E("e1", "l1")]));
+    const anomalies = [L("la", { root: "r", authorised: false }), L("lb", { root: "r", authorised: false }), L("lc", { root: "r", issued: "2026-10-03T00:00:00.000Z" })];
+    expect(plan(anomalies)).toStrictEqual(plan([...anomalies].reverse()));
+  });
+  it("a lone REPLACED licence without an environment needs nothing", () => {
+    expect(plan([L("l1", { status: "REPLACED", replacedBy: "l9" })])).toStrictEqual([]);
   });
   it("holds a chain that owns more than one environment", () => {
     expect(plan([L("l1", { stage: "e1" })], [E("e1", "l1"), E("e2", "l1")])).toStrictEqual([
@@ -255,6 +316,11 @@ describe("planChains: app integrity", () => {
       { kind: "hold", root: "l1", reason },
       { kind: "hold", root: "l2", reason },
     ]);
+  });
+  it("requires the app integrity (omitting it cannot fail open)", () => {
+    // @ts-expect-error app is required
+    const call = () => planChains({ licences: [], environments: [], resolve });
+    expect(call).toBeTypeOf("function");
   });
   it("a verified, untampered app plans normally even with holdUnverified", () => {
     const app = { tampered: false, tamperReason: null, unverified: false };

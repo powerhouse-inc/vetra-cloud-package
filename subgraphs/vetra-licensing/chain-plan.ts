@@ -12,6 +12,8 @@ export interface PlanLicence {
   root: string;
   /** Has an app_license_grants row. Without one it provisions and releases nothing. */
   authorised: boolean;
+  /** The licence that replaced this one (REPLACED). Must be in the same chain, or the chain is held. */
+  replacedBy: string | null;
 }
 
 export type PlanResolution =
@@ -38,17 +40,28 @@ export type ChainStep =
   | { kind: "set-stage"; licenseId: string; stage: string }
   | { kind: "hold"; root: string; reason: string }
   | { kind: "ended"; root: string; environmentId: string }
-  | { kind: "resumed"; root: string; environmentId: string };
+  | { kind: "resumed"; root: string; environmentId: string }
+  /** Informational: nothing to do, but worth logging (e.g. an ACTIVE licence without provenance beside the head). */
+  | { kind: "anomaly"; root: string; reason: string };
 
 const TERMINAL: ReadonlySet<LicenseStatusName> = new Set(["EXPIRED", "REVOKED", "REPLACED"]);
 
-/** Newest first: later `issued` (missing = oldest), then the larger id. Total and input-order independent. */
-const newestFirst = (a: PlanLicence, b: PlanLicence) =>
-  (b.issued ?? "").localeCompare(a.issued ?? "") || b.id.localeCompare(a.id);
+/** Milliseconds since epoch; a missing or unparseable timestamp sorts oldest. */
+const instant = (iso: string | null): number => {
+  const t = iso === null ? Number.NaN : Date.parse(iso);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+};
+
+/** Newest first: later `issued` instant, then the larger id. Total and input-order independent. */
+const newestFirst = (a: PlanLicence, b: PlanLicence): number => {
+  const ta = instant(a.issued);
+  const tb = instant(b.issued);
+  if (ta !== tb) return tb > ta ? 1 : -1;
+  return b.id.localeCompare(a.id);
+};
 
 /** Why the whole app is held, or null when its chains may be planned. */
-function appHold(app: PlanApp | undefined, holdUnverified: boolean): string | null {
-  if (!app) return null;
+function appHold(app: PlanApp, holdUnverified: boolean): string | null {
   if (app.tampered) return `app is tampered (${app.tamperReason ?? "unknown"}): holding`;
   if (app.unverified && holdUnverified) return "app licensing state is unverified (no ledger row): holding";
   return null;
@@ -61,7 +74,8 @@ function appHold(app: PlanApp | undefined, holdUnverified: boolean): string | nu
  * ONE environment. A chain is ENDED only when every licence in it is terminal
  * (EXPIRED, REVOKED, REPLACED); anything unknown — an unresolvable kind, a
  * missing provenance row, an unreadable chain, a licence not yet active, a
- * tampered (or, when asked, unverified) app — is HELD. Holding is the only
+ * REPLACED licence whose successor is not in the chain, a tampered (or, when
+ * asked, unverified) app — is HELD. Holding is the only
  * answer to doubt.
  *
  * `app` is the integrity of the app document; `holdUnverified` holds an app
@@ -72,7 +86,8 @@ export function planChains(input: {
   licences: PlanLicence[];
   environments: PlanEnvironment[];
   resolve(kind: string | null): PlanResolution;
-  app?: PlanApp;
+  /** Required: omitting the integrity of the app must not fail open. */
+  app: PlanApp;
   holdUnverified?: boolean;
 }): ChainStep[] {
   const byRoot = new Map<string, PlanLicence[]>();
@@ -92,7 +107,8 @@ export function planChains(input: {
 
   const steps: ChainStep[] = [];
   for (const root of roots) {
-    const chain = byRoot.get(root) ?? [];
+    // Sorted by id so every scan below is independent of input order.
+    const chain = [...(byRoot.get(root) ?? [])].sort((a, b) => a.id.localeCompare(b.id));
     const envs = envsByRoot.get(root) ?? [];
 
     if (heldApp) {
@@ -116,6 +132,15 @@ export function planChains(input: {
 
     const heads = chain.filter((l) => l.status === "ACTIVE" && l.authorised).sort(newestFirst);
     const head: PlanLicence | null = heads.length > 0 ? heads[0] : null;
+
+    // A REPLACED licence whose successor is not here: the successor was not
+    // read or was mislinked. It may be live (and newer than any head we see).
+    const ids = new Set(chain.map((l) => l.id));
+    const orphan = chain.find((l) => l.status === "REPLACED" && (l.replacedBy === null || !ids.has(l.replacedBy)));
+    if (orphan && (env || head)) {
+      steps.push({ kind: "hold", root, reason: `replaced by ${orphan.replacedBy ?? "an unknown licence"}, which is not in this chain` });
+      continue;
+    }
     if (!head) {
       if (!env) continue;
       if (chain.some((l) => l.status === "ACTIVE")) {
@@ -126,6 +151,12 @@ export function planChains(input: {
         steps.push({ kind: "ended", root, environmentId: env.environmentId });
       }
       continue;
+    }
+
+    for (const l of chain) {
+      if (l.status === "ACTIVE" && !l.authorised) {
+        steps.push({ kind: "anomaly", root, reason: `ACTIVE licence ${l.id} has no provenance; serving ${head.id}` });
+      }
     }
 
     const r = input.resolve(head.kind);
