@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createReactorLicenseReads,
+  legacyLicenseTypeOf,
   type LicenseClientLike,
 } from "../reads.js";
 import { templateHash, type TemplateShape } from "../template.js";
@@ -393,5 +394,27 @@ describe("allLicenses", () => {
     });
     const rows = await createReactorLicenseReads(client).allLicenses();
     expect(rows.map((r) => r.id)).toEqual(["a"]);
+  });
+});
+
+describe("legacyLicenseTypeOf", () => {
+  it("prefers stored licenseType, then details.legacyLicenseType", () => {
+    expect(
+      legacyLicenseTypeOf({
+        licenseType: "t1",
+        details: '{"legacyLicenseType":"t2"}',
+      }),
+    ).toBe("t1");
+    expect(
+      legacyLicenseTypeOf({ details: '{"legacyLicenseType":"t2"}' }),
+    ).toBe("t2");
+  });
+  it("is null for free-text, non-object or missing details", () => {
+    expect(legacyLicenseTypeOf({ details: "not json" })).toBeNull();
+    expect(legacyLicenseTypeOf({ details: "42" })).toBeNull();
+    expect(
+      legacyLicenseTypeOf({ details: '{"legacyLicenseType":7}' }),
+    ).toBeNull();
+    expect(legacyLicenseTypeOf({})).toBeNull();
   });
 });

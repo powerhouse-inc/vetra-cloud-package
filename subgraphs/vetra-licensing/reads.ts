@@ -135,6 +135,27 @@ interface ParsedLicense {
   end: string | null;
 }
 
+/**
+ * The licence-type id a pre-terms licence was issued against. Stored state
+ * written before the reshape has `licenseType`; a licence issued (or replayed)
+ * through the reshaped reducer carries it in details.legacyLicenseType.
+ */
+export function legacyLicenseTypeOf(g: Record<string, unknown>): string | null {
+  const direct = typeof g.licenseType === "string" ? g.licenseType : null;
+  if (direct) return direct;
+  if (typeof g.details !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(g.details);
+    if (typeof parsed === "object" && parsed !== null) {
+      const v = (parsed as Record<string, unknown>).legacyLicenseType;
+      return typeof v === "string" ? v : null;
+    }
+  } catch {
+    // details is free text on non-legacy licences.
+  }
+  return null;
+}
+
 /** null for a document that is not a well-formed licence; callers skip it. */
 function parseLicense(doc: unknown): ParsedLicense | null {
   const id = docId(doc);
@@ -145,7 +166,7 @@ function parseLicense(doc: unknown): ParsedLicense | null {
   return {
     id,
     app: str(g.app),
-    licenseTypeId: str(g.licenseType),
+    licenseTypeId: legacyLicenseTypeOf(g),
     user: (str(g.user) ?? "").toLowerCase(),
     status: status as LicenseStatusName,
     start: str(g.start),

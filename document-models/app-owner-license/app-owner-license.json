@@ -13,8 +13,8 @@
       "changeLog": [],
       "state": {
         "global": {
-          "schema": "type AppOwnerLicenseState {\n  app: PHID\n  licenseType: PHID\n  user: EthereumAddress\n  issuer: LicenseIssuerKind\n  issuedBy: EthereumAddress\n  stage: PHID\n  details: String\n  issued: DateTime\n  start: DateTime\n  end: DateTime\n  status: LicenseStatus!\n  replacedBy: PHID\n  revokedReason: String\n}\n\nenum LicenseIssuerKind {\n  INVITE_CODE\n  PUBLISHER_GRANT\n  ACHRA_SUBSCRIPTION\n}\n\nenum LicenseStatus {\n  ISSUED\n  ACTIVE\n  EXPIRED\n  REVOKED\n  REPLACED\n}",
-          "initialValue": "{\n  \"app\": null,\n  \"licenseType\": null,\n  \"user\": null,\n  \"issuer\": null,\n  \"issuedBy\": null,\n  \"stage\": null,\n  \"details\": null,\n  \"issued\": null,\n  \"start\": null,\n  \"end\": null,\n  \"status\": \"ISSUED\",\n  \"replacedBy\": null,\n  \"revokedReason\": null\n}",
+          "schema": "type AppOwnerLicenseState {\n  issuer: LicenseIssuerKind\n  user: String\n  app: PHID\n  stage: PHID\n  kind: String\n  details: String\n  issued: DateTime\n  start: DateTime\n  end: DateTime\n  status: LicenseStatus!\n  replacedBy: PHID\n  revokedReason: String\n}\n\nenum LicenseIssuerKind {\n  INVITE_CODE\n  PUBLISHER_GRANT\n  ACHRA_SUBSCRIPTION\n}\n\nenum LicenseStatus {\n  ISSUED\n  ACTIVE\n  EXPIRED\n  REVOKED\n  REPLACED\n}",
+          "initialValue": "{\n  \"issuer\": null,\n  \"user\": null,\n  \"app\": null,\n  \"stage\": null,\n  \"kind\": null,\n  \"details\": null,\n  \"issued\": null,\n  \"start\": null,\n  \"end\": null,\n  \"status\": \"ISSUED\",\n  \"replacedBy\": null,\n  \"revokedReason\": null\n}",
           "examples": []
         },
         "local": {
@@ -33,9 +33,9 @@
               "id": "op-issue-license",
               "name": "ISSUE_LICENSE",
               "description": "Issue a license. Dates are resolved by the caller because reducers are pure.",
-              "schema": "input IssueLicenseInput {\n  app: PHID!\n  licenseType: PHID!\n  user: EthereumAddress!\n  issuer: LicenseIssuerKind!\n  issuedBy: EthereumAddress!\n  stage: PHID\n  details: String\n  issued: DateTime!\n  start: DateTime!\n  end: DateTime\n}",
+              "schema": "input IssueLicenseInput {\n  app: PHID!\n  user: String!\n  issuer: LicenseIssuerKind!\n  kind: String\n  stage: PHID\n  details: String\n  issued: DateTime!\n  start: DateTime!\n  end: DateTime\n  licenseType: PHID\n  issuedBy: String\n}",
               "template": "",
-              "reducer": "if (state.user) {\n  throw new AlreadyIssuedError(\"this license is already issued\");\n}\nif (action.input.end && action.input.end < action.input.start) {\n  throw new EndBeforeStartError(\"end must not precede start\");\n}\nstate.app = action.input.app;\nstate.licenseType = action.input.licenseType;\nstate.user = action.input.user.toLowerCase();\nstate.issuer = action.input.issuer;\nstate.issuedBy = action.input.issuedBy.toLowerCase();\nstate.stage = action.input.stage ?? null;\nstate.details = action.input.details ?? null;\nstate.issued = action.input.issued;\nstate.start = action.input.start;\nstate.end = action.input.end ?? null;\nstate.status = \"ISSUED\";",
+              "reducer": "if (state.user) {\n  throw new AlreadyIssuedError(\"this license is already issued\");\n}\nif (!action.input.kind && !action.input.licenseType) {\n  throw new MissingKindError(\"a licence needs a kind\");\n}\nif (action.input.end && action.input.end < action.input.start) {\n  throw new EndBeforeStartError(\"end must not precede start\");\n}\nstate.app = action.input.app;\nstate.user = action.input.user.toLowerCase();\nstate.issuer = action.input.issuer;\nstate.kind = action.input.kind ?? null;\nstate.stage = action.input.stage ?? null;\n// A pre-terms ISSUE_LICENSE (replayed from history) carries licenseType\n// and issuedBy; both survive in details so MIGRATE_LICENSE can map them.\nstate.details =\n  action.input.details ??\n  (action.input.licenseType\n    ? JSON.stringify({\n        legacyLicenseType: action.input.licenseType,\n        issuedBy: action.input.issuedBy ?? null,\n      })\n    : null);\nstate.issued = action.input.issued;\nstate.start = action.input.start;\nstate.end = action.input.end ?? null;\nstate.status = \"ISSUED\";",
               "errors": [
                 {
                   "id": "err-already-issued",
@@ -49,6 +49,13 @@
                   "name": "EndBeforeStartError",
                   "code": "END_BEFORE_START",
                   "description": "The end date precedes the start date",
+                  "template": ""
+                },
+                {
+                  "id": "err-missing-kind",
+                  "name": "MissingKindError",
+                  "code": "MISSING_KIND",
+                  "description": "A licence needs a kind (or, for a legacy licence, a licence type).",
                   "template": ""
                 }
               ],
@@ -125,6 +132,51 @@
                   "name": "InvalidStatusTransitionError",
                   "code": "INVALID_STATUS_TRANSITION",
                   "description": "The license status does not permit this transition",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-set-stage",
+              "name": "SET_STAGE",
+              "description": "Bind the licence to the environment it is served by.",
+              "schema": "input SetStageInput {\n  stage: PHID\n}",
+              "template": "",
+              "reducer": "if (!state.user) {\n  throw new NotIssuedError(\"this license has not been issued\");\n}\nstate.stage = action.input.stage ?? null;",
+              "errors": [
+                {
+                  "id": "err-not-issued-stage",
+                  "name": "NotIssuedError",
+                  "code": "NOT_ISSUED",
+                  "description": "The licence has not been issued.",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-migrate-license",
+              "name": "MIGRATE_LICENSE",
+              "description": "One-time, system-only conversion of a pre-terms licence onto a kind and a DID.",
+              "schema": "input MigrateLicenseInput {\n  kind: String!\n  user: String!\n  details: String\n}",
+              "template": "",
+              "reducer": "if (!state.user) {\n  throw new NotIssuedError(\"this license has not been issued\");\n}\nif (state.kind) {\n  throw new AlreadyMigratedError(\"this license already carries a kind\");\n}\nstate.kind = action.input.kind;\nstate.user = action.input.user.toLowerCase();\nstate.details = action.input.details ?? null;",
+              "errors": [
+                {
+                  "id": "err-not-issued-migrate",
+                  "name": "NotIssuedError",
+                  "code": "NOT_ISSUED",
+                  "description": "The licence has not been issued.",
+                  "template": ""
+                },
+                {
+                  "id": "err-already-migrated",
+                  "name": "AlreadyMigratedError",
+                  "code": "ALREADY_MIGRATED",
+                  "description": "The licence already carries a kind.",
                   "template": ""
                 }
               ],

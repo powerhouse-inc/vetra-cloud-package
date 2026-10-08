@@ -8,8 +8,10 @@ import type {
   ActivateLicenseAction,
   ExpireLicenseAction,
   IssueLicenseAction,
+  MigrateLicenseAction,
   ReplaceLicenseAction,
   RevokeLicenseAction,
+  SetStageAction,
 } from "./actions.js";
 
 export interface AppOwnerLicenseLifecycleOperations {
@@ -36,6 +38,16 @@ export interface AppOwnerLicenseLifecycleOperations {
   replaceLicenseOperation: (
     state: AppOwnerLicenseGlobalState,
     action: ReplaceLicenseAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setStageOperation: (
+    state: AppOwnerLicenseGlobalState,
+    action: SetStageAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  migrateLicenseOperation: (
+    state: AppOwnerLicenseGlobalState,
+    action: MigrateLicenseAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

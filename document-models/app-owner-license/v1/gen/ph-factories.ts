@@ -15,12 +15,11 @@ import { utils } from "./utils.js";
 
 export function defaultGlobalState(): AppOwnerLicenseGlobalState {
   return {
-    app: null,
-    licenseType: null,
-    user: null,
     issuer: null,
-    issuedBy: null,
+    user: null,
+    app: null,
     stage: null,
+    kind: null,
     details: null,
     issued: null,
     start: null,
