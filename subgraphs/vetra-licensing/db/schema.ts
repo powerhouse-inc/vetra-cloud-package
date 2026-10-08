@@ -155,6 +155,11 @@ export interface AppLicensingIntent {
   action_ids: string;
   created_at: string;
   done_at: string | null;
+  /**
+   * Set (with done_at) when the write failed with none of its actions applied.
+   * Its action ids never count as system writes when healing.
+   */
+  abandoned_at: string | null;
 }
 
 export interface VetraLicensingDB {

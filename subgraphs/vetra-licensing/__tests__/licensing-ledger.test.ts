@@ -350,8 +350,32 @@ describe("intent journal", () => {
     await recordLicensingState(db, "app-1", STATE, "t");
     await expect(writer(async () => { throw new Error("network"); }).appendLicensingOps("app-1", [act("sys-1")]))
       .rejects.toThrow("network");
-    expect(await intents()).toMatchObject([{ action_ids: '["sys-1"]', done_at: "2026-10-09T00:00:00.000Z" }]);
+    expect(await intents()).toMatchObject([
+      { action_ids: '["sys-1"]', done_at: "2026-10-09T00:00:00.000Z", abandoned_at: "2026-10-09T00:00:00.000Z" },
+    ]);
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("does not let a foreign operation reuse an abandoned intent's action id", async () => {
+    const { reads, apply, state, writer } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    await expect(writer(async () => { throw new Error("network"); }).appendLicensingOps("app-1", [act("sys-1")]))
+      .rejects.toThrow("network");
+    // A pending intent from the same base puts the heal scan over the abandoned one's range.
+    await writer(async () => undefined).appendLicensingOps("app-1", [act("sys-2")]);
+    apply("sys-1", () => { (state.global.terms as Terms)[0]!.status = "RETIRED"; });
+    expect(await reads.app("app-1")).toMatchObject({ tampered: true });
+    expect((await row()).state_hash).toBe(licensingStateHash(STATE));
+  });
+
+  it("still counts a completed (not abandoned) intent's actions when healing", async () => {
+    const { reads, apply, retire, writer, getOperations } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    await writer(noop(apply)).appendLicensingOps("app-1", [act("i1")]);
+    await writer(async () => undefined).appendLicensingOps("app-1", [act("i2")]);
+    getOperations.mockRejectedValueOnce(new Error("db down"));
+    await writer(async (_id, actions) => retire(actions)).appendLicensingOps("app-1", [act("i3")]);
+    expect(await reads.app("app-1")).toMatchObject({ tampered: false, unverified: false });
   });
 
   /** A system write whose operation leaves the ledger-covered state unchanged. */
@@ -418,8 +442,31 @@ describe("ledger setup", () => {
     const chain: unknown = new Proxy(() => {}, {
       get: (_t, k) => (k === "execute" ? () => Promise.reject(Object.assign(new Error(code), { code })) : () => chain),
     });
-    return { schema: chain } as unknown as Kysely<any>;
+    const probe: unknown = new Proxy(() => {}, {
+      get: (_t, k) => (k === "execute" ? () => Promise.resolve([]) : () => probe),
+    });
+    return { schema: chain, selectFrom: () => probe } as unknown as Kysely<any>;
   };
+
+  it("adds abandoned_at to an intent table created before it existed, once", async () => {
+    const fresh = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await fresh.schema.createTable("app_licensing_intent")
+        .addColumn("id", "text", (c) => c.notNull().primaryKey())
+        .addColumn("app_id", "text", (c) => c.notNull())
+        .addColumn("base_hash", "text", (c) => c.notNull())
+        .addColumn("base_revision", "integer", (c) => c.notNull())
+        .addColumn("action_ids", "text", (c) => c.notNull())
+        .addColumn("created_at", "text", (c) => c.notNull())
+        .addColumn("done_at", "text")
+        .execute();
+      await ensureLedgerTables(fresh);
+      await ensureLedgerTables(fresh);
+      await expect(fresh.selectFrom("app_licensing_intent").select("abandoned_at").execute()).resolves.toStrictEqual([]);
+    } finally {
+      await fresh.destroy();
+    }
+  });
 
   it("tolerates a concurrent CREATE ... IF NOT EXISTS (23505, 42P07), not other failures", async () => {
     await expect(ensureLedgerTables(failingDb("23505"))).resolves.toBeUndefined();

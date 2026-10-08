@@ -113,10 +113,12 @@ export async function ensureLedgerTables(db: Kysely<any>): Promise<void> {
       .addColumn("action_ids", "text", (c) => c.notNull())
       .addColumn("created_at", "text", (c) => c.notNull())
       .addColumn("done_at", "text")
+      .addColumn("abandoned_at", "text")
       .addPrimaryKeyConstraint("app_licensing_intent_pkey", ["id"])
       .ifNotExists()
       .execute(),
   );
+  await addAbandonedAt(db);
   await tolerateConcurrentCreate(() =>
     db.schema
       .createIndex("app_licensing_intent_app_id_idx")
@@ -125,6 +127,30 @@ export async function ensureLedgerTables(db: Kysely<any>): Promise<void> {
       .column("app_id")
       .execute(),
   );
+}
+
+/** SQLSTATEs: undefined_column, duplicate_column. */
+const UNDEFINED_COLUMN = "42703";
+const DUPLICATE_COLUMN = "42701";
+
+/**
+ * `abandoned_at` arrived after the table (forward-only). Probe with a query
+ * first: ALTER TABLE takes an ACCESS EXCLUSIVE lock even when it then fails,
+ * and this runs on every boot. The probe goes through the query builder, so a
+ * namespaced db reads its own schema. 42701 is swallowed for a concurrent boot.
+ */
+async function addAbandonedAt(db: Kysely<any>): Promise<void> {
+  try {
+    await db.selectFrom("app_licensing_intent").select("abandoned_at").limit(0).execute();
+    return;
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code !== UNDEFINED_COLUMN) throw err;
+  }
+  try {
+    await db.schema.alterTable("app_licensing_intent").addColumn("abandoned_at", "text").execute();
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code !== DUPLICATE_COLUMN) throw err;
+  }
 }
 
 export async function recordLicensingState(
@@ -297,9 +323,11 @@ type Settled =
  * An intent is completed only once every one of its actions appears among the
  * document's operations since its base; one whose actions have not (yet)
  * applied stays pending, unless its write failed with none of them applied:
- * then it is abandoned (marked done) at once. When healing, the actions of
- * intents already completed since the oldest pending base count as system
- * writes too.
+ * then it is abandoned at once (done, and marked `abandoned_at`). When
+ * healing, the actions of intents completed since the oldest pending base
+ * count as system writes too, but never an abandoned intent's: its actions
+ * were not seen applied, so an operation carrying one of its ids (a late
+ * landing, or a forger reusing it) reads as foreign.
  */
 export function createAppLedger(deps: {
   db: Kysely<VetraLicensingDB>;
@@ -313,10 +341,14 @@ export function createAppLedger(deps: {
   const logger = deps.logger ?? console;
   const lookup = createLedgerLookup(db);
 
-  async function complete(ids: string[]): Promise<void> {
+  async function complete(ids: string[], opts: { abandoned?: boolean } = {}): Promise<void> {
     if (ids.length === 0) return;
     const at = now();
-    await db.updateTable("app_licensing_intent").set({ done_at: at }).where("id", "in", ids).execute();
+    await db
+      .updateTable("app_licensing_intent")
+      .set(opts.abandoned ? { done_at: at, abandoned_at: at } : { done_at: at })
+      .where("id", "in", ids)
+      .execute();
     const cutoff = new Date(Date.parse(at) - INTENT_RETENTION_MS).toISOString();
     await db
       .deleteFrom("app_licensing_intent")
@@ -353,7 +385,7 @@ export function createAppLedger(deps: {
       // base: a write that left the hash unchanged is recorded as done without
       // moving the hash, yet its operations sit in this range.
       const completed = rows
-        .filter((i) => i.done_at !== null && i.base_revision >= since)
+        .filter((i) => i.done_at !== null && i.abandoned_at === null && i.base_revision >= since)
         .map(parse);
       const allowed = new Set([...intents, ...completed].flatMap((i) => i.actions));
       const seen = new Set<string>();
@@ -431,7 +463,9 @@ export function createAppLedger(deps: {
               // abandoned; one that returned but is not visible yet stays
               // pending until its actions show up.
               const applied = new Set(await source.operationsSince(appId, base.revision));
-              if (!actionIds.some((id) => applied.has(id))) await complete([intentId]);
+              if (!actionIds.some((id) => applied.has(id))) {
+                await complete([intentId], { abandoned: true });
+              }
             }
             const settled = await settle(appId);
             if (settled.status === "tampered") {
