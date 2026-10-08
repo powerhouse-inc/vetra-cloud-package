@@ -86,6 +86,41 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     expect(row).toMatchObject({ license_id: "l1", kind: null, user_did: null });
   });
 
+  it("issues no ALTER TABLE when the columns already exist", async () => {
+    const pg = new PGlite();
+    const executed: string[] = [];
+    db = new Kysely<VetraLicensingDB>({
+      dialect: new PGliteDialect(pg),
+      log: (e) => { executed.push(e.query.sql); },
+    });
+    await up(db as Kysely<any>);
+    executed.length = 0;
+    await up(db as Kysely<any>);
+    expect(executed.filter((q) => /alter table/i.test(q))).toStrictEqual([]);
+  });
+
+  it("checks columns in the namespace schema, not another schema with the same table", async () => {
+    const pg = new PGlite();
+    const executed: string[] = [];
+    db = new Kysely<VetraLicensingDB>({
+      dialect: new PGliteDialect(pg),
+      log: (e) => { executed.push(e.query.sql); },
+    });
+    // public.app_license_grants already has the new columns; the namespace's does not.
+    await up(db as Kysely<any>);
+    await pg.exec(`CREATE SCHEMA ns`);
+    const ns = db.withSchema("ns") as unknown as Kysely<any>;
+    await up(ns);
+    executed.length = 0;
+    await up(ns);
+    expect(executed.filter((q) => /alter table/i.test(q))).toStrictEqual([]);
+    const cols = await pg.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'ns' AND table_name = 'app_license_grants' AND column_name IN ('kind', 'user_did')`,
+    );
+    expect(cols.rows.map((r) => r.column_name).sort()).toStrictEqual(["kind", "user_did"]);
+  });
+
   it("migrates a production database that already holds old-shape rows", async () => {
     const pg = new PGlite();
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });

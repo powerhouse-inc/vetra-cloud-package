@@ -1,15 +1,44 @@
-import { type Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 
 /** Postgres SQLSTATE for "column already exists". */
 const DUPLICATE_COLUMN = "42701";
 
-/** addColumn has no IF NOT EXISTS; the boot-time runner calls up() on every start. */
+/**
+ * The schema `db` writes to. A namespaced db (relationalDb.createNamespace) is
+ * `withSchema(<hash>)`, which qualifies table names at query-build time and
+ * leaves the session's search_path alone, so current_schema() would name the
+ * wrong schema. Read it off the transformed query instead; an unqualified db
+ * falls back to current_schema().
+ */
+function namespaceSchema(db: Kysely<any>, table: string): string | null {
+  const node = db.selectFrom(table).selectAll().toOperationNode() as {
+    from?: { froms?: { kind?: string; table?: { schema?: { name?: string } } }[] };
+  };
+  const from = node.from?.froms?.[0];
+  return from?.kind === "TableNode" ? (from.table?.schema?.name ?? null) : null;
+}
+
+/**
+ * addColumn has no IF NOT EXISTS; the boot-time runner calls up() on every
+ * start. ALTER TABLE takes an ACCESS EXCLUSIVE lock even when it then fails
+ * with "column already exists", so look first: a no-op boot must not queue
+ * behind (and block) live traffic on the table. The 42701 swallow stays for a
+ * race with another replica booting at the same time.
+ */
 async function addColumnIfMissing(
   db: Kysely<any>,
   table: string,
   column: string,
   type: "varchar(255)" | "text",
 ): Promise<void> {
+  const schema = namespaceSchema(db, table);
+  const { rows } = await sql<{ present: number }>`
+    SELECT 1 AS present FROM information_schema.columns
+    WHERE table_schema = COALESCE(${schema}::text, current_schema())
+      AND table_name = ${table}
+      AND column_name = ${column}
+  `.execute(db);
+  if (rows.length > 0) return;
   try {
     await db.schema.alterTable(table).addColumn(column, type).execute();
   } catch (error) {
@@ -17,6 +46,10 @@ async function addColumnIfMissing(
   }
 }
 
+/**
+ * Must not run inside a transaction: each ALTER TABLE's lock is held until
+ * commit, and a swallowed 42701 aborts the surrounding transaction.
+ */
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
     .createTable("app_user_environments")
