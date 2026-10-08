@@ -17,7 +17,7 @@
 - GraphQL strings must match the contract exactly: namespaces `vetraPublisher` and `vetraSubscriptions`, field, argument, input-type and output-field names as listed in the contract. No codegen; hand-written strings.
 - Enum values travel as `String`: template mode `SHARED | DEDICATED`; term status `DRAFT | ACTIVE | RETIRED`; issuers `INVITE_CODE | PUBLISHER_GRANT | ACHRA_SUBSCRIPTION`; licence status `ISSUED | ACTIVE | EXPIRED | REVOKED | REPLACED`; warning kind `EXPIRING | ENDED_STOP_PENDING | STOPPED_DELETE_PENDING | DELETE_IMMINENT`.
 - `user` arguments accept `did:pkh:eip155:<chain>:0x…` or a bare `0x` address; every other DID method is refused server-side with `UNSUPPORTED_DID`. Client validation accepts exactly those two shapes.
-- Server error codes (`extensions.code`): `NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `APP_NOT_ACTIVE`, `NOT_ON_ALLOW_LIST`, `TERM_NOT_ISSUABLE`, `UNSUPPORTED_DID`, `LICENSING_DISABLED`, `INVALID_CODE`, `ALREADY_HOLDS`, plus `UNAUTHENTICATED` from the gateway. Server text is shown verbatim via `describePublisherError`; only `NETWORK` and `PUBLISHER_UNAVAILABLE` get our own copy.
+- Server error codes (`extensions.code`): `NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `APP_NOT_ACTIVE`, `NOT_ON_ALLOW_LIST`, `TERM_NOT_ISSUABLE`, `UNSUPPORTED_DID`, `LICENSING_DISABLED`, `INVALID_CODE`, `ALREADY_HOLDS`, plus `UNAUTHENTICATED` from the gateway. Every code the user can hit gets friendly copy from `describePublisherError` (`ERROR_COPY` in Task 1); only `INVALID_INPUT` (it carries the reducer's specific sentence, e.g. "kind already exists") and `UNKNOWN` show the server text verbatim. Mapping from the cloud-package plan: old `UNKNOWN_APP`/`UNKNOWN_LICENSE` are now `NOT_FOUND`, old `APP_IDENTITY_INACTIVE` is now `APP_NOT_ACTIVE`.
 - `VetraAccessCodes` no longer exists server-side. After Task 12 no client code references it (`grep -rn VetraAccessCodes app modules` returns nothing).
 - No new dependencies and no new UI libraries. Use `modules/shared/components/ui/*`, `lucide-react`, `date-fns` (already installed).
 - Mutations never retry (`useMutation` default `retry: 0`; never pass `retryPublisher` to a mutation). Queries use `retryPublisher`.
@@ -387,7 +387,39 @@ const SERVER_CODES = [
 ] as const
 ```
 
-Define `SERVER_CODES` once at the top of the file and use `for (const code of SERVER_CODES)` and `for (const code of [...SERVER_CODES, 'UNKNOWN'] as const)`. Add one test to the `toPublisherError` block:
+Define `SERVER_CODES` once at the top of the file and use `for (const code of SERVER_CODES)` in `passes every code the server can send through unchanged`. Replace the whole `returns the SERVER message verbatim for every server-controlled code` test with the two tests below (friendly copy per code, verbatim only for `INVALID_INPUT` and `UNKNOWN`):
+
+```ts
+it('keeps the server sentence for INVALID_INPUT and UNKNOWN: it is specific', () => {
+  for (const code of ['INVALID_INPUT', 'UNKNOWN'] as const) {
+    expect(describePublisherError(new PublisherApiError(code, 'kind 2026-pro already exists', null))).toBe(
+      'kind 2026-pro already exists',
+    )
+  }
+})
+
+it('gives every other code plain-language copy', () => {
+  const expected: Record<string, RegExp> = {
+    UNAUTHENTICATED: /log in again/i,
+    NOT_FOUND: /could not find/i,
+    FORBIDDEN: /not allowed/i,
+    APP_NOT_ACTIVE: /app is not active/i,
+    NOT_ON_ALLOW_LIST: /allow list/i,
+    TERM_NOT_ISSUABLE: /plan can.t be handed out this way/i,
+    UNSUPPORTED_DID: /wallet address/i,
+    LICENSING_DISABLED: /switched off/i,
+    INVALID_CODE: /code can.t be used/i,
+    ALREADY_HOLDS: /already have this plan/i,
+  }
+  for (const [code, copy] of Object.entries(expected)) {
+    const text = describePublisherError(new PublisherApiError(code as never, 'raw server text', null))
+    expect(text).toMatch(copy)
+    expect(text).not.toBe('raw server text')
+  }
+})
+```
+
+Add one test to the `toPublisherError` block:
 
 ```ts
 it('maps the retired licence-type codes to UNKNOWN', () => {
@@ -632,7 +664,40 @@ const KNOWN_CODES = new Set<string>([
 ])
 ```
 
-Keep `GqlError`, `GqlBody`, `PublisherApiError`, `isPublisherError`, `toPublisherError`, `publisherGql`, `describePublisherError`, `retryPublisher` unchanged. In the `describePublisherError` doc comment delete the paragraph about `UNKNOWN_APP`.
+Keep `GqlError`, `GqlBody`, `PublisherApiError`, `isPublisherError`, `toPublisherError`, `publisherGql`, `retryPublisher` unchanged. Replace `describePublisherError` (and its doc comment) with:
+
+```ts
+/**
+ * Plain-language copy per code. INVALID_INPUT carries the reducer's own, specific
+ * sentence ("kind … already exists") and UNKNOWN is whatever the server said, so
+ * those two stay verbatim; everything else reads the same wherever it surfaces.
+ */
+export const ERROR_COPY: Partial<Record<PublisherErrorCode, string>> = {
+  NETWORK: 'Lost the connection to Vetra. Check your network and try again.',
+  PUBLISHER_UNAVAILABLE: 'Licensing is not available on this deployment yet.',
+  UNAUTHENTICATED: 'Your login has expired. Log in again and retry.',
+  NOT_FOUND: 'We could not find that. It may have been removed, or it belongs to another account.',
+  FORBIDDEN: 'You are not allowed to do that for this app.',
+  APP_NOT_ACTIVE: 'This app is not active yet, so licensing changes are paused. Authorize its deploy identity first.',
+  NOT_ON_ALLOW_LIST: 'That person is not on your allow list yet. Add them, then grant again.',
+  TERM_NOT_ISSUABLE: 'That plan can’t be handed out this way. Check it is published and allows this way of giving it out.',
+  UNSUPPORTED_DID: 'Use a wallet address (0x…) or a did:pkh identity. Other identity types are not supported.',
+  LICENSING_DISABLED: 'Licensing is switched off on this deployment right now. You can look, but not change anything.',
+  INVALID_CODE: 'This code can’t be used. It may be mistyped, paused, expired or used up.',
+  ALREADY_HOLDS: 'You already have this plan for this app.',
+}
+
+export function describePublisherError(err: unknown): string {
+  if (isPublisherError(err)) {
+    const copy = ERROR_COPY[err.code]
+    if (copy) return copy
+  }
+  if (err instanceof Error && err.message) return err.message
+  return 'Something went wrong.'
+}
+```
+
+The existing `supplies copy only for the two codes the server never sends` test in `graphql.test.ts` becomes obsolete — delete it (its `NETWORK` assertion is covered by the new per-code test plus `NETWORK`'s entry). The `server message journey` tests stay valid only for uncoded/`INVALID_INPUT` errors: change any `extensions.code` they use to `INVALID_INPUT`.
 
 - [ ] **Step 7: Replace the reads and writes in `modules/publisher/graphql.ts`**
 
@@ -5211,7 +5276,7 @@ describe('GrantDialog', () => {
     fireEvent.change(screen.getByLabelText('Wallet address or DID'), { target: { value: A } })
     expect(screen.getByText(/added to your allow list/i)).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Plan'), { target: { value: 'pro' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Grant licence' })))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add to allow list and grant' })))
     expect(addToAllowList).toHaveBeenCalledWith({ user: A })
     expect(issueGrant).toHaveBeenCalledOnce()
     expect(addToAllowList.mock.invocationCallOrder[0]).toBeLessThan(issueGrant.mock.invocationCallOrder[0])
@@ -5227,8 +5292,8 @@ describe('GrantDialog', () => {
     expect(screen.getByText(/already holds pro/i)).toBeTruthy()
   })
 
-  it('shows the server sentence when the grant is refused', async () => {
-    issueGrant.mockRejectedValue(new PublisherApiError('TERM_NOT_ISSUABLE', 'pro cannot be granted', 200))
+  it('shows the reducer sentence when the grant is refused as invalid input', async () => {
+    issueGrant.mockRejectedValue(new PublisherApiError('INVALID_INPUT', 'pro cannot be granted', 200))
     renderDialog()
     fireEvent.change(screen.getByLabelText('Wallet address or DID'), { target: { value: A } })
     fireEvent.change(screen.getByLabelText('Plan'), { target: { value: 'pro' } })
@@ -5590,7 +5655,7 @@ export function GrantDialog({
             <DialogFooter>
               <Button type="submit" disabled={busy || plans.length === 0}>
                 {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                Grant licence
+                {needsAllowList ? 'Add to allow list and grant' : 'Grant licence'}
               </Button>
             </DialogFooter>
           </form>
@@ -8188,10 +8253,33 @@ describe('RedeemFlow', () => {
     redeem.mockResolvedValue(sub({ licenseId: 'new-3' }))
     render(<RedeemFlow code="KV-PILOT" />)
     expect(screen.queryByRole('radio', { name: /upgrade old/i })).toBeNull()
-    fireEvent.click(screen.getByRole('radio', { name: /upgrade free/i }))
+    // Preselected: a second code for something you hold is an extension, not a second licence.
+    expect(screen.getByRole('radio', { name: /upgrade free/i }).getAttribute('aria-checked')).toBe('true')
     expect(screen.queryByLabelText('Project name')).toBeNull()
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Get access' })))
     expect(redeem).toHaveBeenCalledWith({ code: 'KV-PILOT', upgrades: 'live' })
+  })
+
+  it('can still start something new next to a live licence', async () => {
+    authState = 'authenticated'
+    check = { data: valid(), isPending: false, error: null }
+    subs = [sub({ licenseId: 'live' })]
+    redeem.mockResolvedValue(sub({ licenseId: 'new-4' }))
+    render(<RedeemFlow code="KV-PILOT" />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Start something new' }))
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Second project' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Get access' })))
+    expect(redeem).toHaveBeenCalledWith({ code: 'KV-PILOT', label: 'Second project' })
+  })
+
+  it('extends the studio licence a person already holds instead of failing with ALREADY_HOLDS', async () => {
+    authState = 'authenticated'
+    check = { data: valid({ appId: 'studio', appName: 'Vetra Studio', mode: 'SHARED', termLabel: 'Early access' }), isPending: false, error: null }
+    subs = [sub({ licenseId: 'studio-lic', appId: 'studio', appName: 'Vetra Studio', termLabel: 'Early access', mode: 'SHARED' })]
+    redeem.mockResolvedValue(sub({ licenseId: 'studio-lic-2' }))
+    render(<RedeemFlow code="STUDIO-2" />)
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Get access' })))
+    expect(redeem).toHaveBeenCalledWith({ code: 'STUDIO-2', upgrades: 'studio-lic' })
   })
 
   it('explains ALREADY_HOLDS and links to subscriptions', async () => {
@@ -8409,7 +8497,10 @@ export function RedeemFlow({ code }: { code: string }) {
   const subs = useMySubscriptions()
   const redeem = useRedeemInviteCode()
   const router = useRouter()
-  const [choice, setChoice] = useState<string>(NEW)
+  // null = not chosen yet: defaults to upgrading the first live licence of this app,
+  // because a second code for a plan you already hold is refused (ALREADY_HOLDS) —
+  // extending studio access, for example, is an upgrade of the licence you have.
+  const [picked, setPicked] = useState<string | null>(null)
   const [label, setLabel] = useState('')
   const [error, setError] = useState<unknown>(null)
 
@@ -8446,6 +8537,7 @@ export function RedeemFlow({ code }: { code: string }) {
   const info = check.data
   const dedicated = info.mode === 'DEDICATED'
   const candidates = info.appId ? upgradeCandidates(subs.data ?? [], info.appId) : []
+  const choice = picked ?? candidates[0]?.licenseId ?? NEW
   const redeemChoice: RedeemChoice = choice === NEW ? 'new' : { upgrades: choice }
   const needsName = dedicated && choice === NEW
   const authenticated = state === 'authenticated'
@@ -8502,7 +8594,7 @@ export function RedeemFlow({ code }: { code: string }) {
         {candidates.length > 0 && (
           <div className="space-y-2">
             <Label>You already have {info.appName}</Label>
-            <RadioGroup value={choice} onValueChange={setChoice} className="space-y-2">
+            <RadioGroup value={choice} onValueChange={setPicked} className="space-y-2">
               {candidates.map((s) => (
                 <label key={s.licenseId} className="border-border has-[[data-state=checked]]:border-primary flex cursor-pointer items-start gap-3 rounded-xl border p-3">
                   <RadioGroupItem value={s.licenseId} aria-label={`Upgrade ${subscriptionName(s)}`} className="mt-1" />
@@ -8550,8 +8642,13 @@ export function RedeemFlow({ code }: { code: string }) {
             </AlertTitle>
             <AlertDescription className="space-y-2">
               <p>{describePublisherError(error)}</p>
+              {isPublisherError(error, 'ALREADY_HOLDS') && candidates.length > 0 && choice === NEW && (
+                <Button size="sm" variant="outline" onClick={() => setPicked(candidates[0].licenseId)}>
+                  Extend {subscriptionName(candidates[0])} instead
+                </Button>
+              )}
               {isPublisherError(error, 'ALREADY_HOLDS') && (
-                <Link href="/user/subscriptions" className="text-primary font-medium hover:underline">
+                <Link href="/user/subscriptions" className="text-primary block font-medium hover:underline">
                   See your subscriptions
                 </Link>
               )}
@@ -9756,4 +9853,7 @@ Do not push without the user's go-ahead. When approved: `git push -u origin feat
 4. **Playwright auth** depends on the Renown mock adapter plus a recorded HAR of the Renown switchboard. If replay is time-bound, CI needs `E2E_LIVE_RENOWN=1` (network to Renown). Server-side `verifySession` in `app/layout.tsx` also calls Renown from the dev server, which the browser-side HAR cannot intercept; it only affects first-paint seeding, not the journeys.
 5. **Deployment order.** Task 1 deletes the old Licensing UI; staging must run the new cloud-package API before this branch deploys, or the publisher tabs and the studio gate fail (the gate fails safe: it shows a retry, not "redeem a code").
 6. **Standalone environments on `/user`.** Licence-provisioned environments are not app-linked from the owner's view, so they appear under "Standalone environments" on the apps home. They carry the licence badge (Task 13), which is enough for now.
-7. **Gate scope (D2).** `/user/environments/new` stays gated as a builder action; the spec only names Studio and app creation. Flip it to `RequireLogin` if product disagrees.
+7. **Studio codes.** (From the cloud-package plan.) The `vetra-studio` app exists only as a document (no `apps` row), so it never appears in `/user/apps`; publisher management of studio codes happens wherever an admin's app list includes it — this plan builds no special studio UI. A second studio code no longer extends access (`ALREADY_HOLDS`); the redeem page preselects "Upgrade <current licence>" whenever the person holds a live licence of the code's app, which is how studio access is extended.
+8. **Allow list enforcement.** `PUBLISHER_GRANT` now requires the allow list server-side; the grant dialog adds and grants in one flow ("Add to allow list and grant") and the Holders tab manages the list (Task 7).
+9. **Paused provisioning after deploy.** Until the cloud-package migration is applied, provisioning is paused; new DEDICATED licences sit at "Being set up…" in Holders and Subscriptions. No UI change needed.
+10. **Gate scope (D2).** `/user/environments/new` stays gated as a builder action; the spec only names Studio and app creation. Flip it to `RequireLogin` if product disagrees.
