@@ -110,19 +110,10 @@ export async function up(db: Kysely<any>): Promise<void> {
       "issued_by",
       "created_at",
     ])
-    .expression((eb: any) =>
-      eb
-        .selectFrom("app_user_environments")
-        .select([
-          "license_id",
-          "app_id",
-          eb.val("").as("license_type_id"),
-          "user_address",
-          eb.val("backfill").as("issued_by"),
-          "created_at",
-        ]),
+    .expression(
+      sql`select license_id, app_id, '' as license_type_id, user_address, 'backfill' as issued_by, created_at from app_user_environments`,
     )
-    .onConflict((oc: any) => oc.column("license_id").doNothing())
+    .onConflict((oc) => oc.column("license_id").doNothing())
     .execute();
 
   await db.schema

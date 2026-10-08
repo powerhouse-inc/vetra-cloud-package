@@ -523,9 +523,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // Off by default; dry-run by default. The variable keeps its original name,
     // LICENSING_KEEPER_ENABLED.
     this.keeper = new LicenseKeeper({
-      listLicenses: reads.listLicenses,
-      activate: gateway.activate,
-      expire: gateway.expire,
+      listLicenses: () => reads.listLicenses(),
+      activate: (id) => gateway.activate(id),
+      expire: (id) => gateway.expire(id),
       now: () => new Date().toISOString(),
       cfg,
       logger: console,
