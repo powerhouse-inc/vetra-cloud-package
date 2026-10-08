@@ -162,6 +162,23 @@ export interface AppLicensingIntent {
   abandoned_at: string | null;
 }
 
+/**
+ * The lifecycle status of a licence as the SYSTEM last wrote it (every
+ * issue/activate/expire/revoke/replace goes through the licence gateway, which
+ * records here after the write applied). Licence documents carry the same
+ * fields, but a document can be written by others; the keeper treats a licence
+ * as terminal only when this row agrees. No row: written before this table
+ * existed (the migration backfills it), and the document is used.
+ */
+export interface LicenseLifecycle {
+  license_id: string;
+  status: string;
+  /** The licence's end as issued; null for an open-ended licence. */
+  end_at: string | null;
+  replaced_by: string | null;
+  updated_at: string;
+}
+
 export interface VetraLicensingDB {
   app_licensing_state: AppLicensingState;
   app_licensing_intent: AppLicensingIntent;
@@ -176,4 +193,5 @@ export interface VetraLicensingDB {
   environment_reporting_tokens: EnvironmentReportingTokens;
   licensing_migration_type_map: LicensingMigrationTypeMap;
   licensing_migration_steps: LicensingMigrationSteps;
+  license_lifecycle: LicenseLifecycle;
 }

@@ -122,6 +122,29 @@ describe("sweepAppDocumentProtection", () => {
   });
 });
 
+describe("licence documents reuse the same protection", () => {
+  it("sweeps licence documents under the platform owner, naming them in logs", async () => {
+    const { perm, rows } = fakePerm({ "lic-1": { protected: false, owner: null, grants: ["0xforger"] } });
+    const rel = fakeRel({ "lic-1": ["drive-x"] });
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    const result = await sweepAppDocumentProtection({
+      perm, relationships: rel, listAppDocumentIds: async () => ["lic-1"],
+      ownerFor: async () => "0xplatform", logger, noun: "licence document",
+    });
+    expect(result).toStrictEqual({ protected: 1, failed: 0, skipped: 0 });
+    expect(rows.get("lic-1")).toMatchObject({ protected: true, owner: "0xplatform", grants: ["0xplatform"] });
+    expect(rel.parentsOf.get("lic-1")).toStrictEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("licence document lic-1 had parent drive-x"));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("swept 1 licence documents"));
+  });
+
+  it("refuses to create a licence document it cannot protect", async () => {
+    const { perm } = fakePerm();
+    const protect = createAppDocProtector(perm, async () => null, fakeRel(), { warn: vi.fn() }, "licence document");
+    await expect(protect("lic-2")).rejects.toThrow("no owner to protect licence document lic-2 with");
+  });
+});
+
 describe("createAppDocProtector", () => {
   it("protects with the row owner, detaches parents, and refuses when there is no owner", async () => {
     const { perm, rows } = fakePerm();

@@ -204,6 +204,7 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     }).execute();
     await d.insertInto("licensing_migration_steps").values({ step: "complete", completed_at: "t", detail: null }).execute();
     await d.insertInto("app_licensing_state").values({ app_id: "a", state_hash: "h", updated_at: "t" }).execute();
+    await d.insertInto("license_lifecycle").values({ license_id: "l", status: "ACTIVE", end_at: null, replaced_by: null, updated_at: "t" }).execute();
     await expect(
       d.insertInto("app_licensing_state").values({ app_id: "a", state_hash: "h2", updated_at: "t" }).execute(),
     ).rejects.toThrow(/duplicate key|unique/i);
@@ -212,7 +213,7 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     for (const t of [
       "license_chain", "license_environments", "app_allow_list", "invite_codes", "invite_redemptions",
       "environment_reporting_tokens", "licensing_migration_type_map", "licensing_migration_steps",
-      "app_licensing_state",
+      "app_licensing_state", "license_lifecycle",
     ] as const) {
       expect(await d.selectFrom(t).selectAll().execute()).toHaveLength(0);
     }

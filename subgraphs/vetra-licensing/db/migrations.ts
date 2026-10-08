@@ -227,12 +227,22 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("licensing_migration_steps_pkey", ["step"])
     .ifNotExists().execute();
 
+  await db.schema.createTable("license_lifecycle")
+    .addColumn("license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("status", "varchar(32)", (c) => c.notNull())
+    .addColumn("end_at", "varchar(255)")
+    .addColumn("replaced_by", "varchar(255)")
+    .addColumn("updated_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("license_lifecycle_pkey", ["license_id"])
+    .ifNotExists().execute();
+
   // Also created by vetra-apps, which writes the ledger too (licensing-ledger.ts).
   await ensureLedgerTables(db);
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "license_lifecycle",
     "app_licensing_intent",
     "app_licensing_state",
     "licensing_migration_steps",

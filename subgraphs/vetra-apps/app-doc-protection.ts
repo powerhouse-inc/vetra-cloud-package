@@ -59,11 +59,12 @@ export async function detachAppDocumentParents(
   rel: RelationshipClient,
   id: string,
   logger: Pick<Console, "warn">,
+  noun = "app document",
 ): Promise<number> {
   const parents = await incomingParentIds(rel, id);
   for (const parent of parents) {
     logger.warn(
-      `[app-doc-protection] app document ${id} had parent ${parent} (its grants could write the app); removing the relationship`,
+      `[app-doc-protection] ${noun} ${id} had parent ${parent} (its grants could write it); removing the relationship`,
     );
     await rel.removeRelationship(parent, id, "child");
   }
@@ -124,13 +125,16 @@ export async function sweepAppDocumentProtection(deps: {
   listAppDocumentIds(): Promise<string[]>;
   ownerFor(id: string): Promise<string | null>;
   logger: Pick<Console, "warn" | "info">;
+  /** What the documents are called in logs; app documents by default (licence documents reuse this). */
+  noun?: string;
 }): Promise<{ protected: number; failed: number; skipped: number }> {
+  const noun = deps.noun ?? "app document";
   const result = { protected: 0, failed: 0, skipped: 0 };
   let ids: string[];
   try {
     ids = await deps.listAppDocumentIds();
   } catch (err) {
-    deps.logger.warn(`[app-doc-protection] listing app documents failed: ${String(err)}`);
+    deps.logger.warn(`[app-doc-protection] listing ${noun}s failed: ${String(err)}`);
     return result;
   }
   for (const id of ids) {
@@ -142,7 +146,7 @@ export async function sweepAppDocumentProtection(deps: {
         continue;
       }
       await protectAppDocument(deps.perm, id, owner);
-      await detachAppDocumentParents(deps.relationships, id, deps.logger);
+      await detachAppDocumentParents(deps.relationships, id, deps.logger, noun);
       result.protected++;
     } catch (err) {
       deps.logger.warn(`[app-doc-protection] ${id}: protection failed: ${String(err)}`);
@@ -150,7 +154,7 @@ export async function sweepAppDocumentProtection(deps: {
     }
   }
   deps.logger.info(
-    `[app-doc-protection] swept ${ids.length} app documents: ${result.protected} protected, ${result.failed} failed, ${result.skipped} skipped`,
+    `[app-doc-protection] swept ${ids.length} ${noun}s: ${result.protected} protected, ${result.failed} failed, ${result.skipped} skipped`,
   );
   return result;
 }
@@ -176,11 +180,12 @@ export function createAppDocProtector(
   ownerFor: (id: string) => Promise<string | null>,
   relationships: RelationshipClient,
   logger: Pick<Console, "warn">,
+  noun = "app document",
 ): (id: string) => Promise<void> {
   return async (id) => {
     const owner = await ownerFor(id);
-    if (!owner) throw new Error(`no owner to protect app document ${id} with`);
+    if (!owner) throw new Error(`no owner to protect ${noun} ${id} with`);
     await protectAppDocument(perm, id, owner);
-    await detachAppDocumentParents(relationships, id, logger);
+    await detachAppDocumentParents(relationships, id, logger, noun);
   };
 }

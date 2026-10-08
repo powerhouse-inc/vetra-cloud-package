@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { actions } from "document-models/app-owner-license";
 import {
   createReactorLicenseGateway,
+  LifecycleNotRecordedError,
+  listLicenceDocumentIds,
   type LicenseGatewayClientLike,
 } from "../license-gateway.js";
 
@@ -116,5 +118,50 @@ describe("createReactorLicenseGateway", () => {
     await expect(
       createReactorLicenseGateway(bad.client).execute("lic-1", acts),
     ).rejects.toThrow("ACTIVATE_LICENSE rejected: nope");
+  });
+
+  describe("protection and the lifecycle record", () => {
+    it("protects a new licence document before handing out its id", async () => {
+      const f = fakeClient({});
+      const protectedIds: string[] = [];
+      const id = await createReactorLicenseGateway(f.client, { protect: async (i) => { protectedIds.push(i); } }).create();
+      expect(id).toBe("lic-new");
+      expect(protectedIds).toStrictEqual(["lic-new"]);
+    });
+
+    it("records the lifecycle after a write applied, and not after a rejection", async () => {
+      const recorded: [string, string[]][] = [];
+      const lifecycle = { record: async (id: string, acts: { type: string }[]) => { recorded.push([id, acts.map((a) => a.type)]); } };
+      await createReactorLicenseGateway(fakeClient({}).client, { lifecycle }).expire("lic-1");
+      await createReactorLicenseGateway(fakeClient({}).client, { lifecycle }).execute("lic-2", [actions.revokeLicense({ reason: null })]);
+      await expect(createReactorLicenseGateway(fakeClient({ error: "no" }).client, { lifecycle }).activate("lic-3")).rejects.toThrow();
+      expect(recorded).toStrictEqual([["lic-1", ["EXPIRE_LICENSE"]], ["lic-2", ["REVOKE_LICENSE"]]]);
+    });
+
+    it("retries a failed record once, then fails loudly", async () => {
+      let calls = 0;
+      const flaky = { record: async () => { if (++calls === 1) throw new Error("blip"); } };
+      await createReactorLicenseGateway(fakeClient({}).client, { lifecycle: flaky }).expire("lic-1");
+      expect(calls).toBe(2);
+      const error = vi.fn();
+      const down = { record: async () => { throw new Error("db down"); } };
+      await expect(createReactorLicenseGateway(fakeClient({}).client, { lifecycle: down, logger: { error } }).expire("lic-1"))
+        .rejects.toBeInstanceOf(LifecycleNotRecordedError);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("EXPIRE_LICENSE applied but its lifecycle status was not recorded"));
+    });
+  });
+
+  it("lists every licence document id across pages", async () => {
+    const pages: Record<string, { results: unknown[]; nextCursor?: string }> = {
+      "0": { results: [{ header: { id: "a" } }, { header: {} }], nextCursor: "1" },
+      "1": { results: [{ header: { id: "b" } }], nextCursor: "1" },
+    };
+    const seen: string[] = [];
+    const ids = await listLicenceDocumentIds({
+      find: async (search, _v, paging) => { seen.push(search.type!); return pages[paging!.cursor]!; },
+      get: async () => null,
+    });
+    expect(ids).toStrictEqual(["a", "b"]);
+    expect(seen).toStrictEqual(["powerhouse/app-owner-license", "powerhouse/app-owner-license"]);
   });
 });
