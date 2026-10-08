@@ -1,475 +1,191 @@
-import { describe, it, expect, vi } from "vitest";
-import type { Kysely } from "kysely";
-import { buildASTSchema, GraphQLError, type GraphQLInputObjectType } from "graphql";
-import { schema } from "../schema.js";
-import type { Action } from "document-model";
+import { beforeAll, describe, expect, it } from "vitest";
+import type { GraphQLError } from "graphql";
 import {
-  createPublisherResolvers,
-  type PublisherDeps,
-} from "../publisher-resolvers.js";
-import { NotAppOwnerError, UnknownAppError } from "../publisher-auth.js";
-import type { VetraLicensingDB } from "../db/schema.js";
+  asUser,
+  codeOf,
+  createPublisherHarness,
+  type PublisherHarness,
+  type Resolvers,
+} from "./publisher-harness.js";
 
 /**
- * Cross-publisher isolation: the security property of the whole publisher
- * surface. Two publishers, A and B, each own one app, with one licence type,
- * one licence and one environment row. A acts on B's identifiers through every
- * one of the thirteen fields and must be refused WITHOUT any read of B's data
- * and WITHOUT any write. "Refused" is never enough on its own: a refusal that
- * still dispatched is a breach, so each case asserts the gateways were not
- * called. Every refusal also has a positive control (A on A's own identifiers
- * works), so a broken harness cannot make the suite pass vacuously.
+ * Publisher isolation: owner A, calling with ANY of B's ids (app, template,
+ * term, licence, invite code), gets NOT_FOUND and changes nothing of B's --
+ * neither B's app document nor B's licence document nor any table row. Every
+ * field of the contract is covered, and the field list is pinned to the
+ * contract, so a field added later cannot skip this suite.
  */
 
 const A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const HOLDER_A = "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
-const HOLDER_B = "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+const APP_A = "a0000000-5d0e-4e3e-9a55-1c3b9b8f2a01";
+const APP_B = "b0000000-5d0e-4e3e-9a55-1c3b9b8f2a02";
+const HOLDER = "0x1111111111111111111111111111111111111111";
 
-const APP_A = "app-a";
-const APP_B = "app-b";
-const TYPE_A = "type-a";
-const TYPE_B = "type-b";
-const LIC_A = "lic-a";
-const LIC_B = "lic-b";
-const GHOST_APP = "app-ghost";
-const GHOST_TYPE = "type-ghost";
-const GHOST_LIC = "lic-ghost";
-
-// isAdmin is pinned so the ADMINS env of the machine running the suite cannot
-// turn A into an admin and mask a breach.
-const asA = { user: { address: A, networkId: "eip155", chainId: 1 }, isAdmin: () => false };
-
-const APPS: Record<string, { owner: string }> = {
-  [APP_A]: { owner: A },
-  [APP_B]: { owner: B },
-};
-const TYPES: Record<string, string> = { [TYPE_A]: APP_A, [TYPE_B]: APP_B };
-const LICENSES: Record<string, { app: string; user: string; type: string }> = {
-  [LIC_A]: { app: APP_A, user: HOLDER_A, type: TYPE_A },
-  [LIC_B]: { app: APP_B, user: HOLDER_B, type: TYPE_B },
-};
-
-const template = { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null };
-
-const envRows = [
-  { app_id: APP_A, user_address: HOLDER_A, environment_id: "env-a", license_id: LIC_A, template_hash: "ha" },
-  { app_id: APP_B, user_address: HOLDER_B, environment_id: "env-b", license_id: LIC_B, template_hash: "hb" },
+// Contract § vetraPublisher, in contract order.
+const CONTRACT_QUERIES = [
+  "myApps", "templates", "terms", "appArtifacts", "licenses", "environments", "inviteCodes", "allowList",
+];
+const CONTRACT_MUTATIONS = [
+  "addTemplate", "setTemplateDetails", "addTemplateService", "removeTemplateService",
+  "addTemplatePackage", "removeTemplatePackage", "deleteTemplate", "addTerm", "setTermDetails",
+  "publishTerm", "retireTerm", "issueGrant", "replaceGrant", "revokeLicense", "createInviteCode",
+  "setInviteCodeActive", "addToAllowList", "removeFromAllowList",
 ];
 
-function makeHarness() {
-  const dbSelects: string[] = [];
-  const filters: Array<[string, string]> = [];
-  const chain: Record<string, unknown> = {
-    selectAll: () => chain,
-    where: (col: string, op: string, val: string) => {
-      if (op !== "=") throw new Error(`unsupported operator ${op}`);
-      filters.push([col, val]);
-      return chain;
-    },
-    // Honours every filter it is given, so a dropped filter changes the rows
-    // returned rather than merely the calls made.
-    execute: async () =>
-      envRows.filter((r) =>
-        filters.every(([c, v]) => (r as Record<string, string>)[c] === v),
-      ),
-  };
-  const db = {
-    selectFrom: (t: string) => {
-      dbSelects.push(t);
-      filters.length = 0;
-      return chain;
-    },
-  } as unknown as Kysely<VetraLicensingDB>;
-
-  const dispatched: Array<{ id: string; actions: Action[] }> = [];
-  const typeGateway = {
-    create: vi.fn(async () => "NEW-TYPE"),
-    execute: vi.fn(async (id: string, actions: Action[]) => {
-      dispatched.push({ id, actions });
-    }),
-  };
-  const licenseGateway = {
-    execute: vi.fn(async (id: string, actions: Action[]) => {
-      dispatched.push({ id, actions });
-    }),
-  };
-  const reads = {
-    // By-id reads: these only ever yield the document's own app.
-    licenseType: vi.fn(async (id: string) =>
-      TYPES[id]
-        ? { id, app: TYPES[id], status: "DRAFT", validityDays: 30 }
-        : null,
-    ),
-    license: vi.fn(async (id: string) =>
-      LICENSES[id]
-        ? {
-            id,
-            app: LICENSES[id].app,
-            user: LICENSES[id].user,
-            licenseTypeId: LICENSES[id].type,
-            status: "ACTIVE",
-            start: null,
-            end: null,
-          }
-        : null,
-    ),
-    // Listing reads: these return DATA of the app they are asked about.
-    licenseTypeDetails: vi.fn(async (appId: string) =>
-      Object.entries(TYPES)
-        .filter(([, app]) => app === appId)
-        .map(([id]) => ({
-          id,
-          kind: "pro",
-          label: `label of ${id}`,
-          status: "DRAFT",
-          validityDays: 30,
-          templateHash: "h",
-          template,
-        })),
-    ),
-    licenses: vi.fn(async (appId: string) =>
-      Object.entries(LICENSES)
-        .filter(([, l]) => l.app === appId)
-        .map(([id, l]) => ({
-          id,
-          user: l.user,
-          licenseTypeId: l.type,
-          status: "ACTIVE",
-          start: null,
-          end: null,
-        })),
-    ),
-  };
-  const auth = {
-    findAppById: vi.fn(async (id: string) =>
-      APPS[id]
-        ? { id, name: id, status: "ACTIVE", owner_address: APPS[id].owner }
-        : null,
-    ),
-    listAppsForOwner: vi.fn(async (address: string) =>
-      Object.entries(APPS)
-        .filter(([, a]) => a.owner === address.toLowerCase())
-        .map(([id, a]) => ({
-          id,
-          name: `name of ${id}`,
-          status: "ACTIVE",
-          owner_address: a.owner,
-        })),
-    ),
-  };
-  const grant = {
-    isOnAllowList: vi.fn(async () => true),
-    getLicenseType: vi.fn(async (id: string) =>
-      TYPES[id]
-        ? { id, app: TYPES[id], status: "ACTIVE", validityDays: 30 }
-        : null,
-    ),
-    createLicenseDocument: vi.fn(async () => "NEW-LICENSE"),
-    execute: vi.fn(async (id: string, actions: Action[]) => {
-      dispatched.push({ id, actions });
-    }),
-    recordGrant: vi.fn(async () => undefined),
-  };
-  const deps = {
-    auth,
-    reads,
-    cfg: { enabled: true },
-    typeGateway,
-    licenseGateway,
-    grant,
-  } as unknown as PublisherDeps;
-  const r = createPublisherResolvers(db, deps) as Record<
-    string,
-    Record<string, (p: unknown, a: unknown, c: unknown) => Promise<unknown>>
-  >;
-  const q = r.VetraPublisherQueries;
-  const m = r.VetraPublisherMutations;
-
-  /** Every write path: nothing may have been created, dispatched or issued. */
-  const expectNoWrite = () => {
-    expect(typeGateway.create).not.toHaveBeenCalled();
-    expect(typeGateway.execute).not.toHaveBeenCalled();
-    expect(licenseGateway.execute).not.toHaveBeenCalled();
-    expect(grant.createLicenseDocument).not.toHaveBeenCalled();
-    expect(grant.execute).not.toHaveBeenCalled();
-    expect(dispatched).toEqual([]);
-  };
-  /** No listing read and no database access: no data of B was fetched. */
-  const expectNoDataRead = () => {
-    expect(reads.licenseTypeDetails).not.toHaveBeenCalled();
-    expect(reads.licenses).not.toHaveBeenCalled();
-    expect(dbSelects).toEqual([]);
-  };
-  return { q, m, dispatched, dbSelects, typeGateway, licenseGateway, reads, auth, grant, expectNoWrite, expectNoDataRead };
+/** One app's ids, as its own owner created them through the publisher API. */
+interface Ids {
+  app: string;
+  template: string;
+  service: string;
+  pkg: string;
+  term: string;
+  licence: string;
+  code: string;
 }
 
-const rejection = async (p: Promise<unknown>): Promise<Error> => {
-  try {
-    await p;
-  } catch (e) {
-    return e as Error;
+let h: PublisherHarness;
+let r: Resolvers;
+let a: Ids;
+let b: Ids;
+
+async function seed(owner: string, app: string): Promise<Ids> {
+  const ctx = asUser(owner);
+  const m = (f: string, args: object) => r.VetraPublisherMutations[f]!({}, args, ctx);
+  const template = (await m("addTemplate", { input: { appId: app, name: "T", mode: "DEDICATED" } })) as string;
+  await m("addTemplateService", { input: { appId: app, templateId: template, type: "CONNECT" } });
+  await m("addTemplatePackage", { input: { appId: app, templateId: template, packageName: "@x/y" } });
+  const term = (await m("addTerm", { input: { appId: app, kind: "pro", templateId: template, issuers: ["PUBLISHER_GRANT", "INVITE_CODE"] } })) as string;
+  await m("publishTerm", { appId: app, termId: term });
+  await m("addTerm", { input: { appId: app, kind: "max", templateId: template, issuers: ["PUBLISHER_GRANT"] } })
+    .then((id) => m("publishTerm", { appId: app, termId: id }));
+  await m("addToAllowList", { appId: app, user: HOLDER });
+  const licence = (await m("issueGrant", { input: { appId: app, kind: "pro", user: HOLDER } })) as string;
+  const code = ((await m("createInviteCode", { input: { appId: app, kind: "pro" } })) as { code: string }).code;
+  const [t] = (await r.VetraPublisherQueries.templates!({}, { appId: app }, ctx)) as {
+    services: { id: string }[];
+    packages: { id: string }[];
+  }[];
+  return { app, template, service: t!.services[0]!.id, pkg: t!.packages[0]!.id, term, licence, code };
+}
+
+const TABLES = [
+  "app_license_grants", "license_chain", "license_lifecycle", "license_environments",
+  "app_allow_list", "invite_codes", "invite_redemptions", "app_licensing_state",
+] as const;
+
+/** Everything of B's that a call could change. */
+async function snapshotB(): Promise<unknown> {
+  const tables: Record<string, unknown> = {};
+  for (const t of TABLES) {
+    tables[t] = await h.db.selectFrom(t).selectAll().execute();
   }
-  throw new Error("expected the call to be refused, but it resolved");
-};
-
-/**
- * The WIRE representation: what a client receives. Isolation is judged on this,
- * not on the domain class, so a change to the code a client sees cannot slip
- * past the suite.
- */
-const codeOf = (e: unknown) => (e as GraphQLError).extensions?.code;
-async function expectWire(p: Promise<unknown> | Error, code: string) {
-  const err = p instanceof Error ? p : await rejection(p);
-  expect(err).toBeInstanceOf(GraphQLError);
-  expect(codeOf(err)).toBe(code);
+  return {
+    appRevision: await h.revisionOf(b.app),
+    appState: await h.stateOf(b.app),
+    licenceRevision: await h.revisionOf(b.licence),
+    tables,
+  };
 }
 
-/** Message with the id the caller typed replaced, so ids can be compared. */
-const sans = (e: Error, id: string) => e.message.split(id).join("<id>");
+/** The call A makes with B's ids, and the same call on A's own ids. */
+type Case = [field: string, kind: "q" | "m", args: (ids: Ids, own: Ids) => object];
+const CASES: Case[] = [
+  ["templates", "q", (x) => ({ appId: x.app })],
+  ["terms", "q", (x) => ({ appId: x.app })],
+  ["appArtifacts", "q", (x) => ({ appId: x.app })],
+  ["licenses", "q", (x) => ({ appId: x.app })],
+  ["environments", "q", (x) => ({ appId: x.app })],
+  ["inviteCodes", "q", (x) => ({ appId: x.app })],
+  ["allowList", "q", (x) => ({ appId: x.app })],
+  ["addTemplate", "m", (x) => ({ input: { appId: x.app, mode: "SHARED" } })],
+  ["setTemplateDetails", "m", (x) => ({ input: { appId: x.app, templateId: x.template, name: "renamed" } })],
+  ["addTemplateService", "m", (x) => ({ input: { appId: x.app, templateId: x.template, type: "SWITCHBOARD" } })],
+  ["removeTemplateService", "m", (x) => ({ input: { appId: x.app, templateId: x.template, id: x.service } })],
+  ["addTemplatePackage", "m", (x) => ({ input: { appId: x.app, templateId: x.template, packageName: "@x/z" } })],
+  ["removeTemplatePackage", "m", (x) => ({ input: { appId: x.app, templateId: x.template, id: x.pkg } })],
+  ["deleteTemplate", "m", (x) => ({ appId: x.app, templateId: x.template })],
+  ["addTerm", "m", (x) => ({ input: { appId: x.app, kind: "extra" } })],
+  ["setTermDetails", "m", (x) => ({ input: { appId: x.app, termId: x.term, label: "renamed" } })],
+  ["publishTerm", "m", (x) => ({ appId: x.app, termId: x.term })],
+  ["retireTerm", "m", (x) => ({ appId: x.app, termId: x.term })],
+  ["issueGrant", "m", (x) => ({ input: { appId: x.app, kind: "pro", user: HOLDER } })],
+  ["replaceGrant", "m", (x) => ({ input: { licenseId: x.licence, kind: "max" } })],
+  ["revokeLicense", "m", (x) => ({ input: { licenseId: x.licence, reason: "nope" } })],
+  ["createInviteCode", "m", (x) => ({ input: { appId: x.app, kind: "pro" } })],
+  ["setInviteCodeActive", "m", (x) => ({ appId: x.app, code: x.code, active: false })],
+  ["addToAllowList", "m", (x) => ({ appId: x.app, user: "0x3333333333333333333333333333333333333333" })],
+  ["removeFromAllowList", "m", (x) => ({ appId: x.app, user: HOLDER })],
+];
 
-describe("app-keyed queries refuse another publisher's app", () => {
-  it("myApps returns only the caller's apps", async () => {
-    const h = makeHarness();
-    const apps = (await h.q.myApps({}, {}, asA)) as Array<{ id: string }>;
-    expect(apps.map((a) => a.id)).toEqual([APP_A]);
-    // and for B the mirror image, so the filter is real, not a constant
-    const asB = { ...asA, user: { ...asA.user, address: B } };
-    const bApps = (await h.q.myApps({}, {}, asB)) as Array<{ id: string }>;
-    expect(bApps.map((a) => a.id)).toEqual([APP_B]);
+/** A's appId with one of B's inner ids: still B's, still NOT_FOUND. */
+const CROSS: Case[] = [
+  ["setTemplateDetails", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, name: "renamed" } })],
+  ["addTemplateService", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, type: "SWITCHBOARD" } })],
+  ["removeTemplateService", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, id: x.service } })],
+  ["addTemplatePackage", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, packageName: "@x/z" } })],
+  ["removeTemplatePackage", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, id: x.pkg } })],
+  ["deleteTemplate", "m", (x, own) => ({ appId: own.app, templateId: x.template })],
+  ["setTermDetails", "m", (x, own) => ({ input: { appId: own.app, termId: x.term, label: "renamed" } })],
+  ["publishTerm", "m", (x, own) => ({ appId: own.app, termId: x.term })],
+  ["retireTerm", "m", (x, own) => ({ appId: own.app, termId: x.term })],
+  ["setInviteCodeActive", "m", (x, own) => ({ appId: own.app, code: x.code, active: false })],
+];
+
+const call = (owner: string, [field, kind, args]: Case, ids: Ids, own: Ids) =>
+  (kind === "q" ? r.VetraPublisherQueries : r.VetraPublisherMutations)[field]!({}, args(ids, own), asUser(owner));
+
+beforeAll(async () => {
+  h = await createPublisherHarness();
+  await h.addApp(APP_A, A);
+  await h.addApp(APP_B, B);
+  r = h.build();
+  a = await seed(A, APP_A);
+  b = await seed(B, APP_B);
+  await h.db.insertInto("license_environments").values({
+    environment_id: "env-b", root_license_id: b.licence, app_id: APP_B, user_did: `did:pkh:eip155:1:${HOLDER}`,
+    license_id: b.licence, template_id: b.template, label: null, template_hash: "h",
+    ended_at: null, stopped_at: null, delete_after: null, created_at: "t", updated_at: "t",
+  }).execute();
+}, 180_000);
+
+describe("publisher isolation", () => {
+  it("the resolver fields are exactly the contract's, so none escapes this suite", () => {
+    expect(Object.keys(r.VetraPublisherQueries).sort()).toStrictEqual([...CONTRACT_QUERIES].sort());
+    expect(Object.keys(r.VetraPublisherMutations).sort()).toStrictEqual([...CONTRACT_MUTATIONS].sort());
+    const covered = new Set(["myApps", ...CASES.map(([f]) => f)]);
+    expect([...CONTRACT_QUERIES, ...CONTRACT_MUTATIONS].filter((f) => !covered.has(f))).toStrictEqual([]);
   });
 
-  it("licenseTypes: refused, no data read; own app is served", async () => {
-    const h = makeHarness();
-    const own = (await h.q.licenseTypes({}, { appId: APP_A }, asA)) as Array<{ id: string }>;
-    expect(own.map((t) => t.id)).toEqual([TYPE_A]);
-    h.reads.licenseTypeDetails.mockClear();
-
-    await expectWire(
-      h.q.licenseTypes({}, { appId: APP_B }, asA),
-      "UNKNOWN_APP",
-    );
-    expect(h.reads.licenseTypeDetails).not.toHaveBeenCalled();
+  it("myApps lists only the caller's apps", async () => {
+    expect(await r.VetraPublisherQueries.myApps!({}, {}, asUser(A))).toStrictEqual([
+      { id: APP_A, name: `App ${APP_A.slice(0, 4)}`, status: "ACTIVE" },
+    ]);
   });
 
-  it("licenses: refused, no data read; own app is served and excludes B", async () => {
-    const h = makeHarness();
-    const own = (await h.q.licenses({}, { appId: APP_A }, asA)) as Array<{ id: string }>;
-    expect(own.map((l) => l.id)).toEqual([LIC_A]);
-    h.reads.licenses.mockClear();
-    h.dbSelects.length = 0;
-
-    await expectWire(
-      h.q.licenses({}, { appId: APP_B }, asA),
-      "UNKNOWN_APP",
-    );
-    await expectWire(
-      h.q.licenses({}, { appId: APP_B, status: "ACTIVE" }, asA),
-      "UNKNOWN_APP",
-    );
-    expect(h.reads.licenses).not.toHaveBeenCalled();
-    expect(h.dbSelects).toEqual([]);
+  it.each(CASES)("%s with B's ids: NOT_FOUND, nothing of B's changes", async (...c) => {
+    const before = await snapshotB();
+    expect(await codeOf(call(A, c, b, a))).toBe("NOT_FOUND");
+    expect(await snapshotB()).toStrictEqual(before);
   });
 
-  it("environments: refused, no database access; own app returns only A's rows", async () => {
-    const h = makeHarness();
-    const own = (await h.q.environments({}, { appId: APP_A }, asA)) as Array<{ appId: string; environmentId: string }>;
-    expect(own.map((e) => e.environmentId)).toEqual(["env-a"]);
-    expect(own.every((e) => e.appId === APP_A)).toBe(true);
-    h.dbSelects.length = 0;
-
-    await expectWire(
-      h.q.environments({}, { appId: APP_B }, asA),
-      "UNKNOWN_APP",
-    );
-    expect(h.dbSelects).toEqual([]);
-  });
-});
-
-describe("app-keyed mutations refuse another publisher's app", () => {
-  it("createLicenseType: no document is created or dispatched", async () => {
-    const h = makeHarness();
-    await expectWire(
-      h.m.createLicenseType({}, { input: { appId: APP_B, kind: "pro" } }, asA),
-      "UNKNOWN_APP",
-    );
-    h.expectNoWrite();
-
-    // positive control
-    await expect(
-      h.m.createLicenseType({}, { input: { appId: APP_A, kind: "pro" } }, asA),
-    ).resolves.toBe("NEW-TYPE");
-    expect(h.dispatched).toHaveLength(1);
+  it.each(CROSS)("%s with A's app and B's inner id: NOT_FOUND, nothing of B's changes", async (...c) => {
+    const before = await snapshotB();
+    expect(await codeOf(call(A, c, b, a))).toBe("NOT_FOUND");
+    expect(await snapshotB()).toStrictEqual(before);
   });
 
-  describe("issueGrant", () => {
-    it("on B's app: refused, nothing issued", async () => {
-      const h = makeHarness();
-      await expectWire(
-        h.m.issueGrant({}, { input: { appId: APP_B, licenseTypeId: TYPE_B, user: HOLDER_B } }, asA),
-        "UNKNOWN_APP",
-      );
-      h.expectNoWrite();
-      expect(h.grant.getLicenseType).not.toHaveBeenCalled();
-    });
-
-    it("on A's app with B's licence type: refused, nothing issued", async () => {
-      const h = makeHarness();
-      const err = await rejection(
-        h.m.issueGrant({}, { input: { appId: APP_A, licenseTypeId: TYPE_B, user: HOLDER_A } }, asA),
-      );
-      await expectWire(err, "INVALID_INPUT");
-      h.expectNoWrite();
-
-      // indistinguishable from a type that does not exist
-      const ghost = await rejection(
-        h.m.issueGrant({}, { input: { appId: APP_A, licenseTypeId: GHOST_TYPE, user: HOLDER_A } }, asA),
-      );
-      await expectWire(ghost, "INVALID_INPUT");
-      expect(sans(err, TYPE_B)).toBe(sans(ghost, GHOST_TYPE));
-      h.expectNoWrite();
-    });
-
-    it("positive control: A's type on A's app is issued", async () => {
-      const h = makeHarness();
-      await expect(
-        h.m.issueGrant({}, { input: { appId: APP_A, licenseTypeId: TYPE_A, user: HOLDER_A } }, asA),
-      ).resolves.toBe("NEW-LICENSE");
-      expect(h.dispatched).toHaveLength(1);
-    });
-  });
-});
-
-describe("licence-type-keyed mutations refuse another publisher's type", () => {
-  const CASES: Array<[string, (id: string) => unknown]> = [
-    ["setLicenseTypeDetails", (id) => ({ input: { licenseTypeId: id, label: "hijacked" } })],
-    ["setLicenseTypeTemplate", (id) => ({ input: { licenseTypeId: id, size: "SMALL" } })],
-    ["addLicenseTypeService", (id) => ({ input: { licenseTypeId: id, type: "SWITCHBOARD" } })],
-    ["addLicenseTypePackage", (id) => ({ input: { licenseTypeId: id, packageName: "@evil/pkg" } })],
-    ["publishLicenseType", (id) => ({ licenseTypeId: id })],
-    ["retireLicenseType", (id) => ({ licenseTypeId: id })],
-  ];
-
-  it.each(CASES)("%s: refused, nothing dispatched; own type works", async (field, args) => {
-    const h = makeHarness();
-    const err = await rejection(h.m[field]({}, args(TYPE_B), asA));
-    await expectWire(err, "UNKNOWN_LICENSE_TYPE");
-    h.expectNoWrite();
-    h.expectNoDataRead();
-
-    // positive control: the same call on A's own type is dispatched
-    await expect(h.m[field]({}, args(TYPE_A), asA)).resolves.toBe(true);
-    expect(h.dispatched.map((d) => d.id)).toEqual([TYPE_A]);
-  });
-
-  it.each(CASES)("%s: B's type is refused with the same text as a missing one", async (field, args) => {
-    const h = makeHarness();
-    const theirs = await rejection(h.m[field]({}, args(TYPE_B), asA));
-    const missing = await rejection(h.m[field]({}, args(GHOST_TYPE), asA));
-    expect(theirs.name).toBe(missing.name);
-    expect(theirs.message).toBe(missing.message);
-    expect(codeOf(theirs)).toBe("UNKNOWN_LICENSE_TYPE");
-    expect(codeOf(theirs)).toBe(codeOf(missing));
-    // and it does not echo the id, which would let A confirm B's ids
-    expect(theirs.message).not.toContain(TYPE_B);
-    h.expectNoWrite();
-  });
-
-  it("the BUILT schema's SetLicenseTypeDetailsInput has no app field", () => {
-    // Second half of the defence: GraphQL rejects an `app` at the boundary
-    // only because the input does not define one. Read from the built type
-    // map, not from the SDL text.
-    const input = buildASTSchema(schema).getType("SetLicenseTypeDetailsInput") as
-      | GraphQLInputObjectType
-      | undefined;
-    expect(input).toBeDefined();
-    const fields = Object.keys(input!.getFields());
-    expect(fields).toContain("licenseTypeId");
-    expect(fields).not.toContain("app");
-  });
-
-  it("setLicenseTypeDetails cannot move a type into another publisher's app", async () => {
-    const h = makeHarness();
-    // A edits their OWN type and smuggles an `app` pointing at B's app.
-    await h.m.setLicenseTypeDetails(
-      {},
-      { input: { licenseTypeId: TYPE_A, label: "x", app: APP_B } },
-      asA,
-    );
-    expect(h.dispatched).toHaveLength(1);
-    expect(h.dispatched[0].id).toBe(TYPE_A);
-    for (const a of h.dispatched[0].actions) {
-      // asserted on the dispatched action, not on the resolver's arguments
-      expect(a.input as Record<string, unknown>).not.toHaveProperty("app");
-      expect(JSON.stringify(a)).not.toContain(APP_B);
+  it("B's ids fail with the same message as missing ones", async () => {
+    const missing: Ids = { app: "missing-app", template: "missing-t", service: "s", pkg: "p", term: "missing-k", licence: "missing-l", code: "missing-code" };
+    for (const c of [...CASES, ...CROSS]) {
+      const foreign = (await call(A, c, b, a).catch((e: unknown) => e)) as GraphQLError;
+      const absent = (await call(A, c, missing, a).catch((e: unknown) => e)) as GraphQLError;
+      expect(absent.extensions?.code, c[0]).toBe("NOT_FOUND");
+      expect(foreign.message, c[0]).toBe(absent.message);
     }
-
-    // The same via B's type is refused before any dispatch.
-    const h2 = makeHarness();
-    await expectWire(
-      h2.m.setLicenseTypeDetails({}, { input: { licenseTypeId: TYPE_B, app: APP_A } }, asA),
-      "UNKNOWN_LICENSE_TYPE",
-    );
-    h2.expectNoWrite();
-  });
-});
-
-describe("revokeLicense refuses another publisher's licence", () => {
-  const revoke = (id: string) => ({ input: { licenseId: id, reason: "x" } });
-
-  it("B's licence: refused, nothing dispatched; own licence is revoked", async () => {
-    const h = makeHarness();
-    const err = await rejection(h.m.revokeLicense({}, revoke(LIC_B), asA));
-    await expectWire(err, "UNKNOWN_LICENSE");
-    h.expectNoWrite();
-    h.expectNoDataRead();
-
-    await expect(h.m.revokeLicense({}, revoke(LIC_A), asA)).resolves.toBe(true);
-    expect(h.licenseGateway.execute).toHaveBeenCalledTimes(1);
-    expect(h.licenseGateway.execute.mock.calls[0][0]).toBe(LIC_A);
   });
 
-  it("B's licence is refused with the same text as a missing one", async () => {
-    const h = makeHarness();
-    const theirs = await rejection(h.m.revokeLicense({}, revoke(LIC_B), asA));
-    const missing = await rejection(h.m.revokeLicense({}, revoke(GHOST_LIC), asA));
-    expect(theirs.name).toBe(missing.name);
-    expect(theirs.message).toBe(missing.message);
-    expect(codeOf(theirs)).toBe("UNKNOWN_LICENSE");
-    expect(codeOf(theirs)).toBe(codeOf(missing));
-    expect(theirs.message).not.toContain(LIC_B);
-    h.expectNoWrite();
-  });
-});
-
-describe("error wording does not distinguish 'not yours' from 'does not exist'", () => {
-  // The two app-level errors differ in class but must not differ in text.
-  const APP_KEYED: Array<[string, "q" | "m", string, (id: string) => unknown]> = [
-    ["licenseTypes", "q", "licenseTypes", (id) => ({ appId: id })],
-    ["licenses", "q", "licenses", (id) => ({ appId: id })],
-    ["environments", "q", "environments", (id) => ({ appId: id })],
-    ["createLicenseType", "m", "createLicenseType", (id) => ({ input: { appId: id, kind: "pro" } })],
-    ["issueGrant", "m", "issueGrant", (id) => ({ input: { appId: id, licenseTypeId: TYPE_A, user: HOLDER_A } })],
-  ];
-
-  it.each(APP_KEYED)("%s: B's app and a missing app are indistinguishable", async (_n, kind, field, args) => {
-    const h = makeHarness();
-    const target = kind === "q" ? h.q : h.m;
-    const theirs = await rejection(target[field]({}, args(APP_B), asA));
-    const missing = await rejection(target[field]({}, args(GHOST_APP), asA));
-    // Distinct classes server-side (logging), visible only as originalError...
-    expect((theirs as GraphQLError).originalError).toBeInstanceOf(NotAppOwnerError);
-    expect((missing as GraphQLError).originalError).toBeInstanceOf(UnknownAppError);
-    // ...but nothing a client can see differs: name, message AND code match.
-    // A different code here would be an app-enumeration oracle.
-    expect(codeOf(theirs)).toBe("UNKNOWN_APP");
-    expect(codeOf(missing)).toBe("UNKNOWN_APP");
-    expect(codeOf(theirs)).toBe(codeOf(missing));
-    expect(theirs.name).toBe(missing.name);
-    expect(theirs.message).toBe(missing.message);
-    expect(theirs.message).not.toContain(APP_B);
-    expect(missing.message).not.toContain(GHOST_APP);
-    h.expectNoWrite();
-    h.expectNoDataRead();
+  it.each([...CASES, ...CROSS])("positive control: %s on A's own ids is not NOT_FOUND", async (...c) => {
+    expect(await codeOf(call(A, c, a, a))).not.toBe("NOT_FOUND");
   });
 });

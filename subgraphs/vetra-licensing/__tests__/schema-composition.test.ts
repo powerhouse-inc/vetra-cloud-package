@@ -48,31 +48,46 @@ describe("subgraph schema composition", () => {
     );
   });
 
-  it("also serves the publisher surface", () => {
+  it("also serves the publisher surface, exactly the contract's fields", () => {
     const built = buildASTSchema(schema);
     expect(fieldsOf(built, "Query")).toContain("vetraPublisher");
     expect(fieldsOf(built, "Mutation")).toContain("vetraPublisher");
-    expect(fieldsOf(built, "VetraPublisherQueries")).toEqual(
-      expect.arrayContaining([
-        "myApps",
-        "licenseTypes",
-        "licenses",
-        "environments",
-      ]),
-    );
-    expect(fieldsOf(built, "VetraPublisherMutations")).toEqual(
-      expect.arrayContaining([
-        "createLicenseType",
-        "setLicenseTypeDetails",
-        "setLicenseTypeTemplate",
-        "addLicenseTypeService",
-        "addLicenseTypePackage",
-        "publishLicenseType",
-        "retireLicenseType",
-        "issueGrant",
-        "revokeLicense",
-      ]),
-    );
+    expect(fieldsOf(built, "VetraPublisherQueries")).toStrictEqual([
+      "myApps",
+      "templates",
+      "terms",
+      "appArtifacts",
+      "licenses",
+      "environments",
+      "inviteCodes",
+      "allowList",
+    ]);
+    expect(fieldsOf(built, "VetraPublisherMutations")).toStrictEqual([
+      "addTemplate",
+      "setTemplateDetails",
+      "addTemplateService",
+      "removeTemplateService",
+      "addTemplatePackage",
+      "removeTemplatePackage",
+      "deleteTemplate",
+      "addTerm",
+      "setTermDetails",
+      "publishTerm",
+      "retireTerm",
+      "issueGrant",
+      "replaceGrant",
+      "revokeLicense",
+      "createInviteCode",
+      "setInviteCodeActive",
+      "addToAllowList",
+      "removeFromAllowList",
+    ]);
+  });
+
+  it("the publisher surface no longer serves licence types", () => {
+    const built = buildASTSchema(schema);
+    expect(built.getType("PublisherLicenseType")).toBeUndefined();
+    expect(fieldsOf(built, "PublisherEnvironment")).toContain("rootLicenseId");
   });
 
   it("defines no type name in both documents", () => {
@@ -89,7 +104,7 @@ describe("subgraph schema composition", () => {
     // no database or reactor, so these are the real key sets.
     const merged = mergeResolvers(
       createResolvers({} as never, { cfg: { enabled: true } } as never) as never,
-      createPublisherResolvers({} as never, { cfg: { enabled: true } } as never) as never,
+      createPublisherResolvers({ cfg: { enabled: true } } as never) as never,
     );
     const unknown = Object.keys(merged).filter((k) => !built.getType(k));
     expect(unknown).toEqual([]);

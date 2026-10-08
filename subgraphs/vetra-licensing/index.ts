@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
@@ -14,7 +15,11 @@ import { createReactorLicenseReads } from "./reads.js";
 import { createAppReads } from "./app-reads.js";
 import { createOwnerAppLookup } from "./owner-apps.js";
 import { STUDIO_APP_ID, studioPublisherAddress } from "./studio-app.js";
-import { createAppLedger, reactorLedgerSource } from "./licensing-ledger.js";
+import {
+  createAppLedger,
+  createAppLicensingWriter,
+  reactorLedgerSource,
+} from "./licensing-ledger.js";
 import {
   createAppDocOwnerResolver,
   sweepAppDocumentProtection,
@@ -42,8 +47,33 @@ import {
 import { createGrantStore } from "./grants.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
-import { createReactorLicenseTypeGateway } from "./license-type-gateway.js";
 import { mergeResolvers } from "./merge-resolvers.js";
+import { APP_DOC_TYPE } from "./app-reads.js";
+import { createReactorDocGateway } from "./doc-gateway.js";
+import { createKeyVault } from "./key-vault.js";
+import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
+
+/** As vetra-access-codes: the same role and key prefix, so stored keys still decrypt. */
+const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
+
+/**
+ * Encrypts the Claude keys attached to invite codes. Null (keys refused, the
+ * subgraph still loads) when OPENBAO_ADDR is unset.
+ */
+function inviteKeyVault() {
+  const addr = process.env.OPENBAO_ADDR;
+  if (!addr) {
+    console.warn("[licensing] OPENBAO_ADDR unset — invite-code Claude keys disabled");
+    return null;
+  }
+  return createKeyVault(
+    new OpenBaoTransitClient({
+      addr,
+      role: process.env.OPENBAO_TRANSIT_ROLE ?? DEFAULT_TRANSIT_ROLE,
+      keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
+    }),
+  );
+}
 
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
@@ -169,13 +199,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       Record<string, unknown>
     >;
 
-    const typeGateway = createReactorLicenseTypeGateway(
-      this.reactorClient as never,
-    );
-    // Human surface. Ownership is checked on every call: the apps table row
-    // wins where one exists; an app that exists only as a document (the
-    // vetra-studio app) falls back to the document's owner. Platform admins
-    // (the ADMINS env) pass via resolveOwnerApp.
+    // Human surface. Ownership is checked on every call against the apps
+    // table row (the studio app: the configured studio publisher), never the
+    // document. Platform admins (the ADMINS env) pass via resolveOwnerApp.
     const rowOwner = (id: string) =>
       appsDb
         .selectFrom("apps")
@@ -202,31 +228,58 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           STUDIO_APP_ID,
         ]),
     });
-    const publisherResolvers = createPublisherResolvers(db, {
-      auth: createOwnerAppLookup({
-        table: {
-          byId: (id) =>
-            appsDb
-              .selectFrom("apps")
-              .select(["id", "name", "status", "owner_address"])
-              .where("id", "=", id)
-              .executeTakeFirst()
-              .then((r) => r ?? null),
-          byOwner: (address) =>
-            appsDb
-              .selectFrom("apps")
-              .select(["id", "name", "status", "owner_address"])
-              .where("owner_address", "=", address)
-              .execute(),
-        },
-        apps: appReads,
-        studioPublisher,
-      }),
-      reads,
-      cfg,
-      typeGateway,
+    const ownerLookup = createOwnerAppLookup({
+      table: {
+        byId: (id) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "name", "status", "owner_address"])
+            .where("id", "=", id)
+            .executeTakeFirst()
+            .then((r) => r ?? null),
+        byOwner: (address) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "name", "status", "owner_address"])
+            .where("owner_address", "=", address)
+            .execute(),
+      },
+      apps: appReads,
+      studioPublisher,
+    });
+    // Template and term writes go through the ledger writer only, so the
+    // app's recorded licensing-state hash stays valid.
+    const appWriter = createAppLicensingWriter({
+      docs: createReactorDocGateway(this.reactorClient as never, APP_DOC_TYPE, "app", () =>
+        Promise.reject(new Error("the publisher surface never creates app documents")),
+      ),
+      ledger: appLedger,
+    });
+    const grants = createGrantStore(db);
+    const chainRows = createChainEnvironmentRows(db, cfg);
+    const publisherResolvers = createPublisherResolvers({
+      auth: ownerLookup,
+      apps: appReads,
+      appWriter,
+      licences: reads,
+      lifecycle,
       licenseGateway: gateway,
-      grant: deps.grant,
+      issue: {
+        owners: ownerLookup,
+        apps: appReads,
+        licence: (id) => reads.licenceRecord(id),
+        createLicenseDocument: () => gateway.create(),
+        executeLicence: (id, acts) => gateway.execute(id, acts),
+        grants,
+        logger: console,
+      },
+      grants,
+      envRows: chainRows,
+      codes: db,
+      keyVault: inviteKeyVault(),
+      cfg,
+      newId: () => randomUUID(),
+      now: () => new Date().toISOString(),
     }) as Record<string, Record<string, unknown>>;
 
     this.resolvers = mergeResolvers(machineResolvers, publisherResolvers);
@@ -259,8 +312,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // publisher surface, so a tampered or unverified app is held. The old
     // ProvisioningKeeper (app_user_environments) no longer runs; its tables
     // stay in place, read-only.
-    const grants = createGrantStore(db);
-    const chainRows = createChainEnvironmentRows(db, cfg);
     const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
     const offboarding: OffboardingDeps = {
       rows: chainRows,

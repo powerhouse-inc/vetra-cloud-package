@@ -71,8 +71,9 @@ export const machineSchema: DocumentNode = gql`
 
 /**
  * Everything this subgraph serves: the machine surface and the publisher
- * surface in one document. The publisher document extends Query and Mutation
- * and reuses AppUserEnvironment, so the two are only valid together.
+ * surface in one document. The publisher document extends Query and Mutation,
+ * so it is only valid together with the machine document. It defines its own
+ * types (PublisherEnvironment, not the machine AppUserEnvironment).
  */
 export const schema: DocumentNode = {
   kind: Kind.DOCUMENT,

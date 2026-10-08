@@ -7,7 +7,7 @@ describe("mergeResolvers", () => {
   const machine = createResolvers({} as never, {
     cfg: { enabled: true },
   } as never) as Record<string, Record<string, unknown>>;
-  const publisher = createPublisherResolvers({} as never, {
+  const publisher = createPublisherResolvers({
     cfg: { enabled: true },
   } as never) as Record<string, Record<string, unknown>>;
 
