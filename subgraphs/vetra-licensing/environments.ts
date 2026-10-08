@@ -4,7 +4,7 @@ import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-env
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { addressOfDid } from "./did.js";
-import { keyedMutex } from "./keyed-mutex.js";
+import { keyedMutex, LockTimeoutError, type AcquireOptions } from "./keyed-mutex.js";
 import { AppEnvironmentCapReachedError, UNAPPLIED_TEMPLATE_HASH } from "./provision.js";
 import {
   renderCreateActions,
@@ -289,14 +289,39 @@ export async function provisionChain(
 }
 
 /**
+ * Another caller (usually a handler step, possibly one that timed out but
+ * is still running) holds the chain, and this call gave up waiting for it.
+ * Nothing was done; retry later. Mapped to BUSY.
+ */
+export class ChainBusyError extends Error {
+  override name = "ChainBusyError";
+  constructor() {
+    super("this licence chain is busy; retry shortly");
+  }
+}
+
+/**
  * One lock per licence chain (keyed by its root), shared by every path that
- * provisions: the AppLicenseHandler's ticks and the machine API's
- * applyEnvironmentTemplate. In-process, which is enough because the subgraph
- * runs as a single replica (pgbouncer in transaction mode rules out session
- * advisory locks). A handler step that timed out but is still running keeps
- * holding it, so nothing else touches that chain until it settles.
+ * provisions or ends a chain: the AppLicenseHandler's ticks and the machine
+ * API. In-process, which is enough because the subgraph runs as a single
+ * replica (pgbouncer in transaction mode rules out session advisory locks).
+ * A handler step that timed out but is still running keeps holding it, so
+ * nothing else touches that chain until it settles.
  */
 export const withChainLock = keyedMutex();
+
+/**
+ * fn under the chain's lock. With `timeoutMs`, a caller that cannot get the
+ * lock in time leaves the queue without running fn and gets ChainBusyError.
+ */
+export async function lockChain<T>(root: string, fn: () => Promise<T>, opts: AcquireOptions = {}): Promise<T> {
+  try {
+    return await withChainLock(root, fn, opts);
+  } catch (err) {
+    if (err instanceof LockTimeoutError) throw new ChainBusyError();
+    throw err;
+  }
+}
 
 /**
  * provisionChain under the chain's lock: two callers on one chain never both
@@ -306,6 +331,7 @@ export const withChainLock = keyedMutex();
 export function provisionChainExclusive(
   deps: ChainEnvDeps,
   input: ProvisionChainInput,
+  opts: AcquireOptions = {},
 ): Promise<LicenseEnvironments> {
-  return withChainLock(input.root, () => provisionChain(deps, input));
+  return lockChain(input.root, () => provisionChain(deps, input), opts);
 }

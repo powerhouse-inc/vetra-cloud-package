@@ -34,6 +34,7 @@ import { LicenseKeeper } from "./keeper.js";
 import { AppLicenseHandler } from "./handler.js";
 import {
   createChainEnvironmentRows,
+  lockChain,
   provisionChainExclusive,
   type ChainEnvDeps,
   type ProvisionChainInput,
@@ -46,6 +47,7 @@ import {
   type OffboardingDeps,
 } from "./offboarding.js";
 import { createGrantStore } from "./grants.js";
+import type { AcquireOptions } from "./keyed-mutex.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
 import { mergeResolvers } from "./merge-resolvers.js";
@@ -317,7 +319,15 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         .select("step")
         .where("step", "=", "complete")
         .executeTakeFirst()) !== undefined;
-    const provision = (input: ProvisionChainInput) => provisionChainExclusive(chainEnvDeps, input);
+    // The handler waits for a chain as long as it takes (its own step timeout
+    // reports a hang); the machine API passes a bounded wait (BUSY).
+    const provision = (input: ProvisionChainInput, opts?: AcquireOptions) =>
+      provisionChainExclusive(chainEnvDeps, input, opts);
+    /** Offboarding writes of one environment, under its chain's lock. */
+    const underChainOf = async (environmentId: string, fn: () => Promise<void>) => {
+      const row = await chainRows.byEnvironment(environmentId);
+      await (row ? lockChain(row.root_license_id, fn) : fn());
+    };
 
     // Machine surface (app backends, by App identity). Licences come from
     // grant rows and the lifecycle record, environments from
@@ -390,11 +400,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       app: (id) => appReads.app(id),
       environments: (appId) => chainRows.forApp(appId),
       environmentAppIds: () => chainRows.appIds(),
-      provision,
+      provision: (input) => provision(input),
       setStage: (licenseId, stage) =>
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
-      onEnded: (_appId, env) => markEnded(offboarding, env),
-      onResumed: (_appId, env) => markResumed(offboarding, env),
+      onEnded: (_appId, env) => underChainOf(env, () => markEnded(offboarding, env)),
+      onResumed: (_appId, env) => underChainOf(env, () => markResumed(offboarding, env)),
       afterApp: (_appId, rows, confirmedEndedRoots) =>
         tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots)),
       migrationComplete,

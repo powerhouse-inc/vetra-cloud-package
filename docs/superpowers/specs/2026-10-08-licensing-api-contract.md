@@ -302,6 +302,13 @@ type VetraLicensingMutations {
 
 `AppUserEnvironment` gains `rootLicenseId`, `label`, `stoppedAt`, `deleteAfter`.
 
+Error codes (`extensions.code`): `UNAUTHENTICATED`, `FORBIDDEN`, `APP_NOT_ACTIVE`,
+`NOT_FOUND` (another app's licence fails exactly like a missing one),
+`INVALID_INPUT`, `UNSUPPORTED_DID`, `NOT_ON_ALLOW_LIST`, `TERM_NOT_ISSUABLE`,
+`LICENSING_DISABLED`, `BUSY`.
+`BUSY` is retryable: the licence chain is busy (or its environment is asleep or
+mid-transition) and nothing was done; retry later, e.g. on the next tick.
+
 ## Renown (renown-package)
 
 Document types: `powerhouse/renown-app-profile`, `powerhouse/renown-user-stats`.

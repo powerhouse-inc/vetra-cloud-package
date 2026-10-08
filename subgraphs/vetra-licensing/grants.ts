@@ -140,6 +140,19 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
       return new Map(ids.map((id) => [id, found.get(id) ?? id]));
     },
 
+    /**
+     * Every licence linked into a chain, with or without provenance, plus the
+     * root itself (a root from before chains existed has no row of its own).
+     */
+    async chainMembers(rootLicenseId: string): Promise<string[]> {
+      const rows = await db
+        .selectFrom("license_chain")
+        .select("license_id")
+        .where("root_license_id", "=", rootLicenseId)
+        .execute();
+      return [...new Set([rootLicenseId, ...rows.map((r) => r.license_id)])];
+    },
+
     async chainLabel(rootLicenseId: string): Promise<string | null> {
       const row = await db
         .selectFrom("license_chain")

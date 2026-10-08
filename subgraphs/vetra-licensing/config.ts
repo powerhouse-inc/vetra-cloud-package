@@ -2,7 +2,13 @@ export type LicensingMigrationMode = "off" | "dry-run" | "apply";
 
 export interface LicensingConfig {
   enabled: boolean;
-  /** Default-safe: even when enabled, only logs until explicitly turned off. */
+  /**
+   * Default-safe: even when enabled, the autonomous handler and keeper only
+   * log until this is explicitly turned off. It does NOT cover the machine
+   * API's mutations (applyEnvironmentTemplate, releaseEnvironment,
+   * issuePublisherGrant): an authenticated app's explicit call acts at once,
+   * gated only by `enabled`.
+   */
   dryRun: boolean;
   scanIntervalMs: number;
   /** Ceiling applied to an app with no row in app_environment_limits. */

@@ -60,12 +60,19 @@ export const machineSchema: DocumentNode = gql`
   }
 
   type VetraLicensingMutations {
+    """
+    Provision (or bring up to its term's template) the environment of the
+    chain whose newest licence this is. Acts immediately: LICENSING_DRY_RUN
+    covers only the autonomous handler, not machine mutations (which
+    LICENSING_KEEPER_ENABLED gates). BUSY: the chain is busy, retry later.
+    """
     applyEnvironmentTemplate(
       input: ApplyEnvironmentTemplateInput!
     ): AppUserEnvironment!
     """
     Starts the offboarding clock of an environment whose licence chain has
-    ended (false otherwise); never stops or deletes it directly.
+    ended (false otherwise); never stops or deletes it directly. Not covered
+    by LICENSING_DRY_RUN. BUSY: the chain is busy, retry later.
     """
     releaseEnvironment(input: ReleaseEnvironmentInput!): Boolean!
     """

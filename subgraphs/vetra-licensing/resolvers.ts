@@ -3,7 +3,13 @@ import { resolveKind, type AppReads } from "./app-reads.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
-import type { ChainEnvRows, ProvisionChainInput } from "./environments.js";
+import {
+  EnvironmentOwnershipMismatchError,
+  lockChain,
+  type ChainEnvRows,
+  type ProvisionChainInput,
+} from "./environments.js";
+import type { AcquireOptions } from "./keyed-mutex.js";
 import type { GrantStore } from "./grants.js";
 import { grantLicense, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
 import { authorisedLicences } from "./licence-view.js";
@@ -70,15 +76,26 @@ export interface ResolverDeps {
   /** The recorded lifecycle, which decides status and end over the document. */
   lifecycle: Pick<LifecycleStore, "entries">;
   /** Grant rows: which app, holder and kind every licence was authorised for. */
-  grants: Pick<GrantStore, "grantFor" | "grantsForApp" | "grantsForHolder" | "chainRootOf" | "chainRootsFor">;
+  grants: Pick<
+    GrantStore,
+    | "grantFor"
+    | "grantsForApp"
+    | "grantsForHolder"
+    | "chainRootOf"
+    | "chainRootsFor"
+    | "chainHead"
+    | "chainMembers"
+    | "chainLabel"
+  >;
   /** license_environments: one environment per licence chain. */
   envRows: Pick<ChainEnvRows, "forApp" | "byEnvironment">;
   /**
    * The handler's provisioning path, under the chain's lock
    * (provisionChainExclusive), so a machine call and a handler tick on the
-   * same chain never both create an environment.
+   * same chain never both create an environment. `opts.timeoutMs` bounds the
+   * wait for the lock (ChainBusyError, BUSY).
    */
-  provision(input: ProvisionChainInput): Promise<LicenseEnvironments>;
+  provision(input: ProvisionChainInput, opts: AcquireOptions): Promise<LicenseEnvironments>;
   offboarding: OffboardingDeps;
   issue: PublisherGrantDeps;
   /** True once the startup migration recorded `complete` (the handler's gate). */
@@ -139,17 +156,19 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
   };
 
   /**
-   * True only when every authorised licence of the environment's chain is
-   * recorded terminal: no live head, and none the system cannot vouch for.
+   * True only when every licence linked into the environment's chain
+   * (license_chain, with or without a grant, plus the root) is recorded
+   * terminal. A member without a lifecycle record is unknown, never ended:
+   * release must not decide "ended" more readily than the handler does.
    */
   const chainEnded = async (row: LicenseEnvironments): Promise<boolean> => {
-    const grants = await deps.grants.grantsForApp(row.app_id);
-    const roots = await deps.grants.chainRootsFor(grants.map((g) => g.licenseId));
-    const members = grants.filter((g) => roots.get(g.licenseId) === row.root_license_id).map((g) => g.licenseId);
-    if (members.length === 0) return false;
+    const members = await deps.grants.chainMembers(row.root_license_id);
     const recorded = await deps.lifecycle.entries(members);
     return members.every((id) => TERMINAL.has(recorded.get(id)?.status ?? ""));
   };
+
+  /** How long a machine call waits for a chain another caller holds. */
+  const lockWait: AcquireOptions = { timeoutMs: deps.cfg.stepTimeoutMs };
 
   return {
     Query: { vetraLicensing: () => ({}) },
@@ -159,10 +178,18 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
       appLicenses: withCodes(async (a: { status?: string | null }, ctx) => {
         const { appId } = await resolveCallerApp(deps.auth, ctx);
         const licences = await authorisedLicences(deps, await deps.grants.grantsForApp(appId));
-        const [roots, envs] = await Promise.all([
+        const [roots, envs, app] = await Promise.all([
           deps.grants.chainRootsFor(licences.map((l) => l.id)),
           deps.envRows.forApp(appId),
+          deps.apps.app(appId),
         ]);
+        // A SHARED kind's environment is the app's shared one, as the
+        // (ledger-checked) app resolves it; never a licence document's stage.
+        const sharedStage = (kind: string | null): string | null => {
+          if (!app) return null;
+          const r = resolveKind(app, kind);
+          return r.ok && r.template.mode === "SHARED" ? r.stage : null;
+        };
         const envByRoot = new Map(envs.map((e) => [e.root_license_id, e.environment_id]));
         return licences
           .filter((l) => !a.status || l.status === a.status)
@@ -173,8 +200,9 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
             status: l.status,
             start: l.start,
             end: l.end,
-            // The chain's environment; else (a SHARED licence) the document's stage, display only.
-            environmentId: envByRoot.get(roots.get(l.id) ?? l.id) ?? l.stage,
+            // The chain's environment (license_environments); else, for a
+            // SHARED kind, the app's shared environment; else none yet.
+            environmentId: envByRoot.get(roots.get(l.id) ?? l.id) ?? sharedStage(l.kind),
           }));
       }),
 
@@ -204,8 +232,12 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
       hasLicense: withCodes(async (a: { user: string }, ctx) => {
         const { appId } = await resolveCallerApp(deps.auth, ctx);
         const user = normaliseUserDid(a.user);
-        const grants = (await deps.grants.grantsForHolder(user)).filter((g) => g.appId === appId);
-        return (await authorisedLicences(deps, grants)).some((l) => l.status === "ACTIVE");
+        const ids = (await deps.grants.grantsForHolder(user))
+          .filter((g) => g.appId === appId)
+          .map((g) => g.licenseId);
+        // The lifecycle record only: an unrecorded licence's document is not evidence.
+        const recorded = await deps.lifecycle.entries(ids);
+        return ids.some((id) => recorded.get(id)?.status === "ACTIVE");
       }),
     },
 
@@ -260,19 +292,40 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
           if (r.template.mode !== "DEDICATED") {
             throw new InvalidPublisherInputError("a SHARED licence has no environment of its own");
           }
-          const row = await deps.provision({
-            appId,
-            root: await deps.grants.chainRootOf(licence.id),
-            licenseId: licence.id,
-            // The grant row's holder, never the document's.
-            userDid: licence.userDid,
-            templateId: r.template.id,
-            template: r.template.template,
-            templateHash: r.template.templateHash,
-            label: a.input.label,
-            now: deps.now(),
-          });
-          return toEnv(row);
+          const root = await deps.grants.chainRootOf(licence.id);
+          // As the handler: only the chain's newest authorised licence is served.
+          if ((await deps.grants.chainHead(root)) !== licence.id) {
+            throw new InvalidPublisherInputError(
+              `licence ${licence.id} is not the newest licence of its chain; upgrade the newest licence`,
+            );
+          }
+          try {
+            const row = await deps.provision(
+              {
+                appId,
+                root,
+                licenseId: licence.id,
+                // The grant row's holder, never the document's.
+                userDid: licence.userDid,
+                templateId: r.template.id,
+                template: r.template.template,
+                templateHash: r.template.templateHash,
+                // As the handler: the project name chosen at issue wins.
+                label: (await deps.grants.chainLabel(root)) ?? a.input.label,
+                now: deps.now(),
+              },
+              lockWait,
+            );
+            return toEnv(row);
+          } catch (err) {
+            // Its message names the other holder and app: not the caller's to see.
+            if (err instanceof EnvironmentOwnershipMismatchError) {
+              throw new InvalidPublisherInputError(
+                "this licence's chain environment is inconsistent with its grant; it is held for review",
+              );
+            }
+            throw err;
+          }
         },
       ),
 
@@ -287,9 +340,17 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
         requireEnabled();
         const row = await deps.envRows.byEnvironment(a.input.environmentId);
         if (!row || row.app_id !== appId) return false;
-        if (!(await chainEnded(row))) return false;
-        await markEnded(deps.offboarding, row.environment_id);
-        return true;
+        // Under the chain's lock, so no provision, renewal or resume of the
+        // chain interleaves between the check and the write.
+        return lockChain(
+          row.root_license_id,
+          async () => {
+            if (!(await chainEnded(row))) return false;
+            await markEnded(deps.offboarding, row.environment_id);
+            return true;
+          },
+          lockWait,
+        );
       }),
 
       // The caller is an environment presenting its reporting token, not an app.

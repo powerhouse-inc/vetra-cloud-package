@@ -102,6 +102,16 @@ describe("grant store", () => {
     expect(await g.chainRootsFor([])).toStrictEqual(new Map());
   });
 
+  it("lists a chain's members with or without provenance, and the root", async () => {
+    const g = await open();
+    await g.linkChain({ licenseId: "l2", rootLicenseId: "l1", appId: "a", label: null, now: "t" });
+    await g.linkChain({ licenseId: "l3", rootLicenseId: "l1", appId: "a", label: null, now: "t" });
+    await g.linkChain({ licenseId: "x", rootLicenseId: "x", appId: "a", label: null, now: "t" });
+    expect((await g.chainMembers("l1")).sort()).toStrictEqual(["l1", "l2", "l3"]);
+    expect(await g.chainMembers("x")).toStrictEqual(["x"]);
+    expect(await g.chainMembers("lone")).toStrictEqual(["lone"]);
+  });
+
   it("resolves chain roots; an unchained licence is its own root", async () => {
     const g = await open();
     await g.linkChain({ licenseId: "l1", rootLicenseId: "l1", appId: "a", label: "Project", now: "t" });

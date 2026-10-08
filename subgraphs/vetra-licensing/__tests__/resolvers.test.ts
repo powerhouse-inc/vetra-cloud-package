@@ -11,6 +11,7 @@ import { createLifecycleStore } from "../lifecycle.js";
 import {
   createChainEnvironmentRows,
   provisionChainExclusive,
+  withChainLock,
   type ChainEnvDeps,
 } from "../environments.js";
 import type { OffboardingDeps } from "../offboarding.js";
@@ -32,12 +33,14 @@ const OTHER_DID = "did:pkh:eip155:1:0x2222222222222222222222222222222222222222";
 const FORGED_DID = "did:pkh:eip155:1:0x3333333333333333333333333333333333333333";
 const LAPSED_DID = "did:pkh:eip155:1:0x4444444444444444444444444444444444444444";
 const NEW_DID = "did:pkh:eip155:1:0x5555555555555555555555555555555555555555";
+const UNREC_DID = "did:pkh:eip155:1:0x6666666666666666666666666666666666666666";
 
 const caller = (appKey?: string) => ({
   user: { address: "0x9999999999999999999999999999999999999999", networkId: "eip155", chainId: 1, ...(appKey ? { appKey } : {}) },
 });
 const asApp = caller("did:key:app1");
 const asApp2 = caller("did:key:app2");
+const asApp3 = caller("did:key:app3");
 
 const TEMPLATE = {
   services: [{ id: "s", type: "CONNECT", prefix: null }],
@@ -96,10 +99,23 @@ const DOCS: LicenceRecord[] = [
   // A chain that ended: its only licence was revoked.
   licence("l-old", "app-1", DID, "pro", "REVOKED", "env-old"),
   licence("l-new", "app-1", NEW_DID, "pro", "ACTIVE"),
+  // app-3: the fix-round cases, apart so app-1's listings stay as they are.
+  licence("u1", "app-3", UNREC_DID, "pro", "ACTIVE"), // granted, never recorded
+  licence("x0", "app-3", DID, "pro", "REVOKED", "env-x"),
+  licence("x1", "app-3", DID, "pro", "ACTIVE"), // chained onto x0, no grant, no record
+  licence("h0", "app-3", DID, "pro", "ACTIVE"), // an older ACTIVE licence of chain h0
+  licence("h1", "app-3", DID, "pro", "ACTIVE"), // the head of chain h0
+  licence("lab", "app-3", DID, "pro", "ACTIVE"),
+  licence("fs", "app-3", DID, "pro", "ACTIVE", "env-forged"), // DEDICATED, no environment yet, forged stage
+  licence("sh", "app-3", DID, "free", "ACTIVE", "env-forged-2"), // SHARED, forged stage
+  licence("om", "app-3", DID, "pro", "ACTIVE"),
+  licence("nr", "app-3", DID, "pro", "ACTIVE"),
 ];
 
 let db: Kysely<VetraLicensingDB>;
 let migrated: boolean;
+/** Environment document statuses, by id ("READY" when unset). */
+let envStates: Map<string, string>;
 let s: ReturnType<typeof spies>;
 
 const spies = () => ({
@@ -114,11 +130,10 @@ const spies = () => ({
 });
 
 function deps(over: Partial<ResolverDeps> = {}, enabled = true): ResolverDeps {
-  const cfg = { ...loadLicensingConfig({}), enabled };
+  const cfg = { ...loadLicensingConfig({}), enabled, stepTimeoutMs: 50 };
   const lifecycle = createLifecycleStore(db, () => NOW);
   const grants = createGrantStore(db);
   const envRows = createChainEnvironmentRows(db, cfg);
-  const envStates = new Map<string, string>();
   const chainEnv: ChainEnvDeps = {
     rows: envRows,
     envs: {
@@ -150,7 +165,9 @@ function deps(over: Partial<ResolverDeps> = {}, enabled = true): ResolverDeps {
     logger: { info: () => {}, warn: () => {} },
     now: () => NOW,
   };
-  const apps = { app: async (id: string) => (id === "app-1" ? app1 : null) };
+  const apps = {
+    app: async (id: string) => (id === "app-1" ? app1 : id === "app-3" ? { ...freshApp1(), id: "app-3" } : null),
+  };
   const licences = {
     licenceRecords: async (ids: string[]) => ids.flatMap((id) => DOCS.filter((d) => d.id === id)),
   };
@@ -161,14 +178,16 @@ function deps(over: Partial<ResolverDeps> = {}, enabled = true): ResolverDeps {
           ? { id: "app-1", status: "ACTIVE" }
           : did === "did:key:app2"
             ? { id: "app-2", status: "ACTIVE" }
-            : null,
+            : did === "did:key:app3"
+              ? { id: "app-3", status: "ACTIVE" }
+              : null,
     },
     apps,
     licences,
     lifecycle,
     grants,
     envRows,
-    provision: (input) => provisionChainExclusive(chainEnv, input),
+    provision: (input, opts) => provisionChainExclusive(chainEnv, input, opts),
     offboarding,
     issue: {
       owners: { findAppById: async (id) => (id === "app-1" ? { id, name: "Vault", status: "ACTIVE", owner_address: "0xowner" } : null) },
@@ -217,6 +236,7 @@ async function seed() {
   await db.deleteFrom("license_chain").execute();
   await db.deleteFrom("license_environments").execute();
   await db.deleteFrom("app_allow_list").execute();
+  await db.deleteFrom("app_environment_limits").execute();
   const grants = createGrantStore(db);
   const grant = (licenseId: string, appId: string, userDid: string, kind: string) =>
     grants.recordGrant({ licenseId, appId, kind, userDid, issuedBy: "0xowner", now: NOW });
@@ -249,6 +269,25 @@ async function seed() {
   await rows.claim(envRow("env-unrecorded", "l-unrecorded", "app-1", DID, "l-unrecorded", null));
   await rows.claim(envRow("env-app2", "l-app2", "app-2", DID, "l-app2", null));
   await grants.addToAllowList("app-1", DID, NOW);
+
+  // app-3
+  await grant("u1", "app-3", UNREC_DID, "pro");
+  await grant("x0", "app-3", DID, "pro");
+  await life("x0", "REVOKED");
+  await grants.linkChain({ licenseId: "x1", rootLicenseId: "x0", appId: "app-3", label: null, now: NOW });
+  await rows.claim(envRow("env-x", "x0", "app-3", DID, "x0", null));
+  for (const id of ["h0", "h1", "lab", "fs", "sh", "om", "nr"]) {
+    await grant(id, "app-3", DID, id === "sh" ? "free" : "pro");
+    await life(id, "ACTIVE");
+  }
+  await grants.linkChain({ licenseId: "h0", rootLicenseId: "h0", appId: "app-3", label: null, now: NOW });
+  await grants.linkChain({ licenseId: "h1", rootLicenseId: "h0", appId: "app-3", label: null, now: "2026-10-08T00:00:01.000Z" });
+  await grants.linkChain({ licenseId: "lab", rootLicenseId: "lab", appId: "app-3", label: "Project X", now: NOW });
+  // A chain environment naming another holder: inconsistent data, never re-templated.
+  await rows.claim(envRow("env-om", "om", "app-3", OTHER_DID, "om", null));
+  // An environment on an older template that is asleep: not applicable now.
+  await rows.claim({ ...envRow("env-nr", "nr", "app-3", DID, "nr", null), template_hash: "h-old" });
+  envStates.set("env-nr", "STOPPED");
 }
 
 beforeAll(async () => {
@@ -262,6 +301,7 @@ beforeEach(async () => {
   s = spies();
   app1 = freshApp1();
   migrated = true;
+  envStates = new Map();
   await seed();
 });
 
@@ -281,7 +321,8 @@ describe("vetraLicensing (machine)", () => {
       row("l-broken", DID, "broken", null),
       row("l-draft", DID, "draft", null),
       row("l-new", NEW_DID, "pro", null),
-      row("l-shared", DID, "free", null),
+      // SHARED: the app's shared environment, as its template resolves it.
+      row("l-shared", DID, "free", "env-shared"),
       // Unrecorded: the document's status is all there is (display only).
       row("l-unrecorded", DID, "pro", "env-unrecorded"),
       row("l1", DID, "pro", "env-1"),
@@ -372,12 +413,14 @@ describe("vetraLicensing (machine)", () => {
       if (n === 1) await gate;
       return id;
     });
-    const d = deps();
+    const base = deps();
+    // Long enough to wait the handler out (the BUSY test covers the bound).
+    const d = { ...base, cfg: { ...base.cfg, stepTimeoutMs: 5_000 } };
     const r = createResolvers(d) as unknown as Resolvers;
     const handlerTick = d.provision({
       appId: "app-1", root: "l-new", licenseId: "l-new", userDid: NEW_DID, templateId: "tpl-ded",
       template: TEMPLATE, templateHash: "h-ded", label: "pro", now: NOW,
-    });
+    }, {});
     const machineCall = r.VetraLicensingMutations.applyEnvironmentTemplate!({}, { input: { licenseId: "l-new", label: "Mine" } }, asApp);
     await new Promise((res) => setTimeout(res, 50));
     openGate();
@@ -468,5 +511,71 @@ describe("vetraLicensing (machine)", () => {
     expect(await code(q("appTerms", {}, asApp, r))).toBe("OK");
     // Authentication comes first: a stranger learns nothing about the switch.
     expect(await code(disabledM("issuePublisherGrant", { input: { kind: "pro", user: ADDR } }, {}))).toBe("UNAUTHENTICATED");
+  });
+
+  describe("fix round 1", () => {
+    const apply = (licenseId: string, ctx: object = asApp3, label = "x") =>
+      m("applyEnvironmentTemplate", { input: { licenseId, label } }, ctx);
+
+    it("hasLicense is false for a holder whose only ACTIVE licence is unrecorded", async () => {
+      expect(await q("hasLicense", { user: UNREC_DID }, asApp3)).toBe(false);
+    });
+
+    it("release is false for a chain with a member that has no grant and no record", async () => {
+      expect(await m("releaseEnvironment", { input: { environmentId: "env-x" } }, asApp3)).toBe(false);
+      const row = await db.selectFrom("license_environments").selectAll().where("environment_id", "=", "env-x").executeTakeFirstOrThrow();
+      expect(row.ended_at).toBeNull();
+    });
+
+    it("apply and release behind a held chain lock answer BUSY, and never run later", async () => {
+      let release = () => {};
+      const held = withChainLock("lab", () => new Promise<void>((r) => (release = r)));
+      const heldOld = withChainLock("l-old", () => held);
+      expect(await code(apply("lab"))).toBe("BUSY");
+      expect(await code(m("releaseEnvironment", { input: { environmentId: "env-old" } }, asApp))).toBe("BUSY");
+      release();
+      await Promise.all([held, heldOld]);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(s.create).not.toHaveBeenCalled();
+      const old = await db.selectFrom("license_environments").select("ended_at").where("environment_id", "=", "env-old").executeTakeFirstOrThrow();
+      expect(old.ended_at).toBeNull();
+    });
+
+    it("provisions only the chain head", async () => {
+      try {
+        await apply("h0");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as GraphQLError).extensions?.code).toBe("INVALID_INPUT");
+        expect((e as Error).message).toMatch(/newest licence/);
+      }
+      expect(await apply("h1")).toMatchObject({ licenseId: "h1", rootLicenseId: "h0" });
+      expect(s.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("labels a new environment with the chain's label, as the handler does", async () => {
+      expect(await apply("lab", asApp3, "from the caller")).toMatchObject({ label: "Project X" });
+      expect(await apply("fs", asApp3, "from the caller")).toMatchObject({ label: "from the caller" });
+    });
+
+    it("never reports a forged document stage as a DEDICATED licence's environment", async () => {
+      const ls = (await q("appLicenses", {}, asApp3)) as { id: string; environmentId: string | null }[];
+      expect(ls.find((l) => l.id === "fs")!.environmentId).toBeNull();
+      expect(ls.find((l) => l.id === "sh")!.environmentId).toBe("env-shared");
+    });
+
+    it("maps provisioning refusals to codes without leaking another holder", async () => {
+      try {
+        await apply("om");
+        expect.unreachable();
+      } catch (e) {
+        expect((e as GraphQLError).extensions?.code).toBe("INVALID_INPUT");
+        expect((e as Error).message).not.toMatch(/0x2222|did:pkh|app-3/);
+      }
+      expect(await code(apply("nr"))).toBe("BUSY");
+      await db.insertInto("app_environment_limits").values({ app_id: "app-3", max_environments: 0 }).execute();
+      expect(await code(apply("fs"))).toBe("INVALID_INPUT");
+      expect(s.create).not.toHaveBeenCalled();
+    });
   });
 });

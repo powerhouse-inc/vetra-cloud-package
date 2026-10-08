@@ -10,11 +10,19 @@ import {
   UnknownTemplateSizeError,
   UnsupportedTemplateServiceError,
   MissingPackageNameError,
+  MultipleFusionServicesError,
+  UnresolvedFusionServiceError,
 } from "./template.js";
 import { UnsupportedDidError } from "./did.js";
 import { InvalidCodeError, InvalidCodeInputError } from "./invite-codes.js";
 import { KeyStorageUnavailableError } from "./key-vault.js";
 import { AlreadyHoldsError, LicenceNotUpgradableError, TermNotIssuableError } from "./issue.js";
+import {
+  AppEnvironmentCapReachedError,
+  ChainBusyError,
+  EnvironmentNotReadyError,
+  EnvironmentOwnershipMismatchError,
+} from "./environments.js";
 
 /** The holder is not on the app's allow list (publisher grants). */
 export class NotOnAllowListError extends Error {
@@ -152,6 +160,9 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
   ["LICENSING_DISABLED", [LicensingDisabledError]],
   ["INVALID_CODE", [InvalidCodeError]],
   ["ALREADY_HOLDS", [AlreadyHoldsError]],
+  // Retryable: the chain is held by another caller, or its environment is
+  // asleep or mid-transition. Nothing was done.
+  ["BUSY", [ChainBusyError, EnvironmentNotReadyError]],
   [
     "INVALID_INPUT",
     [
@@ -166,6 +177,10 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
       MissingPackageNameError,
       InvalidHolderAddressError,
       LicenseTypeNotIssuableError,
+      AppEnvironmentCapReachedError,
+      EnvironmentOwnershipMismatchError,
+      UnresolvedFusionServiceError,
+      MultipleFusionServicesError,
     ],
   ],
 ];

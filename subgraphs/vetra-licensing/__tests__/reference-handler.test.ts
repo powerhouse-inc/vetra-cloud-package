@@ -116,4 +116,21 @@ describe("LicenseHandler (reference client)", () => {
     expect(apply).toHaveBeenCalledTimes(2);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
   });
+
+  it("treats BUSY as retry-next-tick, not a failure", async () => {
+    const busy = Object.assign(new Error("this licence chain is busy; retry shortly"), { extensions: { code: "BUSY" } });
+    const wrapped = { message: "request failed", response: { errors: [{ extensions: { code: "BUSY" } }] } };
+    const apply = vi.fn().mockRejectedValueOnce(busy).mockRejectedValueOnce(wrapped);
+    const c = client({
+      appLicenses: vi.fn(async () => [
+        { id: "lic-1", user: DID, kind: "pro", status: "ACTIVE" },
+        { id: "lic-2", user: DID, kind: "pro", status: "ACTIVE" },
+      ]),
+      applyEnvironmentTemplate: apply,
+    });
+    await acting(c).reconcileOnce();
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("retry on the next tick"));
+  });
 });
