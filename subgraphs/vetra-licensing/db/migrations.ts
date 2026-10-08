@@ -110,8 +110,20 @@ export async function up(db: Kysely<any>): Promise<void> {
       "issued_by",
       "created_at",
     ])
-    .expression(
-      sql`select license_id, app_id, '' as license_type_id, user_address, 'backfill' as issued_by, created_at from app_user_environments`,
+    // Built with the query builder, not raw SQL: the namespace schema (withSchema)
+    // only qualifies table names the builder emits. A raw `from app_user_environments`
+    // resolves against search_path and fails on a real namespaced database.
+    .expression((eb) =>
+      eb
+        .selectFrom("app_user_environments")
+        .select([
+          "license_id",
+          "app_id",
+          eb.val("").as("license_type_id"),
+          "user_address",
+          eb.val("backfill").as("issued_by"),
+          "created_at",
+        ]),
     )
     .onConflict((oc) => oc.column("license_id").doNothing())
     .execute();
