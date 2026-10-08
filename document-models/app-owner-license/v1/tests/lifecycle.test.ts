@@ -1,6 +1,7 @@
 import {
   activateLicense,
   expireLicense,
+  IssueLicenseInputSchema,
   issueLicense,
   migrateLicense,
   reducer,
@@ -9,7 +10,6 @@ import {
   setStage,
   utils,
 } from "document-models/app-owner-license/v1";
-import { IssueLicenseInputSchema } from "document-models/app-owner-license/v1/gen/schema/zod.js";
 import { describe, expect, it } from "vitest";
 
 const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
