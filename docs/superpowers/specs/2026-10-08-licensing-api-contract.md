@@ -299,6 +299,16 @@ type Mutation {
 }
 ```
 
-Vetra calls `reportUserStat` with a bearer issued for the app's DID. Until
+Authentication of the relay (Vetra holds no app keys): Vetra first calls
+`mutation { issueAppStatsToken(did: <appDid>) }` on Renown's
+`/graphql/renown-workload`, authorised by the existing registration-token header
+(`RENOWN_WORKLOAD_REGISTRATION_TOKEN`), receiving a ~10-minute token whose
+audience is only renown-stats. It caches the token and sends it to
+`reportUserStat` in the **`X-Renown-App-Token`** header (not `Authorization`).
+FORBIDDEN (app in PENDING_IDENTITY, delegation expired/revoked) → relay returns
+`false` and logs. The relay coalesces reports per (user, metric) before sending.
+
+The first `upsertAppProfile` also requires the caller's wallet to hold a
+delegation to the app DID. Until
 renown-package with `renown-stats` is deployed, the Vetra relay is configured off
 (`RENOWN_STATS_URL` unset → `reportUserStat` returns `false` and logs).
