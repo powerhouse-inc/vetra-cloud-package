@@ -8,7 +8,6 @@ import type { VetraLicensingDB } from "../db/schema.js";
 import {
   createAppLedger,
   createAppLicensingWriter,
-  createAppLock,
   createLedgerLookup,
   ensureLedgerTables,
   lazyLedger,
@@ -222,44 +221,44 @@ describe("ledger integrity check", () => {
 });
 
 describe("serialised system writes", () => {
-  for (const crossReplica of [false, true]) {
-    it(`two concurrent writes to one app leave it clean and never overlap (advisory lock: ${crossReplica})`, async () => {
-      const w = world();
-      await recordLicensingState(db, "app-1", STATE, "t");
-      const ledger = createAppLedger({
+  it("two concurrent writes through two ledger instances leave the app clean and never overlap", async () => {
+    const w = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    // e.g. vetra-apps (CI artifact) and vetra-licensing (term change) at once:
+    // separate ledger instances share the process-wide per-app lock.
+    const ledgers = [0, 1].map(() =>
+      createAppLedger({
         db,
         source: reactorLedgerSource(w.client),
         now: () => "2026-10-09T00:00:00.000Z",
-        lock: createAppLock(db, { crossReplica }),
         logger: w.logger,
-      });
-      let inFlight = 0;
-      let maxInFlight = 0;
-      // e.g. CI matrix jobs registering PACKAGE and FUSION_IMAGE at once.
-      const register = (id: string) =>
-        ledger.append("app-1", [act(id)], async (_i, actions) => {
-          inFlight += 1;
-          maxInFlight = Math.max(maxInFlight, inFlight);
-          await new Promise((r) => setTimeout(r, 5));
-          for (const a of actions) {
-            w.apply(a.id, () => {
-              (w.state.global.artifacts as typeof ARTIFACTS)[0]!.versions.push({
-                ...ARTIFACTS[0]!.versions[0]!, version: a.id, reference: `r:${a.id}`,
-              });
+      }),
+    );
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const register = (ledger: AppLedger, id: string) =>
+      ledger.append("app-1", [act(id)], async (_i, actions) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        for (const a of actions) {
+          w.apply(a.id, () => {
+            (w.state.global.artifacts as typeof ARTIFACTS)[0]!.versions.push({
+              ...ARTIFACTS[0]!.versions[0]!, version: a.id, reference: `r:${a.id}`,
             });
-          }
-          inFlight -= 1;
-        }, { seedUnrecorded: false });
-      await Promise.all([register("ci-package"), register("ci-fusion")]);
-      expect(maxInFlight).toBe(1);
-      expect(await w.reads.app("app-1")).toMatchObject({ tampered: false, unverified: false });
-      expect(w.logger.error).not.toHaveBeenCalled();
-      expect(w.logger.warn).not.toHaveBeenCalled(); // clean without healing
-      expect((await intents()).map((i) => i.done_at)).toStrictEqual([
-        "2026-10-09T00:00:00.000Z", "2026-10-09T00:00:00.000Z",
-      ]);
-    });
-  }
+          });
+        }
+        inFlight -= 1;
+      }, { seedUnrecorded: false });
+    await Promise.all([register(ledgers[0]!, "ci-package"), register(ledgers[1]!, "ci-fusion")]);
+    expect(maxInFlight).toBe(1);
+    expect(await w.reads.app("app-1")).toMatchObject({ tampered: false, unverified: false });
+    expect(w.logger.error).not.toHaveBeenCalled();
+    expect(w.logger.warn).not.toHaveBeenCalled(); // clean without healing
+    expect((await intents()).map((i) => i.done_at)).toStrictEqual([
+      "2026-10-09T00:00:00.000Z", "2026-10-09T00:00:00.000Z",
+    ]);
+  });
 });
 
 describe("intent journal", () => {
@@ -317,6 +316,33 @@ describe("intent journal", () => {
     }).appendLicensingOps("app-1", [act("sys-1")]);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("during this system write"));
     expect(await reads.app("app-1")).toMatchObject({ tampered: true });
+  });
+
+  it("aborts the write, without executing, when the check before it fails", async () => {
+    const { retire, writer, getOperations } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    // Leave an applied but unrecorded write, so the next write must heal first.
+    getOperations.mockRejectedValueOnce(new Error("db down"));
+    await writer(async (_id, actions) => retire(actions)).appendLicensingOps("app-1", [act("sys-1")]);
+    getOperations.mockRejectedValueOnce(new Error("still down"));
+    const execute = vi.fn(async () => undefined);
+    await expect(writer(execute).appendLicensingOps("app-1", [act("sys-2")])).rejects.toThrow("still down");
+    expect(execute).not.toHaveBeenCalled();
+    expect((await intents()).map((i) => i.action_ids)).toStrictEqual(['["sys-1"]']);
+  });
+
+  it("does not complete an intent whose actions have not been applied", async () => {
+    const { retire, writer } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    // Accepted but not applied (yet): the state is still the recorded one.
+    await writer(async () => undefined).appendLicensingOps("app-1", [act("sys-1")]);
+    expect(await intents()).toMatchObject([{ action_ids: '["sys-1"]', done_at: null }]);
+    // A later clean write completes its own intent only.
+    await writer(async (_id, actions) => retire(actions)).appendLicensingOps("app-1", [act("sys-2")]);
+    expect((await intents()).map((i) => [i.action_ids, i.done_at])).toStrictEqual([
+      ['["sys-1"]', null],
+      ['["sys-2"]', "2026-10-09T00:00:00.000Z"],
+    ]);
   });
 
   it("does not execute when the intent cannot be journalled", async () => {
