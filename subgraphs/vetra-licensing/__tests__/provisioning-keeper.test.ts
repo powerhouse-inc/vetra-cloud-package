@@ -5,8 +5,10 @@ import {
 } from "../provisioning-keeper.js";
 import type { LicenseFullRow } from "../reads.js";
 import type { UserEnvironment } from "../plan.js";
+import { loadLicensingConfig } from "../config.js";
 
 const cfg = {
+  ...loadLicensingConfig({}),
   enabled: true,
   dryRun: false,
   scanIntervalMs: 60_000,

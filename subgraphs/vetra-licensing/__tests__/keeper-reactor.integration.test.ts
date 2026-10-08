@@ -5,7 +5,7 @@ import { documentModels } from "../../../document-models/document-models.js";
 import { createReactorLicenseReads, LICENSE_DOC_TYPE } from "../reads.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
 import { LicenseKeeper } from "../keeper.js";
-import type { LicensingConfig } from "../config.js";
+import { loadLicensingConfig, type LicensingConfig } from "../config.js";
 
 /**
  * The seam every other test on this branch mocks.
@@ -36,6 +36,7 @@ const BASE = Date.parse("2026-06-01T12:00:00.000Z");
 let clock = BASE;
 
 const cfg: LicensingConfig = {
+  ...loadLicensingConfig({}),
   enabled: true,
   dryRun: false,
   scanIntervalMs: 1_000,

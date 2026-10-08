@@ -25,7 +25,7 @@ import {
 import { releaseEnvironment } from "../release.js";
 import { ProvisioningKeeper } from "../provisioning-keeper.js";
 import { templateHash, type TemplateShape } from "../template.js";
-import type { LicensingConfig } from "../config.js";
+import { loadLicensingConfig, type LicensingConfig } from "../config.js";
 
 /**
  * The provisioning keeper against a REAL reactor and a REAL database (in-memory
@@ -54,6 +54,7 @@ const TEMPLATE: TemplateShape = {
 };
 
 const cfg: LicensingConfig = {
+  ...loadLicensingConfig({}),
   enabled: true,
   dryRun: false,
   scanIntervalMs: 1_000,

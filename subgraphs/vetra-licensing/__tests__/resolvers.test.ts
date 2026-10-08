@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createResolvers, type ResolverDeps } from "../resolvers.js";
 import { UnauthenticatedError } from "../auth.js";
 import { LicensingDisabledError } from "../resolvers.js";
+import { loadLicensingConfig } from "../config.js";
 
 type Field = (p: unknown, a: unknown, c: unknown) => Promise<unknown>;
 
@@ -69,6 +70,7 @@ const build = (s: ReturnType<typeof spies>, enabled = false) => {
       recordGrant: s.recordGrant,
     },
     cfg: {
+      ...loadLicensingConfig({}),
       enabled,
       dryRun: true,
       scanIntervalMs: 60_000,
