@@ -2,17 +2,19 @@ import { GraphQLError } from "graphql";
 import { UnauthenticatedError, AppIdentityInactiveError } from "./auth.js";
 import { NotAppOwnerError, UnknownAppError } from "./publisher-auth.js";
 import { LicensingDisabledError } from "./resolvers.js";
-import {
-  InvalidHolderAddressError,
-  LicenseTypeNotIssuableError,
-  NotOnAllowListError,
-} from "./issuers/publisher-grant.js";
 import { NegativeValidityError } from "../../document-models/app-license-type/v1/gen/license-type/error.js";
 import {
   UnknownTemplateSizeError,
   UnsupportedTemplateServiceError,
   MissingPackageNameError,
 } from "./template.js";
+
+/** The holder is not on the app's allow list (publisher grants). */
+export class NotOnAllowListError extends Error {}
+/** Legacy grant path: the licence type is missing, inactive or another app's. */
+export class LicenseTypeNotIssuableError extends Error {}
+/** Legacy grant path: the holder is not a 0x address. */
+export class InvalidHolderAddressError extends Error {}
 
 /**
  * Thrown by Tasks 6 and 7 for a licence type that is missing OR belongs to

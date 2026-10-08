@@ -418,3 +418,50 @@ describe("legacyLicenseTypeOf", () => {
     expect(legacyLicenseTypeOf({})).toBeNull();
   });
 });
+
+describe("licence records", () => {
+  const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
+  const reshaped = (id: string, g: Partial<Record<string, unknown>> = {}) =>
+    license(id, {
+      licenseType: undefined, user: DID, kind: "pro", issuer: "PUBLISHER_GRANT",
+      issued: "2026-01-01T00:00:00Z", stage: "env-7", details: '{"grantedBy":"0xowner"}',
+      replacedBy: null, ...g,
+    });
+
+  it("parses kind, issuer, stage and the rest of a licence document", async () => {
+    const reads = createReactorLicenseReads(fakeClient({}, { "lic-1": reshaped("lic-1") }));
+    expect(await reads.licenceRecord("lic-1")).toStrictEqual({
+      id: "lic-1", app: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT",
+      status: "ACTIVE", issued: "2026-01-01T00:00:00Z", start: "2026-01-01T00:00:00Z",
+      end: "2027-01-01T00:00:00Z", stage: "env-7", details: '{"grantedBy":"0xowner"}',
+      replacedBy: null, legacyLicenseTypeId: null,
+    });
+  });
+
+  it("keeps a legacy licence's type id and leaves its kind null", async () => {
+    const reads = createReactorLicenseReads(fakeClient({}, { "lic-0": license("lic-0") }));
+    expect(await reads.licenceRecord("lic-0")).toMatchObject({
+      kind: null, issuer: null, user: "0xabc", legacyLicenseTypeId: "lt-1",
+    });
+  });
+
+  it("is null for a missing id, a licence-type document, or a licence with no app", async () => {
+    const reads = createReactorLicenseReads(
+      fakeClient({}, { "lt-1": licenseType("lt-1"), "lic-2": reshaped("lic-2", { app: null }) }),
+    );
+    expect(await reads.licenceRecord("nope")).toBeNull();
+    expect(await reads.licenceRecord("lt-1")).toBeNull();
+    expect(await reads.licenceRecord("lic-2")).toBeNull();
+  });
+
+  it("lists every licence record across pages, and by ids skipping missing ones", async () => {
+    const a = reshaped("a");
+    const b = reshaped("b", { app: "app-2", status: "REPLACED", replacedBy: "c" });
+    const reads = createReactorLicenseReads(
+      fakeClient({ [L]: [[a], [b, reshaped("x", { app: null })]] }, { a, b }),
+    );
+    expect((await reads.allLicenceRecords()).map((r) => [r.id, r.app, r.status, r.replacedBy]))
+      .toStrictEqual([["a", "app-1", "ACTIVE", null], ["b", "app-2", "REPLACED", "c"]]);
+    expect((await reads.licenceRecords(["b", "nope", "a"])).map((r) => r.id)).toStrictEqual(["b", "a"]);
+  });
+});

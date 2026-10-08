@@ -84,6 +84,25 @@ export interface AppArtifact {
   channels: { channel: string; version: string }[];
 }
 
+/** A licence as issueLicense, the keeper and the publisher surface see it. */
+export interface LicenceRecord {
+  id: string;
+  app: string;
+  /** Lowercased: a DID on reshaped licences, a bare 0x address on legacy ones. */
+  user: string;
+  /** The term kind; null on a legacy licence issued against a licence type. */
+  kind: string | null;
+  issuer: string | null;
+  status: LicenseStatusName;
+  issued: string | null;
+  start: string | null;
+  end: string | null;
+  stage: string | null;
+  details: string | null;
+  replacedBy: string | null;
+  legacyLicenseTypeId: string | null;
+}
+
 export interface LicenseReads {
   /** Every artifact the app has published, for the template builder's selects. */
   appArtifacts(appId: string): Promise<AppArtifact[]>;
@@ -105,6 +124,12 @@ export interface LicenseReads {
   listLicenses(): Promise<LicenseRow[]>;
   /** Every licence across all apps, with the fields provisioning needs. */
   allLicenses(): Promise<LicenseFullRow[]>;
+  /** One licence by document id; null when missing, not a licence, malformed or without an app. */
+  licenceRecord(id: string): Promise<LicenceRecord | null>;
+  /** Every well-formed licence with an app, across all apps. */
+  allLicenceRecords(): Promise<LicenceRecord[]>;
+  /** The licences with these ids, in the given order; missing ids are skipped. */
+  licenceRecords(ids: string[]): Promise<LicenceRecord[]>;
 }
 
 interface ParsedLicense {
@@ -153,6 +178,28 @@ function parseLicense(doc: unknown): ParsedLicense | null {
     status: status as LicenseStatusName,
     start: str(g.start),
     end: str(g.end),
+  };
+}
+
+/** null for a document that is not a well-formed licence with an app. */
+function toRecord(doc: unknown): LicenceRecord | null {
+  const l = parseLicense(doc);
+  const g = globalState(doc);
+  if (!l || !g || l.app === null) return null;
+  return {
+    id: l.id,
+    app: l.app,
+    user: l.user,
+    kind: str(g.kind),
+    issuer: str(g.issuer),
+    status: l.status,
+    issued: str(g.issued),
+    start: l.start,
+    end: l.end,
+    stage: str(g.stage),
+    details: str(g.details),
+    replacedBy: str(g.replacedBy),
+    legacyLicenseTypeId: l.licenseTypeId,
   };
 }
 
@@ -408,6 +455,27 @@ export function createReactorLicenseReads(
         start: l.start,
         end: l.end,
       }));
+    },
+
+    async licenceRecord(id) {
+      const doc = await getDoc(id);
+      return isDocType(doc, LICENSE_DOC_TYPE) ? toRecord(doc) : null;
+    },
+
+    async allLicenceRecords() {
+      return (await findAll(LICENSE_DOC_TYPE)).flatMap((d) => {
+        const r = toRecord(d);
+        return r ? [r] : [];
+      });
+    },
+
+    async licenceRecords(ids) {
+      const out: LicenceRecord[] = [];
+      for (const id of ids) {
+        const r = await this.licenceRecord(id);
+        if (r) out.push(r);
+      }
+      return out;
     },
 
     async allLicenses() {
