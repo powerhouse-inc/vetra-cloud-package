@@ -300,7 +300,7 @@ type Mutation {
 ```
 
 Authentication of the relay (Vetra holds no app keys): Vetra first calls
-`mutation { issueAppStatsToken(did: <appDid>) }` on Renown's
+`mutation { issueAppStatsToken(did: <appDid>) { accessToken } }` (returns an `AppStatsToken` object) on Renown's
 `/graphql/renown-workload`, authorised by the existing registration-token header
 (`RENOWN_WORKLOAD_REGISTRATION_TOKEN`), receiving a ~10-minute token whose
 audience is only renown-stats. It caches the token and sends it to
