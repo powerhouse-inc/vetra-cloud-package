@@ -491,7 +491,7 @@ describe("vetraLicensing (machine)", () => {
     expect(await code(m("issuePublisherGrant", { input: { kind: "pro", user: OTHER_DID } }, asApp))).toBe("NOT_ON_ALLOW_LIST");
   });
 
-  it("reportUserStat forwards the reporting token header to the relay (a stub until the relay exists)", async () => {
+  it("reportUserStat forwards the reporting token header to the relay", async () => {
     const args = { user: DID, metric: "documents", value: 3 };
     expect(await m("reportUserStat", args, { headers: { [REPORTING_HEADER]: "tok" } })).toBe(false);
     expect(s.relay).toHaveBeenLastCalledWith("tok", args);

@@ -61,6 +61,17 @@ import { keyCiphertextForCode, redeemedCodeOf } from "./invite-codes.js";
 import { createHolderLicences } from "./licence-view.js";
 import type { StudioAccessDeps } from "./studio-access.js";
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
+import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
+import { loadAppsConfig } from "../vetra-apps/config.js";
+import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
+import {
+  deleteReportingToken,
+  ensureReportingTokens,
+  newReportingToken,
+  relayUserStat,
+  type RelayDeps,
+  type ReportingDeps,
+} from "./reporting.js";
 
 /** As vetra-access-codes: the same role and key prefix, so stored keys still decrypt. */
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
@@ -97,6 +108,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   additionalContextFields = {};
   private keeper: LicenseKeeper | null = null;
   private handler: AppLicenseHandler | null = null;
+  private stats: RenownStatsClient | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -309,6 +321,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         await envs.execute(id, [wakeEnvironment({})]);
       },
       destroy: (id) => envs.delete(id),
+      forgetEnvironment: (id) => deleteReportingToken(db, id),
       cfg,
       logger: console,
       now: () => new Date().toISOString(),
@@ -327,6 +340,46 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const underChainOf = async (environmentId: string, fn: () => Promise<void>) => {
       const row = await chainRows.byEnvironment(environmentId);
       await (row ? lockChain(row.root_license_id, fn) : fn());
+    };
+
+    // Reporting tokens (one per DEDICATED environment, in its secrets) and
+    // the Renown stats relay. Off while RENOWN_STATS_URL is unset.
+    const renownCfg = loadAppsConfig(process.env).renown;
+    const stats = createRenownStatsClient({
+      statsUrl: cfg.renownStatsUrl,
+      workloadUrl: renownCfg ? `${renownCfg.switchboardUrl}/graphql/renown-workload` : null,
+      registrationToken: renownCfg?.registrationToken ?? null,
+    });
+    this.stats = stats;
+    const reporting: ReportingDeps = {
+      db,
+      secrets: secretsService,
+      tenantIdOf: async (id) => {
+        const state = await envs.getState(id);
+        return state?.genericSubdomain ? getTenantId(state.genericSubdomain, id) : null;
+      },
+      licensingUrl: cfg.licensingPublicUrl,
+      newToken: newReportingToken,
+      now: () => new Date().toISOString(),
+      logger: console,
+    };
+    const relayDeps: RelayDeps = {
+      db,
+      envRows: chainRows,
+      grants,
+      lifecycle,
+      apps: appReads,
+      // The app DID comes from the apps row, never the app document.
+      appIdentity: async (appId) => {
+        const row = await appsDb
+          .selectFrom("apps")
+          .select(["identity_did", "status"])
+          .where("id", "=", appId)
+          .executeTakeFirst();
+        return row ? { identityDid: row.identity_did, status: row.status } : null;
+      },
+      stats,
+      logger: console,
     };
 
     // Machine surface (app backends, by App identity). Licences come from
@@ -353,8 +406,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       migrationComplete,
       cfg,
       now: () => new Date().toISOString(),
-      // Until the Renown relay exists, every report is dropped.
-      relay: () => Promise.resolve(false),
+      relay: (token, input) => relayUserStat(relayDeps, token, input),
     };
     const machineResolvers = createResolvers(machineDeps) as Record<string, Record<string, unknown>>;
 
@@ -405,8 +457,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
       onEnded: (_appId, env) => underChainOf(env, () => markEnded(offboarding, env)),
       onResumed: (_appId, env) => underChainOf(env, () => markResumed(offboarding, env)),
-      afterApp: (_appId, rows, confirmedEndedRoots) =>
-        tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots)),
+      afterApp: async (_appId, rows, confirmedEndedRoots) => {
+        await tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots));
+        // Live environments only; ensureReportingTokens catches per environment.
+        await ensureReportingTokens(
+          reporting,
+          rows.filter((r) => r.ended_at === null).map((r) => r.environment_id),
+        );
+      },
       migrationComplete,
       cfg,
       logger: console,
@@ -435,6 +493,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper = null;
     this.handler?.stop();
     this.handler = null;
+    this.stats?.stop();
+    this.stats = null;
     await super.onDisconnect();
   }
 }

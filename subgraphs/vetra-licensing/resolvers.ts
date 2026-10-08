@@ -102,7 +102,7 @@ export interface ResolverDeps {
   migrationComplete(): Promise<boolean>;
   cfg: LicensingConfig;
   now(): string;
-  /** Forwards a user stat to Renown as the app; a stub returning false until the relay exists. */
+  /** Forwards a user stat to Renown as the app (reporting.ts relayUserStat); false when refused or off. */
   relay: (token: string | null, input: { user: string; metric: string; value: number }) => Promise<boolean>;
 }
 

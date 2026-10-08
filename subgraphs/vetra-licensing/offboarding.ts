@@ -104,6 +104,11 @@ export interface OffboardingDeps {
   wake(environmentId: string): Promise<void>;
   /** Hard delete of the environment document (gitops + namespace teardown follow). */
   destroy(environmentId: string): Promise<void>;
+  /**
+   * Drops what else belongs to a destroyed environment (its reporting token).
+   * Runs before the row is removed, so a failure is retried on the next tick.
+   */
+  forgetEnvironment?(environmentId: string): Promise<void>;
   cfg: Pick<LicensingConfig, "destroyEnabled">;
   logger: Pick<Console, "info" | "warn">;
   now(): string;
@@ -187,6 +192,7 @@ export async function tickOffboarding(deps: OffboardingDeps, rows: LicenseEnviro
           continue;
         }
         if (status !== null) await deps.destroy(id);
+        await deps.forgetEnvironment?.(id);
         await deps.rows.remove(id);
         deps.logger.info(`[licensing] destroyed ${id}, ${DESTROY_AFTER_DAYS} days after its licence ended`);
         continue;

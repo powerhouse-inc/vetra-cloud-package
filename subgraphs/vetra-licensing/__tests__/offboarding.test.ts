@@ -130,6 +130,39 @@ describe("offboarding against rows", () => {
     expect(await row()).toBeNull();
   });
 
+  it("forgets the environment's reporting token when it destroys it, also when the environment is already gone", async () => {
+    const forgotten: string[] = [];
+    deps.forgetEnvironment = vi.fn(async (id: string) => { forgotten.push(id); });
+    await markEnded(deps, "e1");
+    now = at(90);
+    status.delete("e1");
+    await tickOffboarding(deps, [(await row())!]);
+    expect(deps.destroy).not.toHaveBeenCalled();
+    expect(forgotten).toStrictEqual(["e1"]);
+    expect(await row()).toBeNull();
+  });
+
+  it("keeps the row when forgetting the token fails, so the next tick retries", async () => {
+    deps.forgetEnvironment = vi.fn().mockRejectedValueOnce(new Error("db down")).mockResolvedValue(undefined);
+    await markEnded(deps, "e1");
+    now = at(90);
+    await tickOffboarding(deps, [(await row())!]);
+    expect(await row()).not.toBeNull();
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("db down"));
+    await tickOffboarding(deps, [(await row())!]);
+    expect(deps.forgetEnvironment).toHaveBeenCalledTimes(2);
+    expect(await row()).toBeNull();
+  });
+
+  it("does not forget the token while the destroy is only logged", async () => {
+    deps.cfg = { destroyEnabled: false };
+    deps.forgetEnvironment = vi.fn(async () => {});
+    await markEnded(deps, "e1");
+    now = at(90);
+    await tickOffboarding(deps, [(await row())!]);
+    expect(deps.forgetEnvironment).not.toHaveBeenCalled();
+  });
+
   it("only logs the destroy while LICENSING_DESTROY_ENABLED is off", async () => {
     deps.cfg = { destroyEnabled: false };
     await markEnded(deps, "e1");
