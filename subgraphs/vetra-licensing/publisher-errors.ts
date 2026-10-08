@@ -28,10 +28,6 @@ import {
 export class NotOnAllowListError extends Error {
   override name = "NotOnAllowListError";
 }
-/** Legacy machine grant path: the licence type is missing, inactive or another app's. */
-export class LicenseTypeNotIssuableError extends Error {}
-/** Legacy machine grant path: the holder is not a 0x address. */
-export class InvalidHolderAddressError extends Error {}
 
 /**
  * "Not yours" and "does not exist" are ONE error with a fixed message that
@@ -175,8 +171,6 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
       UnknownTemplateSizeError,
       UnsupportedTemplateServiceError,
       MissingPackageNameError,
-      InvalidHolderAddressError,
-      LicenseTypeNotIssuableError,
       AppEnvironmentCapReachedError,
       EnvironmentOwnershipMismatchError,
       UnresolvedFusionServiceError,

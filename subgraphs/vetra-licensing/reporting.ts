@@ -133,13 +133,18 @@ export async function ensureReportingTokens(
   const todo: string[] = [];
   const free = new Set<string>();
   for (const id of candidates) {
+    // GONE first: an environment that will never run again gets no hash
+    // recorded, even for a token that was written before it was destroyed.
+    const status = await deps.envStatus(id).catch(() => null);
+    if (status !== null && GONE.has(status)) {
+      unrecorded.delete(id);
+      continue;
+    }
     if (unrecorded.has(id)) {
       todo.push(id);
       free.add(id);
       continue;
     }
-    const status = await deps.envStatus(id).catch(() => null);
-    if (status !== null && GONE.has(status)) continue;
     todo.push(id);
     if (status !== null && ASLEEP.has(status)) free.add(id);
   }

@@ -254,6 +254,29 @@ describe("environments that will never run again", () => {
   });
 });
 
+describe("a destroyed environment with a token written but not recorded", () => {
+  it("never gets its hash recorded: the status check runs before the unrecorded-token branch", async () => {
+    let status = "READY";
+    const deps: ReportingDeps = { ...rep, envStatus: async () => status };
+    const insert = vi.spyOn(db, "insertInto");
+    insert.mockImplementationOnce(() => { throw new Error("db down"); });
+    const issuer = createReportingTokenIssuer(deps, 5);
+    issuer.startTick();
+    await issuer.issue(["e1"]);
+    insert.mockRestore();
+    expect(setSecrets).toHaveBeenCalledTimes(1);
+
+    status = "DESTROYED";
+    issuer.startTick();
+    await issuer.issue(["e1"]);
+    issuer.endTick();
+    // Neither a second secret write nor a recorded hash for the gone environment.
+    expect(setSecrets).toHaveBeenCalledTimes(1);
+    expect(await db.selectFrom("environment_reporting_tokens").selectAll().execute()).toStrictEqual([]);
+    expect(await environmentForToken(db, "token-1")).toBeNull();
+  });
+});
+
 describe("relayUserStat", () => {
   let relay: RelayDeps;
   let enqueue: ReturnType<typeof vi.fn>;

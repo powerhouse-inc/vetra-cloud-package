@@ -23,23 +23,6 @@ import {
 import type { LicenseReads } from "./reads.js";
 import { REPORTING_HEADER } from "./reporting.js";
 
-/** The legacy reads' shapes (reads.ts); removed with them. */
-export interface LicenseView {
-  id: string;
-  user: string;
-  licenseTypeId: string;
-  status: string;
-  start: string | null;
-  end: string | null;
-}
-
-export interface LicenseTypeView {
-  id: string;
-  kind: string;
-  status: string;
-  templateHash: string;
-}
-
 /**
  * Thrown by every write when licensing is switched off for this deployment.
  * Reads are never gated, so an operator can still inspect licences and

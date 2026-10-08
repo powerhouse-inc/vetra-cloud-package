@@ -233,6 +233,46 @@ describe("startup migration: edges", { timeout: 60_000 }, () => {
     expect(report.complete).toBe(false);
   });
 
+  it("counts a type as referenced from the grant row first; a forged type id on the licence document counts for nothing", async () => {
+    const APP = "7d1f6f5c-1f0e-4a8b-9d55-0c3b9b8f2a77";
+    const w = await world({ legacy: "none", appRows: [{ id: APP, status: "ACTIVE" }] });
+    await w.appDocs.create(APP);
+    const types = createReactorLicenseTypeGateway(w.client as never);
+    const real = await types.create();
+    await types.execute(real, [
+      typeActions.setLicenseTypeDetails({ app: APP, kind: "pro", label: "Real", validityDays: 30 }),
+      typeActions.addTemplateService({ id: "s", type: "CONNECT" as never, prefix: "connect", artifactName: null, artifactChannel: null }),
+      typeActions.publishLicenseType({}),
+      typeActions.retireLicenseType({}),
+    ]);
+    const forged = await types.create();
+    await types.execute(forged, [
+      typeActions.setLicenseTypeDetails({ app: APP, kind: "pro", label: "Forged", validityDays: 30 }),
+      typeActions.addTemplateService({ id: "s", type: "CONNECT" as never, prefix: "connect", artifactName: null, artifactChannel: null }),
+      typeActions.publishLicenseType({}),
+    ]);
+    const plain = createReactorLicenseGateway(w.client as never);
+    const licence = await plain.create();
+    // The document names the forged (ACTIVE, would-win-the-kind) type; the grant row names the real one.
+    await plain.execute(licence, [
+      licenseActions.issueLicense({
+        app: APP, licenseType: forged, kind: null, user: addr(8), issuer: "PUBLISHER_GRANT", issuedBy: PUBLISHER,
+        stage: null, details: null, issued: at(-5), start: at(-5), end: at(25),
+      }),
+      licenseActions.activateLicense({}),
+    ]);
+    await w.db.insertInto("app_license_grants").values({
+      license_id: licence, app_id: APP, license_type_id: real, user_address: addr(8), issued_by: PUBLISHER,
+      created_at: at(-5), kind: null, user_did: null,
+    }).execute();
+    await runLicensingMigration(w.deps);
+    const map = new Map((await w.db.selectFrom("licensing_migration_type_map").select(["license_type_id", "kind"]).execute()).map((r) => [r.license_type_id, r.kind]));
+    expect(map.get(real)).toBe("pro");
+    expect(map.get(forged)).toBe(`pro-${forged.slice(0, 8)}`);
+    const app = (await w.deps.apps.app(APP))!;
+    expect(app.terms.find((t) => t.id === `term-${forged}`)?.status).toBe("DRAFT");
+  });
+
   it("never records a squatted studio document in the ledger, so the squat is still caught once the publisher is set", async () => {
     const w = await world({ legacy: "none" });
     const squat = appUtils.createDocument();

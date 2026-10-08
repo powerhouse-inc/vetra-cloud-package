@@ -15,7 +15,7 @@ import {
 } from "./environments.js";
 import type { GrantProvenance } from "./grants.js";
 import type { LifecycleRecord } from "./lifecycle.js";
-import { UNAPPLIED_TEMPLATE_HASH } from "./provision.js";
+import { UNAPPLIED_TEMPLATE_HASH } from "./environments.js";
 import type { LicenceRecord } from "./reads.js";
 
 export interface HandlerDeps {

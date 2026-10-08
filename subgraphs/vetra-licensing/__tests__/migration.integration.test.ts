@@ -25,7 +25,7 @@ import { createHolderLicences } from "../licence-view.js";
 import { studioAccess, studioKeyForDid } from "../studio-access.js";
 import { createStudioAccessDeps } from "../studio-access-factory.js";
 import { renderCreateActions, templateHash, type TemplateShape } from "../template.js";
-import { UNAPPLIED_TEMPLATE_HASH } from "../provision.js";
+import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
 import { LEGACY_LICENSE_TYPE_DOC_TYPE, type LegacyAccessDB } from "../migration/legacy.js";
 import { STUDIO_APP_ID, STUDIO_KIND, STUDIO_TERM_ID, STUDIO_TEMPLATE_ID } from "../migration/studio.js";
 import type { MigrationDeps } from "../migration/steps.js";

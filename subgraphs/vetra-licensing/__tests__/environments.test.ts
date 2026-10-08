@@ -11,7 +11,7 @@ import {
   createChainEnvironmentRows, provisionChain, provisionChainExclusive, withChainLock,
   type ChainEnvDeps, type ProvisionChainInput,
 } from "../environments.js";
-import { UNAPPLIED_TEMPLATE_HASH } from "../provision.js";
+import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
 
 const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 const OTHER_DID = "did:pkh:eip155:1:0x2222222222222222222222222222222222222222";

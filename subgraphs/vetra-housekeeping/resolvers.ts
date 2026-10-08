@@ -3,7 +3,7 @@ import type { StudioPowerStatus } from "./policy.js";
 import type { StudioActivity } from "./keeper.js";
 
 /**
- * Subset of the reactor-api resolver context — mirrors vetra-access-codes.
+ * Subset of the reactor-api resolver context — same shape as the other subgraphs.
  *
  * `headers` is the real reactor-api `Context.headers` (IncomingHttpHeaders):
  * unlike `user` (populated by the gateway's own bearer-verification, and

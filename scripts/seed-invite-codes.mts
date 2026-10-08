@@ -1,5 +1,16 @@
-/** Seed early-access invite codes, optionally attaching a Claude API key to each. */
-// Config format and usage: subgraphs/vetra-access-codes/README.md
+/** Seed invite codes for one app term, optionally attaching a Claude API key to each. */
+// Calls the publisher API (`vetraPublisher { createInviteCode }` on the
+// vetra-licensing subgraph; schema: subgraphs/vetra-licensing/publisher-schema.ts).
+// The bearer token must belong to the app's owner (or an ADMINS address).
+//
+// Usage:
+//   node --experimental-strip-types scripts/seed-invite-codes.mts \
+//     --endpoint <switchboard-graphql-url> --token <bearer> \
+//     --app <appId> --kind <term kind> --config keys.json \
+//     [--prefix vetra] [--expires-days 30] [--out handout.csv] [--dry-run]
+//
+// Config: a JSON array of { label?, anthropicApiKey?, count, maxUses?, expiresAt? }
+// (see seed-invite-codes.example.json). `anthropicApiKey` is sent as `anthropicKey`.
 import { parseArgs } from "node:util";
 import { randomInt } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -61,26 +72,13 @@ function generateCode(prefix: string, used: Set<string>): string {
 }
 
 const CREATE_MUTATION = `
-  mutation Create(
-    $code: String!
-    $label: String
-    $expiresAt: String
-    $maxUses: Int
-    $anthropicApiKey: String
-  ) {
-    VetraAccessCodes {
-      createInviteCode(
-        code: $code
-        label: $label
-        expiresAt: $expiresAt
-        maxUses: $maxUses
-        anthropicApiKey: $anthropicApiKey
-      ) {
+  mutation Create($input: CreateInviteCodeInput!) {
+    vetraPublisher {
+      createInviteCode(input: $input) {
         code
         label
         maxUses
         expiresAt
-        redemptions
         hasAnthropicKey
       }
     }
@@ -92,7 +90,6 @@ type CreateResult = {
   label: string | null;
   maxUses: number | null;
   expiresAt: string | null;
-  redemptions: number;
   hasAnthropicKey: boolean;
 };
 
@@ -113,13 +110,13 @@ async function createInviteCode(
     throw new Error(`HTTP ${res.status} ${res.statusText}: ${await res.text()}`);
   }
   const json = (await res.json()) as {
-    data?: { VetraAccessCodes?: { createInviteCode?: CreateResult } };
+    data?: { vetraPublisher?: { createInviteCode?: CreateResult } };
     errors?: Array<{ message?: string }>;
   };
   if (json.errors?.length) {
     throw new Error(json.errors.map((e) => e.message).join("; "));
   }
-  const created = json.data?.VetraAccessCodes?.createInviteCode;
+  const created = json.data?.vetraPublisher?.createInviteCode;
   if (!created) throw new Error("Mutation returned no data");
   return created;
 }
@@ -174,6 +171,8 @@ async function main(): Promise<void> {
     options: {
       endpoint: { type: "string" },
       token: { type: "string" },
+      app: { type: "string" },
+      kind: { type: "string" },
       config: { type: "string" },
       prefix: { type: "string", default: "vetra" },
       "expires-days": { type: "string" },
@@ -188,6 +187,11 @@ async function main(): Promise<void> {
   const dryRun = values["dry-run"];
   const prefix = values.prefix.trim();
 
+  const appId = values.app;
+  const kind = values.kind;
+
+  if (!appId) throw new Error("--app <appId> is required");
+  if (!kind) throw new Error("--kind <term kind> is required");
   if (!configPath) throw new Error("--config <path-to-keys.json> is required");
   if (!dryRun && !endpoint) throw new Error("--endpoint <switchboard-graphql-url> is required");
   if (!dryRun && !token) {
@@ -230,15 +234,17 @@ async function main(): Promise<void> {
       }
       try {
         const result = await createInviteCode(endpoint!, token, {
-          code,
-          label,
-          expiresAt,
-          maxUses: entry.maxUses ?? null,
-          anthropicApiKey: entry.anthropicApiKey ?? null,
+          input: {
+            appId,
+            kind,
+            code,
+            label,
+            expiresAt,
+            maxUses: entry.maxUses ?? null,
+            anthropicKey: entry.anthropicApiKey ?? null,
+          },
         });
-        // createInviteCode is idempotent on the code string: a random-name
-        // collision returns the pre-existing (redeemed or differently-keyed) row.
-        if (result.redemptions > 0 || result.hasAnthropicKey !== wantsKey) {
+        if (result.hasAnthropicKey !== wantsKey) {
           throw new Error(`name collided with an existing code (${code}); re-run to mint a fresh one`);
         }
         created.push({

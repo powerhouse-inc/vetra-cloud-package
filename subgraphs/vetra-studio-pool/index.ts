@@ -35,7 +35,7 @@ const ENV_DOC_TYPE = "powerhouse/vetra-cloud-environment";
  * Warm pool for Vetra Studio. Two responsibilities, both in-process:
  *  - `claimStudioEnvironment` mutation: atomically assigns a warm env to an
  *    caller with an active studio licence, transfers ownership (system SET_OWNER), and injects the
- *    code's attached key (reusing the access-codes lookup + secrets service).
+ *    licence's attached key (found through the licensing tables, written via the secrets service).
  *  - PoolKeeper worker: creates/maintains STUDIO_POOL_SIZE warm envs via the
  *    reactor client directly (no wallet, no separate service). Started only when
  *    STUDIO_POOL_SIZE > 0.

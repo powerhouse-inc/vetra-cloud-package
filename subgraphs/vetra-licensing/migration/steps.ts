@@ -277,14 +277,26 @@ export async function migrateLicenseTypes(deps: MigrationDeps, report: Migration
     if (t) types.push(t);
     else report.problems.push(`licence type document ${docId(doc) ?? "(no id)"} is unreadable; it can be neither migrated nor deleted`);
   }
-  // Types some authorised licence was issued on: a grant row's
-  // license_type_id, or the type of a licence with a grant or chain row.
-  const grants = await deps.db.selectFrom("app_license_grants").select(["license_id", "license_type_id"]).execute();
-  const chained = new Set((await deps.db.selectFrom("license_chain").select("license_id").execute()).map((r) => r.license_id));
-  const granted = new Set(grants.map((g) => g.license_id));
-  const referenced = new Set(grants.map((g) => g.license_type_id).filter(Boolean));
+  // Types some authorised licence was issued on. A grant row's license_type_id
+  // wins. Only a grant without one falls back to the licence document's own
+  // type id, and only when that type belongs to the app the grant (or chain)
+  // names: the document is not trusted, so a forged type id cannot make
+  // another app's type referenced.
+  const grants = await deps.db.selectFrom("app_license_grants").select(["license_id", "app_id", "license_type_id"]).execute();
+  const chains = await deps.db.selectFrom("license_chain").select(["license_id", "app_id"]).execute();
+  const authorisedApp = new Map<string, string>();
+  for (const c of chains) authorisedApp.set(c.license_id, c.app_id);
+  const grantTypeOf = new Map<string, string>();
+  for (const g of grants) {
+    authorisedApp.set(g.license_id, g.app_id);
+    if (g.license_type_id) grantTypeOf.set(g.license_id, g.license_type_id);
+  }
+  const typeApp = new Map(types.map((t) => [t.id, t.app]));
+  const referenced = new Set(grantTypeOf.values());
   for (const l of await deps.licences()) {
-    if (l.legacyLicenseTypeId && (granted.has(l.id) || chained.has(l.id))) referenced.add(l.legacyLicenseTypeId);
+    if (grantTypeOf.has(l.id) || !l.legacyLicenseTypeId) continue;
+    const app = authorisedApp.get(l.id);
+    if (app !== undefined && typeApp.get(l.legacyLicenseTypeId) === app) referenced.add(l.legacyLicenseTypeId);
   }
   // Two types of one app may share a kind; the one that keeps it plain is a
   // referenced one first, then the live one (ACTIVE, then RETIRED, which has

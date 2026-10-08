@@ -1,13 +1,7 @@
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
 import { parseAppDocument } from "./app-reads.js";
-import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
+import { docId, globalState, isDocType, str } from "./doc-parse.js";
 import type { LicenseRow, LicenseStatusName } from "./transitions.js";
-import type { LicenseTypeView, LicenseView } from "./resolvers.js";
-import { templateHash, type TemplateShape } from "./template.js";
-import {
-  resolveTemplateArtifacts,
-  templateNeedsArtifacts,
-} from "./artifact-resolution.js";
 
 export const LICENSE_DOC_TYPE = "powerhouse/app-owner-license";
 export const LICENSE_TYPE_DOC_TYPE = "powerhouse/app-license-type";
@@ -30,33 +24,6 @@ export interface LicenseClientLike {
     paging?: { cursor: string; limit: number },
   ): Promise<{ results: unknown[]; nextCursor?: string }>;
   get(id: string): Promise<unknown>;
-}
-
-export interface LicenseFullRow {
-  id: string;
-  app: string;
-  user: string;
-  licenseTypeId: string;
-  status: LicenseStatusName;
-  start: string | null;
-  end: string | null;
-}
-
-/** A licence type with the fields the publisher dashboard shows. */
-export interface LicenseTypeDetail {
-  /**
-   * Why this type's artifacts could not be resolved, or null when they were.
-   * A type that cannot be resolved is not provisioned: the licence is HELD, not
-   * given an environment running some other version. See artifact-resolution.ts.
-   */
-  resolutionError: string | null;
-  id: string;
-  kind: string;
-  label: string | null;
-  status: string;
-  validityDays: number | null;
-  templateHash: string;
-  template: TemplateShape;
 }
 
 /**
@@ -106,24 +73,8 @@ export interface LicenceRecord {
 export interface LicenseReads {
   /** Every artifact the app has published, for the template builder's selects. */
   appArtifacts(appId: string): Promise<AppArtifact[]>;
-  /** Every licence type of one app, with label, validity and template contents. */
-  licenseTypeDetails(appId: string): Promise<LicenseTypeDetail[]>;
-  licenses(appId: string, status: string | null): Promise<LicenseView[]>;
-  licenseTypes(appId: string): Promise<LicenseTypeView[]>;
-  templateFor(licenseId: string): Promise<TemplateShape | null>;
-  /** One licence type by document id; null when missing or not a licence type. */
-  licenseType(id: string): Promise<{
-    id: string;
-    app: string;
-    status: string;
-    validityDays: number | null;
-  } | null>;
-  /** One licence by document id; null when missing, malformed or without an app. */
-  license(id: string): Promise<LicenseFullRow | null>;
   /** Every licence across all apps; the keeper is global. */
   listLicenses(): Promise<LicenseRow[]>;
-  /** Every licence across all apps, with the fields provisioning needs. */
-  allLicenses(): Promise<LicenseFullRow[]>;
   /** One licence by document id; null when missing, not a licence, malformed or without an app. */
   licenceRecord(id: string): Promise<LicenceRecord | null>;
   /** Every well-formed licence with an app, across all apps. */
@@ -203,100 +154,6 @@ function toRecord(doc: unknown): LicenceRecord | null {
   };
 }
 
-interface ParsedLicenseType {
-  id: string;
-  app: string | null;
-  kind: string;
-  label: string | null;
-  status: string;
-  validityDays: number | null;
-  template: TemplateShape | null;
-}
-
-function parseTemplate(raw: unknown): TemplateShape | null {
-  if (!isRec(raw)) return null;
-  if (!Array.isArray(raw.services) || !Array.isArray(raw.packages)) return null;
-  const services = [];
-  for (const s of raw.services) {
-    if (!isRec(s)) return null;
-    const id = str(s.id);
-    const type = str(s.type);
-    if (id === null || type === null) return null;
-    services.push({ id, type, prefix: str(s.prefix) });
-  }
-  const packages = [];
-  for (const p of raw.packages) {
-    if (!isRec(p)) return null;
-    const id = str(p.id);
-    if (id === null) return null;
-    packages.push({
-      id,
-      packageName: str(p.packageName),
-      version: str(p.version),
-    });
-  }
-  return {
-    services,
-    packages,
-    size: str(raw.size),
-    baseDomain: str(raw.baseDomain),
-    packageRegistry: str(raw.packageRegistry),
-  };
-}
-
-const EMPTY_TEMPLATE: TemplateShape = {
-  services: [],
-  packages: [],
-  size: null,
-  baseDomain: null,
-  packageRegistry: null,
-};
-
-function parseLicenseType(doc: unknown): ParsedLicenseType | null {
-  const id = docId(doc);
-  const g = globalState(doc);
-  if (!id || !g) return null;
-  const status = str(g.status);
-  if (!status) return null;
-  return {
-    id,
-    app: str(g.app),
-    kind: str(g.kind) ?? "",
-    label: str(g.label),
-    status,
-    validityDays: typeof g.validityDays === "number" ? g.validityDays : null,
-    template: parseTemplate(g.template),
-  };
-}
-
-/**
- * Resolves a template's artifacts, or reports why it could not.
- *
- * Never throws: one unresolvable type must not blank an app's whole list. The
- * error travels with the type so provisioning can HOLD that licence while every
- * other type of the app is still planned normally.
- *
- * On failure the hash stays the unresolved one, which is stable — an app whose
- * image was yanked does not churn every tick.
- */
-function resolveSafely(
-  template: TemplateShape,
-  artifacts: AppArtifact[],
-): { template: TemplateShape; error: string | null } {
-  if (!templateNeedsArtifacts(template)) return { template, error: null };
-  try {
-    return {
-      template: resolveTemplateArtifacts(template, artifacts),
-      error: null,
-    };
-  } catch (err) {
-    return {
-      template,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
 /** Every document of one type, following the cursor to exhaustion. */
 export async function findAllOfType(client: LicenseClientLike, type: string): Promise<unknown[]> {
   const out: unknown[] = [];
@@ -338,42 +195,6 @@ export function createReactorLicenseReads(
   }
 
   return {
-    async licenses(appId, status) {
-      return (await parsedLicenses())
-        .filter(
-          (l) => l.app === appId && (status === null || l.status === status),
-        )
-        .map((l) => ({
-          id: l.id,
-          user: l.user,
-          licenseTypeId: l.licenseTypeId ?? "",
-          status: l.status,
-          start: l.start,
-          end: l.end,
-        }));
-    },
-
-    async licenseTypes(appId) {
-      const [docs, artifacts] = await Promise.all([
-        findAll(LICENSE_TYPE_DOC_TYPE),
-        this.appArtifacts(appId),
-      ]);
-      return docs.flatMap((d) => {
-        const t = parseLicenseType(d);
-        if (!t || t.app !== appId) return [];
-        return [
-          {
-            id: t.id,
-            kind: t.kind,
-            status: t.status,
-            templateHash: templateHash(
-              resolveSafely(t.template ?? EMPTY_TEMPLATE, artifacts).template,
-            ),
-          },
-        ];
-      });
-    },
-
     async appArtifacts(appId) {
       // The app document's id is the app id, so this is a direct get. A missing
       // document means the app has published nothing yet — an empty list, not
@@ -381,76 +202,6 @@ export function createReactorLicenseReads(
       // Artifacts only, for the template builder and the legacy type hash; the
       // integrity check (createAppReads) guards templates and terms.
       return parseAppDocument(await getDoc(appId))?.artifacts ?? [];
-    },
-
-    async licenseTypeDetails(appId) {
-      // One artifact read per app per tick, shared by every type of that app.
-      const [docs, artifacts] = await Promise.all([
-        findAll(LICENSE_TYPE_DOC_TYPE),
-        this.appArtifacts(appId),
-      ]);
-      return docs.flatMap((d) => {
-        const t = parseLicenseType(d);
-        if (!t || t.app !== appId) return [];
-        const resolved = resolveSafely(t.template ?? EMPTY_TEMPLATE, artifacts);
-        return [
-          {
-            id: t.id,
-            kind: t.kind,
-            label: t.label,
-            status: t.status,
-            validityDays: t.validityDays,
-            // Over the RESOLVED template: a publish moves the channel, which
-            // moves this hash, which is what makes the keeper re-provision.
-            templateHash: templateHash(resolved.template),
-            template: resolved.template,
-            resolutionError: resolved.error,
-          },
-        ];
-      });
-    },
-
-    async templateFor(licenseId) {
-      const license = parseLicense(await getDoc(licenseId));
-      if (!license?.licenseTypeId) return null;
-      const type = parseLicenseType(await getDoc(license.licenseTypeId));
-      // A RETIRED type still resolves: the licence is the entitlement and the
-      // type is only where the template comes from. Retire means "no new
-      // grants"; it never ends service for existing holders. This must agree
-      // with the provisioning keeper (resolveTemplateForLicence).
-      if (!type) return null;
-      return type.template;
-    },
-
-    async licenseType(id) {
-      // By-id reads must check the type: a licence document would otherwise
-      // parse as a licence type (and vice versa).
-      const doc = await getDoc(id);
-      if (!isDocType(doc, LICENSE_TYPE_DOC_TYPE)) return null;
-      const t = parseLicenseType(doc);
-      if (!t || t.app === null) return null;
-      return {
-        id: t.id,
-        app: t.app,
-        status: t.status,
-        validityDays: t.validityDays,
-      };
-    },
-
-    async license(id) {
-      const doc = await getDoc(id);
-      if (!isDocType(doc, LICENSE_DOC_TYPE)) return null;
-      const l = parseLicense(doc);
-      if (!l || l.app === null) return null;
-      return {
-        id: l.id,
-        app: l.app,
-        user: l.user,
-        licenseTypeId: l.licenseTypeId ?? "",
-        status: l.status,
-        start: l.start,
-        end: l.end,
-      };
     },
 
     async listLicenses() {
@@ -478,25 +229,6 @@ export function createReactorLicenseReads(
         if (r) out.push(r);
       }
       return out;
-    },
-
-    async allLicenses() {
-      // parseLicense already validates status and lowercases user.
-      return (await parsedLicenses()).flatMap((l) =>
-        l.app === null
-          ? []
-          : [
-              {
-                id: l.id,
-                app: l.app,
-                user: l.user,
-                licenseTypeId: l.licenseTypeId ?? "",
-                status: l.status,
-                start: l.start,
-                end: l.end,
-              },
-            ],
-      );
     },
   };
 }

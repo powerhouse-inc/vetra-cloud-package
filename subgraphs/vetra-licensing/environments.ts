@@ -5,7 +5,6 @@ import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { addressOfDid } from "./did.js";
 import { keyedMutex, LockTimeoutError, type AcquireOptions } from "./keyed-mutex.js";
-import { AppEnvironmentCapReachedError, UNAPPLIED_TEMPLATE_HASH } from "./provision.js";
 import {
   renderCreateActions,
   renderFloorUpdateActions,
@@ -13,7 +12,16 @@ import {
   type TemplateShape,
 } from "./template.js";
 
-export { AppEnvironmentCapReachedError };
+export class AppEnvironmentCapReachedError extends Error {
+  override name = "AppEnvironmentCapReachedError";
+}
+
+/**
+ * The `template_hash` of a row that owns an environment document whose template
+ * has not been applied yet. Never a sha256, so it can never compare equal to a
+ * wanted hash: the next call always re-applies against the claimed document.
+ */
+export const UNAPPLIED_TEMPLATE_HASH = "unapplied";
 
 /** The environment is asleep, mid-transition or gone; nothing is dispatched and the next tick retries. */
 export class EnvironmentNotReadyError extends Error {
