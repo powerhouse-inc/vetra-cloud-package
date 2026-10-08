@@ -7,9 +7,6 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
     addPackageOperation(state, action) {
       assertOwner(state, action);
       const { packageName, version, registry } = action.input;
-      if (!state.packages) {
-        state.packages = [];
-      }
       const resolvedVersion = version ?? "latest";
       const resolvedRegistry = registry || state.defaultPackageRegistry || "";
       const existing = state.packages.find((p) => p.name === packageName);
@@ -28,9 +25,6 @@ export const vetraCloudEnvironmentPackagesOperations: VetraCloudEnvironmentPacka
     removePackageOperation(state, action) {
       assertOwner(state, action);
       const { packageName } = action.input;
-      if (!state.packages) {
-        state.packages = [];
-      }
       if (packageName) {
         state.packages = state.packages.filter((p) => p.name !== packageName);
         markPendingIfDeployed(state);

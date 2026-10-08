@@ -22,9 +22,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           "clintConfig is required when enabling a CLINT service",
         );
       }
-      if (!state.services) {
-        state.services = [];
-      }
       const collision = state.services.find(
         (s) => s.prefix === prefix && s.type !== type,
       );
@@ -47,7 +44,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
               // a reference to the env name. The actual encrypted value
               // lives in tenant_secrets (written separately via the
               // vetra-cloud-secrets `setSecret` mutation).
-              env: (clintConfig.env ?? []).map((e) => ({
+              env: clintConfig.env.map((e) => ({
                 name: e.name,
                 value: e.isSecret === true ? null : (e.value ?? null),
                 isSecret: e.isSecret ?? null,
@@ -88,9 +85,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     disableServiceOperation(state, action) {
       assertOwner(state, action);
       const { type, prefix } = action.input;
-      if (!state.services) {
-        state.services = [];
-      }
       // CLINT supports multiple services per env keyed by prefix; without
       // a prefix the lookup would silently disable whichever clint
       // happens to come first (a real bug for multi-agent envs). When a
@@ -163,9 +157,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     setServiceConfigOperation(state, action) {
       const { prefix, config } = action.input;
-      if (!state.services) {
-        state.services = [];
-      }
       const service = state.services.find((s) => s.prefix === prefix);
       if (!service) {
         throw new ServiceNotFoundError(`No service with prefix '${prefix}'`);
@@ -182,7 +173,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           version: config.package.version ?? null,
         },
         // Same secret-value drop as enableService — see comment there.
-        env: (config.env ?? []).map((e) => ({
+        env: config.env.map((e) => ({
           name: e.name,
           value: e.isSecret === true ? null : (e.value ?? null),
           isSecret: e.isSecret ?? null,
@@ -197,9 +188,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
     },
     setServiceSizeOperation(state, action) {
       assertOwner(state, action);
-      if (!state.services) {
-        state.services = [];
-      }
       const service = state.services.find(
         (s) => s.prefix === action.input.prefix,
       );
@@ -241,7 +229,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           throw new InvalidFusionConfigError(`Invalid auto-update tag pattern '${pattern}'`);
         }
       }
-      for (const e of env ?? []) {
+      for (const e of env) {
         // Names become YAML keys and env var names in the rendered values.
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.name)) {
           throw new InvalidFusionConfigError(`Invalid env name '${e.name}'`);
@@ -256,7 +244,7 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         image: repo,
         // Secret values never live in the document — the UI writes them to the
         // tenant secrets store; the pod gets them via envFrom <tenant>-secrets.
-        env: (env ?? []).map((e) => ({
+        env: env.map((e) => ({
           name: e.name,
           value: e.isSecret === true ? null : (e.value ?? null),
           isSecret: e.isSecret ?? null,

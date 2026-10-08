@@ -163,9 +163,7 @@ export function validateRuntimeConfig(json: unknown): ValidationResult {
   const issues: RuntimeConfigIssue[] = (validate.errors ?? []).map(
     (e: ErrorObject) => ({
       path: e.instancePath || "/",
-      message: `${e.message ?? "invalid"}${
-        e.params ? ` (${JSON.stringify(e.params)})` : ""
-      }`,
+      message: `${e.message ?? "invalid"} (${JSON.stringify(e.params)})`,
     }),
   );
   return { ok: false, issues };
