@@ -139,8 +139,27 @@ export interface AppLicensingState {
   updated_at: string;
 }
 
+/**
+ * A system write about to be made to an app document (licensing-ledger.ts):
+ * lets a later read or write record the result when the write applied but
+ * recording it failed. `done_at` is set once the ledger reflects it.
+ */
+export interface AppLicensingIntent {
+  id: string;
+  app_id: string;
+  /** The recorded hash the write started from. */
+  base_hash: string;
+  /** The document's global revision before the write. */
+  base_revision: number;
+  /** JSON array of the batch's action ids (server-generated). */
+  action_ids: string;
+  created_at: string;
+  done_at: string | null;
+}
+
 export interface VetraLicensingDB {
   app_licensing_state: AppLicensingState;
+  app_licensing_intent: AppLicensingIntent;
   app_license_grants: AppLicenseGrants;
   app_user_environments: AppUserEnvironments;
   app_environment_limits: AppEnvironmentLimits;

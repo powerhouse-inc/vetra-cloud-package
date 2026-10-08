@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Action } from "document-model";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import type { DocGateway } from "./doc-gateway.js";
@@ -24,8 +24,8 @@ import { globalState } from "./doc-parse.js";
  * Writers: vetra-licensing (publisher mutations, migration) through
  * `createAppLicensingWriter`, and vetra-apps (backfill, row mirror, CI artifact
  * registration) through its app document store (app-doc-store.ts), which opens
- * the "vetra-licensing" namespace for this one table. Both go through
- * `appendAppOps`. Any other system write to those fields makes the app read as
+ * the "vetra-licensing" namespace for the ledger tables. Both go through
+ * `AppLedger.append` (createAppLedger). Any other system write to those fields makes the app read as
  * tampered: the safe direction.
  */
 
@@ -74,16 +74,56 @@ export function licensingStateOf(doc: unknown): LedgerState {
   return { templates: g?.templates, terms: g?.terms, artifacts: g?.artifacts };
 }
 
-/** The table, for subgraphs that reach the namespace without running its migrations. */
-export async function ensureAppLicensingStateTable(db: Kysely<any>): Promise<void> {
-  await db.schema
-    .createTable("app_licensing_state")
-    .addColumn("app_id", "text", (c) => c.notNull())
-    .addColumn("state_hash", "text", (c) => c.notNull())
-    .addColumn("updated_at", "text", (c) => c.notNull())
-    .addPrimaryKeyConstraint("app_licensing_state_pkey", ["app_id"])
-    .ifNotExists()
-    .execute();
+
+/** SQLSTATEs a concurrent CREATE ... IF NOT EXISTS still raises (unique_violation on the catalog, duplicate_table). */
+const CONCURRENT_CREATE = new Set(["23505", "42P07"]);
+
+async function tolerateConcurrentCreate(create: () => Promise<unknown>): Promise<void> {
+  try {
+    await create();
+  } catch (err) {
+    if (!CONCURRENT_CREATE.has((err as { code?: string } | null)?.code ?? "")) throw err;
+  }
+}
+
+/**
+ * The ledger tables (forward-only, idempotent), for every subgraph that writes
+ * them: vetra-licensing's up() and vetra-apps on first use, since boot order is
+ * not fixed and replicas may boot at the same time.
+ */
+export async function ensureLedgerTables(db: Kysely<any>): Promise<void> {
+  await tolerateConcurrentCreate(() =>
+    db.schema
+      .createTable("app_licensing_state")
+      .addColumn("app_id", "text", (c) => c.notNull())
+      .addColumn("state_hash", "text", (c) => c.notNull())
+      .addColumn("updated_at", "text", (c) => c.notNull())
+      .addPrimaryKeyConstraint("app_licensing_state_pkey", ["app_id"])
+      .ifNotExists()
+      .execute(),
+  );
+  await tolerateConcurrentCreate(() =>
+    db.schema
+      .createTable("app_licensing_intent")
+      .addColumn("id", "text", (c) => c.notNull())
+      .addColumn("app_id", "text", (c) => c.notNull())
+      .addColumn("base_hash", "text", (c) => c.notNull())
+      .addColumn("base_revision", "integer", (c) => c.notNull())
+      .addColumn("action_ids", "text", (c) => c.notNull())
+      .addColumn("created_at", "text", (c) => c.notNull())
+      .addColumn("done_at", "text")
+      .addPrimaryKeyConstraint("app_licensing_intent_pkey", ["id"])
+      .ifNotExists()
+      .execute(),
+  );
+  await tolerateConcurrentCreate(() =>
+    db.schema
+      .createIndex("app_licensing_intent_app_id_idx")
+      .ifNotExists()
+      .on("app_licensing_intent")
+      .column("app_id")
+      .execute(),
+  );
 }
 
 export async function recordLicensingState(
@@ -92,7 +132,15 @@ export async function recordLicensingState(
   state: LedgerState | null,
   now: string,
 ): Promise<void> {
-  const state_hash = licensingStateHash(state);
+  await recordHash(db, appId, licensingStateHash(state), now);
+}
+
+async function recordHash(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+  state_hash: string,
+  now: string,
+): Promise<void> {
   await db
     .insertInto("app_licensing_state")
     .values({ app_id: appId, state_hash, updated_at: now })
@@ -114,86 +162,333 @@ export function createLedgerLookup(
     )?.state_hash ?? null;
 }
 
-export interface AppStateLedger {
-  lookup(appId: string): Promise<string | null>;
-  record(appId: string, state: LedgerState | null): Promise<void>;
+/**
+ * Serialises the system's writes to one app document, from the read of the
+ * state it starts from to the record of the state it left, across replicas.
+ * `fn` runs its ledger queries through the db it is handed (the connection
+ * that holds the lock).
+ */
+export interface AppLock {
+  run<T>(appId: string, fn: (db: Kysely<VetraLicensingDB>) => Promise<T>): Promise<T>;
 }
 
-export function createAppStateLedger(
-  db: Kysely<VetraLicensingDB>,
-  now: () => string,
-): AppStateLedger {
-  const lookup = createLedgerLookup(db);
-  return {
-    lookup,
-    record: (appId, state) => recordLicensingState(db, appId, state, now()),
+/** In-process keyed mutex: callers with the same key run one at a time, in order. */
+function keyedMutex() {
+  const tails = new Map<string, Promise<void>>();
+  return async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = tails.get(key) ?? Promise.resolve();
+    let release = () => {};
+    const tail = prev.then(() => new Promise<void>((r) => (release = r)));
+    tails.set(key, tail);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (tails.get(key) === tail) tails.delete(key);
+    }
   };
 }
 
-export interface AppendAppOpsDeps {
-  execute(appId: string, actions: Action[]): Promise<unknown>;
-  /** The document's global state, or null when it does not exist. */
-  getState(appId: string): Promise<LedgerState | null>;
-  ledger: AppStateLedger;
-  logger: Pick<Console, "error">;
+/**
+ * In-process mutex per app, plus (on PostgreSQL) a session advisory lock keyed
+ * on hashtext('app_licensing_state:' || app_id), held on one pooled connection
+ * from the "before" read through the record. On PGlite (single process, one
+ * connection that other relational queries would queue behind) the in-process
+ * mutex is the whole lock. `crossReplica` overrides the detection (tests).
+ */
+export function createAppLock(
+  db: Kysely<VetraLicensingDB>,
+  opts: { crossReplica?: boolean } = {},
+): AppLock {
+  const local = keyedMutex();
+  let cross: Promise<boolean> | undefined =
+    opts.crossReplica === undefined ? undefined : Promise.resolve(opts.crossReplica);
+  const crossReplica = (): Promise<boolean> => {
+    if (cross) return cross;
+    const detecting = sql<{ v: string }>`select version() as v`
+      .execute(db)
+      .then((r) => !/emscripten/i.test(r.rows[0]?.v ?? ""));
+    cross = detecting;
+    detecting.catch(() => {
+      if (cross === detecting) cross = undefined; // retry on the next call
+    });
+    return detecting;
+  };
+  return {
+    run: (appId, fn) =>
+      local(appId, async () => {
+        if (!(await crossReplica())) return fn(db);
+        const key = `app_licensing_state:${appId}`;
+        return db.connection().execute(async (conn) => {
+          await sql`select pg_advisory_lock(hashtext(${key}))`.execute(conn);
+          try {
+            return await fn(conn);
+          } finally {
+            await sql`select pg_advisory_unlock(hashtext(${key}))`.execute(conn);
+          }
+        });
+      }),
+  };
 }
 
+/** What the ledger reads from the reactor. */
+export interface LedgerDoc {
+  state: LedgerState | null;
+  /** The global-scope revision (index of the next global operation). */
+  revision: number;
+}
+export interface LedgerSource {
+  /** Null when the document does not exist. */
+  getDoc(appId: string): Promise<LedgerDoc | null>;
+  /** Action ids of the global operations with index >= revision, in order (null: no id). */
+  operationsSince(appId: string, revision: number): Promise<(string | null)[]>;
+}
+
+type LedgerReactorClient = {
+  get(id: string): Promise<unknown>;
+  getOperations(
+    id: string,
+    view?: { branch?: string; scopes?: string[] },
+    filter?: { sinceRevision?: number },
+    paging?: { cursor: string; limit: number },
+  ): Promise<{ results: unknown[]; nextCursor?: string }>;
+};
+
+export function reactorLedgerSource(client: LedgerReactorClient): LedgerSource {
+  return {
+    async getDoc(appId) {
+      let doc: unknown;
+      try {
+        doc = await client.get(appId);
+      } catch (err) {
+        if (isDocumentNotFound(err)) return null;
+        throw err;
+      }
+      const revision = (doc as { header?: { revision?: { global?: unknown } } } | null)
+        ?.header?.revision?.global;
+      return {
+        state: licensingStateOf(doc),
+        revision: typeof revision === "number" ? revision : 0,
+      };
+    },
+    async operationsSince(appId, revision) {
+      const out: (string | null)[] = [];
+      let cursor = "0";
+      for (;;) {
+        const page = await client.getOperations(
+          appId,
+          { branch: "main", scopes: ["global"] },
+          { sinceRevision: revision },
+          { cursor, limit: 200 },
+        );
+        for (const op of page.results as { action?: { id?: unknown } }[]) {
+          out.push(typeof op.action?.id === "string" ? op.action.id : null);
+        }
+        if (!page.nextCursor || page.nextCursor === cursor) return out;
+        cursor = page.nextCursor;
+      }
+    },
+  };
+}
+
+/** Completed intents are kept this long, then pruned. */
+const INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface AppLedger {
+  /** The recorded hash, null when never recorded. */
+  lookup: (appId: string) => Promise<string | null>;
+  /** Records a state the system built itself (a document it just created). */
+  record: (appId: string, state: LedgerState | null) => Promise<void>;
+  /**
+   * The one way the system writes an app document; see createAppLedger.
+   * `execute` throws when the write (or an action of it) failed.
+   */
+  append: (
+    appId: string,
+    actions: Action[],
+    execute: (appId: string, actions: Action[]) => Promise<unknown>,
+    opts: { seedUnrecorded: boolean },
+  ) => Promise<void>;
+  /**
+   * Records the document's state when it differs from the ledger only by
+   * system writes journalled as intents. True when the ledger matches the
+   * document afterwards.
+   */
+  heal: (appId: string) => Promise<boolean>;
+}
+
+type Settled =
+  | { status: "clean" | "healed"; doc: LedgerDoc }
+  | { status: "tampered" | "unrecorded" | "missing" };
+
 /**
- * The one way the system writes an app document: executes the actions,
- * re-reads the document and records the resulting ledger state.
+ * The app-state ledger with its intent journal (`app_licensing_intent`).
  *
- * - The state is checked BEFORE the write. If it no longer matches the
- *   recorded hash it was changed outside Vetra: the write is still applied
- *   (a CI artifact must not be lost) but NOT recorded, so the app stays held
- *   instead of the system laundering the foreign change.
- * - A document with no row is recorded only with `seedUnrecorded` (the
- *   licensing migration seeds; vetra-apps records the documents it creates,
- *   see app-doc-store.ts, and leaves older unrecorded ones unverified).
- * - Records even when an action was rejected (an earlier action of the batch
- *   may have applied), then rethrows. A missing document records nothing.
+ * `append`, holding the app's lock (AppLock):
+ * - Reads the state BEFORE the write. If it no longer matches the recorded
+ *   hash, it tries to heal (below); if that fails the document was changed
+ *   outside Vetra: the write is still applied (a CI artifact must not be lost)
+ *   but NOT recorded, so the app stays held.
+ * - A document with no row is recorded (seeded) only with `seedUnrecorded`.
+ * - Journals an intent (base hash, base revision, the batch's action ids)
+ *   before executing; if that insert fails nothing is executed.
+ * - After the write (also after a rejection: an earlier action of the batch
+ *   may have applied) settles: records the new state when every operation
+ *   since the base revision is one of the journalled actions. A foreign
+ *   operation interleaved with the write leaves the app held. A failure to
+ *   record is logged, not thrown: the intent stays pending and the next read
+ *   or write heals it.
+ *
+ * Healing: when the document differs from the recorded hash, the pending
+ * intents based on that hash are taken; if the operations since their base
+ * revision are exactly those intents' actions (each at most once), the current
+ * state is recorded and the intents completed. System action ids are
+ * generated by the server and unknown until applied, so a foreign write
+ * cannot pass as one.
  */
-export async function appendAppOps(
-  deps: AppendAppOpsDeps,
-  appId: string,
-  actions: Action[],
-  opts: { seedUnrecorded: boolean },
-): Promise<void> {
-  const before = await deps.getState(appId);
-  let record = false;
-  if (before !== null) {
-    const recorded = await deps.ledger.lookup(appId);
-    if (recorded === null) {
-      record = opts.seedUnrecorded;
-    } else if (recorded === licensingStateHash(before)) {
-      record = true;
-    } else {
-      deps.logger.error(
-        `[licensing] app document ${appId} changed outside Vetra before this system write; applying it without recording, the app stays held`,
-      );
-    }
+export function createAppLedger(deps: {
+  db: Kysely<VetraLicensingDB>;
+  source: LedgerSource;
+  now: () => string;
+  newId?: () => string;
+  lock?: AppLock;
+  logger?: Pick<Console, "error" | "warn">;
+}): AppLedger {
+  const { db, source, now } = deps;
+  const newId = deps.newId ?? (() => randomUUID());
+  const lock = deps.lock ?? createAppLock(db);
+  const logger = deps.logger ?? console;
+
+  async function lookupIn(q: Kysely<VetraLicensingDB>, appId: string) {
+    return createLedgerLookup(q)(appId);
   }
 
-  let failure: Error | null = null;
-  try {
-    await deps.execute(appId, actions);
-  } catch (err) {
-    failure = err instanceof Error ? err : new Error(String(err));
+  async function complete(q: Kysely<VetraLicensingDB>, ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const at = now();
+    await q.updateTable("app_licensing_intent").set({ done_at: at }).where("id", "in", ids).execute();
+    const cutoff = new Date(Date.parse(at) - INTENT_RETENTION_MS).toISOString();
+    await q
+      .deleteFrom("app_licensing_intent")
+      .where("done_at", "is not", null)
+      .where("done_at", "<", cutoff)
+      .execute();
   }
-  if (record) {
-    try {
-      const after = await deps.getState(appId);
-      if (after !== null) await deps.ledger.record(appId, after);
-    } catch (err) {
-      if (failure === null) throw err;
+
+  async function settle(q: Kysely<VetraLicensingDB>, appId: string): Promise<Settled> {
+    const recorded = await lookupIn(q, appId);
+    if (recorded === null) return { status: "unrecorded" };
+    // The document first, then its operations: an operation landing in
+    // between shows up in the list and fails the check, never the reverse.
+    const doc = await source.getDoc(appId);
+    if (doc === null) return { status: "missing" };
+    const hash = licensingStateHash(doc.state);
+    const intents = (
+      await q
+        .selectFrom("app_licensing_intent")
+        .selectAll()
+        .where("app_id", "=", appId)
+        .where("done_at", "is", null)
+        .execute()
+    ).filter((i) => i.base_hash === recorded);
+    if (hash !== recorded) {
+      if (intents.length === 0) return { status: "tampered" };
+      const allowed = new Set(intents.flatMap((i) => JSON.parse(i.action_ids) as string[]));
+      const ops = await source.operationsSince(
+        appId,
+        Math.min(...intents.map((i) => i.base_revision)),
+      );
+      const seen = new Set<string>();
+      for (const id of ops) {
+        if (id === null || !allowed.has(id) || seen.has(id)) return { status: "tampered" };
+        seen.add(id);
+      }
+      if (seen.size === 0) return { status: "tampered" };
+      await recordHash(q, appId, hash, now());
     }
+    await complete(q, intents.map((i) => i.id));
+    return { status: hash === recorded ? "clean" : "healed", doc };
   }
-  if (failure !== null) throw failure;
+
+  return {
+    lookup: createLedgerLookup(db),
+    record: (appId, state) =>
+      lock.run(appId, (q) => recordHash(q, appId, licensingStateHash(state), now())),
+    heal: (appId) =>
+      lock.run(appId, async (q) => {
+        const settled = await settle(q, appId);
+        if (settled.status === "healed") {
+          logger.warn(`[licensing] app document ${appId}: recorded system writes from the intent journal`);
+        }
+        return settled.status === "clean" || settled.status === "healed";
+      }),
+    append: (appId, actions, execute, opts) =>
+      lock.run(appId, async (q) => {
+        let base = await source.getDoc(appId);
+        if (base !== null) {
+          const recorded = await lookupIn(q, appId);
+          if (recorded === null) {
+            if (opts.seedUnrecorded) await recordHash(q, appId, licensingStateHash(base.state), now());
+            else base = null;
+          } else if (recorded !== licensingStateHash(base.state)) {
+            const settled = await settle(q, appId).catch((err: unknown) => {
+              logger.error(`[licensing] healing app document ${appId} failed: ${String(err)}`);
+              return { status: "tampered" } as const;
+            });
+            base = "doc" in settled ? settled.doc : null;
+            if (base === null) {
+              logger.error(
+                `[licensing] app document ${appId} changed outside Vetra before this system write; applying it without recording, the app stays held`,
+              );
+            }
+          }
+        }
+        // base !== null: the write starts from a recorded state and is recorded.
+        if (base !== null) {
+          await q
+            .insertInto("app_licensing_intent")
+            .values({
+              id: newId(),
+              app_id: appId,
+              base_hash: licensingStateHash(base.state),
+              base_revision: base.revision,
+              action_ids: JSON.stringify(actions.flatMap((a) => (a.id ? [a.id] : []))),
+              created_at: now(),
+              done_at: null,
+            })
+            .execute();
+        }
+
+        let failure: Error | null = null;
+        try {
+          await execute(appId, actions);
+        } catch (err) {
+          failure = err instanceof Error ? err : new Error(String(err));
+        }
+        if (base !== null) {
+          try {
+            const settled = await settle(q, appId);
+            if (settled.status === "tampered") {
+              logger.error(
+                `[licensing] app document ${appId} changed outside Vetra during this system write; not recorded, the app stays held`,
+              );
+            }
+          } catch (err) {
+            logger.error(
+              `[licensing] recording app document ${appId} failed after the write; the next read or write records it from the intent journal: ${String(err)}`,
+            );
+          }
+        }
+        if (failure !== null) throw failure;
+      }),
+  };
 }
 
 export interface AppLicensingWriter {
   /**
    * The ONLY way vetra-licensing changes an app document's templates or terms
-   * (appendAppOps, seeding an unrecorded document).
+   * (AppLedger.append, seeding an unrecorded document).
    */
   appendLicensingOps(appId: string, actions: Action[]): Promise<void>;
 }
@@ -201,32 +496,30 @@ export interface AppLicensingWriter {
 export function createAppLicensingWriter(deps: {
   /** A vetra-app DocGateway (it protects what it creates). */
   docs: Pick<DocGateway, "execute">;
-  get(id: string): Promise<unknown>;
-  db: Kysely<VetraLicensingDB>;
-  now: () => string;
-  logger?: Pick<Console, "error">;
+  ledger: AppLedger;
 }): AppLicensingWriter {
-  const ledger = createAppStateLedger(deps.db, deps.now);
-  const getState = async (id: string): Promise<LedgerState | null> => {
-    try {
-      return licensingStateOf(await deps.get(id));
-    } catch (err) {
-      if (isDocumentNotFound(err)) return null;
-      throw err;
-    }
-  };
   return {
     appendLicensingOps: (appId, actions) =>
-      appendAppOps(
-        {
-          execute: (id, a) => deps.docs.execute(id, a),
-          getState,
-          ledger,
-          logger: deps.logger ?? console,
-        },
-        appId,
-        actions,
-        { seedUnrecorded: true },
-      ),
+      deps.ledger.append(appId, actions, (id, a) => deps.docs.execute(id, a), {
+        seedUnrecorded: true,
+      }),
+  };
+}
+
+/**
+ * Initialises on first use and caches the result. A failed initialisation is
+ * not cached: the next call tries again, so a ledger that was unreachable at
+ * boot is never disabled for the life of the process.
+ */
+export function lazyLedger(init: () => Promise<AppLedger>): () => Promise<AppLedger> {
+  let pending: Promise<AppLedger> | undefined;
+  return () => {
+    if (pending) return pending;
+    const attempt = init();
+    pending = attempt;
+    attempt.catch(() => {
+      if (pending === attempt) pending = undefined;
+    });
+    return attempt;
   };
 }

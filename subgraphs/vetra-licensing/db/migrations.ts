@@ -1,5 +1,5 @@
 import { type Kysely, sql } from "kysely";
-import { ensureAppLicensingStateTable } from "../licensing-ledger.js";
+import { ensureLedgerTables } from "../licensing-ledger.js";
 
 /** Postgres SQLSTATE for "column already exists". */
 const DUPLICATE_COLUMN = "42701";
@@ -228,11 +228,12 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists().execute();
 
   // Also created by vetra-apps, which writes the ledger too (licensing-ledger.ts).
-  await ensureAppLicensingStateTable(db);
+  await ensureLedgerTables(db);
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "app_licensing_intent",
     "app_licensing_state",
     "licensing_migration_steps",
     "licensing_migration_type_map",

@@ -3,10 +3,7 @@ import { createPresignedHeader } from "document-model";
 import { utils } from "../../document-models/vetra-app/v1/index.js";
 import type { AppDocStore } from "./app-document.js";
 import { isDocumentNotFound } from "./envs.js";
-import {
-  appendAppOps,
-  type AppStateLedger,
-} from "../vetra-licensing/licensing-ledger.js";
+import type { AppLedger } from "../vetra-licensing/licensing-ledger.js";
 
 export const APP_DOC_TYPE = "powerhouse/vetra-app";
 
@@ -45,13 +42,15 @@ export function createReactorAppDocStore(
    */
   protect?: (id: string) => Promise<void>,
   /**
-   * The app-state ledger (licensing-ledger.ts). With it, `create` records the
-   * state it created and every `execute` goes through appendAppOps, so the
-   * backfill, the row mirror and CI artifact registration all leave the
-   * document verifiably clean. Without it (tests, no licensing) nothing is
-   * recorded.
+   * The app-state ledger (licensing-ledger.ts), resolved on each use so a
+   * ledger that failed to initialise is retried, never disabled. With it,
+   * `create` records the state it created and every `execute` goes through
+   * AppLedger.append, so the backfill, the row mirror and CI artifact
+   * registration all leave the document verifiably clean. A ledger that cannot
+   * be reached fails the write before anything is applied. Without it (tests,
+   * no licensing) nothing is recorded.
    */
-  ledger?: AppStateLedger,
+  ledger?: () => Promise<AppLedger>,
   logger: Pick<Console, "error"> = console,
 ): AppDocStore {
   async function getDoc(id: string): Promise<DocLike | null> {
@@ -68,9 +67,17 @@ export function createReactorAppDocStore(
       const doc = utils.createDocument();
       doc.header = createPresignedHeader(id, APP_DOC_TYPE);
       await client.create(doc);
+      if (!ledger) return;
       // Record exactly what was created, not a re-read: a write landing
       // between create and a re-read would otherwise be recorded as ours.
-      await ledger?.record(id, doc.state.global);
+      // The document exists now; a failed record leaves it unverified.
+      try {
+        await (await ledger()).record(id, doc.state.global);
+      } catch (err) {
+        logger.error(
+          `[vetra-apps] app document ${id} created but not recorded in the app-state ledger; it reads as unverified: ${String(err)}`,
+        );
+      }
     },
     protect,
     async exists(id) {
@@ -81,19 +88,22 @@ export function createReactorAppDocStore(
     },
     async execute(id, actions) {
       if (!ledger) return executeChecked(id, actions);
-      await appendAppOps(
-        {
-          execute: executeChecked,
-          getState: async (appId) => (await getDoc(appId))?.state?.global ?? null,
-          ledger,
-          logger,
-        },
-        id,
-        actions,
+      let appLedger: AppLedger;
+      try {
+        appLedger = await ledger();
+      } catch (err) {
+        logger.error(
+          `[vetra-apps] app-state ledger unavailable, not writing app document ${id}: ${String(err)}`,
+        );
+        throw err;
+      }
+      // Record failures after a successful write are logged by append, not
+      // thrown: the intent journal heals them on the next read or write.
+      await appLedger.append(id, actions, executeChecked, {
         // A document this store did not create and that was never recorded
         // stays unverified: recording it now could launder a foreign change.
-        { seedUnrecorded: false },
-      );
+        seedUnrecorded: false,
+      });
     },
   };
 

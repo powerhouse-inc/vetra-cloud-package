@@ -253,6 +253,11 @@ export interface AppReadsOptions {
   logger?: Pick<Console, "warn" | "error">;
   /** The recorded licensing-state hash of an app, null when none was recorded. */
   ledger?: (appId: string) => Promise<string | null>;
+  /**
+   * Records a mismatching state that consists only of journalled system
+   * writes (AppLedger.heal). Best-effort: a failure leaves the app held.
+   */
+  heal?: (appId: string) => Promise<boolean>;
 }
 
 export function createAppReads(
@@ -272,7 +277,16 @@ export function createAppReads(
     if (parents.length > 0) {
       reasons.push(`has parent document(s) ${parents.join(", ")}, whose grants can write it`);
     }
-    const recorded = opts.ledger ? await opts.ledger(view.id) : null;
+    let recorded = opts.ledger ? await opts.ledger(view.id) : null;
+    if (recorded !== null && recorded !== view.licensingStateHash && opts.heal && opts.ledger) {
+      let healed = false;
+      try {
+        healed = await opts.heal(view.id);
+      } catch (err) {
+        logger.warn(`[licensing] healing app document ${view.id} failed: ${String(err)}`);
+      }
+      if (healed) recorded = await opts.ledger(view.id);
+    }
     if (recorded !== null && recorded !== view.licensingStateHash) {
       reasons.push("licensing state changed outside Vetra");
     }

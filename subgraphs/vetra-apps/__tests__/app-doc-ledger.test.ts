@@ -11,9 +11,12 @@ import {
 import { up as licensingUp } from "../../vetra-licensing/db/migrations.js";
 import type { VetraLicensingDB } from "../../vetra-licensing/db/schema.js";
 import {
-  createAppStateLedger,
+  createAppLedger,
   createLedgerLookup,
-  ensureAppLicensingStateTable,
+  ensureLedgerTables,
+  lazyLedger,
+  reactorLedgerSource,
+  type AppLedger,
 } from "../../vetra-licensing/licensing-ledger.js";
 import { createAppReads } from "../../vetra-licensing/app-reads.js";
 import { createReactorAppDocStore } from "../app-doc-store.js";
@@ -50,8 +53,15 @@ function memReactor() {
       for (const a of actions) d = reducer(d as never, a as never) as PHDocument;
       docs.set(id, d);
     },
-    async getOperations() {
-      return { results: [] };
+    async getOperations(
+      id: string,
+      _view?: unknown,
+      filter?: { sinceRevision?: number },
+    ) {
+      const ops = docs.get(id)?.operations.global ?? [];
+      return {
+        results: ops.filter((op) => op.index >= (filter?.sinceRevision ?? 0)),
+      };
     },
     async find() {
       return { results: [...docs.values()] };
@@ -74,7 +84,7 @@ beforeEach(async () => {
   });
   // vetra-apps creates the table itself (boot order is not fixed); the
   // licensing migrations creating it again afterwards must be a no-op.
-  await ensureAppLicensingStateTable(ledgerDb as Kysely<any>);
+  await ensureLedgerTables(ledgerDb as Kysely<any>);
   await licensingUp(ledgerDb as Kysely<any>);
   mem = memReactor();
   error = vi.fn();
@@ -84,16 +94,19 @@ afterEach(async () => {
   await h.close();
 });
 
-const store = () =>
-  createReactorAppDocStore(
-    mem,
-    undefined,
-    createAppStateLedger(ledgerDb, () => "2026-10-08T00:00:00.000Z"),
-    { error },
-  );
+const ledger = (source = reactorLedgerSource(mem)) =>
+  createAppLedger({
+    db: ledgerDb,
+    source,
+    now: () => "2026-10-08T00:00:00.000Z",
+    logger: { error, warn: vi.fn() },
+  });
+const store = (l: () => Promise<AppLedger> = async () => ledger()) =>
+  createReactorAppDocStore(mem, undefined, l, { error });
 const reads = () =>
   createAppReads(mem, {
     ledger: createLedgerLookup(ledgerDb),
+    heal: ledger().heal,
     logger: { warn: vi.fn(), error: vi.fn() },
   });
 
@@ -217,5 +230,56 @@ describe("app document writes from vetra-apps record the ledger", () => {
       tampered: false,
       unverified: true,
     });
+  });
+
+  it("a record failure after a successful CI write is logged, not thrown, and healed on the next read", async () => {
+    h.deps.docs = store();
+    const app = await seedActiveApp(h);
+    await ciRecordArtifact(h.deps, ci(), artifact({ appId: app.id }));
+    const source = reactorLedgerSource(mem);
+    let failOps = true;
+    const flaky = {
+      getDoc: source.getDoc,
+      operationsSince: async (id: string, rev: number) => {
+        if (failOps) {
+          failOps = false;
+          throw new Error("connection reset");
+        }
+        return source.operationsSince(id, rev);
+      },
+    };
+    h.deps.docs = store(async () => ledger(flaky));
+    await expect(
+      ciRecordArtifact(
+        h.deps,
+        ci(),
+        artifact({ appId: app.id, version: "1.2.4", reference: "r:1.2.4" }),
+      ),
+    ).resolves.toBeDefined();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("intent journal"));
+    expect(await reads().app(app.id)).toMatchObject({ tampered: false, unverified: false });
+  });
+
+  it("a ledger that failed to initialise is retried on the next write, not disabled", async () => {
+    const app = await seedActiveApp(h);
+    let attempts = 0;
+    h.deps.docs = store(
+      lazyLedger(async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("namespace unavailable");
+        return ledger();
+      }),
+    );
+    // Create-on-demand: the document is created; recording it fails and is logged.
+    await ciRecordArtifact(h.deps, ci(), artifact({ appId: app.id })).catch(() => undefined);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("not recorded"));
+    await ciRecordArtifact(
+      h.deps,
+      ci(),
+      artifact({ appId: app.id, version: "1.2.4", reference: "r:1.2.4" }),
+    );
+    expect(attempts).toBe(2);
+    // The creation went unrecorded, so the document stays unverified (never laundered).
+    expect(await reads().app(app.id)).toMatchObject({ tampered: false, unverified: true });
   });
 });
