@@ -69,6 +69,24 @@ export function createGrantStore(db: Kysely<VetraLicensingDB>) {
       return row?.root_license_id ?? licenseId;
     },
 
+    /**
+     * The newest authorised licence linked into a chain: the one an upgrade
+     * must start from. A chain row without provenance (an issue that failed
+     * half-way) is inert and skipped. With no such row the root is the head
+     * (a root from before chains existed has no row of its own).
+     */
+    async chainHead(rootLicenseId: string): Promise<string> {
+      const row = await db
+        .selectFrom("license_chain as c")
+        .innerJoin("app_license_grants as g", "g.license_id", "c.license_id")
+        .select("c.license_id")
+        .where("c.root_license_id", "=", rootLicenseId)
+        .orderBy("c.created_at", "desc")
+        .orderBy("c.license_id", "desc")
+        .executeTakeFirst();
+      return row?.license_id ?? rootLicenseId;
+    },
+
     async chainRoots(): Promise<Map<string, string>> {
       const rows = await db
         .selectFrom("license_chain")

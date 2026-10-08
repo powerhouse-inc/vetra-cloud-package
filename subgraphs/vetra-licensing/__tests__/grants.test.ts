@@ -58,6 +58,21 @@ describe("grant store", () => {
     expect(await g.chainRoots()).toStrictEqual(new Map([["l1", "l1"], ["l2", "l1"]]));
   });
 
+  it("finds a chain's head among authorised licences, newest first", async () => {
+    const g = await open();
+    const grant = (licenseId: string) => g.recordGrant({ licenseId, appId: "a", kind: "pro", userDid: DID, issuedBy: "x", now: "t" });
+    // A legacy root has provenance but no chain row: it is its own head.
+    await grant("legacy");
+    expect(await g.chainHead("legacy")).toBe("legacy");
+    await g.linkChain({ licenseId: "l1", rootLicenseId: "legacy", appId: "a", label: null, now: "2026-10-01T00:00:00.000Z" });
+    await grant("l1");
+    await g.linkChain({ licenseId: "l2", rootLicenseId: "legacy", appId: "a", label: null, now: "2026-10-02T00:00:00.000Z" });
+    // l2 has no provenance (an issue that failed half-way): inert.
+    expect(await g.chainHead("legacy")).toBe("l1");
+    await grant("l2");
+    expect(await g.chainHead("legacy")).toBe("l2");
+  });
+
   it("manages the allow list idempotently", async () => {
     const g = await open();
     await g.addToAllowList("a", DID, "t1");

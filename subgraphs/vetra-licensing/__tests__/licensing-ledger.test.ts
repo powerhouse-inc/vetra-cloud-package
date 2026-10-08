@@ -345,6 +345,47 @@ describe("intent journal", () => {
     ]);
   });
 
+  it("abandons an intent whose write failed with none of its actions applied", async () => {
+    const { writer, logger } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    await expect(writer(async () => { throw new Error("network"); }).appendLicensingOps("app-1", [act("sys-1")]))
+      .rejects.toThrow("network");
+    expect(await intents()).toMatchObject([{ action_ids: '["sys-1"]', done_at: "2026-10-09T00:00:00.000Z" }]);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  /** A system write whose operation leaves the ledger-covered state unchanged. */
+  const noop = (apply: (id: string) => void) => async (_id: string, actions: Action[]) => {
+    for (const a of actions) apply(a.id);
+  };
+
+  it("I1 fails with nothing applied, I2 leaves the hash unchanged, I3 changes it: the app stays clean", async () => {
+    const { reads, retire, apply, writer, logger } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    await expect(writer(async () => { throw new Error("network"); }).appendLicensingOps("app-1", [act("i1")]))
+      .rejects.toThrow("network");
+    await writer(noop(apply)).appendLicensingOps("app-1", [act("i2")]);
+    await writer(async (_id, actions) => retire(actions)).appendLicensingOps("app-1", [act("i3")]);
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(await reads.app("app-1")).toMatchObject({ tampered: false, unverified: false });
+    expect((await intents()).map((i) => i.done_at)).toStrictEqual(Array(3).fill("2026-10-09T00:00:00.000Z"));
+  });
+
+  it("an intent still pending (accepted, not applied) does not turn a later system write into tampering", async () => {
+    const { reads, retire, apply, writer, logger } = world();
+    await recordLicensingState(db, "app-1", STATE, "t");
+    await writer(async () => undefined).appendLicensingOps("app-1", [act("i1")]);
+    await writer(noop(apply)).appendLicensingOps("app-1", [act("i2")]);
+    await writer(async (_id, actions) => retire(actions)).appendLicensingOps("app-1", [act("i3")]);
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(await reads.app("app-1")).toMatchObject({ tampered: false, unverified: false });
+    expect((await intents()).map((i) => [i.action_ids, i.done_at]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))).toStrictEqual([
+      ['["i1"]', null],
+      ['["i2"]', "2026-10-09T00:00:00.000Z"],
+      ['["i3"]', "2026-10-09T00:00:00.000Z"],
+    ]);
+  });
+
   it("does not execute when the intent cannot be journalled", async () => {
     const { writer } = world();
     await recordLicensingState(db, "app-1", STATE, "t");

@@ -3,6 +3,7 @@ import { actions } from "document-models/app-owner-license";
 import type { AppReads } from "./app-reads.js";
 import { normaliseUserDid } from "./did.js";
 import type { GrantStore } from "./grants.js";
+import { keyedMutex } from "./keyed-mutex.js";
 import type { PublisherAuthDeps } from "./publisher-auth.js";
 import { UnknownLicenseError } from "./publisher-errors.js";
 import type { LicenceRecord } from "./reads.js";
@@ -17,6 +18,7 @@ export type IssuerKind = "INVITE_CODE" | "PUBLISHER_GRANT" | "ACHRA_SUBSCRIPTION
 export class TermNotIssuableError extends Error {
   override name = "TermNotIssuableError";
 }
+/** The licence is REPLACED or ISSUED, or is not the newest licence of its chain. */
 export class LicenceNotUpgradableError extends Error {
   override name = "LicenceNotUpgradableError";
 }
@@ -36,7 +38,7 @@ export interface IssueDeps {
   licence(id: string): Promise<LicenceRecord | null>;
   createLicenseDocument(): Promise<string>;
   executeLicence(id: string, actions: Action[]): Promise<void>;
-  grants: Pick<GrantStore, "recordGrant" | "linkChain" | "chainRootOf">;
+  grants: Pick<GrantStore, "recordGrant" | "linkChain" | "chainRootOf" | "chainHead">;
   logger: Pick<Console, "warn">;
 }
 
@@ -65,6 +67,13 @@ export interface IssuedLicence {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UPGRADABLE = new Set(["ACTIVE", "EXPIRED", "REVOKED"]);
 
+/**
+ * Upgrades of one licence run one at a time (in this process; production runs
+ * a single replica), so a double-submitted upgrade sees the first one's
+ * successor and is refused instead of forking the chain.
+ */
+const withPredecessorLock = keyedMutex();
+
 /** Two holder spellings name the same wallet (legacy licences carry a bare address). */
 export function sameHolder(a: string, b: string): boolean {
   try {
@@ -81,6 +90,12 @@ export function sameHolder(a: string, b: string): boolean {
  * holder must not wait a keeper tick for access they were just given.
  */
 export async function issueLicense(deps: IssueDeps, input: IssueInput): Promise<IssuedLicence> {
+  return input.upgrades
+    ? withPredecessorLock(input.upgrades, () => issueUnlocked(deps, input))
+    : issueUnlocked(deps, input);
+}
+
+async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<IssuedLicence> {
   const user = normaliseUserDid(input.user);
   const notIssuable = (why: string) =>
     new TermNotIssuableError(
@@ -98,6 +113,7 @@ export async function issueLicense(deps: IssueDeps, input: IssueInput): Promise<
   if (!term.issuers.includes(input.issuer)) throw notIssuable("the term does not allow this issuer");
 
   let previous: LicenceRecord | null = null;
+  let root: string | null = null;
   if (input.upgrades) {
     previous = await deps.licence(input.upgrades);
     // Another holder's or another app's licence fails exactly like a missing one.
@@ -111,6 +127,15 @@ export async function issueLicense(deps: IssueDeps, input: IssueInput): Promise<
     }
     if (previous.status === "ACTIVE" && previous.kind === input.kind) {
       throw new AlreadyHoldsError(`licence ${previous.id} already is ${input.kind}`);
+    }
+    // Only the newest licence of a chain can be upgraded: an older EXPIRED or
+    // REVOKED one would otherwise fork the chain a second time.
+    root = await deps.grants.chainRootOf(previous.id);
+    const head = await deps.grants.chainHead(root);
+    if (head !== previous.id) {
+      throw new LicenceNotUpgradableError(
+        `licence ${previous.id} has been succeeded by ${head}; upgrade the newest licence of the chain`,
+      );
     }
   }
 
@@ -136,22 +161,24 @@ export async function issueLicense(deps: IssueDeps, input: IssueInput): Promise<
 
   const licenseId = await deps.createLicenseDocument();
   await deps.executeLicence(licenseId, [issueAction, actions.activateLicense({})]);
-  // After the document exists, so a failed issue never leaves an authorisation
-  // for a licence that was not created.
+  // The chain first, then provenance: a chain row without provenance is
+  // inert (the keeper provisions only authorised licences), but provenance
+  // without a chain row would make an upgrade its own chain, and its own
+  // second environment. Both after the document exists, so a failed issue
+  // never leaves an authorisation for a licence that was not created.
+  await deps.grants.linkChain({
+    licenseId,
+    rootLicenseId: root ?? licenseId,
+    appId: input.appId,
+    label: input.label ?? null,
+    now: start,
+  });
   await deps.grants.recordGrant({
     licenseId,
     appId: input.appId,
     kind: input.kind,
     userDid: user,
     issuedBy: input.issuedBy,
-    now: start,
-  });
-  const root = previous ? await deps.grants.chainRootOf(previous.id) : licenseId;
-  await deps.grants.linkChain({
-    licenseId,
-    rootLicenseId: root,
-    appId: input.appId,
-    label: input.label ?? null,
     now: start,
   });
 

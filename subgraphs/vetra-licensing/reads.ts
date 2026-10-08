@@ -324,6 +324,11 @@ export function createReactorLicenseReads(
     }
   }
 
+  async function licenceRecord(id: string): Promise<LicenceRecord | null> {
+    const doc = await getDoc(id);
+    return isDocType(doc, LICENSE_DOC_TYPE) ? toRecord(doc) : null;
+  }
+
   async function parsedLicenses(): Promise<ParsedLicense[]> {
     const docs = await findAll(LICENSE_DOC_TYPE);
     return docs.flatMap((d) => {
@@ -457,10 +462,7 @@ export function createReactorLicenseReads(
       }));
     },
 
-    async licenceRecord(id) {
-      const doc = await getDoc(id);
-      return isDocType(doc, LICENSE_DOC_TYPE) ? toRecord(doc) : null;
-    },
+    licenceRecord,
 
     async allLicenceRecords() {
       return (await findAll(LICENSE_DOC_TYPE)).flatMap((d) => {
@@ -472,7 +474,7 @@ export function createReactorLicenseReads(
     async licenceRecords(ids) {
       const out: LicenceRecord[] = [];
       for (const id of ids) {
-        const r = await this.licenceRecord(id);
+        const r = await licenceRecord(id);
         if (r) out.push(r);
       }
       return out;

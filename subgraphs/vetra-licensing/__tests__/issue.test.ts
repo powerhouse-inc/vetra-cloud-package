@@ -45,9 +45,21 @@ const DOCS: Record<string, AppDocView> = {
 };
 const ROWS = new Set(["app-1", "app-3"]);
 
-function harness(licences: LicenceRecord[] = [], opts: { allowed?: boolean; replaceFails?: boolean } = {}) {
+/**
+ * Stateful fakes: issued licences become readable, REPLACE_LICENSE marks the
+ * predecessor, and the chain/provenance rows are kept, so double submits and
+ * chain heads behave as against the real store.
+ */
+function harness(
+  initial: LicenceRecord[] = [],
+  opts: { allowed?: boolean; replaceFails?: boolean; linkFails?: boolean; delayMs?: number } = {},
+) {
+  const licences = initial.map((l) => ({ ...l }));
   const executed: { id: string; actions: Action[] }[] = [];
   const created: string[] = [];
+  // "old" sits in a chain rooted at root-0 and is authorised.
+  const chain = new Map<string, string>([["old", "root-0"]]);
+  const authorised = new Set<string>(["old"]);
   const deps = {
     owners: {
       findAppById: async (id: string) =>
@@ -55,20 +67,38 @@ function harness(licences: LicenceRecord[] = [], opts: { allowed?: boolean; repl
     },
     apps: { app: async (id: string) => DOCS[id] ?? null },
     licence: async (id: string) => licences.find((l) => l.id === id) ?? null,
-    createLicenseDocument: async () => { const id = `lic-${created.length + 1}`; created.push(id); return id; },
+    createLicenseDocument: async () => {
+      if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
+      const id = `lic-${created.length + 1}`;
+      created.push(id);
+      return id;
+    },
     executeLicence: vi.fn(async (id: string, actions: Action[]) => {
       if (opts.replaceFails && actions[0]?.type === "REPLACE_LICENSE") throw new Error("boom");
       executed.push({ id, actions });
+      if (actions[0]?.type === "REPLACE_LICENSE") {
+        const prev = licences.find((l) => l.id === id);
+        if (prev) prev.status = "REPLACED";
+      }
+      if (actions[0]?.type === "ISSUE_LICENSE") {
+        const input = actions[0].input as { app: string; user: string; kind: string };
+        licences.push(lic({ id, app: input.app, user: input.user, kind: input.kind, status: "ACTIVE" }));
+      }
     }),
     grants: {
-      recordGrant: vi.fn(async () => {}),
-      linkChain: vi.fn(async () => {}),
-      chainRootOf: async (id: string) => (id === "old" ? "root-0" : id),
+      recordGrant: vi.fn(async (r: { licenseId: string }) => { authorised.add(r.licenseId); }),
+      linkChain: vi.fn(async (r: { licenseId: string; rootLicenseId: string }) => {
+        if (opts.linkFails) throw new Error("db down");
+        chain.set(r.licenseId, r.rootLicenseId);
+      }),
+      chainRootOf: async (id: string) => chain.get(id) ?? id,
+      chainHead: async (root: string) =>
+        [...chain].filter(([id, r]) => r === root && authorised.has(id)).at(-1)?.[0] ?? root,
       isOnAllowList: async () => opts.allowed ?? true,
     },
     logger: { warn: vi.fn() },
   } satisfies IssueDeps & { grants: { isOnAllowList: unknown } };
-  return { deps, executed, created };
+  return { deps, executed, created, licences };
 }
 
 describe("issueLicense", () => {
@@ -84,6 +114,19 @@ describe("issueLicense", () => {
     expect(activate!.type).toBe("ACTIVATE_LICENSE");
     expect(h.deps.grants.recordGrant).toHaveBeenCalledWith({ licenseId: "lic-1", appId: "app-1", kind: "pro", userDid: DID, issuedBy: "0xOwner", now: NOW });
     expect(h.deps.grants.linkChain).toHaveBeenCalledWith({ licenseId: "lic-1", rootLicenseId: "lic-1", appId: "app-1", label: "Project A", now: NOW });
+  });
+
+  it("links the chain before recording provenance", async () => {
+    const h = harness();
+    await issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", now: NOW });
+    expect(h.deps.grants.linkChain.mock.invocationCallOrder[0]!)
+      .toBeLessThan(h.deps.grants.recordGrant.mock.invocationCallOrder[0]!);
+  });
+
+  it("records no provenance when linking the chain fails", async () => {
+    const h = harness([], { linkFails: true });
+    await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", now: NOW })).rejects.toThrow("db down");
+    expect(h.deps.grants.recordGrant).not.toHaveBeenCalled();
   });
 
   it("leaves end open for an open-ended term", async () => {
@@ -152,6 +195,34 @@ describe("issueLicense", () => {
     const h = harness(licences as LicenceRecord[]);
     await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW })).rejects.toBeInstanceOf(error);
     expect(h.created).toStrictEqual([]);
+  });
+});
+
+describe("upgrading a chain", () => {
+  const upgrade = (h: ReturnType<typeof harness>, kind: string) =>
+    issueLicense(h.deps, { appId: "app-1", user: DID, kind, issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW });
+
+  it("refuses to upgrade a licence that is no longer the head of its chain", async () => {
+    const h = harness([lic({ status: "EXPIRED" })]);
+    await upgrade(h, "pro");
+    await expect(upgrade(h, "free")).rejects.toBeInstanceOf(LicenceNotUpgradableError);
+    expect(h.created).toStrictEqual(["lic-1"]);
+  });
+
+  it("ignores an inert successor (chain row, no provenance) when finding the head", async () => {
+    const h = harness([lic({ status: "EXPIRED" })]);
+    h.deps.grants.recordGrant.mockRejectedValueOnce(new Error("db down"));
+    await expect(upgrade(h, "pro")).rejects.toThrow("db down");
+    await expect(upgrade(h, "pro")).resolves.toMatchObject({ licenseId: "lic-2", replaced: "old" });
+  });
+
+  it.each(["ACTIVE", "EXPIRED"] as const)("a double-submitted upgrade of an %s licence creates one successor", async (status) => {
+    const h = harness([lic({ status })], { delayMs: 5 });
+    const results = await Promise.allSettled([upgrade(h, "pro"), upgrade(h, "pro")]);
+    expect(results.map((r) => r.status).sort()).toStrictEqual(["fulfilled", "rejected"]);
+    expect(h.created).toStrictEqual(["lic-1"]);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(LicenceNotUpgradableError);
   });
 });
 

@@ -5,6 +5,7 @@ import { isDocumentNotFound } from "../vetra-apps/envs.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import type { DocGateway } from "./doc-gateway.js";
 import { globalState } from "./doc-parse.js";
+import { keyedMutex } from "./keyed-mutex.js";
 
 /**
  * The app-state ledger (table `app_licensing_state`, namespace
@@ -162,24 +163,6 @@ export function createLedgerLookup(
     )?.state_hash ?? null;
 }
 
-/** In-process keyed mutex: callers with the same key run one at a time, in order. */
-function keyedMutex() {
-  const tails = new Map<string, Promise<void>>();
-  return async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
-    const prev = tails.get(key) ?? Promise.resolve();
-    let release = () => {};
-    const tail = prev.then(() => new Promise<void>((r) => (release = r)));
-    tails.set(key, tail);
-    await prev;
-    try {
-      return await fn();
-    } finally {
-      release();
-      if (tails.get(key) === tail) tails.delete(key);
-    }
-  };
-}
-
 /**
  * Serialises the system's writes (and heals) to one app document, from the
  * read of the state it starts from to the record of the state it left. ONE
@@ -313,7 +296,10 @@ type Settled =
  *
  * An intent is completed only once every one of its actions appears among the
  * document's operations since its base; one whose actions have not (yet)
- * applied stays pending.
+ * applied stays pending, unless its write failed with none of them applied:
+ * then it is abandoned (marked done) at once. When healing, the actions of
+ * intents already completed since the oldest pending base count as system
+ * writes too.
  */
 export function createAppLedger(deps: {
   db: Kysely<VetraLicensingDB>;
@@ -347,24 +333,29 @@ export function createAppLedger(deps: {
     const doc = await source.getDoc(appId);
     if (doc === null) return { status: "missing" };
     const hash = licensingStateHash(doc.state);
-    const intents = (
-      await db
-        .selectFrom("app_licensing_intent")
-        .selectAll()
-        .where("app_id", "=", appId)
-        .where("done_at", "is", null)
-        .execute()
-    )
-      .filter((i) => i.base_hash === recorded)
-      .map((i) => ({ id: i.id, revision: i.base_revision, actions: JSON.parse(i.action_ids) as string[] }));
+    const rows = await db
+      .selectFrom("app_licensing_intent")
+      .selectAll()
+      .where("app_id", "=", appId)
+      .execute();
+    const parse = (i: (typeof rows)[number]) => ({
+      id: i.id,
+      revision: i.base_revision,
+      actions: JSON.parse(i.action_ids) as string[],
+    });
+    const intents = rows.filter((i) => i.done_at === null && i.base_hash === recorded).map(parse);
     if (hash === recorded && intents.length === 0) return { status: "clean", doc };
-    const ops =
-      intents.length === 0
-        ? []
-        : await source.operationsSince(appId, Math.min(...intents.map((i) => i.revision)));
+    const since = Math.min(...intents.map((i) => i.revision));
+    const ops = intents.length === 0 ? [] : await source.operationsSince(appId, since);
     if (hash !== recorded) {
       if (intents.length === 0) return { status: "tampered" };
-      const allowed = new Set(intents.flatMap((i) => i.actions));
+      // Also the actions of system writes completed since the oldest pending
+      // base: a write that left the hash unchanged is recorded as done without
+      // moving the hash, yet its operations sit in this range.
+      const completed = rows
+        .filter((i) => i.done_at !== null && i.base_revision >= since)
+        .map(parse);
+      const allowed = new Set([...intents, ...completed].flatMap((i) => i.actions));
       const seen = new Set<string>();
       for (const id of ops) {
         if (id === null || !allowed.has(id) || seen.has(id)) return { status: "tampered" };
@@ -410,15 +401,17 @@ export function createAppLedger(deps: {
           }
         }
         // base !== null: the write starts from a recorded state and is recorded.
+        const intentId = newId();
+        const actionIds = actions.flatMap((a) => (a.id ? [a.id] : []));
         if (base !== null) {
           await db
             .insertInto("app_licensing_intent")
             .values({
-              id: newId(),
+              id: intentId,
               app_id: appId,
               base_hash: licensingStateHash(base.state),
               base_revision: base.revision,
-              action_ids: JSON.stringify(actions.flatMap((a) => (a.id ? [a.id] : []))),
+              action_ids: JSON.stringify(actionIds),
               created_at: now(),
               done_at: null,
             })
@@ -433,6 +426,13 @@ export function createAppLedger(deps: {
         }
         if (base !== null) {
           try {
+            if (failure !== null) {
+              // A write that failed with none of its actions applied is
+              // abandoned; one that returned but is not visible yet stays
+              // pending until its actions show up.
+              const applied = new Set(await source.operationsSince(appId, base.revision));
+              if (!actionIds.some((id) => applied.has(id))) await complete([intentId]);
+            }
             const settled = await settle(appId);
             if (settled.status === "tampered") {
               logger.error(
