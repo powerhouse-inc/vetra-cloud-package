@@ -38,6 +38,10 @@ const envRow = (over: Partial<LicenseEnvironments>): LicenseEnvironments => ({
 const grantsFor = (licences: LicenceRecord[]) =>
   new Map<string, GrantProvenance>(licences.map((l) => [l.id, { appId: "app-1", userAddress: ADDR, kind: l.kind }]));
 
+/** The lifecycle the system recorded, agreeing with every licence document. */
+const lifecycleFor = (licences: LicenceRecord[]) =>
+  new Map<string, LifecycleRecord>(licences.map((l) => [l.id, { status: l.status, replacedBy: l.replacedBy }]));
+
 function harness(over: Partial<HandlerDeps> = {}, licences: LicenceRecord[] = [lic("l1")]) {
   const provisioned: string[] = [];
   const staged: [string, string][] = [];
@@ -46,7 +50,7 @@ function harness(over: Partial<HandlerDeps> = {}, licences: LicenceRecord[] = [l
     licences: vi.fn(async () => licences),
     chainRoots: async () => new Map(),
     grants: async () => grantsFor(licences),
-    lifecycle: async () => new Map(),
+    lifecycle: async () => lifecycleFor(licences),
     chainLabel: async () => "Project A",
     app: async (id) => (id === "app-1" ? APP : null),
     environments: async () => [],
@@ -383,10 +387,18 @@ describe("AppLicenseHandler", () => {
       expect(h.logger.error).not.toHaveBeenCalled();
     });
 
-    it("falls back to the document for a licence the system has no record of (pre-migration)", async () => {
-      const h = harness(ended(), [lic("l1", { status: "EXPIRED" })]);
+    it("holds, with an error, an authorised licence the system has no record of", async () => {
+      const h = harness({ ...ended(), lifecycle: async () => new Map() }, [lic("l1", { status: "EXPIRED" })]);
       await h.handler.reconcileOnce();
-      expect(h.deps.onEnded).toHaveBeenCalledWith("app-1", "e1");
+      expect(h.deps.onEnded).not.toHaveBeenCalled();
+      expect(h.logger.error).toHaveBeenCalledWith(expect.stringContaining("licence l1: has no recorded lifecycle"));
+    });
+
+    it("does not need a record for a licence without provenance (it is held for that already)", async () => {
+      const h = harness({ ...ended(), lifecycle: async () => new Map(), grants: async () => new Map() }, [lic("l1")]);
+      await h.handler.reconcileOnce();
+      expect(h.logger.error).not.toHaveBeenCalled();
+      warned(h, "holding chain l1 of app app-1: ACTIVE licence without provenance");
     });
 
     it("holds a chain whose recorded successor differs from the document's", async () => {
@@ -424,11 +436,14 @@ describe("AppLicenseHandler", () => {
         cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 2 },
       }, licences);
       await h.handler.reconcileOnce();
-      expect(h.provisioned).toStrictEqual(["l0", "l1"]);
+      expect(h.provisioned).toHaveLength(2);
       expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 environment re-template(s) deferred to later ticks (at most 2 per tick)"));
-      // The budget is per tick.
+      // The budget is per tick, and the starting chain rotates: whoever was
+      // deferred goes first next time.
+      const deferred = ["l0", "l1", "l2"].find((r) => !h.provisioned.includes(r))!;
       await h.handler.reconcileOnce();
-      expect(h.provisioned).toStrictEqual(["l0", "l1", "l0", "l1"]);
+      expect(h.provisioned).toHaveLength(4);
+      expect(h.provisioned.slice(2)).toContain(deferred);
     });
 
     it("does not spend the budget on creation, a repoint or a refusal that dispatched nothing", async () => {
@@ -448,7 +463,7 @@ describe("AppLicenseHandler", () => {
         cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
       }, [...stuck, ...fresh]);
       await h.handler.reconcileOnce();
-      expect(provision.mock.calls.map((c) => c[0].root)).toStrictEqual(["l0", "l1", "l2", "n0", "n1", "n2"]);
+      expect(provision.mock.calls.map((c) => c[0].root).sort()).toStrictEqual(["l0", "l1", "l2", "n0", "n1", "n2"]);
     });
 
     it("pauses re-templating entirely at 0", async () => {
@@ -518,13 +533,57 @@ describe("AppLicenseHandler", () => {
     });
   });
 
+  describe("a failing chain backs off", () => {
+    it("skips a chain for 1, 2, 4, 8 and at most 16 ticks after consecutive failures, and resets on success", async () => {
+      const attempts: number[] = [];
+      let tick = 0;
+      let failing = true;
+      const provision = vi.fn(async (input: { root: string }) => {
+        if (input.root === "l1") {
+          attempts.push(tick);
+          if (failing) throw new Error("ENABLE_SERVICE rejected: PrefixInUseError");
+        }
+        return { environment_id: `env-${input.root}` } as LicenseEnvironments;
+      });
+      const h = harness({ provision }, [lic("l1"), lic("l2")]);
+      for (tick = 1; tick <= 54; tick++) await h.handler.reconcileOnce();
+      expect(attempts).toStrictEqual([1, 3, 6, 11, 20, 37, 54]);
+      // The other chain is never held back.
+      expect(provision.mock.calls.filter((c) => c[0].root === "l2")).toHaveLength(54);
+
+      failing = false;
+      for (tick = 55; tick <= 72; tick++) await h.handler.reconcileOnce();
+      expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("chain l1 of app app-1 failed 7 time(s) in a row; retrying on tick 71"));
+      // Retried on tick 71, succeeded, so the backoff reset: tried again on 72.
+      expect(attempts.slice(7)).toStrictEqual([71, 72]);
+    });
+
+    it("a backed-off re-template does not take the budget from other chains", async () => {
+      const licences = [lic("l0", { stage: "e0" }), lic("l1", { stage: "e1" })];
+      const envs = licences.map((l, i) => envRow({ environment_id: `e${i}`, root_license_id: l.id, license_id: l.id, template_hash: "old" }));
+      const provision = vi.fn(async (input: { root: string }) => {
+        if (input.root === "l1") throw new Error("rejected");
+        return { environment_id: `env-${input.root}` } as LicenseEnvironments;
+      });
+      const h = harness({
+        environments: async () => envs,
+        provision,
+        cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+      }, licences);
+      await h.handler.reconcileOnce(); // rotation: l1 first, fails and takes the budget
+      await h.handler.reconcileOnce(); // l1 backed off: l0 gets it
+      expect(provision.mock.calls.map((c) => c[0].root)).toStrictEqual(["l1", "l0"]);
+    });
+  });
+
   describe("a hung call cannot stall the handler", () => {
     afterEach(() => { vi.useRealTimers(); });
 
     it("fails a step that does not settle within stepTimeoutMs and carries on", async () => {
       vi.useFakeTimers();
+      // Chains rotate by tick: on the first tick l2 goes first.
       const provision = vi.fn((input: { root: string }) =>
-        input.root === "l1"
+        input.root === "l2"
           ? new Promise<LicenseEnvironments>(() => {})
           : Promise.resolve({ environment_id: `env-${input.root}` } as LicenseEnvironments));
       const h = harness({ provision, cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, stepTimeoutMs: 120_000 } }, [lic("l1"), lic("l2")]);
@@ -533,8 +592,31 @@ describe("AppLicenseHandler", () => {
       expect(provision).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
       await done;
-      expect(h.staged).toStrictEqual([["l2", "env-l2"]]);
-      warned(h, "provision of l1 for app app-1 failed: StepTimeoutError: provision of l1 (app app-1) timed out after 120000ms");
+      expect(h.staged).toStrictEqual([["l1", "env-l1"]]);
+      warned(h, "provision of l2 for app app-1 failed: StepTimeoutError: provision of l2 (app app-1) timed out after 120000ms");
+    });
+
+    it("skips a chain whose timed-out step is still running until it settles", async () => {
+      vi.useFakeTimers();
+      let finish: () => void = () => {};
+      let calls = 0;
+      const provision = vi.fn(() => {
+        calls++;
+        return calls === 1
+          ? new Promise<LicenseEnvironments>((r) => { finish = () => r({ environment_id: "env-l1" } as LicenseEnvironments); })
+          : Promise.resolve({ environment_id: "env-l1" } as LicenseEnvironments);
+      });
+      const h = harness({ provision, cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, stepTimeoutMs: 1_000 } });
+      const tick = async () => { const p = h.handler.reconcileOnce(); await vi.advanceTimersByTimeAsync(1_000); await p; };
+      await tick(); // times out; backs off for tick 2
+      await tick(); // backed off (and still running)
+      await tick(); // backoff over, but still running: skipped
+      expect(provision).toHaveBeenCalledTimes(1);
+      expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("chain l1 of app app-1: a step from an earlier tick is still running; skipping"));
+      finish();
+      await vi.advanceTimersByTimeAsync(0);
+      await tick();
+      expect(provision).toHaveBeenCalledTimes(2);
     });
 
     it("fails a tick whose reads hang, so the next tick runs", async () => {

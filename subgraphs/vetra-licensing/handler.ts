@@ -30,8 +30,8 @@ export interface HandlerDeps {
   grants(): Promise<Map<string, GrantProvenance>>;
   /**
    * licence id -> the lifecycle status the system last wrote
-   * (license_lifecycle). A document that disagrees holds its chain; a licence
-   * with no row (written before the table existed) falls back to its document.
+   * (license_lifecycle). A document that disagrees holds its chain, and so does
+   * an authorised licence with no row (the migration backfills every one).
    */
   lifecycle(): Promise<Map<string, LifecycleRecord>>;
   chainLabel(rootLicenseId: string): Promise<string | null>;
@@ -120,8 +120,15 @@ function unauthorisedBecause(l: LicenceRecord, grant: GrantProvenance | undefine
 }
 
 /** Why the document's lifecycle disagrees with what the system recorded, or null. */
-function lifecycleMismatch(l: LicenceRecord, rec: LifecycleRecord | undefined): string | null {
-  if (!rec) return null; // pre-migration: the document is all there is
+function lifecycleMismatch(
+  l: LicenceRecord,
+  rec: LifecycleRecord | undefined,
+  grant: GrantProvenance | undefined,
+): string | null {
+  // The handler runs only after the migration, which backfills every
+  // licence: an authorised licence without a record is not one the system
+  // can vouch for. (An unauthorised one is held for its provenance anyway.)
+  if (!rec) return grant ? "has no recorded lifecycle (the system never recorded writing it)" : null;
   if (rec.status !== l.status) {
     return `its document says ${l.status} but the system recorded ${rec.status}`;
   }
@@ -133,6 +140,16 @@ function lifecycleMismatch(l: LicenceRecord, rec: LifecycleRecord | undefined): 
 
 const rootOfStep = (step: ChainStep, rootById: Map<string, string>): string | null =>
   step.kind === "set-stage" ? (rootById.get(step.licenseId) ?? null) : step.root;
+
+/** The longest a failing chain is skipped for, in ticks. */
+export const BACKOFF_CAP_TICKS = 16;
+
+/** `list` starting at `offset` (mod its length), wrapping around. */
+function rotate<T>(list: T[], offset: number): T[] {
+  if (list.length === 0) return list;
+  const k = offset % list.length;
+  return [...list.slice(k), ...list.slice(0, k)];
+}
 
 type ProvisionKind = "create" | "retemplate" | "repoint";
 
@@ -157,6 +174,11 @@ export class AppLicenseHandler {
   private readonly notices: Notices;
   private retemplateBudget = 0;
   private deferredRetemplates = 0;
+  private tickNo = 0;
+  /** chain key -> consecutive failures and the last tick it is skipped on. */
+  private readonly backoff = new Map<string, { failures: number; until: number }>();
+  /** Chain keys with a step that has not settled (including timed-out ones). */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly d: HandlerDeps) {
     this.notices = new Notices(d.logger);
@@ -255,7 +277,7 @@ export class AppLicenseHandler {
           `[licensing] licence ${l.id} ${why}; holding its chain`,
         );
       }
-      const mismatch = lifecycleMismatch(l, lifecycle.get(l.id));
+      const mismatch = lifecycleMismatch(l, lifecycle.get(l.id), grant);
       if (mismatch) {
         this.notices.note(
           `licence:${l.id}:lifecycle`,
@@ -296,7 +318,10 @@ export class AppLicenseHandler {
 
     this.retemplateBudget = this.d.cfg.retemplatePerTick;
     this.deferredRetemplates = 0;
-    for (const [appId, appLicences] of byApp) {
+    this.tickNo++;
+    // Rotated, so the same apps (and below, chains) do not always come first
+    // and take the whole re-template budget.
+    for (const [appId, appLicences] of rotate([...byApp], this.tickNo)) {
       try {
         await this.reconcileApp(appId, appLicences, heldRoots.get(appId) ?? new Map<string, string>());
       } catch (err) {
@@ -389,19 +414,70 @@ export class AppLicenseHandler {
       return;
     }
 
+    const rootById = new Map(licences.map((l) => [l.id, l.root]));
+    const groups = new Map<string, ChainStep[]>();
     for (const step of steps) {
-      const key = step.kind === "set-stage" ? step.licenseId : step.root;
+      const root =
+        rootOfStep(step, rootById) ?? (step.kind === "set-stage" ? step.licenseId : "");
+      groups.set(root, [...(groups.get(root) ?? []), step]);
+    }
+    for (const [root, group] of rotate([...groups], this.tickNo)) {
+      await this.runChain(app, root, group, provisionKind);
+    }
+    if (!held) {
+      const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+      await this.timed(this.d.afterApp(appId, after), `after-app work of app ${appId}`);
+    }
+  }
+
+  /**
+   * One chain's steps, in order, stopping at the first failure. A chain whose
+   * step is still running (it timed out earlier) is skipped until that step
+   * settles; a chain that failed is skipped for 1, 2, 4… ticks (at most
+   * BACKOFF_CAP_TICKS), reset by a tick on which it succeeds.
+   */
+  private async runChain(
+    app: AppDocView,
+    root: string,
+    steps: ChainStep[],
+    provisionKind: (step: Extract<ChainStep, { kind: "provision" }>) => ProvisionKind,
+  ): Promise<void> {
+    const appId = app.id;
+    const key = `${appId}:${root}`;
+    if (!steps.some((s) => s.kind !== "hold" && s.kind !== "anomaly")) return;
+    if (this.inFlight.has(key)) {
+      this.notices.note(
+        `inflight:${key}`,
+        "info",
+        `[licensing] chain ${root} of app ${appId}: a step from an earlier tick is still running; skipping`,
+      );
+      return;
+    }
+    const backoff = this.backoff.get(key);
+    if (backoff && this.tickNo <= backoff.until) {
+      this.notices.note(
+        `backoff:${key}`,
+        "info",
+        `[licensing] chain ${root} of app ${appId} failed ${backoff.failures} time(s) in a row; retrying on tick ${backoff.until + 1}`,
+      );
+      return;
+    }
+    for (const step of steps) {
       let budgeted = false;
       if (step.kind === "provision" && provisionKind(step) === "retemplate") {
         if (this.retemplateBudget <= 0) {
           this.deferredRetemplates++;
-          continue;
+          return; // not a failure: the chain waits its turn
         }
         this.retemplateBudget--;
         budgeted = true;
       }
+      const running = this.apply(app, step);
+      this.inFlight.add(key);
+      const settled = () => this.inFlight.delete(key);
+      void running.then(settled, settled);
       try {
-        await this.timed(this.apply(app, step), `${step.kind} of ${key} (app ${appId})`);
+        await this.timed(running, `${step.kind} of ${root} (app ${appId})`);
       } catch (err) {
         // Refused before anything was dispatched: the budget was not spent.
         if (
@@ -410,17 +486,18 @@ export class AppLicenseHandler {
         ) {
           this.retemplateBudget++;
         }
+        const failures = (backoff?.failures ?? 0) + 1;
+        const skip = Math.min(2 ** (failures - 1), BACKOFF_CAP_TICKS);
+        this.backoff.set(key, { failures, until: this.tickNo + skip });
         this.notices.note(
-          `step:${appId}:${key}:${step.kind}`,
+          `step:${key}:${step.kind}`,
           "warn",
-          `[licensing] ${step.kind} of ${key} for app ${appId} failed: ${String(err)}`,
+          `[licensing] ${step.kind} of ${root} for app ${appId} failed: ${String(err)}`,
         );
+        return;
       }
     }
-    if (!held) {
-      const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
-      await this.timed(this.d.afterApp(appId, after), `after-app work of app ${appId}`);
-    }
+    this.backoff.delete(key);
   }
 
   private noteHoldsAndAnomalies(appId: string, steps: ChainStep[]): void {

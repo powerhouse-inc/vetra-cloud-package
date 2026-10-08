@@ -217,13 +217,28 @@ export async function provisionChain(
     try {
       row = await claim;
     } catch (err) {
-      // Nothing references the fresh DRAFT document: without this, a claim
-      // that keeps failing would leak one document per tick.
-      await deps.envs.delete(fresh).catch((deleteErr: unknown) => {
-        (deps.logger ?? console).error(
-          `[licensing] claim of chain ${input.root} failed and its fresh environment ${fresh} could not be deleted: ${String(deleteErr)}`,
+      // The claim is an INSERT then a SELECT: the INSERT may have committed.
+      // Delete the fresh DRAFT document only when no row references it;
+      // otherwise (or when that cannot be told) leave it for the next tick,
+      // which finds the claim and initialises it.
+      const log = deps.logger ?? console;
+      let owner: LicenseEnvironments | null | undefined;
+      try {
+        owner = await deps.rows.byRoot(input.root);
+      } catch (checkErr) {
+        log.error(
+          `[licensing] claim of chain ${input.root} failed and whether it references ${fresh} cannot be told; leaving the document: ${String(checkErr)}`,
         );
-      });
+        throw err;
+      }
+      if (owner?.environment_id !== fresh) {
+        // Without this, a claim that keeps failing would leak one document per tick.
+        await deps.envs.delete(fresh).catch((deleteErr: unknown) => {
+          log.error(
+            `[licensing] claim of chain ${input.root} failed and its fresh environment ${fresh} could not be deleted: ${String(deleteErr)}`,
+          );
+        });
+      }
       throw err;
     }
     if (row.environment_id !== fresh) {

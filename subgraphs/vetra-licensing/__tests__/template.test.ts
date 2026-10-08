@@ -314,15 +314,44 @@ describe("renderFloorUpdateActions (re-templating a live environment)", () => {
     expect(renderFloorUpdateActions({ template, current: tagged })).toEqual([]);
   });
 
-  it("moves the FUSION image to the template's", () => {
+  it("moves the FUSION image to the template's, keeping the holder's env, secrets and auto-update", () => {
     const current = deployedState();
     current.services.push({ ...enabled("FUSION", "fusion"), version: "1.0.0" });
-    current.fusion = { image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null };
-    expect(types(renderFloorUpdateActions({ template: fusionTemplate, current }))).toEqual([
-      "SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES",
-    ]);
+    current.fusion = {
+      image: "registry/old-app",
+      env: [{ name: "API_URL", value: "https://x", isSecret: false }, { name: "TOKEN", value: null, isSecret: true }],
+      autoUpdate: true,
+      autoUpdateTagPattern: "^1\\.",
+    };
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
+    expect(types(actions)).toEqual(["SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(actions[0].input).toStrictEqual({
+      image: "registry/app",
+      env: [{ name: "API_URL", value: "https://x", isSecret: false }, { name: "TOKEN", value: null, isSecret: true }],
+      autoUpdate: true,
+      autoUpdateTagPattern: "^1\\.",
+    });
+    expect(actions[1].input).toStrictEqual({ type: "FUSION", version: "2.0.0" });
+  });
+
+  it("never re-sends the FUSION config when the image matches, and only upgrades its version", () => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "fusion"), version: "1.0.0" });
+    current.fusion = { image: "registry/app", env: [{ name: "A", value: "1", isSecret: null }], autoUpdate: true, autoUpdateTagPattern: null };
+    expect(types(renderFloorUpdateActions({ template: fusionTemplate, current }))).toEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    // The holder runs a newer version than the template: left alone.
+    current.services[2].version = "2.1.0";
+    expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
+    // Equal: nothing.
     current.services[2].version = "2.0.0";
     expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
+  });
+
+  it("sets up a missing FUSION service from scratch", () => {
+    const current = deployedState();
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
+    expect(types(actions)).toEqual(["ENABLE_SERVICE", "SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(actions[1].input).toStrictEqual({ image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null });
   });
 });
 

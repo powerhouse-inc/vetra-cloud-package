@@ -375,11 +375,48 @@ export interface FloorUpdateRenderInput {
  * The action list that brings an existing, live environment UP TO a template,
  * treating the template as a floor: missing template packages are added,
  * template packages provably older than the template are upgraded, template
- * services that are missing or disabled are enabled, and the FUSION image
- * follows the template. Nothing is ever removed, disabled or downgraded, and
- * the label and service prefixes the holder has are left alone. Returns []
+ * services that are missing or disabled are enabled, the FUSION image
+ * follows the template (keeping the holder's env, secrets and auto-update
+ * settings) and the FUSION version only ever moves up. Nothing is ever
+ * removed, disabled or downgraded, and the label and service prefixes the
+ * holder has are left alone. Returns []
  * when the environment already meets the floor, so nothing is dispatched.
  */
+/**
+ * The FUSION half of the floor. SET_FUSION_CONFIG replaces the whole fusion
+ * config, so it is sent only when the image must change, and then carries the
+ * holder's env (secret values live outside the document and are untouched),
+ * autoUpdate and tag pattern over. The version moves only up, or is set when
+ * the service has none (it was missing).
+ */
+function floorFusionActions(
+  repository: string,
+  version: string,
+  have: VetraCloudEnvironmentState["services"][number] | undefined,
+  fusion: VetraCloudEnvironmentState["fusion"],
+): Action[] {
+  const actions: Action[] = [];
+  if (fusion?.image !== repository) {
+    actions.push(
+      setFusionConfig({
+        image: repository,
+        env: (fusion?.env ?? []).map((e) => ({
+          name: e.name,
+          value: e.value ?? null,
+          isSecret: e.isSecret ?? null,
+        })),
+        autoUpdate: fusion?.autoUpdate ?? false,
+        autoUpdateTagPattern: fusion?.autoUpdateTagPattern ?? null,
+      }),
+    );
+  }
+  const currentVersion = have?.version ?? null;
+  if (currentVersion === null || isVersionUpgrade(currentVersion, version)) {
+    actions.push(setServiceVersion({ type: "FUSION", version }));
+  }
+  return actions;
+}
+
 export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[] {
   const n = validateTemplate(input.template);
   const current = input.current;
@@ -396,10 +433,8 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
     if (!have || !have.enabled) {
       actions.push(enableService({ type: s.type, prefix: have?.prefix ?? s.prefix }));
     }
-    if (s.type === "FUSION") {
-      const sameImage = current.fusion?.image === s.repository;
-      const sameVersion = have?.version === s.version;
-      if (!sameImage || !sameVersion) actions.push(...fusionActions(s));
+    if (s.type === "FUSION" && s.repository && s.version) {
+      actions.push(...floorFusionActions(s.repository, s.version, have, current.fusion));
     }
   }
 

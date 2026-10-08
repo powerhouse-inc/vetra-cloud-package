@@ -98,6 +98,30 @@ describe("provisionChain", () => {
     expect(states.size).toBe(0);
   });
 
+  it("keeps the fresh document when the claim's INSERT committed but its read failed", async () => {
+    const claim = deps.rows.claim;
+    deps.rows.claim = async (row) => { await claim(row); throw new Error("connection reset"); };
+    await expect(provisionChain(deps, input())).rejects.toThrow("connection reset");
+    expect(deps.envs.delete).not.toHaveBeenCalled();
+    expect((await deps.rows.byRoot("l1"))!.environment_id).toBe("env-1");
+    deps.rows.claim = claim;
+    // The next call finds the claim and initialises the same document.
+    const row = await provisionChain(deps, input());
+    expect(row.environment_id).toBe("env-1");
+    expect(executed[0]!.actions.map((a) => a.type)).toContain("INITIALIZE");
+  });
+
+  it("keeps the fresh document when it cannot tell whether the claim references it", async () => {
+    const error = vi.fn();
+    deps.logger = { error };
+    deps.rows.claim = async () => { throw new Error("insert failed"); };
+    let reads = 0;
+    deps.rows.byRoot = async () => { if (++reads === 1) return null; throw new Error("db down"); };
+    await expect(provisionChain(deps, input())).rejects.toThrow("insert failed");
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("cannot be told; leaving the document"));
+    expect(deps.envs.delete).not.toHaveBeenCalled();
+  });
+
   it("logs when the fresh document of a failed claim cannot be deleted either", async () => {
     const error = vi.fn();
     deps.logger = { error };
