@@ -15,7 +15,7 @@ import type { LicenseGateway } from "../license-gateway.js";
 import type { AppLedger, AppLicensingWriter } from "../licensing-ledger.js";
 import type { LicenceRecord } from "../reads.js";
 import { renderFloorUpdateActions } from "../template.js";
-import { isoInstant, parseLegacyLicenseType, type LegacyAccessDB, type LegacyLicenseType } from "./legacy.js";
+import { isoInstant, type LegacyAccessDB } from "./legacy.js";
 import { STUDIO_APP_ID, STUDIO_KIND, studioReconcilePlan } from "./studio.js";
 
 /**
@@ -53,8 +53,6 @@ export interface MigrationDeps {
   accessDb: Kysely<LegacyAccessDB> | null;
   /** The `apps` rows (vetra-apps): which apps are trusted, and which are DELETED. */
   appRows(): Promise<{ id: string; status: string }[]>;
-  /** Every powerhouse/app-license-type document, all pages. */
-  legacyTypeDocs(): Promise<unknown[]>;
   /** Every well-formed licence document. */
   licences(): Promise<LicenceRecord[]>;
   /** Ledger-checked app reads that never heal: a dry-run must not write the ledger. */
@@ -111,156 +109,15 @@ async function act(report: MigrationReport, what: string, run: () => Promise<unk
 }
 
 // ---------------------------------------------------------------------------
-// Licence types -> templates + terms
+// Licence types: migrated by the release that still had the model
 // ---------------------------------------------------------------------------
 
-type TemplateServiceInput = Parameters<typeof appActions.addTemplateService>[0];
-
-const legacyKind = (t: LegacyLicenseType) => t.kind?.trim() || `legacy-${t.id.slice(0, 8)}`;
-const TERM_STATUSES = new Set(["DRAFT", "ACTIVE", "RETIRED"]);
-
-function templateActions(t: LegacyLicenseType, templateId: string, name: string, report: MigrationReport): Action[] {
-  const tpl = t.template!;
-  const acts: Action[] = [
-    appActions.addTemplate({ id: templateId, name, mode: "DEDICATED" }),
-    appActions.setTemplateDetails({
-      id: templateId,
-      size: tpl.size,
-      baseDomain: tpl.baseDomain,
-      packageRegistry: tpl.packageRegistry,
-    }),
-  ];
-  for (const s of tpl.services) {
-    acts.push(
-      appActions.addTemplateService({
-        templateId,
-        id: s.id,
-        // Unknown enum values are refused by the action's input validation
-        // (a logged problem for this type), never coerced.
-        type: s.type as TemplateServiceInput["type"],
-        prefix: s.prefix,
-        artifactName: s.artifactName,
-        artifactChannel: s.artifactChannel as TemplateServiceInput["artifactChannel"],
-      }),
-    );
-  }
-  for (const p of tpl.packages) {
-    if (!p.packageName) {
-      report.warnings.push(`licence type ${t.id}: package ${p.id} has no name and is dropped (it could never be installed)`);
-      continue;
-    }
-    acts.push(appActions.addTemplatePackage({ templateId, id: p.id, packageName: p.packageName, version: p.version }));
-  }
-  return acts;
-}
-
-async function recordTypeMapping(deps: MigrationDeps, typeId: string, m: TypeMapping): Promise<void> {
-  await deps.db
-    .insertInto("licensing_migration_type_map")
-    .values({
-      license_type_id: typeId,
-      app_id: m.appId,
-      kind: m.kind,
-      template_id: m.templateId ?? "",
-      term_id: m.termId ?? "",
-      created_at: deps.now(),
-    })
-    .onConflict((oc) => oc.column("license_type_id").doNothing())
-    .execute();
-}
-
-async function migrateOneType(
-  deps: MigrationDeps,
-  report: MigrationReport,
-  ctx: MigrationContext,
-  t: LegacyLicenseType,
-  rows: Map<string, { id: string; status: string }>,
-  referenced: boolean,
-): Promise<void> {
-  const row = t.app ? rows.get(t.app) : undefined;
-  // Everything read from the type document is forgeable: quoted in logs.
-  const label = JSON.stringify(t.label ?? "");
-  const app = JSON.stringify(t.app);
-  if (!t.app || !row || row.status === "DELETED") {
-    // Nothing will ever provision for it: no term, but mapped, so the type
-    // can be deleted with the others and its licences still get a kind.
-    const why = !t.app ? "has no app" : !row ? `app ${app} has no apps row` : `app ${t.app} is DELETED`;
-    const m: TypeMapping = { appId: t.app ?? "", kind: legacyKind(t), templateId: null, termId: null };
-    await act(report, `licence type ${t.id} (${label}): ${why}; skipped, recorded in the type map without a term`, () =>
-      recordTypeMapping(deps, t.id, m),
-    );
-    ctx.types.set(t.id, m);
-    return;
-  }
-  const appDoc = await deps.apps.app(t.app);
-  if (!appDoc) {
-    report.problems.push(`licence type ${t.id}: app ${t.app} has no document yet (waiting for the vetra-apps backfill)`);
-    return;
-  }
-  if (t.validityDays !== null && t.validityDays <= 0) {
-    report.problems.push(`licence type ${t.id}: validityDays ${t.validityDays} is not positive; fix the licence type`);
-    return;
-  }
-  if (appDoc.tampered) {
-    report.warnings.push(`licence type ${t.id}: app ${appDoc.id} reads as tampered (${JSON.stringify(appDoc.tamperReason)}); its term is written but the app stays held`);
-  }
-  const templateId = t.template ? `tpl-${t.id}` : null;
-  const termId = `term-${t.id}`;
-  const existingTerm = appDoc.terms.find((x) => x.id === termId);
-  const planned = ctx.plannedKinds.get(appDoc.id) ?? new Set<string>();
-  let kind = existingTerm?.kind ?? legacyKind(t);
-  if (!existingTerm && (appDoc.terms.some((x) => x.kind === kind) || planned.has(kind))) {
-    kind = `${kind}-${t.id.slice(0, 8)}`;
-  }
-
-  const acts: Action[] = [];
-  if (templateId && !appDoc.templates.some((x) => x.id === templateId)) {
-    acts.push(...templateActions(t, templateId, t.label ?? kind, report));
-  }
-  if (!existingTerm) {
-    acts.push(
-      appActions.addTerm({ id: termId, kind, label: t.label, templateId, validityDays: t.validityDays, issuers: ["PUBLISHER_GRANT"] }),
-    );
-  }
-  // A term is published only with a template: an ACTIVE or RETIRED type
-  // without one (which the old reducers never allowed) stays DRAFT. And only
-  // for a type some authorised licence was issued on: anyone could create a
-  // licence-type document naming any app, so an unreferenced one becomes a
-  // DRAFT term its owner publishes deliberately.
-  let target = TERM_STATUSES.has(t.status) ? t.status : "DRAFT";
-  if (!templateId && target !== "DRAFT") {
-    report.warnings.push(`licence type ${t.id} is ${JSON.stringify(t.status)} but has no template: its term stays DRAFT`);
-    target = "DRAFT";
-  } else if (!referenced && target !== "DRAFT") {
-    report.warnings.push(
-      `licence type ${t.id} is ${JSON.stringify(t.status)} but no authorised licence was issued on it: its term stays DRAFT until the app's owner publishes it`,
-    );
-    target = "DRAFT";
-  }
-  const current = existingTerm?.status ?? "DRAFT";
-  if (target !== "DRAFT" && current === "DRAFT") acts.push(appActions.publishTerm({ id: termId }));
-  if (target === "RETIRED" && current !== "RETIRED") acts.push(appActions.retireTerm({ id: termId }));
-
-  const tpl = t.template;
-  const shape = tpl
-    ? `template ${templateId}: ${tpl.services.length} service(s), ${tpl.packages.length} package(s)`
-    : "no template";
-  const validity = t.validityDays === null ? "no end" : `${t.validityDays} days`;
-  const m: TypeMapping = { appId: appDoc.id, kind, templateId, termId };
-  await act(
-    report,
-    `app ${appDoc.id}: licence type ${t.id} (${label}) -> term ${termId} (kind ${JSON.stringify(kind)}, ${target}, ${validity}, ${shape})`,
-    async () => {
-      if (acts.length > 0) await deps.appWriter.appendLicensingOps(appDoc.id, acts);
-      await recordTypeMapping(deps, t.id, m);
-    },
-  );
-  ctx.types.set(t.id, m);
-  planned.add(kind);
-  ctx.plannedKinds.set(appDoc.id, planned);
-}
-
-export async function migrateLicenseTypes(deps: MigrationDeps, report: MigrationReport, ctx: MigrationContext): Promise<void> {
+/**
+ * The app-license-type model is unregistered, so its documents can no longer
+ * be read. The type map (kept as an archive) is what the licence step needs:
+ * load it into the context.
+ */
+export async function migrateLicenseTypes(deps: MigrationDeps, _report: MigrationReport, ctx: MigrationContext): Promise<void> {
   const mapped = await deps.db.selectFrom("licensing_migration_type_map").selectAll().execute();
   for (const r of mapped) {
     ctx.types.set(r.license_type_id, {
@@ -270,49 +127,7 @@ export async function migrateLicenseTypes(deps: MigrationDeps, report: Migration
       termId: r.term_id || null,
     });
   }
-  const rows = new Map((await deps.appRows()).map((r) => [r.id, r]));
-  const types: LegacyLicenseType[] = [];
-  for (const doc of await deps.legacyTypeDocs()) {
-    const t = parseLegacyLicenseType(doc);
-    if (t) types.push(t);
-    else report.problems.push(`licence type document ${docId(doc) ?? "(no id)"} is unreadable; it can be neither migrated nor deleted`);
-  }
-  // Types some authorised licence was issued on. A grant row's license_type_id
-  // wins. Only a grant without one falls back to the licence document's own
-  // type id, and only when that type belongs to the app the grant (or chain)
-  // names: the document is not trusted, so a forged type id cannot make
-  // another app's type referenced.
-  const grants = await deps.db.selectFrom("app_license_grants").select(["license_id", "app_id", "license_type_id"]).execute();
-  const chains = await deps.db.selectFrom("license_chain").select(["license_id", "app_id"]).execute();
-  const authorisedApp = new Map<string, string>();
-  for (const c of chains) authorisedApp.set(c.license_id, c.app_id);
-  const grantTypeOf = new Map<string, string>();
-  for (const g of grants) {
-    authorisedApp.set(g.license_id, g.app_id);
-    if (g.license_type_id) grantTypeOf.set(g.license_id, g.license_type_id);
-  }
-  const typeApp = new Map(types.map((t) => [t.id, t.app]));
-  const referenced = new Set(grantTypeOf.values());
-  for (const l of await deps.licences()) {
-    if (grantTypeOf.has(l.id) || !l.legacyLicenseTypeId) continue;
-    const app = authorisedApp.get(l.id);
-    if (app !== undefined && typeApp.get(l.legacyLicenseTypeId) === app) referenced.add(l.legacyLicenseTypeId);
-  }
-  // Two types of one app may share a kind; the one that keeps it plain is a
-  // referenced one first, then the live one (ACTIVE, then RETIRED, which has
-  // holders, then DRAFT); the order never depends on how the reactor lists
-  // documents.
-  const STATUS_RANK: Record<string, number> = { ACTIVE: 0, RETIRED: 1, DRAFT: 2 };
-  const rank = (t: LegacyLicenseType) => (referenced.has(t.id) ? 0 : 10) + (STATUS_RANK[t.status] ?? 3);
-  types.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
-  for (const t of types) {
-    if (ctx.types.has(t.id)) continue;
-    try {
-      await migrateOneType(deps, report, ctx, t, rows, referenced.has(t.id));
-    } catch (err) {
-      report.problems.push(`licence type ${t.id}: ${msg(err)}`);
-    }
-  }
+  if (mapped.length > 0) deps.logger.info("[licensing] legacy licence types already migrated");
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,48 +831,15 @@ export async function seedLedger(deps: MigrationDeps, report: MigrationReport): 
 }
 
 // ---------------------------------------------------------------------------
-// Deleting the legacy licence types (after completion, when asked)
+// Deleting the legacy licence types: done by the release that still had the model
 // ---------------------------------------------------------------------------
 
-/** Each legacy type's full state is kept here (licensing_migration_steps) before its document is deleted. */
+/** Each legacy type's full state was kept here (licensing_migration_steps) before its document was deleted. */
 export const ARCHIVE_STEP_PREFIX = "legacy-license-type:";
 
-/**
- * Deletes every app-license-type document the type map covers, archiving its
- * state first. Returns true when, afterwards (apply), none remain.
- */
-export async function deleteLegacyLicenseTypes(deps: MigrationDeps, report: MigrationReport): Promise<boolean> {
-  const mapped = new Set(
-    (await deps.db.selectFrom("licensing_migration_type_map").select("license_type_id").execute()).map((r) => r.license_type_id),
-  );
-  const docs = await deps.legacyTypeDocs();
-  let deleted = 0;
-  for (const doc of docs) {
-    const id = docId(doc);
-    try {
-      if (!id || !mapped.has(id)) {
-        report.problems.push(`licence type document ${id ?? "(no id)"}: not deleted, the type map does not cover it`);
-        continue;
-      }
-      await act(report, `delete licence type document ${id}`, async () => {
-        await deps.db
-          .insertInto("licensing_migration_steps")
-          .values({ step: `${ARCHIVE_STEP_PREFIX}${id}`, completed_at: deps.now(), detail: JSON.stringify(globalState(doc)) })
-          .onConflict((oc) => oc.column("step").doNothing())
-          .execute();
-        await deps.deleteDocument(id);
-        deleted++;
-      });
-    } catch (err) {
-      report.problems.push(`licence type document ${id ?? "(no id)"}: delete failed: ${msg(err)}`);
-    }
-  }
-  if (report.mode !== "apply") return false;
-  const remaining = (await deps.legacyTypeDocs()).length;
-  if (remaining === 0) {
-    deps.logger.warn(`[licensing] migration: deleted ${deleted} app-license-type document(s); none remain`);
-    return true;
-  }
-  report.problems.push(`${remaining} app-license-type document(s) remain after deleting ${deleted}`);
-  return false;
+/** A no-op: the model is gone, and the documents were deleted before this release. Always "complete". */
+export async function deleteLegacyLicenseTypes(deps: MigrationDeps, _report: MigrationReport): Promise<boolean> {
+  const mapped = await deps.db.selectFrom("licensing_migration_type_map").select("license_type_id").execute();
+  if (mapped.length > 0) deps.logger.info("[licensing] legacy licence types already migrated");
+  return true;
 }

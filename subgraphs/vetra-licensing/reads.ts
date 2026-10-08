@@ -4,7 +4,6 @@ import { docId, globalState, isDocType, str } from "./doc-parse.js";
 import type { LicenseRow, LicenseStatusName } from "./transitions.js";
 
 export const LICENSE_DOC_TYPE = "powerhouse/app-owner-license";
-export const LICENSE_TYPE_DOC_TYPE = "powerhouse/app-license-type";
 
 const PAGE_SIZE = 200;
 

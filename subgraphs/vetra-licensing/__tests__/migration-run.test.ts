@@ -30,7 +30,6 @@ function fakeDeps(over: Partial<MigrationDeps> = {}): MigrationDeps {
     db,
     accessDb: null,
     appRows: refuse(),
-    legacyTypeDocs: refuse(),
     licences: refuse(),
     apps: { app: refuse(), appBySlug: refuse() },
     appWriter: { appendLicensingOps: refuse() },
@@ -65,7 +64,6 @@ function cleanWorld(over: Partial<MigrationDeps> = {}): MigrationDeps {
   } as const;
   return fakeDeps({
     appRows: vi.fn(async () => []),
-    legacyTypeDocs: vi.fn(async () => []),
     licences: vi.fn(async () => []),
     apps: { app: vi.fn(async () => structuredClone(studioView) as never), appBySlug: vi.fn(async () => structuredClone(studioView) as never) },
     ledger: { lookup: vi.fn(async () => "h"), seed: refuse() },
@@ -83,14 +81,13 @@ describe("runLicensingMigration", { timeout: 30_000 }, () => {
       mode: "dry-run", actions: [], problems: [], warnings: [], complete: false, deletionComplete: false,
     });
     expect(deps.appRows).not.toHaveBeenCalled();
-    expect(deps.legacyTypeDocs).not.toHaveBeenCalled();
     expect(await steps()).toStrictEqual([]);
   });
 
   it("never throws: a step that throws becomes a problem, and the other steps still run", async () => {
-    const deps = cleanWorld({ legacyTypeDocs: vi.fn(() => Promise.reject(new Error("boom"))) });
+    const deps = cleanWorld({ appRows: vi.fn(() => Promise.reject(new Error("boom"))) });
     const report = await runLicensingMigration(deps);
-    expect(report.problems).toStrictEqual(["step license-types failed: boom"]);
+    expect(report.problems).toStrictEqual(["step ledger failed: boom"]);
     expect(report.complete).toBe(false);
     expect(deps.licences).toHaveBeenCalled();
     expect(await steps()).toStrictEqual([]);
@@ -117,7 +114,7 @@ describe("runLicensingMigration", { timeout: 30_000 }, () => {
     expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration (apply): 0 actions, 0 problems, 0 warnings, complete");
 
     // Once complete, a run does no work at all.
-    const after = cleanWorld({ appRows: refuse(), legacyTypeDocs: refuse(), licences: refuse() });
+    const after = cleanWorld({ appRows: refuse(), licences: refuse() });
     expect(await runLicensingMigration(after)).toMatchObject({ complete: true, actions: [], problems: [] });
   });
 
@@ -174,28 +171,36 @@ describe("runLicensingMigration", { timeout: 30_000 }, () => {
 });
 
 describe("checkLegacyTypesCovered", () => {
-  const typeDoc = { header: { id: "t1", documentType: "powerhouse/app-license-type" }, state: { global: { status: "DRAFT" } } };
+  it("is loud only while the migration is incomplete and the type map is empty", async () => {
+    const deps = fakeDeps();
+    await checkLegacyTypesCovered(deps);
+    expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("must not run before release A's migration"));
 
-  it("is loud while licence types exist and none is mapped, quieter once mapped, silent when gone", async () => {
-    const deps = fakeDeps({ legacyTypeDocs: vi.fn(async () => [typeDoc]) });
-    await checkLegacyTypesCovered(deps);
-    expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("1 app-license-type document(s) exist and the licensing migration has mapped none of them"));
     await db.insertInto("licensing_migration_type_map").values({ license_type_id: "t1", app_id: "a", kind: "k", template_id: "", term_id: "", created_at: "t" }).execute();
-    await checkLegacyTypesCovered(deps);
-    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("1 app-license-type document(s) remain (1 mapped)"));
-    const gone = fakeDeps({ legacyTypeDocs: vi.fn(async () => []) });
-    await checkLegacyTypesCovered(gone);
-    expect(gone.logger.error).not.toHaveBeenCalled();
-    expect(gone.logger.warn).not.toHaveBeenCalled();
-    const failing = fakeDeps();
+    const mapped = fakeDeps();
+    await checkLegacyTypesCovered(mapped);
+    expect(mapped.logger.error).not.toHaveBeenCalled();
+    await db.deleteFrom("licensing_migration_type_map").execute();
+
+    await db.insertInto("licensing_migration_steps").values({ step: "complete", completed_at: "t", detail: null }).execute();
+    const done = fakeDeps();
+    await checkLegacyTypesCovered(done);
+    expect(done.logger.error).not.toHaveBeenCalled();
+    expect(done.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("never throws: an unreadable database is a warning", async () => {
+    const broken = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) }); // no tables
+    const failing = fakeDeps({ db: broken });
     await checkLegacyTypesCovered(failing);
     expect(failing.logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not check the legacy licence types"));
+    await broken.destroy();
   });
 });
 
 describe("startLicensingMigration", { timeout: 30_000 }, () => {
   it("logs and does nothing in mode off", async () => {
-    const deps = fakeDeps({ cfg: { ...fakeDeps().cfg, migration: "off" }, legacyTypeDocs: vi.fn(async () => []) });
+    const deps = fakeDeps({ cfg: { ...fakeDeps().cfg, migration: "off" } });
     startLicensingMigration(deps).stop();
     expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("LICENSING_MIGRATION=off"));
     expect(deps.appRows).not.toHaveBeenCalled();
@@ -223,30 +228,18 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     handle.stop();
   });
 
-  it("keeps going after completion until the asked-for deletion is done", async () => {
+  it("stops after completion even when the deletion of legacy types is asked for: it is a no-op now", async () => {
     vi.useFakeTimers();
     await db.insertInto("licensing_migration_steps").values({ step: "complete", completed_at: "t", detail: null }).execute();
     await db.insertInto("licensing_migration_type_map").values({ license_type_id: "t1", app_id: "a", kind: "k", template_id: "", term_id: "", created_at: "t" }).execute();
-    let docs: unknown[] = [{ header: { id: "t1", documentType: "powerhouse/app-license-type" }, state: { global: { status: "DRAFT" } } }];
-    let failDelete = true;
-    const deps = cleanWorld({
-      cfg: { ...fakeDeps().cfg, deleteLicenseTypes: true },
-      legacyTypeDocs: vi.fn(async () => docs),
-      deleteDocument: vi.fn(async () => {
-        if (failDelete) throw new Error("reactor busy");
-        docs = [];
-      }),
-    });
+    const deps = cleanWorld({ cfg: { ...fakeDeps().cfg, deleteLicenseTypes: true } });
     const handle = startLicensingMigration(deps, 1_000);
     await vi.advanceTimersByTimeAsync(0);
-    expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration problem: licence type document t1: delete failed: reactor busy");
-    failDelete = false;
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(docs).toStrictEqual([]);
-    expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration: deleted 1 app-license-type document(s); none remain");
-    const calls = (deps.deleteDocument as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(deps.logger.info).toHaveBeenCalledWith("[licensing] legacy licence types already migrated");
+    expect(deps.deleteDocument).not.toHaveBeenCalled();
+    const calls = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
     await vi.advanceTimersByTimeAsync(5_000);
-    expect((deps.deleteDocument as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
+    expect((deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
     handle.stop();
   });
 
@@ -255,13 +248,10 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     const gate = new Promise<void>((r) => { release = r; });
     let licenceReads = 0;
     const deps = cleanWorld({
-      // The first step (licence types) blocks until the test stops the migration.
-      legacyTypeDocs: vi.fn(async () => {
-        await gate;
-        return [];
-      }),
+      // The licences step blocks until the test stops the migration.
       licences: vi.fn(async () => {
         licenceReads++;
+        await gate;
         return [];
       }),
     });
@@ -269,9 +259,9 @@ describe("startLicensingMigration", { timeout: 30_000 }, () => {
     await new Promise((r) => setTimeout(r, 50));
     handle.stop();
     release();
-    await vi.waitFor(() => expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration problem: step stopped before licences: shutting down"));
+    await vi.waitFor(() => expect(deps.logger.warn).toHaveBeenCalledWith("[licensing] migration problem: step stopped before environments: shutting down"));
     expect(await steps()).toStrictEqual([]);
-    // licence-types read the licences to find referenced types; nothing after it ran.
+    // The licences step read the licences; nothing after it ran.
     expect(licenceReads).toBe(1);
   });
 
