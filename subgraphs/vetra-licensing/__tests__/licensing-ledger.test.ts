@@ -220,6 +220,23 @@ describe("ledger integrity check", () => {
   });
 });
 
+describe("seeding (the startup migration)", () => {
+  it("records an unrecorded document once, never overwrites a recorded hash, and skips a missing one", async () => {
+    const w = world();
+    expect(await w.reads.app("app-1")).toMatchObject({ unverified: true });
+    expect(await w.ledger.seed("app-1")).toBe(true);
+    expect(await row()).toMatchObject({ app_id: "app-1", state_hash: licensingStateHash(STATE) });
+    expect(await w.reads.app("app-1")).toMatchObject({ unverified: false, tampered: false });
+    // A recorded app is never re-seeded: that would launder a later change.
+    w.apply("foreign", () => { (w.state.global.terms as Terms)[0]!.status = "RETIRED"; });
+    expect(await w.ledger.seed("app-1")).toBe(false);
+    expect(await w.reads.app("app-1")).toMatchObject({ tampered: true });
+    const none = createAppLedger({ db, source: { getDoc: async () => null, operationsSince: async () => [] }, now: () => "t" });
+    expect(await none.seed("app-x")).toBe(false);
+    expect(await db.selectFrom("app_licensing_state").select("app_id").execute()).toStrictEqual([{ app_id: "app-1" }]);
+  });
+});
+
 describe("serialised system writes", () => {
   it("two concurrent writes through two ledger instances leave the app clean and never overlap", async () => {
     const w = world();

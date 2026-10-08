@@ -283,6 +283,13 @@ export interface AppLedger {
     opts: { seedUnrecorded: boolean },
   ) => Promise<void>;
   /**
+   * Records the document's current state, only when the app has no ledger
+   * row yet (the startup migration seeds every trusted app so none reads as
+   * unverified). True when it recorded; false for a recorded app (never
+   * overwritten: that could launder a later change) or a missing document.
+   */
+  seed: (appId: string) => Promise<boolean>;
+  /**
    * Records the document's state when it differs from the ledger only by
    * system writes journalled as intents. True when the ledger matches the
    * document afterwards.
@@ -407,6 +414,14 @@ export function createAppLedger(deps: {
     lookup,
     record: (appId, state) =>
       withAppLock(appId, () => recordHash(db, appId, licensingStateHash(state), now())),
+    seed: (appId) =>
+      withAppLock(appId, async () => {
+        if ((await lookup(appId)) !== null) return false;
+        const doc = await source.getDoc(appId);
+        if (doc === null) return false;
+        await recordHash(db, appId, licensingStateHash(doc.state), now());
+        return true;
+      }),
     heal: (appId) =>
       withAppLock(appId, async () => {
         const settled = await settle(appId);

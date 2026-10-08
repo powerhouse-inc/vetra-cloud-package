@@ -15,6 +15,11 @@ import { createReactorLicenseReads } from "./reads.js";
 import { createOwnerAppLookup } from "./owner-apps.js";
 import { studioPublisherAddress } from "./studio-app.js";
 import { createAppLicensingWriter } from "./licensing-ledger.js";
+import { createReactorAppDocStore } from "../vetra-apps/app-doc-store.js";
+import { createAppReads } from "./app-reads.js";
+import { findAllOfType } from "./reads.js";
+import { LEGACY_LICENSE_TYPE_DOC_TYPE, type LegacyAccessDB } from "./migration/legacy.js";
+import { startLicensingMigration } from "./migration/run.js";
 import {
   createAppDocOwnerResolver,
   sweepAppDocumentProtection,
@@ -103,6 +108,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   private keeper: LicenseKeeper | null = null;
   private handler: AppLicenseHandler | null = null;
   private stats: RenownStatsClient | null = null;
+  private migration: { stop(): void } | null = null;
 
   async onSetup() {
     const db = (await this.relationalDb.createNamespace(
@@ -422,6 +428,57 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       });
     }
 
+    // The startup migration (LICENSING_MIGRATION: dry-run by default, apply,
+    // off): legacy licence types, licences, environments and access codes
+    // onto terms, chains and the vetra-studio app. Not awaited, retried every
+    // 10 minutes until complete; the handler below idles until then. Nothing
+    // here can fail setup.
+    try {
+      // The legacy namespace still exists (Task 17 deletes code, never tables);
+      // createNamespace on an existing one is a lookup.
+      const accessDb = (await this.relationalDb
+        .createNamespace("vetra-access-codes")
+        .catch(() => null)) as unknown as Kysely<LegacyAccessDB> | null;
+      // Ledger-checked reads that never heal: a dry-run must not write.
+      const migrationAppReads = createAppReads(this.reactorClient as never, {
+        ledger: appLedger.lookup,
+        trustedIds: appsTrustedIds(appsDb),
+      });
+      const appDocs = createReactorAppDocStore(this.reactorClient as never, undefined, () =>
+        Promise.resolve(appLedger),
+      );
+      this.migration = startLicensingMigration({
+        db,
+        accessDb,
+        appRows: () => appsDb.selectFrom("apps").select(["id", "status"]).execute(),
+        legacyTypeDocs: () => findAllOfType(this.reactorClient as never, LEGACY_LICENSE_TYPE_DOC_TYPE),
+        licences: () => reads.allLicenceRecords(),
+        apps: migrationAppReads,
+        appWriter,
+        ledger: appLedger,
+        createAppDocument: (id) => appDocs.create(id),
+        protectAppDocument: perm
+          ? createAppDocProtector(
+              perm,
+              createAppDocOwnerResolver(rowOwner, studioPublisher),
+              this.reactorClient as never,
+              console,
+            )
+          : null,
+        licenseGateway: gateway,
+        envState: (id) => envs.getState(id),
+        deleteDocument: async (id) => {
+          await this.reactorClient.deleteDocument(id);
+        },
+        grants,
+        cfg,
+        now: () => new Date().toISOString(),
+        logger: console,
+      });
+    } catch (err) {
+      console.warn(`[licensing] migration not started: ${String(err)}`);
+    }
+
     // Provisioning: one DEDICATED environment per licence chain. Inert unless
     // cfg.enabled (default false); dry-run (default true) only logs. It does
     // nothing at all until the startup migration has recorded `complete`.
@@ -474,6 +531,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   }
 
   async onDisconnect(): Promise<void> {
+    this.migration?.stop();
+    this.migration = null;
     this.keeper?.stop();
     this.keeper = null;
     this.handler?.stop();

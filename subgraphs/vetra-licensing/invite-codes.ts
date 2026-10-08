@@ -294,17 +294,29 @@ export async function keyCiphertextForCode(
  * The code a holder redeemed for one licence, from the redemption row (never
  * from the licence document's details, which a forged document could point at
  * someone else's code). Null when the licence was not redeemed by this holder.
+ *
+ * A licence the startup migration built from a holder's legacy redemptions
+ * has several rows. Then, as vetra-access-codes chose the key: the newest
+ * redemption still live at `now` whose code carries a key, else the newest
+ * redemption. Without `now` no redemption counts as lapsed.
  */
 export async function redeemedCodeOf(
   db: Kysely<VetraLicensingDB>,
   licenseId: string,
   userDid: string,
+  now?: string,
 ): Promise<string | null> {
-  const row = await db
-    .selectFrom("invite_redemptions")
-    .select("code")
-    .where("license_id", "=", licenseId)
-    .where("user_did", "=", userDid)
-    .executeTakeFirst();
-  return row?.code ?? null;
+  const rows = await db
+    .selectFrom("invite_redemptions as r")
+    .leftJoin("invite_codes as c", "c.code", "r.code")
+    .select(["r.code as code", "r.access_expires as access_expires", "c.anthropic_key_ciphertext as ciphertext"])
+    .where("r.license_id", "=", licenseId)
+    .where("r.user_did", "=", userDid)
+    .orderBy("r.redeemed_at", "desc")
+    .orderBy("r.code", "asc")
+    .execute();
+  const nowMs = now === undefined ? Number.NEGATIVE_INFINITY : Date.parse(now);
+  const live = (expires: string | null) => expires === null || !(Date.parse(expires) <= nowMs);
+  const keyed = rows.find((r) => r.ciphertext !== null && live(r.access_expires));
+  return (keyed ?? rows.at(0))?.code ?? null;
 }

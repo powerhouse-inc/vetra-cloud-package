@@ -221,4 +221,24 @@ describe("invite codes", () => {
     // Another holder naming the licence gets nothing.
     expect(await redeemedCodeOf(d, "lic-a", "did:b")).toBeNull();
   });
+
+  it("picks, among several redemptions behind one licence, the newest live one whose code has a key", async () => {
+    // A studio licence the migration built from several legacy redemptions:
+    // as vetra-access-codes did, the key comes from the newest unexpired
+    // redemption whose code carries one; an expired one never lends its key.
+    const d = await open();
+    for (const [code, key] of [["code-old-key", "ct-old"], ["code-mid-key", "ct-mid"], ["code-new-none", null]] as const) {
+      await createInviteCode(d, { ...base, code, anthropicKeyCiphertext: key });
+    }
+    const row = (code: string, redeemed: string, expires: string | null) =>
+      d.insertInto("invite_redemptions")
+        .values({ code, user_did: "did:a", redeemed_at: redeemed, access_expires: expires, license_id: "lic-m" })
+        .execute();
+    await row("code-old-key", "2026-07-01T00:00:00.000Z", "2026-07-31T00:00:00.000Z");
+    await row("code-mid-key", "2026-09-20T00:00:00.000Z", "2026-10-20T00:00:00.000Z");
+    await row("code-new-none", "2026-10-01T00:00:00.000Z", "2026-10-31T00:00:00.000Z");
+    expect(await redeemedCodeOf(d, "lic-m", "did:a", NOW)).toBe("code-mid-key");
+    // Once the keyed one has lapsed too, the newest redemption answers (no key).
+    expect(await redeemedCodeOf(d, "lic-m", "did:a", "2026-10-25T00:00:00.000Z")).toBe("code-new-none");
+  });
 });

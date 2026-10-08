@@ -297,23 +297,23 @@ function resolveSafely(
   }
 }
 
+/** Every document of one type, following the cursor to exhaustion. */
+export async function findAllOfType(client: LicenseClientLike, type: string): Promise<unknown[]> {
+  const out: unknown[] = [];
+  let cursor = "0";
+  for (;;) {
+    const page = await client.find({ type }, undefined, { cursor, limit: PAGE_SIZE });
+    out.push(...page.results);
+    if (!page.nextCursor || page.nextCursor === cursor) return out;
+    cursor = page.nextCursor;
+  }
+}
+
 export function createReactorLicenseReads(
   client: LicenseClientLike,
 ): LicenseReads {
   /** Follows the cursor to exhaustion: one page is never the whole population. */
-  async function findAll(type: string): Promise<unknown[]> {
-    const out: unknown[] = [];
-    let cursor = "0";
-    for (;;) {
-      const page = await client.find({ type }, undefined, {
-        cursor,
-        limit: PAGE_SIZE,
-      });
-      out.push(...page.results);
-      if (!page.nextCursor || page.nextCursor === cursor) return out;
-      cursor = page.nextCursor;
-    }
-  }
+  const findAll = (type: string) => findAllOfType(client, type);
 
   async function getDoc(id: string): Promise<unknown> {
     try {

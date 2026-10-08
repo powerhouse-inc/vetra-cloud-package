@@ -26,9 +26,10 @@ export interface InviteCodeIssuerDeps extends IssueDeps {
  * One redeem per (app, holder) at a time, in this process (production runs a
  * single replica): a double-submitted redeem sees the first one's licence
  * instead of issuing a second, and two codes for one SHARED kind cannot both
- * pass the ALREADY_HOLDS check.
+ * pass the ALREADY_HOLDS check. The startup migration takes the same key
+ * (`<appId>\0<holder DID>`) while it builds a holder's studio licence.
  */
-const withHolderLock = keyedMutex();
+export const withHolderLock = keyedMutex();
 
 /** The invite code an INVITE_CODE licence was issued from (its `details.code`). */
 function codeOf(l: LicenceRecord): string | null {
@@ -44,7 +45,7 @@ function codeOf(l: LicenceRecord): string | null {
 }
 
 /** Codes are redeemable secrets: logs carry a short sha256 prefix, never the code. */
-function codeRef(code: string): string {
+export function codeRef(code: string): string {
   return `code#${createHash("sha256").update(code).digest("hex").slice(0, 12)}`;
 }
 

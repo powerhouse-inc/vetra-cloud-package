@@ -62,7 +62,8 @@ export function buildStudioAccessDeps(input: {
   return {
     studioAppId: async () => (await input.appReads.appBySlug(input.slug))?.id ?? null,
     licencesOf: input.holderLicences,
-    redeemedCode: (licenseId, userDid) => redeemedCodeOf(input.db, licenseId, userDid),
+    redeemedCode: (licenseId, userDid) =>
+      redeemedCodeOf(input.db, licenseId, userDid, new Date().toISOString()),
     keyCiphertextForCode: (code) => keyCiphertextForCode(input.db, code),
     keyVault: input.keyVault,
     now: () => new Date().toISOString(),
