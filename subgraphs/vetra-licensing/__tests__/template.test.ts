@@ -8,6 +8,8 @@ import type { Action } from "document-model";
 import {
   renderCreateActions,
   renderUpdateActions,
+  renderFloorUpdateActions,
+  isVersionUpgrade,
   templateHash,
   validateTemplate,
   MissingPackageNameError,
@@ -53,7 +55,10 @@ const deployedState = (): VetraCloudEnvironmentState => ({
   status: "READY",
   owner: OWNER,
   label: "Acme vault",
-  services: [enabled("CONNECT", "connect"), enabled("SWITCHBOARD", "switchboard")],
+  services: [
+    enabled("CONNECT", "connect"),
+    enabled("SWITCHBOARD", "switchboard"),
+  ],
   packages: [
     {
       registry: "https://registry.example.com",
@@ -194,7 +199,11 @@ describe("renderUpdateActions", () => {
       template: {
         ...template,
         packages: [
-          { id: "p1", packageName: "@powerhousedao/knowledge", version: "2.0.0" },
+          {
+            id: "p1",
+            packageName: "@powerhousedao/knowledge",
+            version: "2.0.0",
+          },
           { id: "p2", packageName: "@powerhousedao/vault", version: null },
         ],
       },
@@ -231,6 +240,21 @@ describe("renderUpdateActions", () => {
   // FUSION is enabled by the app-link flow, not by a licence template, so a
   // template that does not mention it must not tear it down.
   it("leaves a service type the template cannot express alone", () => {
+    // CLINT needs a clintConfig the template cannot carry, so it was enabled by
+    // something other than a licence template and is not ours to tear down.
+    const current = deployedState();
+    current.services.push(enabled("CLINT", "clint"));
+    const actions = renderUpdateActions({
+      label: "Acme vault",
+      template,
+      current,
+    });
+    expect(types(actions)).not.toContain("DISABLE_SERVICE");
+  });
+
+  // FUSION is template-managed now: dropping the app image from a tier means
+  // holders should stop running it.
+  it("disables a FUSION service the template no longer asks for", () => {
     const current = deployedState();
     current.services.push(enabled("FUSION", "fusion"));
     const actions = renderUpdateActions({
@@ -238,7 +262,123 @@ describe("renderUpdateActions", () => {
       template,
       current,
     });
-    expect(types(actions)).not.toContain("DISABLE_SERVICE");
+    expect(types(actions)).toContain("DISABLE_SERVICE");
+  });
+});
+
+describe("renderFloorUpdateActions (re-templating a live environment)", () => {
+  const fusionTemplate: TemplateShape = {
+    ...template,
+    services: [
+      ...template.services,
+      { id: "f", type: "FUSION", prefix: null, resolvedRepository: "registry/app", resolvedVersion: "2.0.0" },
+    ],
+  };
+
+  it("dispatches nothing when the environment already meets the template", () => {
+    expect(renderFloorUpdateActions({ template, current: deployedState() })).toEqual([]);
+  });
+
+  it("never sets the label, removes a package or disables a service", () => {
+    const current = deployedState();
+    current.label = "My own name";
+    current.packages.push({ registry: "r", name: "@me/extra", version: "3.0.0" });
+    current.services.push(enabled("FUSION", "fusion"));
+    const actions = renderFloorUpdateActions({
+      template: { ...template, services: [template.services[0]], packages: [] },
+      current,
+    });
+    expect(actions).toEqual([]);
+  });
+
+  it("adds missing template packages and enables missing or disabled template services", () => {
+    const current = deployedState();
+    current.packages = [];
+    current.services = [{ ...enabled("CONNECT", "my-prefix"), enabled: false }];
+    const actions = renderFloorUpdateActions({ template, current });
+    expect(types(actions)).toEqual(["ADD_PACKAGE", "ENABLE_SERVICE", "ENABLE_SERVICE", "APPROVE_CHANGES"]);
+    // A disabled service keeps the holder's prefix.
+    expect(actions[1].input).toMatchObject({ type: "CONNECT", prefix: "my-prefix" });
+    expect(actions[2].input).toMatchObject({ type: "SWITCHBOARD", prefix: "switchboard" });
+  });
+
+  it("upgrades an older package and never downgrades a newer or tagged one", () => {
+    const older = deployedState();
+    older.packages[0].version = "0.9.0";
+    expect(types(renderFloorUpdateActions({ template, current: older }))).toEqual(["ADD_PACKAGE", "APPROVE_CHANGES"]);
+    const newer = deployedState();
+    newer.packages[0].version = "1.2.0";
+    expect(renderFloorUpdateActions({ template, current: newer })).toEqual([]);
+    const tagged = deployedState();
+    tagged.packages[0].version = "dev";
+    expect(renderFloorUpdateActions({ template, current: tagged })).toEqual([]);
+  });
+
+  it("moves the FUSION image to the template's, keeping the holder's env, secrets and auto-update", () => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "fusion"), version: "1.0.0" });
+    current.fusion = {
+      image: "registry/old-app",
+      env: [{ name: "API_URL", value: "https://x", isSecret: false }, { name: "TOKEN", value: null, isSecret: true }],
+      autoUpdate: true,
+      autoUpdateTagPattern: "^1\\.",
+    };
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
+    expect(types(actions)).toEqual(["SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(actions[0].input).toStrictEqual({
+      image: "registry/app",
+      env: [{ name: "API_URL", value: "https://x", isSecret: false }, { name: "TOKEN", value: null, isSecret: true }],
+      autoUpdate: true,
+      autoUpdateTagPattern: "^1\\.",
+    });
+    expect(actions[1].input).toStrictEqual({ type: "FUSION", version: "2.0.0" });
+  });
+
+  it("never re-sends the FUSION config when the image matches, and only upgrades its version", () => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "fusion"), version: "1.0.0" });
+    current.fusion = { image: "registry/app", env: [{ name: "A", value: "1", isSecret: null }], autoUpdate: true, autoUpdateTagPattern: null };
+    expect(types(renderFloorUpdateActions({ template: fusionTemplate, current }))).toEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    // The holder runs a newer version than the template: left alone.
+    current.services[2].version = "2.1.0";
+    expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
+    // Equal: nothing.
+    current.services[2].version = "2.0.0";
+    expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
+  });
+
+  it("sets up a missing FUSION service from scratch", () => {
+    const current = deployedState();
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
+    expect(types(actions)).toEqual(["ENABLE_SERVICE", "SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(actions[1].input).toStrictEqual({ image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null });
+  });
+});
+
+describe("isVersionUpgrade", () => {
+  it.each([
+    ["1.0.0", "1.0.1", true],
+    ["1.0.0", "1.1.0", true],
+    ["1.9.9", "2.0.0", true],
+    ["v1.0.0", "1.0.1", true],
+    ["1.0.0-beta.1", "1.0.0", true],
+    ["1.0.0-beta.1", "1.0.0-beta.2", true],
+    ["1.0.0-beta.2", "1.0.0-beta.10", true],
+    ["1.0.0-beta", "1.0.0-beta.1", true],
+    ["1.0.0-1", "1.0.0-alpha", true],
+    ["1.0.0-alpha", "1.0.0-beta", true],
+    ["1.0.0", "1.0.0", false],
+    ["1.0.1", "1.0.0", false],
+    ["2.0.0", "1.9.9", false],
+    ["1.0.0", "1.0.0-rc.1", false],
+    ["1.0.0-beta.1", "1.0.0-beta", false],
+    ["1.0.0-alpha", "1.0.0-1", false],
+    ["1.0.0-beta", "1.0.0-alpha", false],
+    ["latest", "1.0.0", false],
+    ["1.0.0", "latest", false],
+    [null, "1.0.0", false],
+  ])("%s -> %s is an upgrade: %s", (current, wanted, expected) => {
+    expect(isVersionUpgrade(current, wanted)).toBe(expected);
   });
 });
 

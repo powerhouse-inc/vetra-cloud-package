@@ -1,7 +1,10 @@
 export type ErrorCode =
   | "AlreadyIssuedError"
   | "EndBeforeStartError"
-  | "InvalidStatusTransitionError";
+  | "MissingKindError"
+  | "InvalidStatusTransitionError"
+  | "NotIssuedError"
+  | "AlreadyMigratedError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -21,6 +24,13 @@ export class EndBeforeStartError extends Error implements ReducerError {
   }
 }
 
+export class MissingKindError extends Error implements ReducerError {
+  errorCode = "MissingKindError" as ErrorCode;
+  constructor(message = "MissingKindError") {
+    super(message);
+  }
+}
+
 export class InvalidStatusTransitionError
   extends Error
   implements ReducerError
@@ -31,8 +41,22 @@ export class InvalidStatusTransitionError
   }
 }
 
+export class NotIssuedError extends Error implements ReducerError {
+  errorCode = "NotIssuedError" as ErrorCode;
+  constructor(message = "NotIssuedError") {
+    super(message);
+  }
+}
+
+export class AlreadyMigratedError extends Error implements ReducerError {
+  errorCode = "AlreadyMigratedError" as ErrorCode;
+  constructor(message = "AlreadyMigratedError") {
+    super(message);
+  }
+}
+
 export const errors = {
-  IssueLicense: { AlreadyIssuedError, EndBeforeStartError },
+  IssueLicense: { AlreadyIssuedError, EndBeforeStartError, MissingKindError },
 
   ActivateLicense: { InvalidStatusTransitionError },
 
@@ -41,4 +65,8 @@ export const errors = {
   RevokeLicense: { InvalidStatusTransitionError },
 
   ReplaceLicense: { InvalidStatusTransitionError },
+
+  SetStage: { NotIssuedError },
+
+  MigrateLicense: { NotIssuedError, AlreadyMigratedError },
 };

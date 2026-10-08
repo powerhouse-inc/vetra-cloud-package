@@ -24,7 +24,9 @@ export const LOCKFILES: ReadonlyArray<readonly [string, PackageManager]> = [
  */
 const DEFAULT_PNPM_VERSION = "10";
 
-const NODE_VERSION = 22;
+// A Powerhouse package builds with `ph-cli build`, and ph-cli declares
+// engines.node >= 24. Setting up anything older fails the install or the build.
+const NODE_VERSION = 24;
 
 /** The commands vetra-deploy-action defaults to; only emitted when they differ. */
 const COMMANDS: Record<PackageManager, { install: string; build: string }> = {
@@ -39,8 +41,13 @@ function setupSteps(
   declaresPackageManager: boolean,
 ): string {
   if (manager === null) return "";
+  // bun installs and builds, but the build still shells into ph-cli, so Node
+  // has to be set up as well. `cache: bun` is not a setup-node option.
   if (manager === "bun") {
-    return "      - uses: oven-sh/setup-bun@v2\n";
+    return (
+      "      - uses: oven-sh/setup-bun@v2\n" +
+      `      - uses: actions/setup-node@v4\n        with: { node-version: ${NODE_VERSION} }\n`
+    );
   }
   const node = `      - uses: actions/setup-node@v4\n        with: { node-version: ${NODE_VERSION}, cache: ${manager} }\n`;
   if (manager !== "pnpm") return node;
@@ -61,7 +68,8 @@ export function workflowTemplate(
     declaresPackageManager?: boolean;
   } = {},
 ): string {
-  const manager = repo.packageManager === undefined ? "pnpm" : repo.packageManager;
+  const manager =
+    repo.packageManager === undefined ? "pnpm" : repo.packageManager;
   const branchInput =
     productionBranch === "main"
       ? ""

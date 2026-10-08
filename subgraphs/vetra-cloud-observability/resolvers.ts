@@ -300,8 +300,8 @@ export function createResolvers(
         // counts + service lists (mirrors myStudioProducts' parsing).
         return rows.map((row) => ({
           ...row,
-          packages: parseEnvSummaryPackages(row.packages),
-          services: parseEnvSummaryServices(row.services),
+          packages: parseEnvSummaryPackages(row.packages as string | null),
+          services: parseEnvSummaryServices(row.services as string | null),
         }));
       },
 

@@ -2,10 +2,12 @@ import { gql } from "graphql-tag";
 import type { DocumentNode } from "graphql";
 
 /**
- * The human surface. Every field here takes an appId or a document id and
- * authorises it against apps.owner_address -- the exact opposite of
- * vetraLicensing, where the app is derived from the caller's App identity and
- * an id argument would be a vulnerability.
+ * The human surface (contract: 2026-10-08-licensing-api-contract.md §
+ * vetraPublisher; field names are binding, vetra.io's GraphQL strings match
+ * them). Every field takes an appId or a document id and authorises it
+ * against the app's owner on every call -- the exact opposite of
+ * vetraLicensing, where the app is derived from the caller's App identity.
+ * Enum-valued fields travel as String.
  */
 export const publisherSchema: DocumentNode = gql`
   type PublisherApp {
@@ -14,26 +16,31 @@ export const publisherSchema: DocumentNode = gql`
     status: String!
   }
 
-  type PublisherLicenseType {
+  type PublisherTemplate {
     id: String!
-    kind: String
-    label: String
-    status: String!
-    validityDays: Int
-    templateHash: String!
-    # The template's scalar fields. SET_TEMPLATE is a full replace, so a client
-    # editing one of them must read all three to send the others back unchanged.
+    name: String
+    "SHARED | DEDICATED"
+    mode: String!
+    "SHARED only; null = App Environment"
+    sharedEnvironment: String
     size: String
     baseDomain: String
     packageRegistry: String
     services: [PublisherTemplateService!]!
     packages: [PublisherTemplatePackage!]!
+    templateHash: String!
+    "Environments currently provisioned from this template (DEDICATED), for the 'affects N' warning."
+    environmentCount: Int!
   }
 
   type PublisherTemplateService {
     id: String!
     type: String!
     prefix: String
+    "The app artifact this FUSION service runs; null for every other type."
+    artifactName: String
+    "DEV, STAGING or LATEST — which published version the service follows."
+    artifactChannel: String
   }
 
   type PublisherTemplatePackage {
@@ -42,54 +49,150 @@ export const publisherSchema: DocumentNode = gql`
     version: String
   }
 
+  type PublisherTerm {
+    id: String!
+    kind: String!
+    label: String
+    templateId: String
+    validityDays: Int
+    "INVITE_CODE | PUBLISHER_GRANT | ACHRA_SUBSCRIPTION"
+    issuers: [String!]!
+    "DRAFT | ACTIVE | RETIRED"
+    status: String!
+    activeLicenses: Int!
+  }
+
   type PublisherLicense {
     id: String!
+    "DID"
     user: String!
-    licenseTypeId: String!
+    kind: String!
+    issuer: String!
+    "ISSUED | ACTIVE | EXPIRED | REVOKED | REPLACED"
     status: String!
     start: String
     end: String
+    "= stage"
     environmentId: String
+    replacedBy: String
   }
 
-  input CreateLicenseTypeInput {
-    appId: String!
+  type PublisherEnvironment {
+    environmentId: String!
+    user: String!
+    licenseId: String!
+    rootLicenseId: String!
+    label: String
+    templateHash: String!
+    stoppedAt: String
+    deleteAfter: String
+  }
+
+  type PublisherInviteCode {
+    code: String!
     kind: String!
     label: String
-    validityDays: Int
+    active: Boolean!
+    expiresAt: String
+    maxUses: Int
+    redemptions: Int!
+    hasAnthropicKey: Boolean!
+    createdAt: String!
   }
 
-  # Deliberately no app field: a type's app is fixed at creation.
-  input SetLicenseTypeDetailsInput {
-    licenseTypeId: String!
-    kind: String
-    label: String
-    validityDays: Int
+  type PublisherAllowListEntry {
+    user: String!
+    addedAt: String!
   }
 
-  input SetLicenseTypeTemplateInput {
-    licenseTypeId: String!
+  "One artifact the app has published, as the template builder offers it."
+  type PublisherAppArtifact {
+    kind: String!
+    name: String!
+    "Every published version, newest last."
+    versions: [PublisherArtifactVersion!]!
+    channels: [PublisherArtifactChannel!]!
+  }
+
+  type PublisherArtifactVersion {
+    version: String!
+    "The full image reference or registry URL CI published."
+    reference: String!
+  }
+
+  type PublisherArtifactChannel {
+    channel: String!
+    version: String!
+  }
+
+  input AddTemplateInput {
+    appId: String!
+    name: String
+    mode: String!
+  }
+
+  input SetTemplateDetailsInput {
+    appId: String!
+    templateId: String!
+    name: String
+    mode: String
+    sharedEnvironment: String
     size: String
     baseDomain: String
     packageRegistry: String
   }
 
-  input AddLicenseTypeServiceInput {
-    licenseTypeId: String!
+  input AddTemplateServiceInput {
+    appId: String!
+    templateId: String!
     type: String!
     prefix: String
+    artifactName: String
+    artifactChannel: String
   }
 
-  input AddLicenseTypePackageInput {
-    licenseTypeId: String!
+  input AddTemplatePackageInput {
+    appId: String!
+    templateId: String!
     packageName: String!
     version: String
   }
 
+  input RemoveTemplateEntryInput {
+    appId: String!
+    templateId: String!
+    id: String!
+  }
+
+  input AddTermInput {
+    appId: String!
+    kind: String!
+    label: String
+    templateId: String
+    validityDays: Int
+    issuers: [String!]
+  }
+
+  input SetTermDetailsInput {
+    appId: String!
+    termId: String!
+    kind: String
+    label: String
+    templateId: String
+    validityDays: Int
+    issuers: [String!]
+  }
+
   input IssueGrantInput {
     appId: String!
-    licenseTypeId: String!
+    kind: String!
     user: String!
+    label: String
+  }
+
+  input ReplaceGrantInput {
+    licenseId: String!
+    kind: String!
   }
 
   input RevokeLicenseInput {
@@ -97,23 +200,52 @@ export const publisherSchema: DocumentNode = gql`
     reason: String
   }
 
+  input CreateInviteCodeInput {
+    appId: String!
+    kind: String!
+    label: String
+    "Omit to generate a random code."
+    code: String
+    expiresAt: String
+    maxUses: Int
+    "Write-only; stored encrypted, never returned."
+    anthropicKey: String
+  }
+
   type VetraPublisherQueries {
     myApps: [PublisherApp!]!
-    licenseTypes(appId: String!): [PublisherLicenseType!]!
+    templates(appId: String!): [PublisherTemplate!]!
+    terms(appId: String!): [PublisherTerm!]!
+    appArtifacts(appId: String!): [PublisherAppArtifact!]!
     licenses(appId: String!, status: String): [PublisherLicense!]!
-    environments(appId: String!): [AppUserEnvironment!]!
+    environments(appId: String!): [PublisherEnvironment!]!
+    inviteCodes(appId: String!): [PublisherInviteCode!]!
+    allowList(appId: String!): [PublisherAllowListEntry!]!
   }
 
   type VetraPublisherMutations {
-    createLicenseType(input: CreateLicenseTypeInput!): String!
-    setLicenseTypeDetails(input: SetLicenseTypeDetailsInput!): Boolean!
-    setLicenseTypeTemplate(input: SetLicenseTypeTemplateInput!): Boolean!
-    addLicenseTypeService(input: AddLicenseTypeServiceInput!): Boolean!
-    addLicenseTypePackage(input: AddLicenseTypePackageInput!): Boolean!
-    publishLicenseType(licenseTypeId: String!): Boolean!
-    retireLicenseType(licenseTypeId: String!): Boolean!
+    "Returns the template id."
+    addTemplate(input: AddTemplateInput!): String!
+    setTemplateDetails(input: SetTemplateDetailsInput!): Boolean!
+    addTemplateService(input: AddTemplateServiceInput!): Boolean!
+    removeTemplateService(input: RemoveTemplateEntryInput!): Boolean!
+    addTemplatePackage(input: AddTemplatePackageInput!): Boolean!
+    removeTemplatePackage(input: RemoveTemplateEntryInput!): Boolean!
+    deleteTemplate(appId: String!, templateId: String!): Boolean!
+    "Returns the term id."
+    addTerm(input: AddTermInput!): String!
+    setTermDetails(input: SetTermDetailsInput!): Boolean!
+    publishTerm(appId: String!, termId: String!): Boolean!
+    retireTerm(appId: String!, termId: String!): Boolean!
+    "Returns the licence id."
     issueGrant(input: IssueGrantInput!): String!
+    "Returns the new licence id."
+    replaceGrant(input: ReplaceGrantInput!): String!
     revokeLicense(input: RevokeLicenseInput!): Boolean!
+    createInviteCode(input: CreateInviteCodeInput!): PublisherInviteCode!
+    setInviteCodeActive(appId: String!, code: String!, active: Boolean!): Boolean!
+    addToAllowList(appId: String!, user: String!): Boolean!
+    removeFromAllowList(appId: String!, user: String!): Boolean!
   }
 
   extend type Query {

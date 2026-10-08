@@ -1,0 +1,281 @@
+scalar Unknown
+scalar DateTime
+scalar Address
+scalar AttachmentRef
+scalar Amount_Tokens
+scalar EthereumAddress
+scalar EmailAddress
+scalar Amount_Percentage
+scalar Date
+scalar URL
+scalar Amount_Money
+scalar OLabel
+scalar Currency
+scalar PHID
+scalar OID
+scalar Amount_Fiat
+scalar Amount_Currency
+scalar Amount_Crypto
+scalar Amount
+scalar Upload
+
+type VetraAppState {
+  name: String
+  slug: String
+  owner: EthereumAddress
+  status: VetraAppStatus!
+  repository: VetraAppRepository
+  identity: VetraAppIdentity
+  productionEnvironmentId: OID
+  previews: VetraAppPreviews
+  artifacts: [VetraAppArtifact!]!
+  templates: [VetraAppEnvironmentTemplate!]!
+  terms: [VetraAppLicenseTerm!]!
+}
+
+enum VetraAppStatus {
+  PENDING_IDENTITY
+  ACTIVE
+  DISCONNECTED
+  DELETED
+}
+
+type VetraAppRepository {
+  repositoryId: String
+  fullName: String
+  productionBranch: String
+}
+
+type VetraAppIdentity {
+  did: String
+  expiresAt: DateTime
+}
+
+type VetraAppPreviews {
+  enabled: Boolean!
+  limit: Int!
+  ttlDays: Int!
+}
+
+type VetraAppArtifact {
+  id: OID!
+  kind: VetraAppArtifactKind!
+  name: String!
+  versions: [VetraAppArtifactVersion!]!
+  channels: [VetraAppArtifactChannel!]!
+}
+
+enum VetraAppArtifactKind {
+  PACKAGE
+  FUSION_IMAGE
+}
+
+type VetraAppArtifactVersion {
+  version: String!
+  reference: String!
+  commitSha: String
+  runId: String
+  publishedAt: DateTime!
+}
+
+type VetraAppArtifactChannel {
+  channel: AutoUpdateChannel!
+  version: String!
+}
+
+enum AutoUpdateChannel {
+  DEV
+  STAGING
+  LATEST
+}
+
+type VetraAppEnvironmentTemplate {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode!
+  sharedEnvironment: PHID
+  services: [TemplateService!]!
+  packages: [TemplatePackage!]!
+  size: String
+  baseDomain: String
+  packageRegistry: URL
+}
+
+enum TemplateInstanceMode {
+  SHARED
+  DEDICATED
+}
+
+type TemplateService {
+  id: OID!
+  type: TemplateServiceType!
+  prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
+}
+
+enum TemplateServiceType {
+  CONNECT
+  SWITCHBOARD
+  FUSION
+  CLINT
+  DOCLING
+  PAPERLESS
+  SPECKLE
+}
+
+type TemplatePackage {
+  id: OID!
+  packageName: String
+  version: String
+}
+
+type VetraAppLicenseTerm {
+  id: OID!
+  kind: String!
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]!
+  status: LicenseTermStatus!
+}
+
+enum LicenseTermStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum LicenseIssuerKind {
+  INVITE_CODE
+  PUBLISHER_GRANT
+  ACHRA_SUBSCRIPTION
+}
+
+# app
+
+input SetAppDetailsInput {
+  name: String
+  slug: String
+  owner: EthereumAddress
+}
+
+input ConnectRepositoryInput {
+  repositoryId: String
+  fullName: String
+  productionBranch: String
+}
+
+input SetIdentityInput {
+  did: String
+  expiresAt: DateTime
+}
+
+input SetStatusInput {
+  status: VetraAppStatus!
+}
+
+input SetPreviewsInput {
+  enabled: Boolean!
+  limit: Int!
+  ttlDays: Int!
+}
+
+input SetProductionEnvironmentInput {
+  environmentId: OID
+}
+
+input RecordArtifactVersionInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  version: String!
+  reference: String!
+  commitSha: String
+  runId: String
+  publishedAt: DateTime!
+}
+
+input SetArtifactChannelInput {
+  kind: VetraAppArtifactKind!
+  name: String!
+  channel: AutoUpdateChannel!
+  version: String!
+}
+
+# licensing
+
+input AddTemplateInput {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode!
+}
+
+input SetTemplateDetailsInput {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode
+  sharedEnvironment: PHID
+  size: String
+  baseDomain: String
+  packageRegistry: URL
+}
+
+input AddTemplateServiceInput {
+  templateId: OID!
+  id: OID!
+  type: TemplateServiceType!
+  prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
+}
+
+input RemoveTemplateServiceInput {
+  templateId: OID!
+  id: OID!
+}
+
+input AddTemplatePackageInput {
+  templateId: OID!
+  id: OID!
+  packageName: String!
+  version: String
+}
+
+input RemoveTemplatePackageInput {
+  templateId: OID!
+  id: OID!
+}
+
+input DeleteTemplateInput {
+  id: OID!
+}
+
+input AddTermInput {
+  id: OID!
+  kind: String!
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]
+}
+
+input SetTermDetailsInput {
+  id: OID!
+  kind: String
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]
+}
+
+input PublishTermInput {
+  id: OID!
+}
+
+input RetireTermInput {
+  id: OID!
+}
+
+input DeleteTermInput {
+  id: OID!
+}

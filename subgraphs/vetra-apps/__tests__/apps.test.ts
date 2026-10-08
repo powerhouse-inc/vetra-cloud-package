@@ -261,6 +261,26 @@ describe("createApp", () => {
     expect(second.harbor_project).toBe("app-shop-2");
   });
 
+  it("never hands out the studio app's reserved slug", async () => {
+    // No row holds "vetra-studio" (the studio app has none), yet an app named
+    // "Vetra Studio" must not take it: a trusted document carrying it would
+    // compete with the studio app.
+    await connectGithubDeploy(h.deps, owner, "code");
+    const first = await createApp(h.deps, owner, {
+      name: "Vetra Studio",
+      installationId: INSTALLATION,
+      repositoryId: REPO_ID,
+    });
+    expect(first.slug).toBe("vetra-studio-2");
+    const second = await createApp(h.deps, owner, {
+      name: "vetra-studio",
+      installationId: INSTALLATION,
+      repositoryId: "4343",
+    });
+    expect(second.slug).toBe("vetra-studio-3");
+    expect([first.slug, second.slug]).not.toContain("vetra-studio");
+  });
+
   it("refuses a repo the installation can reach but the user cannot (I5)", async () => {
     await connectGithubDeploy(h.deps, owner, "code");
     // "9999" exists in the org installation but is not in the user's list

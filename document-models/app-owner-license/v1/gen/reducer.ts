@@ -10,8 +10,10 @@ import {
   ActivateLicenseInputSchema,
   ExpireLicenseInputSchema,
   IssueLicenseInputSchema,
+  MigrateLicenseInputSchema,
   ReplaceLicenseInputSchema,
   RevokeLicenseInputSchema,
+  SetStageInputSchema,
 } from "./schema/zod.js";
 
 const stateReducer: StateReducer<AppOwnerLicensePHState> = (
@@ -75,6 +77,30 @@ const stateReducer: StateReducer<AppOwnerLicensePHState> = (
       ReplaceLicenseInputSchema().parse(action.input);
 
       appOwnerLicenseLifecycleOperations.replaceLicenseOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_STAGE": {
+      SetStageInputSchema().parse(action.input);
+
+      appOwnerLicenseLifecycleOperations.setStageOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "MIGRATE_LICENSE": {
+      MigrateLicenseInputSchema().parse(action.input);
+
+      appOwnerLicenseLifecycleOperations.migrateLicenseOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

@@ -1,7 +1,10 @@
 export type ErrorCode =
   | "NegativeValidityError"
   | "DuplicateServiceError"
+  | "ArtifactOnNonFusionServiceError"
   | "DuplicatePackageError"
+  | "UnknownServiceError"
+  | "UnknownPackageError"
   | "IncompleteTemplateError"
   | "NotPublishedError";
 
@@ -23,9 +26,33 @@ export class DuplicateServiceError extends Error implements ReducerError {
   }
 }
 
+export class ArtifactOnNonFusionServiceError
+  extends Error
+  implements ReducerError
+{
+  errorCode = "ArtifactOnNonFusionServiceError" as ErrorCode;
+  constructor(message = "ArtifactOnNonFusionServiceError") {
+    super(message);
+  }
+}
+
 export class DuplicatePackageError extends Error implements ReducerError {
   errorCode = "DuplicatePackageError" as ErrorCode;
   constructor(message = "DuplicatePackageError") {
+    super(message);
+  }
+}
+
+export class UnknownServiceError extends Error implements ReducerError {
+  errorCode = "UnknownServiceError" as ErrorCode;
+  constructor(message = "UnknownServiceError") {
+    super(message);
+  }
+}
+
+export class UnknownPackageError extends Error implements ReducerError {
+  errorCode = "UnknownPackageError" as ErrorCode;
+  constructor(message = "UnknownPackageError") {
     super(message);
   }
 }
@@ -47,9 +74,16 @@ export class NotPublishedError extends Error implements ReducerError {
 export const errors = {
   SetLicenseTypeDetails: { NegativeValidityError },
 
-  AddTemplateService: { DuplicateServiceError },
+  AddTemplateService: {
+    DuplicateServiceError,
+    ArtifactOnNonFusionServiceError,
+  },
 
   AddTemplatePackage: { DuplicatePackageError },
+
+  RemoveTemplateService: { UnknownServiceError },
+
+  RemoveTemplatePackage: { UnknownPackageError },
 
   PublishLicenseType: { IncompleteTemplateError },
 

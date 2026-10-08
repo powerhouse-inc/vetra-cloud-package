@@ -49,6 +49,16 @@ import {
   workflowTemplate,
   type PackageManager,
 } from "./workflow-template.js";
+import {
+  mirrorAppById,
+  mirrorAppRow,
+  protectNewAppDocument,
+  type AppDocStore,
+} from "./app-document.js";
+import {
+  recordArtifactVersion,
+  setArtifactChannel,
+} from "../../document-models/vetra-app/v1/index.js";
 
 export interface AppsLogger {
   info(msg: string): void;
@@ -66,6 +76,11 @@ export interface AppsDeps {
   now: () => Date;
   newId: () => string;
   logger: AppsLogger;
+  /**
+   * The reactor surface the app documents live on. Absent = no mirroring; reads
+   * are served from the table either way in this step.
+   */
+  docs?: AppDocStore | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
@@ -422,7 +437,8 @@ export async function appForOwner(
 
 /**
  * First free slug for `name`. Every row counts, DELETED ones included, so a
- * slug (and its Harbor project app-<slug>) is never handed out twice.
+ * slug (and its Harbor project app-<slug>) is never handed out twice. The
+ * studio app's slug is reserved: it has no row, and no app may take it.
  */
 async function uniqueSlug(
   deps: AppsDeps,
@@ -442,6 +458,7 @@ async function uniqueSlug(
     ).map((r) => r.slug),
   );
   for (const t of alsoTaken) taken.add(t);
+  taken.add(deps.cfg.studioAppSlug);
   if (!taken.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
@@ -621,7 +638,9 @@ export async function createApp(
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
   );
-  return (await getApp(deps.db, appId))!;
+  const created = (await getApp(deps.db, appId))!;
+  await mirrorAppRow(deps, created);
+  return created;
 }
 
 /**
@@ -657,7 +676,9 @@ export async function confirmAppIdentity(
     })
     .where("id", "=", app.id)
     .execute();
-  return (await getApp(deps.db, app.id))!;
+  const confirmed = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, confirmed);
+  return confirmed;
 }
 
 export interface UpdateAppInput {
@@ -724,7 +745,9 @@ export async function updateApp(
       .where("id", "=", app.id)
       .execute();
   }
-  return (await getApp(deps.db, app.id))!;
+  const updated = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, updated);
+  return updated;
 }
 
 /**
@@ -840,6 +863,7 @@ export async function deleteApp(
     .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
     .where("id", "=", app.id)
     .execute();
+  await mirrorAppById(deps, app.id);
   deps.logger.info(
     `[vetra-apps] deleted App ${app.slug} (${app.id}); slug stays reserved`,
   );
@@ -866,13 +890,14 @@ export async function detectRepoToolchain(
     github.getRepoFile(installationId, repoFullName, path).catch(() => null);
 
   const pkg = await read("package.json");
-  if (pkg === null) return { packageManager: null, declaresPackageManager: false };
+  if (pkg === null)
+    return { packageManager: null, declaresPackageManager: false };
 
   let declaresPackageManager = false;
   try {
     declaresPackageManager =
-      typeof (JSON.parse(pkg) as { packageManager?: unknown }).packageManager ===
-      "string";
+      typeof (JSON.parse(pkg) as { packageManager?: unknown })
+        .packageManager === "string";
   } catch {
     // An unparseable package.json still means there is a Node project here.
   }
@@ -1631,4 +1656,87 @@ async function performDeploy(
   }
   await notifyChanged(deps, id);
   return (await getDeployment(deps.db, id))!;
+}
+
+// ---------------------------------------------------------------------------
+// CI: artifact registration
+// ---------------------------------------------------------------------------
+
+export interface RecordArtifactInput {
+  appId: string;
+  kind: "PACKAGE" | "FUSION_IMAGE";
+  name: string;
+  version: string;
+  reference: string;
+  commitSha?: string | null;
+  runId?: string | null;
+  /** Channel to point at this version, when the run publishes a channel build. */
+  channel?: "DEV" | "STAGING" | "LATEST" | null;
+}
+
+const ARTIFACT_KINDS = new Set(["PACKAGE", "FUSION_IMAGE"]);
+const ARTIFACT_CHANNELS = new Set(["DEV", "STAGING", "LATEST"]);
+
+/**
+ * Records one published artifact on the App's document, and optionally moves a
+ * channel pointer to it.
+ *
+ * Unlike the row mirror, this **fails loudly**. The document is the only place
+ * an artifact is recorded, so swallowing the error would drop the artifact
+ * silently and the template builder would never offer it.
+ */
+export async function ciRecordArtifact(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  input: RecordArtifactInput,
+) {
+  const app = await authorizeCi(deps, ci, input.appId);
+  if (!ARTIFACT_KINDS.has(input.kind))
+    throw appsError("BAD_USER_INPUT", "kind must be PACKAGE or FUSION_IMAGE");
+  for (const [field, value] of Object.entries({
+    name: input.name,
+    version: input.version,
+    reference: input.reference,
+  })) {
+    if (!value || !value.trim())
+      throw appsError("BAD_USER_INPUT", `${field} is required`);
+  }
+  if (input.channel != null && !ARTIFACT_CHANNELS.has(input.channel))
+    throw appsError("BAD_USER_INPUT", "channel must be DEV, STAGING or LATEST");
+  if (!deps.docs) throw notConfigured("The App document store");
+
+  const actions: Action[] = [
+    recordArtifactVersion({
+      kind: input.kind,
+      name: input.name.trim(),
+      version: input.version.trim(),
+      reference: input.reference.trim(),
+      commitSha: input.commitSha ?? null,
+      runId: input.runId ?? null,
+      publishedAt: deps.now().toISOString(),
+    }),
+  ];
+  if (input.channel != null) {
+    actions.push(
+      setArtifactChannel({
+        kind: input.kind,
+        name: input.name.trim(),
+        channel: input.channel,
+        version: input.version.trim(),
+      }),
+    );
+  }
+
+  // Create-on-demand: an App registered before the document backfill ran still
+  // has to be able to publish.
+  const created = !(await deps.docs.exists(app.id));
+  if (created) await deps.docs.create(app.id);
+  await deps.docs.execute(app.id, actions);
+  if (created) await protectNewAppDocument(deps.docs, app.id, deps.logger);
+
+  deps.logger.info(
+    `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +
+      (input.channel ? ` and pointed ${input.channel} at it` : ""),
+  );
+  return { appId: app.id, recorded: true as const };
 }

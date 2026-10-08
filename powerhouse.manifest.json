@@ -18,6 +18,10 @@
     {
       "id": "powerhouse/app-owner-license",
       "name": "AppOwnerLicense"
+    },
+    {
+      "id": "powerhouse/vetra-app",
+      "name": "VetraApp"
     }
   ],
   "apps": [],
@@ -61,10 +65,6 @@
       "documentTypes": [
         "powerhouse/vetra-cloud-environment"
       ]
-    },
-    {
-      "id": "vetra-access-codes",
-      "name": "Vetra Access Codes"
     },
     {
       "id": "vetra-studio-pool",

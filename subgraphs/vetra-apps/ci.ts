@@ -10,11 +10,14 @@ import { deploymentFields } from "./resolvers.js";
 import {
   ciDeployApp,
   ciDeployment,
+  ciRecordArtifact,
   ciRegistryCredentials,
+  type RecordArtifactInput,
   type AppsDeps,
   type CiIdentity,
   type DeployAppInput,
 } from "./service.js";
+import { mirrorAppById } from "./app-document.js";
 
 /**
  * CI-facing HTTP routes of vetra-apps, mounted under
@@ -103,7 +106,7 @@ async function markIdentityExpired(
   address: string,
 ) {
   const nowIso = deps.now().toISOString();
-  await deps.db
+  const expired = await deps.db
     .updateTable("apps")
     .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
     .where("identity_did", "=", appDid)
@@ -115,7 +118,9 @@ async function markIdentityExpired(
         eb("identity_expires_at", "<=", nowIso),
       ]),
     )
+    .returning(["id"])
     .execute();
+  for (const row of expired) await mirrorAppById(deps, row.id);
 }
 
 const STATUS: Record<string, number> = {
@@ -213,6 +218,26 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       run(request, async (ci) => {
         const body = await jsonBody(request);
         return ciRegistryCredentials(deps, ci, requireString(body, "appId"));
+      }),
+
+    artifacts: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        const str = (k: string) =>
+          {
+            const v = body[k];
+            return typeof v === "string" ? v : null;
+          };
+        return ciRecordArtifact(deps, ci, {
+          appId: requireString(body, "appId"),
+          kind: requireString(body, "kind") as RecordArtifactInput["kind"],
+          name: requireString(body, "name"),
+          version: requireString(body, "version"),
+          reference: requireString(body, "reference"),
+          commitSha: str("commitSha"),
+          runId: str("runId"),
+          channel: str("channel") as RecordArtifactInput["channel"],
+        });
       }),
 
     deploy: (request: Request) =>

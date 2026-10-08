@@ -1,10 +1,13 @@
 import type { AppLicenseTypeLicenseTypeOperations } from "document-models/app-license-type/v1";
 import {
+  ArtifactOnNonFusionServiceError,
   DuplicatePackageError,
   DuplicateServiceError,
   IncompleteTemplateError,
   NegativeValidityError,
   NotPublishedError,
+  UnknownPackageError,
+  UnknownServiceError,
 } from "../../gen/license-type/error.js";
 
 export const appLicenseTypeLicenseTypeOperations: AppLicenseTypeLicenseTypeOperations =
@@ -31,6 +34,21 @@ export const appLicenseTypeLicenseTypeOperations: AppLicenseTypeLicenseTypeOpera
       state.template.packageRegistry = action.input.packageRegistry ?? null;
     },
     addTemplateServiceOperation(state, action) {
+      // Validate before touching state: a rejected action must leave the
+      // document exactly as it was, and creating the template first left an
+      // empty one behind on every refusal.
+      if (state.template?.services.some((s) => s.id === action.input.id)) {
+        throw new DuplicateServiceError(
+          `service ${action.input.id} already exists`,
+        );
+      }
+      // Only a FUSION service runs the app's own image. Carrying an artifact on
+      // any other type would render a service the provisioner cannot build.
+      if (action.input.artifactName && action.input.type !== "FUSION") {
+        throw new ArtifactOnNonFusionServiceError(
+          `only a FUSION service can reference an artifact, not ${action.input.type}`,
+        );
+      }
       state.template ??= {
         services: [],
         packages: [],
@@ -38,15 +56,17 @@ export const appLicenseTypeLicenseTypeOperations: AppLicenseTypeLicenseTypeOpera
         baseDomain: null,
         packageRegistry: null,
       };
-      if (state.template.services.some((s) => s.id === action.input.id)) {
-        throw new DuplicateServiceError(
-          `service ${action.input.id} already exists`,
-        );
-      }
       state.template.services.push({
         id: action.input.id,
         type: action.input.type,
-        prefix: action.input.prefix ?? null,
+        // The artifact names the image, so it is the obvious default prefix.
+        prefix: action.input.prefix ?? action.input.artifactName ?? null,
+        artifactName: action.input.artifactName ?? null,
+        // A referenced artifact always tracks a channel; LATEST is what a
+        // publisher means by picking one without saying more.
+        artifactChannel: action.input.artifactName
+          ? (action.input.artifactChannel ?? "LATEST")
+          : null,
       });
     },
     addTemplatePackageOperation(state, action) {
@@ -87,5 +107,25 @@ export const appLicenseTypeLicenseTypeOperations: AppLicenseTypeLicenseTypeOpera
         );
       }
       state.status = "RETIRED";
+    },
+    removeTemplateServiceOperation(state, action) {
+      const list = state.template?.services ?? [];
+      const at = list.findIndex((x) => x.id === action.input.id);
+      if (at === -1) {
+        throw new UnknownServiceError(
+          `service ${action.input.id} does not exist`,
+        );
+      }
+      list.splice(at, 1);
+    },
+    removeTemplatePackageOperation(state, action) {
+      const list = state.template?.packages ?? [];
+      const at = list.findIndex((x) => x.id === action.input.id);
+      if (at === -1) {
+        throw new UnknownPackageError(
+          `package ${action.input.id} does not exist`,
+        );
+      }
+      list.splice(at, 1);
     },
   };

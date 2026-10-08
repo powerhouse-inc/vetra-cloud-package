@@ -15,6 +15,7 @@ import {
   type AppsDeps,
 } from "./service.js";
 import type { GithubDeploymentState } from "./github.js";
+import { mirrorAppById } from "./app-document.js";
 
 export const WATCH_INTERVAL_MS = 15_000;
 export const SWEEP_INTERVAL_MS = 15 * 60_000;
@@ -122,6 +123,7 @@ export async function runIdentityExpirySweepOnce(
     deps.logger.info(
       `[vetra-apps] App ${a.slug} identity authorization expired → PENDING_IDENTITY`,
     );
+    await mirrorAppById(deps, a.id);
   }
   return expired.length;
 }

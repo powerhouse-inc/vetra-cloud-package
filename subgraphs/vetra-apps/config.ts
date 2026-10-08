@@ -39,6 +39,11 @@ export interface VetraAppsConfig {
   productionRegistry: string;
   /** Registry preview envs install PR packages from. */
   previewRegistry: string;
+  /**
+   * The studio app's slug (VETRA_STUDIO_APP_SLUG, default "vetra-studio").
+   * Reserved: no app row is ever given it, so no app document can carry it.
+   */
+  studioAppSlug: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -114,6 +119,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
       "https://switchboard.vetra.io/api/@powerhousedao/vetra-cloud-package/apps",
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
+    studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
   };
 }
 

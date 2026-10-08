@@ -7,6 +7,8 @@ import type {
   AddTemplatePackageInput,
   AddTemplateServiceInput,
   PublishLicenseTypeInput,
+  RemoveTemplatePackageInput,
+  RemoveTemplateServiceInput,
   RetireLicenseTypeInput,
   SetLicenseTypeDetailsInput,
   SetTemplateInput,
@@ -28,6 +30,14 @@ export type AddTemplatePackageAction = Action & {
   type: "ADD_TEMPLATE_PACKAGE";
   input: AddTemplatePackageInput;
 };
+export type RemoveTemplateServiceAction = Action & {
+  type: "REMOVE_TEMPLATE_SERVICE";
+  input: RemoveTemplateServiceInput;
+};
+export type RemoveTemplatePackageAction = Action & {
+  type: "REMOVE_TEMPLATE_PACKAGE";
+  input: RemoveTemplatePackageInput;
+};
 export type PublishLicenseTypeAction = Action & {
   type: "PUBLISH_LICENSE_TYPE";
   input: PublishLicenseTypeInput;
@@ -42,5 +52,7 @@ export type AppLicenseTypeLicenseTypeAction =
   | SetTemplateAction
   | AddTemplateServiceAction
   | AddTemplatePackageAction
+  | RemoveTemplateServiceAction
+  | RemoveTemplatePackageAction
   | PublishLicenseTypeAction
   | RetireLicenseTypeAction;

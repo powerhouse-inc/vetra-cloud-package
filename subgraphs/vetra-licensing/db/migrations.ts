@@ -1,5 +1,57 @@
-import { type Kysely } from "kysely";
+import { type ColumnDefinitionBuilderCallback, type Kysely, sql } from "kysely";
+import { ensureLedgerTables } from "../licensing-ledger.js";
 
+/** Postgres SQLSTATE for "column already exists". */
+const DUPLICATE_COLUMN = "42701";
+
+/**
+ * The schema `db` writes to. A namespaced db (relationalDb.createNamespace) is
+ * `withSchema(<hash>)`, which qualifies table names at query-build time and
+ * leaves the session's search_path alone, so current_schema() would name the
+ * wrong schema. Read it off the transformed query instead; an unqualified db
+ * falls back to current_schema().
+ */
+function namespaceSchema(db: Kysely<any>, table: string): string | null {
+  const node = db.selectFrom(table).selectAll().toOperationNode() as {
+    from?: { froms?: { kind?: string; table?: { schema?: { name?: string } } }[] };
+  };
+  const from = node.from?.froms?.[0];
+  return from?.kind === "TableNode" ? (from.table?.schema?.name ?? null) : null;
+}
+
+/**
+ * addColumn has no IF NOT EXISTS; the boot-time runner calls up() on every
+ * start. ALTER TABLE takes an ACCESS EXCLUSIVE lock even when it then fails
+ * with "column already exists", so look first: a no-op boot must not queue
+ * behind (and block) live traffic on the table. The 42701 swallow stays for a
+ * race with another replica booting at the same time.
+ */
+async function addColumnIfMissing(
+  db: Kysely<any>,
+  table: string,
+  column: string,
+  type: "varchar(255)" | "text" | "boolean",
+  build?: ColumnDefinitionBuilderCallback,
+): Promise<void> {
+  const schema = namespaceSchema(db, table);
+  const { rows } = await sql<{ present: number }>`
+    SELECT 1 AS present FROM information_schema.columns
+    WHERE table_schema = COALESCE(${schema}::text, current_schema())
+      AND table_name = ${table}
+      AND column_name = ${column}
+  `.execute(db);
+  if (rows.length > 0) return;
+  try {
+    await db.schema.alterTable(table).addColumn(column, type, build).execute();
+  } catch (error) {
+    if ((error as { code?: string })?.code !== DUPLICATE_COLUMN) throw error;
+  }
+}
+
+/**
+ * Must not run inside a transaction: each ALTER TABLE's lock is held until
+ * commit, and a swallowed 42701 aborts the surrounding transaction.
+ */
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
     .createTable("app_user_environments")
@@ -58,7 +110,10 @@ export async function up(db: Kysely<any>): Promise<void> {
       "issued_by",
       "created_at",
     ])
-    .expression((eb: any) =>
+    // Built with the query builder, not raw SQL: the namespace schema (withSchema)
+    // only qualifies table names the builder emits. A raw `from app_user_environments`
+    // resolves against search_path and fails on a real namespaced database.
+    .expression((eb) =>
       eb
         .selectFrom("app_user_environments")
         .select([
@@ -70,7 +125,7 @@ export async function up(db: Kysely<any>): Promise<void> {
           "created_at",
         ]),
     )
-    .onConflict((oc: any) => oc.column("license_id").doNothing())
+    .onConflict((oc) => oc.column("license_id").doNothing())
     .execute();
 
   await db.schema
@@ -79,9 +134,137 @@ export async function up(db: Kysely<any>): Promise<void> {
     .column("app_id")
     .ifNotExists()
     .execute();
+
+  await addColumnIfMissing(db, "app_license_grants", "kind", "varchar(255)");
+  await addColumnIfMissing(db, "app_license_grants", "user_did", "varchar(255)");
+  await db.schema.createIndex("app_license_grants_user_did_idx").on("app_license_grants")
+    .column("user_did").ifNotExists().execute();
+
+  await db.schema.createTable("license_chain")
+    .addColumn("license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("root_license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("label", "varchar(255)")
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("license_chain_pkey", ["license_id"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("license_chain_root_idx").on("license_chain")
+    .column("root_license_id").ifNotExists().execute();
+
+  await db.schema.createTable("license_environments")
+    .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("root_license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("user_did", "varchar(255)", (c) => c.notNull())
+    .addColumn("license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("template_id", "varchar(255)")
+    .addColumn("label", "varchar(255)")
+    .addColumn("template_hash", "varchar(64)", (c) => c.notNull())
+    .addColumn("ended_at", "varchar(255)")
+    .addColumn("stopped_at", "varchar(255)")
+    .addColumn("delete_after", "varchar(255)")
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("updated_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("license_environments_pkey", ["environment_id"])
+    .addUniqueConstraint("license_environments_root_key", ["root_license_id"])
+    .ifNotExists().execute();
+  for (const col of ["app_id", "license_id"] as const) {
+    await db.schema.createIndex(`license_environments_${col}_idx`).on("license_environments")
+      .column(col).ifNotExists().execute();
+  }
+
+  await db.schema.createTable("app_allow_list")
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("user_did", "varchar(255)", (c) => c.notNull())
+    .addColumn("added_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("app_allow_list_pkey", ["app_id", "user_did"])
+    .ifNotExists().execute();
+
+  await db.schema.createTable("invite_codes")
+    .addColumn("code", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("kind", "varchar(255)", (c) => c.notNull())
+    .addColumn("label", "varchar(255)")
+    .addColumn("active", "boolean", (c) => c.notNull().defaultTo(true))
+    .addColumn("expires_at", "varchar(255)")
+    .addColumn("max_uses", "integer")
+    .addColumn("anthropic_key_ciphertext", "text")
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("invite_codes_pkey", ["code"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("invite_codes_app_id_idx").on("invite_codes")
+    .column("app_id").ifNotExists().execute();
+  // Codes moved from vetra-access-codes, which trimmed and lowercased every
+  // input: those (and only those) still match case-insensitively.
+  await addColumnIfMissing(db, "invite_codes", "legacy_case_insensitive", "boolean", (c) =>
+    c.notNull().defaultTo(false),
+  );
+
+  await db.schema.createTable("invite_redemptions")
+    .addColumn("code", "varchar(255)", (c) => c.notNull())
+    .addColumn("user_did", "varchar(255)", (c) => c.notNull())
+    .addColumn("redeemed_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("access_expires", "varchar(255)")
+    .addColumn("license_id", "varchar(255)")
+    .addPrimaryKeyConstraint("invite_redemptions_pkey", ["code", "user_did"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("invite_redemptions_user_did_idx").on("invite_redemptions")
+    .column("user_did").ifNotExists().execute();
+
+  await db.schema.createTable("environment_reporting_tokens")
+    .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("token_hash", "varchar(64)", (c) => c.notNull())
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("environment_reporting_tokens_pkey", ["environment_id"])
+    .addUniqueConstraint("environment_reporting_tokens_hash_key", ["token_hash"])
+    .ifNotExists().execute();
+
+  await db.schema.createTable("licensing_migration_type_map")
+    .addColumn("license_type_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("kind", "varchar(255)", (c) => c.notNull())
+    .addColumn("template_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("term_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("licensing_migration_type_map_pkey", ["license_type_id"])
+    .ifNotExists().execute();
+
+  await db.schema.createTable("licensing_migration_steps")
+    .addColumn("step", "varchar(64)", (c) => c.notNull())
+    .addColumn("completed_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("detail", "text")
+    .addPrimaryKeyConstraint("licensing_migration_steps_pkey", ["step"])
+    .ifNotExists().execute();
+
+  await db.schema.createTable("license_lifecycle")
+    .addColumn("license_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("status", "varchar(32)", (c) => c.notNull())
+    .addColumn("end_at", "varchar(255)")
+    .addColumn("replaced_by", "varchar(255)")
+    .addColumn("updated_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("license_lifecycle_pkey", ["license_id"])
+    .ifNotExists().execute();
+
+  // Also created by vetra-apps, which writes the ledger too (licensing-ledger.ts).
+  await ensureLedgerTables(db);
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  for (const t of [
+    "license_lifecycle",
+    "app_licensing_intent",
+    "app_licensing_state",
+    "licensing_migration_steps",
+    "licensing_migration_type_map",
+    "environment_reporting_tokens",
+    "invite_redemptions",
+    "invite_codes",
+    "app_allow_list",
+    "license_environments",
+    "license_chain",
+  ]) {
+    await db.schema.dropTable(t).ifExists().execute();
+  }
   await db.schema.dropTable("app_license_grants").execute();
   await db.schema.dropTable("app_environment_limits").execute();
   await db.schema.dropTable("app_user_environments").execute();

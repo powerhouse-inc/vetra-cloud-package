@@ -7,8 +7,10 @@ import type {
   ActivateLicenseInput,
   ExpireLicenseInput,
   IssueLicenseInput,
+  MigrateLicenseInput,
   ReplaceLicenseInput,
   RevokeLicenseInput,
+  SetStageInput,
 } from "../types.js";
 
 export type IssueLicenseAction = Action & {
@@ -31,10 +33,20 @@ export type ReplaceLicenseAction = Action & {
   type: "REPLACE_LICENSE";
   input: ReplaceLicenseInput;
 };
+export type SetStageAction = Action & {
+  type: "SET_STAGE";
+  input: SetStageInput;
+};
+export type MigrateLicenseAction = Action & {
+  type: "MIGRATE_LICENSE";
+  input: MigrateLicenseInput;
+};
 
 export type AppOwnerLicenseLifecycleAction =
   | IssueLicenseAction
   | ActivateLicenseAction
   | ExpireLicenseAction
   | RevokeLicenseAction
-  | ReplaceLicenseAction;
+  | ReplaceLicenseAction
+  | SetStageAction
+  | MigrateLicenseAction;

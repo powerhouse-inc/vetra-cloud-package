@@ -20,7 +20,7 @@ export interface ResolverDeps {
   version: string;
 }
 
-/** Mirror vetra-access-codes `callerDid` so the attached-key lookup matches the redemption. */
+/** The studio licence lookup normalises the chain away, so any chain spelling resolves the same holder. */
 function callerDid(u: AuthUser): string {
   return `did:pkh:${u.networkId}:${u.chainId}:${u.address.toLowerCase()}`;
 }
