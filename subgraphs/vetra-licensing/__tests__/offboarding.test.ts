@@ -42,6 +42,12 @@ describe("subscriptionWarnings", () => {
     expect(subscriptionWarnings(off, at(14))).toStrictEqual([]);
     expect(subscriptionWarnings({ ...off, stoppedAt: at(14) }, at(20))[0]!.message).toContain("Renew");
   });
+  it("a holder-stopped environment (stopped_at unset) still gets deletion banners", () => {
+    const off = { ...ded, status: "EXPIRED", endedAt: END, deleteAfter: at(90) };
+    expect(subscriptionWarnings(off, at(20))[0]!.kind).toBe("STOPPED_DELETE_PENDING");
+    expect(subscriptionWarnings(off, at(85))[0]!.kind).toBe("DELETE_IMMINENT");
+    expect(subscriptionWarnings(off, at(13))[0]!.kind).toBe("ENDED_STOP_PENDING");
+  });
   it("warns from end - 7 days, with the days left", () => {
     expect(subscriptionWarnings(ded, at(-8))).toStrictEqual([]);
     expect(subscriptionWarnings(ded, at(-7))).toStrictEqual([{ kind: "EXPIRING", at: END, message: "Your licence expires in 7 days." }]);

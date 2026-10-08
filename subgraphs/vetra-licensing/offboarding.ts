@@ -44,7 +44,16 @@ export function subscriptionWarnings(
   now: string,
 ): SubscriptionWarning[] {
   const out: SubscriptionWarning[] = [];
-  if (input.mode === "DEDICATED" && input.stoppedAt && input.deleteAfter) {
+  // Stopped by us, or by the holder (stopped_at unset): either way, once the
+  // stop time has passed the environment is down and deletion is what is coming.
+  const stopPassed =
+    input.endedAt !== null && Date.parse(now) >= Date.parse(addDays(input.endedAt, STOP_AFTER_DAYS));
+  if (
+    input.mode === "DEDICATED" &&
+    input.endedAt &&
+    input.deleteAfter &&
+    (input.stoppedAt || stopPassed)
+  ) {
     const imminent = now >= addDays(input.deleteAfter, -(DESTROY_AFTER_DAYS - FINAL_WARNING_AFTER_DAYS));
     out.push(
       imminent
