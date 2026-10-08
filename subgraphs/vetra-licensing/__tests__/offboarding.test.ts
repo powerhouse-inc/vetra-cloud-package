@@ -37,9 +37,9 @@ describe("subscriptionWarnings", () => {
     expect(subscriptionWarnings(offset, at(-1))[0]).toMatchObject({ at: END, message: "Your licence expires in 1 day." });
     expect(subscriptionWarnings({ ...ded, end: "garbage" }, at(-1))).toStrictEqual([]);
   });
-  it("shows no stop banner once the stop time has passed, and a renewal call to action once stopped", () => {
+  it("shows no stop-pending banner once the stop time has passed, and a renewal call to action once stopped", () => {
     const off = { ...ded, status: "EXPIRED", endedAt: END, deleteAfter: at(90) };
-    expect(subscriptionWarnings(off, at(14))).toStrictEqual([]);
+    expect(subscriptionWarnings(off, at(14))[0]!.kind).toBe("STOPPED_DELETE_PENDING");
     expect(subscriptionWarnings({ ...off, stoppedAt: at(14) }, at(20))[0]!.message).toContain("Renew");
   });
   it("a holder-stopped environment (stopped_at unset) still gets deletion banners", () => {
