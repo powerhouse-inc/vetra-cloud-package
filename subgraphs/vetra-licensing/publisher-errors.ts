@@ -108,19 +108,56 @@ export class OperationRejectedError extends Error {
   override name = "OperationRejectedError";
 }
 
+/** What every unrecognised error becomes on the wire. */
+export const INTERNAL_ERROR_MESSAGE = "Internal error";
+
+/** Values that must not reach a log line even inside an error message. */
+const SECRET_PATTERNS: RegExp[] = [
+  /sk-ant-[A-Za-z0-9_-]+/g, // Claude keys
+  /vault:v\d+:[A-Za-z0-9+/=]+/g, // OpenBao transit ciphertexts
+  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, // credentials
+  /\b(token|password|secret)=[^\s&]+/gi,
+];
+
+function redact(text: string): string {
+  return SECRET_PATTERNS.reduce((t, re) => t.replace(re, "[redacted]"), text).slice(0, 1000);
+}
+
+/** One server-side line for an error a client only sees as INTERNAL. */
+function describeInternal(err: unknown): string {
+  if (!(err instanceof Error)) return redact(typeof err === "string" ? err : Object.prototype.toString.call(err));
+  const code = (err as { code?: unknown }).code;
+  return redact(`${err.name}${typeof code === "string" ? ` (${code})` : ""}: ${err.message}`);
+}
+
 /**
  * Map a licensing error to a GraphQLError carrying the contract's stable
- * `extensions.code` (2026-10-08-licensing-api-contract.md). Unknown errors
- * pass through unchanged.
+ * `extensions.code` (2026-10-08-licensing-api-contract.md).
+ *
+ * Anything not recognised (Postgres, OpenBao, a lock timeout, a bug) becomes
+ * `INTERNAL` with the fixed message "Internal error": its text can carry SQL,
+ * lock keys or upstream detail no client should see. The original is logged
+ * here at error level (redacted) and not attached to the GraphQLError, so
+ * neither its message nor its stack reaches a response.
  *
  * NotAppOwnerError and UnknownAppError share ONE code on purpose. They already
  * share their message text so that a publisher cannot distinguish another
  * publisher's app from a missing one; separate codes would hand back exactly
  * that oracle in machine-readable form.
  */
-export function toLicensingGraphQLError(err: unknown): unknown {
+export function toLicensingGraphQLError(
+  err: unknown,
+  logger: Pick<Console, "error"> = console,
+): GraphQLError {
   const code = codeFor(err);
-  if (!code) return err;
+  if (!code) {
+    try {
+      logger.error(`[licensing] internal error: ${describeInternal(err)}`);
+    } catch {
+      // A failing logger must not replace the masked error.
+    }
+    return new GraphQLError(INTERNAL_ERROR_MESSAGE, { extensions: { code: "INTERNAL" } });
+  }
   const e = err as Error;
   return new GraphQLError(e.message, { extensions: { code }, originalError: e });
 }

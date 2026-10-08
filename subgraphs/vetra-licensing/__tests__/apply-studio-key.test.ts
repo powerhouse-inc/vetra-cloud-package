@@ -98,11 +98,17 @@ describe("applyStudioKey: the tenant must be projected and the caller's", () => 
     expect(setSecret).not.toHaveBeenCalled();
   });
 
-  it("passes any other projection failure through, writing nothing", async () => {
+  it("masks any other projection failure as INTERNAL, writing nothing", async () => {
     const { apply, setSecret } = build(async () => {
       throw new Error("db down");
     });
-    expect(await settle(apply("t-1"), 0)).toBe("UNMAPPED: Error: db down");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await settle(apply("t-1"), 0)).toBe("INTERNAL");
+      expect(error).toHaveBeenCalledWith("[licensing] internal error: Error: db down");
+    } finally {
+      error.mockRestore();
+    }
     expect(setSecret).not.toHaveBeenCalled();
   });
 

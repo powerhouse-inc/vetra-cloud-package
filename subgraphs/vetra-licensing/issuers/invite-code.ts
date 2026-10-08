@@ -13,6 +13,7 @@ import {
 } from "../invite-codes.js";
 import { resolveKind } from "../app-reads.js";
 import { keyedMutex } from "../keyed-mutex.js";
+import { isLiveEntry } from "../lifecycle.js";
 import type { LicenceRecord } from "../reads.js";
 
 export interface InviteCodeIssuerDeps extends IssueDeps {
@@ -114,8 +115,11 @@ export async function redeemInviteCode(
       const app = await deps.apps.app(appId);
       const resolved = app ? resolveKind(app, row.kind) : null;
       if (resolved?.ok && resolved.template.mode === "SHARED") {
-        const held = await deps.activeLicencesOf(appId, user);
-        if (held.some((l) => l.kind === row.kind)) {
+        // Held means live by the lifecycle record: ACTIVE and not past its
+        // recorded end, whether or not the keeper has recorded the expiry.
+        const sameKind = (await deps.activeLicencesOf(appId, user)).filter((l) => l.kind === row.kind);
+        const live = await Promise.all(sameKind.map(async (l) => isLiveEntry(await deps.lifecycle.entry(l.id), input.now)));
+        if (live.some(Boolean)) {
           if (existing) await release(deps, code, user);
           throw new AlreadyHoldsError(`you already hold ${row.kind}`);
         }

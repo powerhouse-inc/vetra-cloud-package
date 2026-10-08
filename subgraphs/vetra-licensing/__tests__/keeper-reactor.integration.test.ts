@@ -103,6 +103,7 @@ describe("LicenseKeeper against a real reactor", () => {
       executeLicence: gateway.execute,
       grants: createGrantStore(db),
       lifecycle,
+      migrationComplete: async () => false,
       logger: console,
     };
 

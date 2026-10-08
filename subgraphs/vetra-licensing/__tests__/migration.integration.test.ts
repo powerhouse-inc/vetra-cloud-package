@@ -561,7 +561,6 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
       licensingDb: db,
       trustedIds: async () => new Set([...appRows.map((r) => r.id), STUDIO_APP_ID]),
       transit: fakeTransit,
-      slug: "vetra-studio",
     });
     const [h0, h1, h7] = [holders[0]!, holders[1]!, holders[7]!];
     // Live, newest code keyless, an older live redemption keyed: the key comes from it.

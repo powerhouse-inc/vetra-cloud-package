@@ -456,3 +456,4 @@ describe("vetraSubscriptions: studio", () => {
     expect(await noSecrets.VetraSubscriptionsMutations.applyStudioKey!({}, { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder)).toBe(false);
   });
 });
+

@@ -197,6 +197,7 @@ function deps(over: Partial<ResolverDeps> = {}, enabled = true): ResolverDeps {
       executeLicence: s.executeLicence,
       grants,
       lifecycle,
+      migrationComplete: async () => false,
       logger: { warn: () => {} },
     },
     migrationComplete: async () => migrated,
@@ -353,6 +354,21 @@ describe("vetraLicensing (machine)", () => {
     expect(await q("hasLicense", { user: FORGED_DID }, asApp)).toBe(false); // ACTIVE doc, no grant row
     expect(await q("hasLicense", { user: LAPSED_DID }, asApp)).toBe(false); // ACTIVE doc, recorded EXPIRED
     expect(await code(q("hasLicense", { user: "did:key:z" }, asApp))).toBe("UNSUPPORTED_DID");
+  });
+
+  it("answers hasLicense false for a licence recorded ACTIVE whose end has passed, before the keeper expires it", async () => {
+    const setEnd = (end: string | null) =>
+      db.updateTable("license_lifecycle").set({ end_at: end }).where("license_id", "=", "l-other").execute();
+    try {
+      await setEnd("2026-10-01T00:00:00.000Z");
+      expect(await q("hasLicense", { user: OTHER_DID }, asApp2)).toBe(false);
+      await setEnd("2026-10-09T00:00:00.000Z");
+      expect(await q("hasLicense", { user: OTHER_DID }, asApp2)).toBe(true);
+      await setEnd(NOW); // ends exactly now: over
+      expect(await q("hasLicense", { user: OTHER_DID }, asApp2)).toBe(false);
+    } finally {
+      await setEnd(null);
+    }
   });
 
   it("lists environments from license_environments with chain fields", async () => {

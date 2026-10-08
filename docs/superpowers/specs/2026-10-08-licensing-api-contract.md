@@ -18,6 +18,11 @@ deleted.
 
 Enum-valued fields are transported as `String` (as today) with the values listed.
 
+On all three surfaces, any error that is not one of the listed codes (a
+database, OpenBao or lock-timeout failure, a bug) is returned as
+`extensions.code: INTERNAL` with the fixed message `Internal error`; its detail
+is logged server-side only.
+
 ## vetraPublisher
 
 ```graphql

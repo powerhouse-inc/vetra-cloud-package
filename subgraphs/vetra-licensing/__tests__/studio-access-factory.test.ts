@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import type { OpenBaoTransitClient } from "../../vetra-cloud-secrets/openbao-transit.js";
@@ -8,7 +8,8 @@ import { redeemInviteCode } from "../issuers/invite-code.js";
 import { createGrantStore } from "../grants.js";
 import { createHolderLicences } from "../licence-view.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
-import { studioKeyForDid } from "../studio-access.js";
+import { studioAccess, studioKeyForDid } from "../studio-access.js";
+import { createSubscriptionResolvers, type SubscriptionDeps } from "../subscriptions-resolvers.js";
 import { createStudioAccessDeps } from "../studio-access-factory.js";
 import { STUDIO_APP_ID } from "../studio-app.js";
 
@@ -23,13 +24,13 @@ const fakeTransit = {
 
 let h: PublisherHarness;
 let licenseId: string;
-const make = () =>
+const SQUATTER = "app-squatter";
+const make = (trusted: string[] = [STUDIO_APP_ID]) =>
   createStudioAccessDeps({
     client: h.client as never,
     licensingDb: h.db,
-    trustedIds: async () => new Set([STUDIO_APP_ID]),
+    trustedIds: async () => new Set(trusted),
     transit: fakeTransit,
-    slug: "vetra-studio",
   });
 
 beforeAll(async () => {
@@ -64,16 +65,42 @@ describe("createStudioAccessDeps", () => {
 
   it("has no key without OpenBao", async () => {
     const deps = createStudioAccessDeps({
-      client: h.client as never, licensingDb: h.db, trustedIds: async () => new Set([STUDIO_APP_ID]), transit: null, slug: "vetra-studio",
+      client: h.client as never, licensingDb: h.db, trustedIds: async () => new Set([STUDIO_APP_ID]), transit: null,
     });
     expect(await studioKeyForDid(deps, DID)).toBeNull();
   });
 
-  it("finds no studio app when its id is not trusted", async () => {
+  it("resolves the studio by its fixed id, not by slug: a trusted app carrying the studio slug changes nothing", async () => {
+    // A row owner holds ADMIN on their own app document, so it can set any
+    // slug; slug lookups would then find two trusted "vetra-studio" apps.
+    await h.addApp(SQUATTER, OWNER);
+    await h.client.execute(SQUATTER, "main", [appActions.setAppDetails({ name: "Not Studio", slug: "vetra-studio" })]);
+    const deps = make([STUDIO_APP_ID, SQUATTER]);
+    expect(await deps.studioAppId()).toBe(STUDIO_APP_ID);
+
+    // studioAccess and the pool's key (studioKeyForDid is what the pool claim uses).
+    expect(await studioAccess(deps, DID)).toMatchObject({ allowed: true, licenseId, hasAttachedKey: true });
+    expect(await studioKeyForDid(deps, DID)).toBe("sk-ant-plain");
+
+    // applyStudioKey, built on the same deps.
+    const setSecret = vi.fn(async (_t: string, key: string, _v: string) => ({ key }));
+    const r = createSubscriptionResolvers({
+      studio: deps,
+      secrets: { setSecret },
+      tenantOwners: async () => [ADDR],
+      tenantWait: { timeoutMs: 0, intervalMs: 1 },
+      now: () => NOW,
+    } as unknown as SubscriptionDeps) as { VetraSubscriptionsMutations: Record<string, (p: unknown, a: unknown, c: unknown) => Promise<unknown>> };
+    await r.VetraSubscriptionsMutations.applyStudioKey!({}, { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asUser(ADDR));
+    expect(setSecret).toHaveBeenCalledWith("t-1", "ANTHROPIC_API_KEY", "sk-ant-plain");
+  });
+
+  it("finds no studio app while its document does not exist", async () => {
     const deps = createStudioAccessDeps({
-      client: h.client as never, licensingDb: h.db, trustedIds: async () => new Set(), transit: fakeTransit, slug: "vetra-studio",
+      client: { get: async () => { throw Object.assign(new Error("gone"), { name: "DocumentNotFoundError" }); } } as never,
+      licensingDb: h.db, trustedIds: async () => new Set([STUDIO_APP_ID]), transit: fakeTransit,
     });
-    expect(await studioKeyForDid(deps, DID)).toBeNull();
+    expect(await deps.studioAppId()).toBeNull();
   });
 
   it("loses the key when the licence is revoked", async () => {

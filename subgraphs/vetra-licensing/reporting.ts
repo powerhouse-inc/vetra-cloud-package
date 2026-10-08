@@ -7,7 +7,7 @@ import type { VetraLicensingDB } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
 import type { ChainEnvRows } from "./environments.js";
 import type { GrantStore } from "./grants.js";
-import type { LifecycleStore } from "./lifecycle.js";
+import { isLiveEntry, type LifecycleStore } from "./lifecycle.js";
 import { InvalidPublisherInputError } from "./publisher-errors.js";
 import type { RenownStatsClient } from "./renown-stats.js";
 
@@ -238,13 +238,14 @@ export interface RelayDeps {
   db: Kysely<VetraLicensingDB>;
   envRows: Pick<ChainEnvRows, "byEnvironment">;
   grants: Pick<GrantStore, "chainHead" | "grantFor">;
-  lifecycle: Pick<LifecycleStore, "get">;
+  lifecycle: Pick<LifecycleStore, "entry">;
   /** Ledger-checked app reads: only `tampered` is used, never the document's identity. */
   apps: Pick<AppReads, "app">;
   /** The apps row (vetra-apps): the App's Renown workload identity and status. */
   appIdentity(appId: string): Promise<{ identityDid: string | null; status: string } | null>;
   stats: RenownStatsClient;
   logger: Pick<Console, "info" | "warn">;
+  now(): string;
 }
 
 /** Statuses of an apps row whose identity may report. */
@@ -294,8 +295,11 @@ export async function relayUserStat(
   if (!grant || grant.appId !== row.app_id || grant.userDid !== row.user_did) {
     return refuse(deps, environmentId, `its chain head ${head} is not granted to the environment's app and holder`);
   }
-  const status = (await deps.lifecycle.get(head))?.status ?? "unrecorded";
+  const entry = await deps.lifecycle.entry(head);
+  const status = entry?.status ?? "unrecorded";
   if (status !== "ACTIVE") return refuse(deps, environmentId, `its chain head ${head} is ${status}`);
+  // Past its recorded end is over, whether or not the keeper has recorded it.
+  if (!isLiveEntry(entry, deps.now())) return refuse(deps, environmentId, `its chain head ${head} ended ${entry?.endAt}`);
   const app = await deps.apps.app(row.app_id);
   if (!app) return refuse(deps, environmentId, `app ${row.app_id} has no readable document`);
   if (app.tampered) return refuse(deps, environmentId, `app ${row.app_id} is tampered`);

@@ -60,6 +60,18 @@ export interface LifecycleEntry extends LifecycleRecord {
   updatedAt: string;
 }
 
+/**
+ * Whether a recorded licence is live now: its lifecycle row is ACTIVE and its
+ * recorded end (end_at) is open or still ahead. Expiry does not wait for the
+ * keeper to record EXPIRED. No row, or an end that does not parse, is not live.
+ */
+export function isLiveEntry(entry: Pick<LifecycleEntry, "status" | "endAt"> | null | undefined, now: string): boolean {
+  if (entry?.status !== "ACTIVE") return false;
+  if (entry.endAt === null) return true;
+  const end = Date.parse(entry.endAt);
+  return !Number.isNaN(end) && end > Date.parse(now);
+}
+
 const toEntry = (r: { status: string; replaced_by: string | null; end_at: string | null; updated_at: string }): LifecycleEntry => ({
   status: r.status,
   replacedBy: r.replaced_by,

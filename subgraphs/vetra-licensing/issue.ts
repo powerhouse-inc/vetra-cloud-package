@@ -51,6 +51,12 @@ export interface IssueDeps {
    * document refused REPLACE_LICENSE.
    */
   lifecycle: Pick<LifecycleStore, "entry" | "record">;
+  /**
+   * Whether the startup migration has completed (its `complete` marker).
+   * Once it has, every licence the system vouches for has a lifecycle row, so
+   * a predecessor without one is refused instead of trusting its document.
+   */
+  migrationComplete(): Promise<boolean>;
   logger: Pick<Console, "warn">;
 }
 
@@ -160,9 +166,16 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
     ) {
       throw new UnknownLicenseError();
     }
-    // The status the system recorded; a licence from before the record
-    // existed (no row yet) falls back to its document.
+    // The status the system recorded. Before the migration completes, a
+    // licence from before the record existed (no row yet) falls back to its
+    // document; once it has completed, an unrecorded licence is not vouched
+    // for by anything but its (forgeable) document, and is refused.
     const recorded = await deps.lifecycle.entry(doc.id);
+    if (!recorded && (await deps.migrationComplete())) {
+      throw new LicenceNotUpgradableError(
+        `licence ${doc.id} has no recorded lifecycle; it cannot be upgraded or renewed`,
+      );
+    }
     previous = { ...doc, user, kind: grant.kind ?? doc.kind };
     previousStatus = recorded?.status ?? doc.status;
     // Never the document's end: a forged far-future end would otherwise be

@@ -13,6 +13,7 @@ import {
   UnknownTemplateError,
   UnknownTenantError,
   UnknownTermError,
+  INTERNAL_ERROR_MESSAGE,
   toLicensingGraphQLError,
   toPublisherGraphQLError,
 } from "../publisher-errors.js";
@@ -29,6 +30,7 @@ import { AlreadyHoldsError, LicenceNotUpgradableError, TermNotIssuableError } fr
 import { UnsupportedDidError } from "../did.js";
 import { InvalidCodeError, InvalidCodeInputError } from "../invite-codes.js";
 import { KeyStorageUnavailableError } from "../key-vault.js";
+import { LockTimeoutError } from "../keyed-mutex.js";
 
 const codeOf = (e: unknown) => (e as GraphQLError).extensions?.code;
 
@@ -89,9 +91,61 @@ describe("toLicensingGraphQLError", () => {
     expect(new UnknownLicenseError().message).toBe("no such licence");
   });
 
-  it("passes an unknown error through unchanged", () => {
-    const boom = new Error("something else");
-    expect(toLicensingGraphQLError(boom)).toBe(boom);
+  describe("masks anything it does not recognise as INTERNAL", () => {
+    const pg = Object.assign(new Error('duplicate key value violates unique constraint "license_lifecycle_pkey"'), { code: "23505" });
+    const bao = new Error("openbao transit decrypt failed for vault:v1:c2VjcmV0 with Bearer hvs.abc.def token=s3cr3t");
+    const lock = new LockTimeoutError("timed out waiting for lock app-1\u0000did:pkh:eip155:1:0xabc");
+    const unknown: Array<[string, unknown]> = [
+      ["a Postgres error", pg],
+      ["an OpenBao error", bao],
+      ["a lock timeout", lock],
+      ["a plain Error", new Error("something else")],
+      ["a GraphQLError from elsewhere", new GraphQLError("upstream", { extensions: { code: "WHATEVER" } })],
+      ["a thrown string", "sk-ant-api03-secret"],
+      ["a thrown object", { message: "not an Error" }],
+    ];
+
+    it.each(unknown)("%s: generic code and message, nothing of the original attached", (_n, err) => {
+      const logger = { error: vi.fn() };
+      const out = toLicensingGraphQLError(err, logger);
+      expect(out).toBeInstanceOf(GraphQLError);
+      expect(out.message).toBe(INTERNAL_ERROR_MESSAGE);
+      expect(out.message).toBe("Internal error");
+      expect(out.extensions).toStrictEqual({ code: "INTERNAL" });
+      expect(out.originalError).toBeUndefined();
+      expect(JSON.stringify(out.toJSON())).not.toMatch(/stack|duplicate|vault|license_lifecycle|0xabc/);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs the original server-side at error level, without secrets", () => {
+      const logger = { error: vi.fn() };
+      toLicensingGraphQLError(pg, logger);
+      expect(logger.error).toHaveBeenLastCalledWith(
+        '[licensing] internal error: Error (23505): duplicate key value violates unique constraint "license_lifecycle_pkey"',
+      );
+      toLicensingGraphQLError(bao, logger);
+      const line = String(logger.error.mock.lastCall?.[0]);
+      expect(line).toContain("openbao transit decrypt failed");
+      expect(line).not.toMatch(/c2VjcmV0|hvs\.abc|s3cr3t/);
+      toLicensingGraphQLError("sk-ant-api03-secret", logger);
+      expect(logger.error).toHaveBeenLastCalledWith("[licensing] internal error: [redacted]");
+      toLicensingGraphQLError(lock, logger);
+      expect(logger.error).toHaveBeenLastCalledWith(expect.stringMatching(/^\[licensing\] internal error: LockTimeoutError: /));
+      toLicensingGraphQLError({ message: "x" }, logger);
+      expect(logger.error).toHaveBeenLastCalledWith("[licensing] internal error: [object Object]");
+    });
+
+    it("still returns the masked error when the logger throws, and logs to console by default", () => {
+      const out = toLicensingGraphQLError(new Error("x"), { error: () => { throw new Error("log down"); } });
+      expect(out.extensions).toStrictEqual({ code: "INTERNAL" });
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(toLicensingGraphQLError(new Error("y")).message).toBe("Internal error");
+        expect(spy).toHaveBeenCalledWith("[licensing] internal error: Error: y");
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });
 

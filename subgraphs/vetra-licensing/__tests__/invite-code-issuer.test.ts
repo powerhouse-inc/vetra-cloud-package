@@ -81,8 +81,16 @@ beforeEach(async () => {
       chainHead: async (id) => id,
       grantFor: async () => null,
     },
-    lifecycle: { entry: async () => null, record: vi.fn(async () => {}) },
+    // The recorded lifecycle of the caller's licences: what `active` says.
+    lifecycle: {
+      entry: async (id) => {
+        const l = active.find((x) => x.id === id);
+        return l ? { status: l.status, endAt: l.end, replacedBy: null, updatedAt: NOW } : null;
+      },
+      record: vi.fn(async () => {}),
+    },
     activeLicencesOf: async () => active,
+    migrationComplete: async () => false,
     logger: { warn: vi.fn() },
   };
   const c = (code: string, kind: string, maxUses: number | null = null) =>
@@ -160,6 +168,25 @@ describe("redeemInviteCode", () => {
     active = [lic({ kind: "free" })];
     await expect(redeem("shared-code")).rejects.toBeInstanceOf(AlreadyHoldsError);
     expect(await findRedemption(db, "shared-code", DID)).toBeNull();
+  });
+
+  it("does not count a SHARED licence recorded ACTIVE whose end has passed", async () => {
+    // The keeper has not recorded the expiry yet: the end alone decides.
+    active = [lic({ id: "lapsed", kind: "free", end: "2026-10-01T00:00:00.000Z" })];
+    const out = await redeem("shared-code");
+    expect(out).toMatchObject({ appId: "app-1", fresh: true });
+    expect(created).toBe(1);
+  });
+
+  it("still refuses a SHARED licence recorded ACTIVE whose end is ahead", async () => {
+    active = [lic({ id: "live", kind: "free", end: "2026-11-01T00:00:00.000Z" })];
+    await expect(redeem("shared-code")).rejects.toBeInstanceOf(AlreadyHoldsError);
+  });
+
+  it("does not count a licence of the kind that has no lifecycle record", async () => {
+    active = [lic({ id: "unrecorded", kind: "free" })];
+    deps.lifecycle.entry = async () => null;
+    expect(await redeem("shared-code")).toMatchObject({ fresh: true });
   });
 
   it("refuses an unusable SHARED code with INVALID_CODE even to a holder of its kind", async () => {

@@ -51,16 +51,22 @@ export function createLicensingAppReads(input: {
   return { appLedger, appReads };
 }
 
-/** The vetra-studio gate over DB authority; one definition for every surface that uses it. */
+/**
+ * The vetra-studio gate over DB authority; one definition for every surface
+ * that uses it. The studio app is the fixed STUDIO_APP_ID, never found by
+ * slug: a slug is document state any app owner can write, so a second app
+ * carrying the studio's slug would otherwise lock everyone out of Studio. Its
+ * document must exist (read through app(), which applies the integrity and
+ * tamper checks).
+ */
 export function buildStudioAccessDeps(input: {
-  appReads: Pick<AppReads, "appBySlug">;
+  appReads: Pick<AppReads, "app">;
   holderLicences: StudioAccessDeps["licencesOf"];
   db: Kysely<VetraLicensingDB>;
   keyVault: KeyVault | null;
-  slug: string;
 }): StudioAccessDeps {
   return {
-    studioAppId: async () => (await input.appReads.appBySlug(input.slug))?.id ?? null,
+    studioAppId: async () => ((await input.appReads.app(STUDIO_APP_ID)) ? STUDIO_APP_ID : null),
     licencesOf: input.holderLicences,
     redeemedCode: (licenseId, userDid) =>
       redeemedCodeOf(input.db, licenseId, userDid, new Date().toISOString()),
@@ -76,7 +82,6 @@ export function createStudioAccessDeps(input: {
   licensingDb: Kysely<VetraLicensingDB>;
   trustedIds: () => Promise<ReadonlySet<string>>;
   transit: OpenBaoTransitClient | null;
-  slug: string;
 }): StudioAccessDeps {
   const { appReads } = createLicensingAppReads({
     client: input.client,
@@ -93,6 +98,5 @@ export function createStudioAccessDeps(input: {
     holderLicences,
     db: input.licensingDb,
     keyVault: createKeyVault(input.transit),
-    slug: input.slug,
   });
 }

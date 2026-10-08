@@ -437,7 +437,8 @@ export async function appForOwner(
 
 /**
  * First free slug for `name`. Every row counts, DELETED ones included, so a
- * slug (and its Harbor project app-<slug>) is never handed out twice.
+ * slug (and its Harbor project app-<slug>) is never handed out twice. The
+ * studio app's slug is reserved: it has no row, and no app may take it.
  */
 async function uniqueSlug(
   deps: AppsDeps,
@@ -457,6 +458,7 @@ async function uniqueSlug(
     ).map((r) => r.slug),
   );
   for (const t of alsoTaken) taken.add(t);
+  taken.add(deps.cfg.studioAppSlug);
   if (!taken.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;

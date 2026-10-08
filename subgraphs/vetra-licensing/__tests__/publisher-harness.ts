@@ -107,6 +107,7 @@ export async function createPublisherHarness() {
       executeLicence: licenseGateway.execute,
       grants,
       lifecycle,
+      migrationComplete: async () => false,
       logger: console,
     },
     grants,

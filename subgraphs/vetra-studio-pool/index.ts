@@ -82,7 +82,6 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
       licensingDb,
       trustedIds: appsTrustedIds(appsDb),
       transit,
-      slug: process.env.VETRA_STUDIO_APP_SLUG?.trim() || "vetra-studio",
     });
 
     const secretsService: SecretsService = createSecretsService({

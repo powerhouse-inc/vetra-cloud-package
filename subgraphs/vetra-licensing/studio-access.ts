@@ -10,7 +10,7 @@ import type { AuthorisedLicence } from "./licence-view.js";
  * (invite_redemptions), never from the licence document.
  */
 export interface StudioAccessDeps {
-  /** The studio app's id (found by slug), null when there is none. */
+  /** The studio app's id (the fixed STUDIO_APP_ID), null while its document does not exist. */
   studioAppId(): Promise<string | null>;
   /** The holder's licences of one app, grant-sourced with lifecycle overlaid, oldest first. */
   licencesOf(appId: string, userDid: string): Promise<AuthorisedLicence[]>;

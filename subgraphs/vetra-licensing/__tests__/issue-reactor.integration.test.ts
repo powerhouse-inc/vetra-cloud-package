@@ -57,6 +57,7 @@ describe("issueLicense against a real reactor", () => {
       executeLicence: gateway.execute,
       grants: createGrantStore(db),
       lifecycle,
+      migrationComplete: async () => false,
       logger: console,
     };
   }, 120_000);

@@ -857,10 +857,16 @@ async function ensureStudioApp(deps: MigrationDeps, report: MigrationReport): Pr
     return false;
   }
   const cfg = { slug: deps.cfg.studioAppSlug, publisher };
-  const bySlug = await deps.apps.appBySlug(cfg.slug);
-  if (bySlug && bySlug.id !== STUDIO_APP_ID) {
-    report.problems.push(`studio: slug ${cfg.slug} belongs to app ${bySlug.id}; rename it, the studio app is ${STUDIO_APP_ID}`);
-    return false;
+  // The studio app is the fixed STUDIO_APP_ID; nothing decides by slug. Another
+  // trusted app carrying the studio's slug is only worth a warning (rename it),
+  // and failing to look is no reason to block the studio step.
+  try {
+    const bySlug = await deps.apps.appBySlug(cfg.slug);
+    if (bySlug && bySlug.id !== STUDIO_APP_ID) {
+      report.warnings.push(`studio: slug ${cfg.slug} is also carried by app ${bySlug.id}; rename it, the studio app is ${STUDIO_APP_ID}`);
+    }
+  } catch (err) {
+    report.warnings.push(`studio: could not check who else carries slug ${cfg.slug}: ${err instanceof Error ? err.message : String(err)}`);
   }
   const view = await deps.apps.app(STUDIO_APP_ID);
   if (!view) {

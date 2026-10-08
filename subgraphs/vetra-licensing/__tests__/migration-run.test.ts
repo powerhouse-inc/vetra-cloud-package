@@ -135,13 +135,33 @@ describe("runLicensingMigration", { timeout: 30_000 }, () => {
     expect(await steps()).toStrictEqual([]);
   });
 
-  it("refuses to build the studio without a publisher, and a slug held by another app", async () => {
+  it("refuses to build the studio without a publisher", async () => {
     const noPublisher = await runLicensingMigration(cleanWorld({ cfg: { ...fakeDeps().cfg, studioPublisher: null } }));
     expect(noPublisher.problems).toStrictEqual(["studio: set VETRA_STUDIO_PUBLISHER_ADDRESS (or ADMINS) to create the vetra-studio app"]);
+  });
+
+  it("only warns when another trusted app carries the studio slug", async () => {
     const other = cleanWorld();
     other.apps.appBySlug = vi.fn(async () => ({ id: "other-app" }) as never);
     const taken = await runLicensingMigration(other);
-    expect(taken.problems).toStrictEqual([`studio: slug vetra-studio belongs to app other-app; rename it, the studio app is ${STUDIO_APP_ID}`]);
+    expect(taken).toMatchObject({ complete: true, problems: [] });
+    expect(taken.warnings).toContain(`studio: slug vetra-studio is also carried by app other-app; rename it, the studio app is ${STUDIO_APP_ID}`);
+  });
+
+  it("does not block on a failed slug check", async () => {
+    const failing = cleanWorld();
+    failing.apps.appBySlug = vi.fn(async () => {
+      throw new Error("reactor down");
+    });
+    const unchecked = await runLicensingMigration(failing);
+    expect(unchecked).toMatchObject({ complete: true, problems: [] });
+    expect(unchecked.warnings).toContain("studio: could not check who else carries slug vetra-studio: reactor down");
+  });
+
+  it("reports a non-Error slug check failure as text", async () => {
+    const stringly = cleanWorld();
+    stringly.apps.appBySlug = vi.fn(() => Promise.reject("boom" as unknown as Error));
+    expect((await runLicensingMigration(stringly)).warnings).toContain("studio: could not check who else carries slug vetra-studio: boom");
   });
 
   it("holds the studio when its recorded document was changed outside Vetra", async () => {

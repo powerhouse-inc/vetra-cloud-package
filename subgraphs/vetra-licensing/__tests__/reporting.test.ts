@@ -310,10 +310,22 @@ describe("relayUserStat", () => {
       appIdentity: async (id) => (id === "app-1" ? appRow : null),
       stats: { enqueue, flush: async () => {}, stop: () => {} },
       logger: { info: vi.fn(), warn: vi.fn() },
+      now: () => "2026-10-08T00:00:00.000Z",
     };
   });
 
   const stat = (user = DID, metric = "notes", value = 4) => ({ user, metric, value });
+
+  it("refuses a chain head recorded ACTIVE whose end has passed, before the keeper expires it", async () => {
+    const setEnd = (end: string | null) =>
+      db.updateTable("license_lifecycle").set({ end_at: end }).where("license_id", "=", "l1").execute();
+    await setEnd("2026-10-01T00:00:00.000Z");
+    expect(await relayUserStat(relay, "token-1", stat())).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(relay.logger.info).toHaveBeenCalledWith(expect.stringContaining("its chain head l1 ended 2026-10-01T00:00:00.000Z"));
+    await setEnd("2026-11-01T00:00:00.000Z");
+    expect(await relayUserStat(relay, "token-1", stat())).toBe(true);
+  });
 
   it("forwards the holder's stat as the app's recorded identity for a live chain", async () => {
     expect(await relayUserStat(relay, "token-1", stat(ADDR))).toBe(true);

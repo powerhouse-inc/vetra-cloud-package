@@ -13,7 +13,7 @@ import type { AcquireOptions } from "./keyed-mutex.js";
 import type { GrantStore } from "./grants.js";
 import { grantLicense, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
 import { authorisedLicences } from "./licence-view.js";
-import type { LifecycleStore } from "./lifecycle.js";
+import { isLiveEntry, type LifecycleStore } from "./lifecycle.js";
 import { markEnded, type OffboardingDeps } from "./offboarding.js";
 import {
   InvalidPublisherInputError,
@@ -218,9 +218,12 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
         const ids = (await deps.grants.grantsForHolder(user))
           .filter((g) => g.appId === appId)
           .map((g) => g.licenseId);
-        // The lifecycle record only: an unrecorded licence's document is not evidence.
+        // The lifecycle record only: an unrecorded licence's document is not
+        // evidence. ACTIVE and not past its recorded end, whether or not the
+        // keeper has recorded the expiry yet.
         const recorded = await deps.lifecycle.entries(ids);
-        return ids.some((id) => recorded.get(id)?.status === "ACTIVE");
+        const now = deps.now();
+        return ids.some((id) => isLiveEntry(recorded.get(id), now));
       }),
     },
 

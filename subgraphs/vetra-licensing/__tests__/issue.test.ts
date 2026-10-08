@@ -63,6 +63,8 @@ function harness(
     grantRows?: GrantRow[];
     /** Recorded lifecycle rows; endAt defaults to null, updatedAt to NOW. */
     lifecycle?: [string, LifecycleRecord & { endAt?: string | null }][];
+    /** Whether the startup migration has completed. */
+    migrated?: boolean;
   } = {},
 ) {
   const licences = initial.map((l) => ({ ...l }));
@@ -141,6 +143,7 @@ function harness(
         [...chain].filter(([id, r]) => r === root && authorised.has(id)).at(-1)?.[0] ?? root,
       isOnAllowList: async () => opts.allowed ?? true,
     },
+    migrationComplete: vi.fn(async () => opts.migrated ?? false),
     logger: { warn: vi.fn() },
   } satisfies IssueDeps & { grants: { isOnAllowList: unknown } };
   return { deps, executed, created, licences, grantRows, lifecycleRows };
@@ -304,6 +307,25 @@ describe("renewal: the same time-limited kind on an ACTIVE licence", () => {
     await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30), replaced: "old" });
     const forged = harness([lic({ kind: "pro", end: "2099-01-01T00:00:00.000Z" })]);
     await expect(renew(forged)).resolves.toMatchObject({ end: plus(NOW, 30) });
+  });
+
+  it("once the migration is complete, refuses to renew or upgrade a predecessor with no lifecycle record", async () => {
+    // Its document says ACTIVE; nothing the system wrote vouches for it.
+    const h = harness([lic({ kind: "pro", end: plus(NOW, 5) })], { migrated: true });
+    const renewal = renew(h);
+    await expect(renewal).rejects.toBeInstanceOf(LicenceNotUpgradableError);
+    await expect(renewal).rejects.toThrow("licence old has no recorded lifecycle; it cannot be upgraded or renewed");
+    const upgrade = issueLicense(h.deps, { appId: "app-1", user: DID, kind: "free", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", upgrades: "old", now: NOW });
+    await expect(upgrade).rejects.toBeInstanceOf(LicenceNotUpgradableError);
+    expect(h.created).toStrictEqual([]);
+    expect(h.executed).toStrictEqual([]);
+    expect(h.deps.lifecycle.record).not.toHaveBeenCalled();
+  });
+
+  it("once the migration is complete, still renews a recorded predecessor (without asking when it has a record)", async () => {
+    const h = harness([lic({ kind: "pro" })], { migrated: true, lifecycle: [["old", { status: "ACTIVE", replacedBy: null, endAt: plus(NOW, 5) }]] });
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 35), replaced: "old" });
+    expect(h.deps.migrationComplete).not.toHaveBeenCalled();
   });
 
   it("counts on from a recorded end that cannot be parsed as from now", async () => {

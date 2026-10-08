@@ -194,6 +194,12 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const chainRows = createChainEnvironmentRows(db, cfg);
     const transit = openBaoTransit();
     const keyVault = createKeyVault(transit);
+    const migrationComplete = async () =>
+      (await db
+        .selectFrom("licensing_migration_steps")
+        .select("step")
+        .where("step", "=", "complete")
+        .executeTakeFirst()) !== undefined;
     const issueDeps = {
       owners: ownerLookup,
       apps: appReads,
@@ -202,6 +208,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       executeLicence: (id: string, acts: Parameters<typeof gateway.execute>[1]) => gateway.execute(id, acts),
       grants,
       lifecycle,
+      migrationComplete,
       logger: console,
     };
     const publisherResolvers = createPublisherResolvers({
@@ -248,7 +255,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       holderLicences,
       db,
       keyVault,
-      slug: cfg.studioAppSlug,
     });
     // Tenant secrets are written through the vetra-cloud-secrets service
     // in-process (its subgraph owns the schema), as vetra-access-codes did.
@@ -314,12 +320,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       logger: console,
       now: () => new Date().toISOString(),
     };
-    const migrationComplete = async () =>
-      (await db
-        .selectFrom("licensing_migration_steps")
-        .select("step")
-        .where("step", "=", "complete")
-        .executeTakeFirst()) !== undefined;
     // The handler waits for a chain as long as it takes (its own step timeout
     // reports a hang); the machine API passes a bounded wait (BUSY).
     const provision = (input: ProvisionChainInput, opts?: AcquireOptions) =>
@@ -372,6 +372,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       },
       stats,
       logger: console,
+      now: () => new Date().toISOString(),
     };
 
     // Machine surface (app backends, by App identity). Licences come from
