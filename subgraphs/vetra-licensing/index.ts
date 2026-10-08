@@ -11,6 +11,8 @@ import { sleepEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
 import { createReactorLicenseReads } from "./reads.js";
+import { createAppReads } from "./app-reads.js";
+import { createOwnerAppLookup } from "./owner-apps.js";
 import { createReactorLicenseGateway } from "./license-gateway.js";
 import { LicenseKeeper } from "./keeper.js";
 import { ProvisioningKeeper } from "./provisioning-keeper.js";
@@ -132,24 +134,30 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const typeGateway = createReactorLicenseTypeGateway(
       this.reactorClient as never,
     );
-    // Human surface. Ownership is checked against apps.owner_address on every
-    // call; platform admins (the ADMINS env) pass via resolveOwnerApp.
+    // Human surface. Ownership is checked on every call: the apps table row
+    // wins where one exists; an app that exists only as a document (the
+    // vetra-studio app) falls back to the document's owner. Platform admins
+    // (the ADMINS env) pass via resolveOwnerApp.
+    const appReads = createAppReads(this.reactorClient as never);
     const publisherResolvers = createPublisherResolvers(db, {
-      auth: {
-        findAppById: (id) =>
-          appsDb
-            .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address"])
-            .where("id", "=", id)
-            .executeTakeFirst()
-            .then((r) => r ?? null),
-        listAppsForOwner: (address) =>
-          appsDb
-            .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address"])
-            .where("owner_address", "=", address)
-            .execute(),
-      },
+      auth: createOwnerAppLookup({
+        table: {
+          byId: (id) =>
+            appsDb
+              .selectFrom("apps")
+              .select(["id", "name", "status", "owner_address"])
+              .where("id", "=", id)
+              .executeTakeFirst()
+              .then((r) => r ?? null),
+          byOwner: (address) =>
+            appsDb
+              .selectFrom("apps")
+              .select(["id", "name", "status", "owner_address"])
+              .where("owner_address", "=", address)
+              .execute(),
+        },
+        apps: appReads,
+      }),
       reads,
       cfg,
       typeGateway,

@@ -1,4 +1,6 @@
 import { isDocumentNotFound } from "../vetra-apps/envs.js";
+import { createAppReads } from "./app-reads.js";
+import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
 import type { LicenseRow, LicenseStatusName } from "./transitions.js";
 import type { LicenseTypeView, LicenseView } from "./resolvers.js";
 import { templateHash, type TemplateShape } from "./template.js";
@@ -103,26 +105,6 @@ export interface LicenseReads {
   listLicenses(): Promise<LicenseRow[]>;
   /** Every licence across all apps, with the fields provisioning needs. */
   allLicenses(): Promise<LicenseFullRow[]>;
-}
-
-type Rec = Record<string, unknown>;
-
-const isRec = (v: unknown): v is Rec => typeof v === "object" && v !== null;
-const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
-
-function docId(doc: unknown): string | null {
-  if (!isRec(doc) || !isRec(doc.header)) return null;
-  return str(doc.header.id);
-}
-
-/** True when the document's own type is the expected one. */
-function isDocType(doc: unknown, type: string): boolean {
-  return isRec(doc) && isRec(doc.header) && doc.header.documentType === type;
-}
-
-function globalState(doc: unknown): Rec | null {
-  if (!isRec(doc) || !isRec(doc.state) || !isRec(doc.state.global)) return null;
-  return doc.state.global;
 }
 
 interface ParsedLicense {
@@ -286,6 +268,8 @@ export function createReactorLicenseReads(
     }
   }
 
+  const appReads = createAppReads(client);
+
   async function getDoc(id: string): Promise<unknown> {
     try {
       return (await client.get(id)) ?? null;
@@ -344,34 +328,7 @@ export function createReactorLicenseReads(
       // The app document's id is the app id, so this is a direct get. A missing
       // document means the app has published nothing yet — an empty list, not
       // an error: the builder says so rather than showing an empty dropdown.
-      const doc = await getDoc(appId);
-      if (!isRec(doc) || !isRec(doc.state)) return [];
-      const global = doc.state.global;
-      if (!isRec(global) || !Array.isArray(global.artifacts)) return [];
-
-      return global.artifacts.flatMap((a): AppArtifact[] => {
-        if (!isRec(a)) return [];
-        const kind = str(a.kind);
-        const name = str(a.name);
-        if ((kind !== "PACKAGE" && kind !== "FUSION_IMAGE") || !name) return [];
-        const versions = Array.isArray(a.versions)
-          ? a.versions.flatMap((v) => {
-              if (!isRec(v)) return [];
-              const version = str(v.version);
-              const reference = str(v.reference);
-              return version && reference ? [{ version, reference }] : [];
-            })
-          : [];
-        const channels = Array.isArray(a.channels)
-          ? a.channels.flatMap((c) => {
-              if (!isRec(c)) return [];
-              const channel = str(c.channel);
-              const version = str(c.version);
-              return channel && version ? [{ channel, version }] : [];
-            })
-          : [];
-        return [{ kind, name, versions, channels }];
-      });
+      return (await appReads.app(appId))?.artifacts ?? [];
     },
 
     async licenseTypeDetails(appId) {
