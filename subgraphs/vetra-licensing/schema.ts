@@ -3,14 +3,21 @@ import { Kind, type DocumentNode } from "graphql";
 import { publisherSchema } from "./publisher-schema.js";
 import { subscriptionsSchema } from "./subscriptions-schema.js";
 
-/** The machine surface (vetraLicensing). Unchanged; served as part of `schema`. */
+/**
+ * The machine surface (vetraLicensing, contract § vetraLicensing (machine)):
+ * app backends calling with their App identity. Served as part of `schema`.
+ */
 export const machineSchema: DocumentNode = gql`
   type AppUserEnvironment {
     appId: String!
     user: String!
     environmentId: String!
     licenseId: String!
+    rootLicenseId: String!
+    label: String
     templateHash: String!
+    stoppedAt: String
+    deleteAfter: String
   }
 
   input ApplyEnvironmentTemplateInput {
@@ -23,42 +30,51 @@ export const machineSchema: DocumentNode = gql`
   }
 
   input IssuePublisherGrantInput {
-    licenseTypeId: String!
+    kind: String!
     user: String!
+  }
+
+  type AppLicense {
+    id: String!
+    user: String!
+    kind: String!
+    status: String!
+    start: String
+    end: String
+    environmentId: String
+  }
+
+  type AppTermSummary {
+    id: String!
+    kind: String!
+    status: String!
+    templateHash: String
   }
 
   type VetraLicensingQueries {
     appLicenses(status: String): [AppLicense!]!
-    appLicenseTypes: [AppLicenseTypeSummary!]!
+    appTerms: [AppTermSummary!]!
     appUserEnvironments: [AppUserEnvironment!]!
+    "SHARED apps: does this DID hold an ACTIVE licence for the calling app?"
+    hasLicense(user: String!): Boolean!
   }
 
   type VetraLicensingMutations {
     applyEnvironmentTemplate(
       input: ApplyEnvironmentTemplateInput!
     ): AppUserEnvironment!
+    """
+    Starts the offboarding clock of an environment whose licence chain has
+    ended (false otherwise); never stops or deletes it directly.
+    """
     releaseEnvironment(input: ReleaseEnvironmentInput!): Boolean!
     """
-    Issue a PUBLISHER_GRANT licence for one of the caller app's own licence
-    types. Returns the new licence document id.
+    Issue a PUBLISHER_GRANT licence of one of the caller app's own terms.
+    Returns the new licence document id.
     """
     issuePublisherGrant(input: IssuePublisherGrantInput!): String!
-  }
-
-  type AppLicense {
-    id: String!
-    user: String!
-    licenseTypeId: String!
-    status: String!
-    start: String
-    end: String
-  }
-
-  type AppLicenseTypeSummary {
-    id: String!
-    kind: String!
-    status: String!
-    templateHash: String!
+    "Caller = environment reporting token. Forwards to Renown signed as the app."
+    reportUserStat(user: String!, metric: String!, value: Float!): Boolean!
   }
 
   type Query {

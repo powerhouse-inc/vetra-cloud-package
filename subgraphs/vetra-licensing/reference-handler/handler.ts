@@ -1,46 +1,43 @@
-import { computeLicensePlan, type ActiveLicense } from "../plan.js";
-
 // The slice of the vetraLicensing GraphQL API this handler calls. Wire each
 // method to the query or mutation of the same name.
 export interface LicensingClient {
   appLicenses(args: { status: string }): Promise<
-    { id: string; user: string; licenseTypeId: string; status: string }[]
+    { id: string; user: string; kind: string; status: string }[]
   >;
-  appLicenseTypes(): Promise<
-    { id: string; kind: string; status: string; templateHash: string }[]
+  appTerms(): Promise<
+    { id: string; kind: string; status: string; templateHash: string | null }[]
   >;
   appUserEnvironments(): Promise<
-    {
-      user: string;
-      environmentId: string;
-      licenseId: string;
-      templateHash: string;
-    }[]
+    { environmentId: string; licenseId: string; templateHash: string }[]
   >;
   applyEnvironmentTemplate(input: {
     licenseId: string;
     label: string;
   }): Promise<{ environmentId: string }>;
-  releaseEnvironment(input: { environmentId: string }): Promise<boolean>;
 }
 
 export interface LicenseHandlerConfig {
   /**
    * Log the plan and change nothing. Defaults to true: read a few ticks of
-   * "would apply / would release" before you let this handler act. Set
-   * `{ dryRun: false }` when the plan it logs is the one you want.
+   * "would apply" before you let this handler act. Set `{ dryRun: false }`
+   * when the plan it logs is the one you want.
    */
   dryRun: boolean;
 }
 
 /**
- * Reconciles active licences against existing environments. Call
- * `reconcileOnce()` from a timer. It keeps no state between runs, so it heals
- * itself after any failure and is safe to run as often as you like:
- * applyEnvironmentTemplate is an upsert keyed on (app, user).
+ * Makes sure every ACTIVE licence of a DEDICATED term has its environment on
+ * the term's current template. Call `reconcileOnce()` from a timer. It keeps
+ * no state between runs, so it heals itself after any failure and is safe to
+ * run as often as you like: applyEnvironmentTemplate is idempotent per
+ * licence chain (a renewal lands on the chain's existing environment).
  *
- * Edit this file only if "every active licence gets its type's template" is not
- * the rule you want.
+ * It only ever applies. Vetra's offboarding clock ends environments whose
+ * licences have ended (stopped after 14 days, deleted after 90), so a
+ * publisher handler never releases anything.
+ *
+ * Edit this file only if "every active licence gets its term's template" is
+ * not the rule you want.
  */
 export class LicenseHandler {
   constructor(
@@ -50,78 +47,42 @@ export class LicenseHandler {
   ) {}
 
   async reconcileOnce(): Promise<void> {
-    const [licenses, types, environments] = await Promise.all([
+    const [licenses, terms, environments] = await Promise.all([
       this.client.appLicenses({ status: "ACTIVE" }),
-      this.client.appLicenseTypes(),
+      this.client.appTerms(),
       this.client.appUserEnvironments(),
     ]);
 
-    // A retired or missing type has no usable template. Such a licence is left
-    // out of the desired set, and so is its user's environment: otherwise no
-    // licence would appear to justify that environment and it would be released.
-    const usable = new Map(
-      types.filter((t) => t.status === "ACTIVE").map((t) => [t.id, t]),
-    );
+    // A DRAFT term provisions nothing; a RETIRED one still serves the
+    // licences already issued on it.
+    const usable = new Map(terms.filter((t) => t.status !== "DRAFT").map((t) => [t.kind, t]));
+    const current = new Set(environments.map((e) => `${e.licenseId}:${e.templateHash}`));
 
-    const active: ActiveLicense[] = [];
-    // Addresses are compared lowercased throughout: a licence document may
-    // carry a checksummed address while the environment table stores it
-    // lowercased, and the two must still be the same user.
-    const parked = new Set<string>();
+    const toApply: { licenseId: string; label: string }[] = [];
     for (const l of licenses) {
-      const type = usable.get(l.licenseTypeId);
-      if (!type) {
-        parked.add(l.user.toLowerCase());
-        this.logger.warn(
-          `[license-handler] licence ${l.id} points at unusable type ${l.licenseTypeId}; skipping`,
-        );
+      const term = usable.get(l.kind);
+      if (!term) {
+        this.logger.warn(`[license-handler] licence ${l.id} has kind ${l.kind}, which has no usable term; skipping`);
         continue;
       }
-      active.push({
-        licenseId: l.id,
-        user: l.user,
-        licenseTypeId: l.licenseTypeId,
-        templateHash: type.templateHash,
-      });
+      // A SHARED term (no hash): the holder uses the app's shared environment.
+      if (term.templateHash === null) continue;
+      if (current.has(`${l.id}:${term.templateHash}`)) continue;
+      toApply.push({ licenseId: l.id, label: l.kind });
     }
-
-    const plan = computeLicensePlan(
-      active,
-      environments.filter((e) => !parked.has(e.user.toLowerCase())),
-    );
 
     if (this.config.dryRun) {
       this.logger.info(
-        `[license-handler] dry run: would apply ${plan.toApply
-          .map((l) => l.licenseId)
-          .join(", ")} and release ${plan.toRelease.join(", ")}`,
+        `[license-handler] dry run: would apply ${toApply.map((a) => a.licenseId).join(", ") || "nothing"}`,
       );
       return;
     }
 
-    for (const l of plan.toApply) {
-      // Every licence in the plan came from `active`, which only holds licences
-      // whose type is in `usable`, so this lookup always finds one.
-      const type = usable.get(l.licenseTypeId)!;
+    for (const input of toApply) {
       try {
-        await this.client.applyEnvironmentTemplate({
-          licenseId: l.licenseId,
-          label: type.kind,
-        });
+        await this.client.applyEnvironmentTemplate(input);
       } catch (err) {
-        this.logger.warn(
-          `[license-handler] apply for ${l.licenseId} failed: ${String(err)}`,
-        );
-      }
-    }
-
-    for (const environmentId of plan.toRelease) {
-      try {
-        await this.client.releaseEnvironment({ environmentId });
-      } catch (err) {
-        this.logger.warn(
-          `[license-handler] release of ${environmentId} failed: ${String(err)}`,
-        );
+        this.logger.warn(`[license-handler] apply for ${input.licenseId} failed: ${String(err)}`);
       }
     }
   }

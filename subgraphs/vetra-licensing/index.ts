@@ -34,8 +34,9 @@ import { LicenseKeeper } from "./keeper.js";
 import { AppLicenseHandler } from "./handler.js";
 import {
   createChainEnvironmentRows,
-  provisionChain,
+  provisionChainExclusive,
   type ChainEnvDeps,
+  type ProvisionChainInput,
 } from "./environments.js";
 import {
   confirmedEndedRows,
@@ -132,79 +133,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       lifecycle,
       logger: console,
     });
-
-    const deps: ResolverDeps = {
-      auth: {
-        findAppByIdentityDid: (did) =>
-          appsDb
-            .selectFrom("apps")
-            .select(["id", "status"])
-            .where("identity_did", "=", did)
-            .executeTakeFirst()
-            .then((r) => r ?? null),
-      },
-      provision: { envs, generateSubdomain },
-      release: {
-        findRowByEnvironment: (environmentId) =>
-          db
-            .selectFrom("app_user_environments")
-            .selectAll()
-            .where("environment_id", "=", environmentId)
-            .executeTakeFirst()
-            .then((r) => r ?? null),
-        environmentStatus: async (environmentId) =>
-          (await envs.getState(environmentId))?.status ?? null,
-        // Sleep only. Nothing here can delete the environment document.
-        stopEnvironment: async (environmentId) => {
-          await envs.execute(environmentId, [sleepEnvironment({})]);
-        },
-        // Reached only for a DRAFT document; see releaseEnvironment.
-        deleteEnvironment: (environmentId) => envs.delete(environmentId),
-        logger: console,
-        deleteRow: async (appId, user) => {
-          await db
-            .deleteFrom("app_user_environments")
-            .where("app_id", "=", appId)
-            .where("user_address", "=", user.toLowerCase())
-            .execute();
-        },
-      },
-      grant: {
-        // No allow-list store exists in this slice. The grant is authorised by
-        // the caller's own App identity and by the licence type having to
-        // belong to that same app (checked in issuePublisherGrant), so any
-        // holder address is accepted. Replace this when a list is introduced.
-        isOnAllowList: async () => true,
-        recordGrant: async (row) => {
-          await db
-            .insertInto("app_license_grants")
-            .values({
-              license_id: row.licenseId,
-              app_id: row.appId,
-              license_type_id: row.licenseTypeId,
-              user_address: row.user.toLowerCase(),
-              issued_by: row.issuedBy.toLowerCase(),
-              created_at: row.now,
-            })
-            .onConflict((oc) => oc.column("license_id").doNothing())
-            .execute();
-        },
-        getLicenseType: reads.licenseType,
-        createLicenseDocument: gateway.create,
-        execute: gateway.execute,
-      },
-      cfg,
-      read: {
-        licenses: reads.licenses,
-        licenseTypes: reads.licenseTypes,
-        templateFor: reads.templateFor,
-      },
-    };
-
-    const machineResolvers = createResolvers(db, deps) as Record<
-      string,
-      Record<string, unknown>
-    >;
 
     // Human surface. Ownership is checked on every call against the apps
     // table row (the studio app: the configured studio publisher), never the
@@ -366,6 +294,60 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       now: () => new Date().toISOString(),
     }) as Record<string, Record<string, unknown>>;
 
+    // Provisioning, shared by the handler and the machine API: one DEDICATED
+    // environment per licence chain, under the chain's lock.
+    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    const offboarding: OffboardingDeps = {
+      rows: chainRows,
+      envStatus: async (id) => (await envs.getState(id))?.status ?? null,
+      sleep: async (id) => {
+        await envs.execute(id, [sleepEnvironment({})]);
+      },
+      wake: async (id) => {
+        await envs.execute(id, [wakeEnvironment({})]);
+      },
+      destroy: (id) => envs.delete(id),
+      cfg,
+      logger: console,
+      now: () => new Date().toISOString(),
+    };
+    const migrationComplete = async () =>
+      (await db
+        .selectFrom("licensing_migration_steps")
+        .select("step")
+        .where("step", "=", "complete")
+        .executeTakeFirst()) !== undefined;
+    const provision = (input: ProvisionChainInput) => provisionChainExclusive(chainEnvDeps, input);
+
+    // Machine surface (app backends, by App identity). Licences come from
+    // grant rows and the lifecycle record, environments from
+    // license_environments; nothing here touches app_user_environments.
+    const machineDeps: ResolverDeps = {
+      auth: {
+        findAppByIdentityDid: (did) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "status"])
+            .where("identity_did", "=", did)
+            .executeTakeFirst()
+            .then((r) => r ?? null),
+      },
+      apps: appReads,
+      licences: reads,
+      lifecycle,
+      grants,
+      envRows: chainRows,
+      provision,
+      offboarding,
+      issue: issueDeps,
+      migrationComplete,
+      cfg,
+      now: () => new Date().toISOString(),
+      // Until the Renown relay exists, every report is dropped.
+      relay: () => Promise.resolve(false),
+    };
+    const machineResolvers = createResolvers(machineDeps) as Record<string, Record<string, unknown>>;
+
     this.resolvers = mergeResolvers(
       mergeResolvers(machineResolvers, publisherResolvers),
       subscriptionResolvers,
@@ -399,21 +381,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // publisher surface, so a tampered or unverified app is held. The old
     // ProvisioningKeeper (app_user_environments) no longer runs; its tables
     // stay in place, read-only.
-    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
-    const offboarding: OffboardingDeps = {
-      rows: chainRows,
-      envStatus: async (id) => (await envs.getState(id))?.status ?? null,
-      sleep: async (id) => {
-        await envs.execute(id, [sleepEnvironment({})]);
-      },
-      wake: async (id) => {
-        await envs.execute(id, [wakeEnvironment({})]);
-      },
-      destroy: (id) => envs.delete(id),
-      cfg,
-      logger: console,
-      now: () => new Date().toISOString(),
-    };
     this.handler = new AppLicenseHandler({
       licences: () => reads.allLicenceRecords(),
       chainRoots: () => grants.chainRoots(),
@@ -423,19 +390,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       app: (id) => appReads.app(id),
       environments: (appId) => chainRows.forApp(appId),
       environmentAppIds: () => chainRows.appIds(),
-      provision: (input) => provisionChain(chainEnvDeps, input),
+      provision,
       setStage: (licenseId, stage) =>
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
       onEnded: (_appId, env) => markEnded(offboarding, env),
       onResumed: (_appId, env) => markResumed(offboarding, env),
       afterApp: (_appId, rows, confirmedEndedRoots) =>
         tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots)),
-      migrationComplete: async () =>
-        (await db
-          .selectFrom("licensing_migration_steps")
-          .select("step")
-          .where("step", "=", "complete")
-          .executeTakeFirst()) !== undefined,
+      migrationComplete,
       cfg,
       logger: console,
       now: () => new Date().toISOString(),

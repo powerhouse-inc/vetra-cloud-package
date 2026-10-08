@@ -4,7 +4,7 @@ import { createPublisherResolvers } from "../publisher-resolvers.js";
 import { mergeResolvers } from "../merge-resolvers.js";
 
 describe("mergeResolvers", () => {
-  const machine = createResolvers({} as never, {
+  const machine = createResolvers({
     cfg: { enabled: true },
   } as never) as Record<string, Record<string, unknown>>;
   const publisher = createPublisherResolvers({

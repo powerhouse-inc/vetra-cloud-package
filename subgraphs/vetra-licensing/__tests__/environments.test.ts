@@ -8,7 +8,8 @@ import type { VetraLicensingDB } from "../db/schema.js";
 import { loadLicensingConfig } from "../config.js";
 import {
   AppEnvironmentCapReachedError, EnvironmentNotReadyError, EnvironmentOwnershipMismatchError,
-  createChainEnvironmentRows, provisionChain, type ChainEnvDeps, type ProvisionChainInput,
+  createChainEnvironmentRows, provisionChain, provisionChainExclusive, withChainLock,
+  type ChainEnvDeps, type ProvisionChainInput,
 } from "../environments.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "../provision.js";
 
@@ -211,5 +212,39 @@ describe("provisionChain", () => {
     expect((await deps.rows.appIds()).sort()).toStrictEqual(["app-1", "app-2"]);
     await deps.rows.remove("env-1");
     expect(await deps.rows.byRoot("a")).toBeNull();
+  });
+});
+
+describe("provisionChainExclusive (the handler's and the machine API's one path)", () => {
+  it("two concurrent callers on one chain create exactly one environment", async () => {
+    const create = vi.spyOn(deps.envs, "create");
+    const [a, b] = await Promise.all([
+      provisionChainExclusive(deps, input()),
+      provisionChainExclusive(deps, input({ label: "from the machine API" })),
+    ]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(a.environment_id).toBe("env-1");
+    expect(b.environment_id).toBe("env-1");
+    expect(deps.envs.delete).not.toHaveBeenCalled();
+  });
+
+  it("waits for anything else holding the chain's lock", async () => {
+    let release = () => {};
+    const held = withChainLock("l1", () => new Promise<void>((r) => (release = r)));
+    const create = vi.spyOn(deps.envs, "create");
+    const p = provisionChainExclusive(deps, input());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(create).not.toHaveBeenCalled();
+    release();
+    await held;
+    expect((await p).environment_id).toBe("env-1");
+  });
+
+  it("different chains do not wait for each other", async () => {
+    let release = () => {};
+    const held = withChainLock("other-root", () => new Promise<void>((r) => (release = r)));
+    expect((await provisionChainExclusive(deps, input())).environment_id).toBe("env-1");
+    release();
+    await held;
   });
 });
