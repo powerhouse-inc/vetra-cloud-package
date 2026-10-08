@@ -101,6 +101,33 @@ describe("AppLicenseHandler", () => {
     expect(h.deps.afterApp).toHaveBeenCalledWith("app-1", [], new Set());
   });
 
+  it("brackets every tick's apps with beforeTick and afterTick, so a per-tick budget spans all apps", async () => {
+    const order: string[] = [];
+    const h = harness(
+      {
+        environmentAppIds: async () => ["app-2"],
+        beforeTick: () => { order.push("before"); },
+        afterTick: () => { order.push("after"); },
+        afterApp: vi.fn(async (appId: string) => { order.push(appId); }),
+      },
+    );
+    await h.handler.reconcileOnce();
+    expect(order[0]).toBe("before");
+    expect(order.at(-1)).toBe("after");
+    expect(order).toContain("app-1");
+    await h.handler.reconcileOnce();
+    expect(order.filter((o) => o === "before")).toHaveLength(2);
+  });
+
+  it("calls neither tick hook before the migration is complete", async () => {
+    const beforeTick = vi.fn();
+    const afterTick = vi.fn();
+    const h = harness({ migrationComplete: async () => false, beforeTick, afterTick });
+    await h.handler.reconcileOnce();
+    expect(beforeTick).not.toHaveBeenCalled();
+    expect(afterTick).not.toHaveBeenCalled();
+  });
+
   it("does not rebind a stage that already points at the environment", async () => {
     const h = harness({}, [lic("l1", { stage: "env-l1" })]);
     await h.handler.reconcileOnce();

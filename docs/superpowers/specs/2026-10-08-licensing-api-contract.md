@@ -340,6 +340,10 @@ audience is only renown-stats. It caches the token and sends it to
 `reportUserStat` in the **`X-Renown-App-Token`** header (not `Authorization`).
 FORBIDDEN (app in PENDING_IDENTITY, delegation expired/revoked) → relay returns
 `false` and logs. The relay coalesces reports per (user, metric) before sending.
+Delivery is asynchronous: `reportUserStat` returning `true` means the stat was
+accepted and **queued**, not that Renown stored it. A Renown `FORBIDDEN` for the
+app therefore shows up as `false` on later calls, during the app's back-off
+(5 minutes), not on the call whose stat was refused.
 
 Ownership is anchored on Renown's workload identity record (not on
 self-issued delegations, which any wallet can mint): `reportUserStat` requires

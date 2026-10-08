@@ -270,6 +270,64 @@ describe("Renown stats client", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("drops a report Renown rejects as bad input without backing off the app", async () => {
+    let n = 0;
+    const s = setup({
+      [WORKLOAD]: () => token("tok"),
+      [STATS]: () => (++n === 1 ? gqlError("BAD_USER_INPUT") : ok({ reportUserStat: true })),
+    });
+    s.client.enqueue(R); await s.client.flush();
+    expect(s.client.enqueue({ ...R, metric: "votes" })).toBe(true);
+    await s.client.flush();
+    expect(s.reports().map((c) => c.body.variables.metric)).toStrictEqual(["notes", "votes"]);
+    expect(s.mints()).toHaveLength(1);
+  });
+
+  it("a mint that fails for any non-transient reason backs off the app", async () => {
+    const s = setup({ [WORKLOAD]: () => gqlError("SERVICE_NOT_CONFIGURED"), [STATS]: () => ok({ reportUserStat: true }) });
+    s.client.enqueue(R); await s.client.flush();
+    expect(s.client.enqueue(R)).toBe(false);
+  });
+
+  it("a transient mint failure keeps the reports and does not back off", async () => {
+    let n = 0;
+    const s = setup({
+      [WORKLOAD]: () => (++n === 1 ? new Response("down", { status: 503 }) : token("tok")),
+      [STATS]: () => ok({ reportUserStat: true }),
+    });
+    s.client.enqueue(R); await s.client.flush();
+    expect(s.reports()).toHaveLength(0);
+    await s.client.flush();
+    expect(s.reports()).toHaveLength(1);
+  });
+
+  it("RATE_LIMITED skips that app for the rest of the flush and keeps its reports queued", async () => {
+    let n = 0;
+    const s = setup({
+      [WORKLOAD]: () => token("tok"),
+      [STATS]: (body) =>
+        body.variables.appDid === R.appDid && ++n === 1 ? gqlError("RATE_LIMITED") : ok({ reportUserStat: true }),
+    });
+    s.client.enqueue(R);
+    s.client.enqueue({ ...R, metric: "votes" });
+    s.client.enqueue({ ...R, appDid: "did:key:zOther" });
+    s.client.enqueue({ ...R, metric: "likes" });
+    await s.client.flush();
+    // zApp: the first report is refused, the rest of zApp waits; zOther goes out.
+    expect(s.reports().map((c) => `${c.body.variables.appDid}/${c.body.variables.metric}`)).toStrictEqual([
+      "did:key:zApp/notes",
+      "did:key:zOther/notes",
+    ]);
+    // Not backed off: everything of zApp goes out on the next flush.
+    expect(s.client.enqueue({ ...R, metric: "votes", value: 6 })).toBe(true);
+    await s.client.flush();
+    expect(s.reports().slice(2).map((c) => [c.body.variables.metric, c.body.variables.value])).toStrictEqual([
+      ["notes", 3],
+      ["votes", 6],
+      ["likes", 3],
+    ]);
+  });
+
   it("treats a malformed token answer as a failed mint", async () => {
     const s = setup({ [WORKLOAD]: () => ok({ issueAppStatsToken: null }), [STATS]: () => ok({ reportUserStat: true }) });
     s.client.enqueue(R); await s.client.flush();

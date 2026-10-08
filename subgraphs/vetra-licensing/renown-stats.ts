@@ -61,6 +61,8 @@ const AUTH = new Set(["HTTP_401", "UNAUTHENTICATED", "FORBIDDEN"]);
 
 class RenownCallError extends Error {
   override name = "RenownCallError";
+  /** Which call failed: a refused mint backs off the app, a refused report may not. */
+  stage: "mint" | "report" = "report";
   constructor(
     readonly code: string,
     message: string,
@@ -134,6 +136,15 @@ export function createRenownStatsClient(
   async function tokenFor(appDid: string): Promise<string> {
     const cached = tokens.get(appDid);
     if (cached && now() < cached.until) return cached.token;
+    try {
+      return await mint(appDid);
+    } catch (err) {
+      if (err instanceof RenownCallError) err.stage = "mint";
+      throw err;
+    }
+  }
+
+  async function mint(appDid: string): Promise<string> {
     const data = await gql<{ issueAppStatsToken: { accessToken?: unknown; expiresIn?: unknown } | null }>(
       cfg.workloadUrl!,
       { [REGISTRATION_TOKEN_HEADER]: cfg.registrationToken! },
@@ -174,18 +185,26 @@ export function createRenownStatsClient(
     }
   }
 
+  /** Current values: a newer report of the same key supersedes a kept one. */
+  function keep(r: StatReport): void {
+    const key = keyOf(r);
+    if (!pending.has(key)) pending.set(key, r);
+  }
+
   function failed(r: StatReport, err: unknown): void {
     const code = err instanceof RenownCallError ? err.code : "ERROR";
+    const mintFailed = err instanceof RenownCallError && err.stage === "mint";
     if (TRANSIENT.has(code)) {
-      // Current values: a newer report of the same key supersedes this one.
-      const key = keyOf(r);
-      if (!pending.has(key)) pending.set(key, r);
-    } else {
-      // FORBIDDEN (identity pending, delegation lapsed or revoked, unknown
-      // DID) and every other refusal: drop, and stop asking for a while.
+      keep(r);
+    } else if (mintFailed || AUTH.has(code)) {
+      // The app itself is refused (identity pending, delegation lapsed or
+      // revoked, unknown DID, no usable token, a report refused even with a
+      // fresh token): drop, and stop asking for a while.
       tokens.delete(r.appDid);
       refused.set(r.appDid, now() + REFUSED_BACKOFF_MS);
     }
+    // Anything else (BAD_USER_INPUT, an unexpected answer) concerns this
+    // report only: it is dropped and the app carries on.
     if (lastFailure.get(r.appDid) === code) return;
     lastFailure.set(r.appDid, code);
     // Messages are Renown's or the fetch's; tokens are never part of them.
@@ -196,10 +215,16 @@ export function createRenownStatsClient(
   async function runFlush(): Promise<void> {
     const batch = [...pending.values()];
     pending.clear();
+    /** Apps Renown rate-limited in this flush: the rest of their reports wait. */
+    const limited = new Set<string>();
     for (const r of batch) {
       const until = refused.get(r.appDid);
       if (until !== undefined && now() < until) continue;
       refused.delete(r.appDid);
+      if (limited.has(r.appDid)) {
+        keep(r);
+        continue;
+      }
       try {
         await deliver(r);
         if (lastFailure.delete(r.appDid)) {
@@ -207,6 +232,7 @@ export function createRenownStatsClient(
         }
       } catch (err) {
         failed(r, err);
+        if (err instanceof RenownCallError && err.code === "RATE_LIMITED") limited.add(r.appDid);
       }
     }
   }

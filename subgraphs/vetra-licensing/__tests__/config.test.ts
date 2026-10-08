@@ -6,7 +6,7 @@ describe("loadLicensingConfig", () => {
     expect(loadLicensingConfig({})).toMatchObject({
       enabled: false, dryRun: true, destroyEnabled: false, migration: "dry-run",
       deleteLicenseTypes: false, studioAppSlug: "vetra-studio", studioPublisher: null,
-      renownStatsUrl: null, licensingPublicUrl: null, retemplatePerTick: 5, stepTimeoutMs: 120_000,
+      renownStatsUrl: null, licensingPublicUrl: null, retemplatePerTick: 5, stepTimeoutMs: 120_000, tokensPerTick: 5,
     });
   });
   it("reads every switch", () => {
@@ -35,5 +35,8 @@ describe("loadLicensingConfig", () => {
     expect(loadLicensingConfig({ LICENSING_RETEMPLATE_PER_TICK: "-1", LICENSING_STEP_TIMEOUT_MS: "0" }))
       .toMatchObject({ retemplatePerTick: 5, stepTimeoutMs: 120_000 });
     expect(loadLicensingConfig({ LICENSING_RETEMPLATE_PER_TICK: "lots" }).retemplatePerTick).toBe(5);
+    expect(loadLicensingConfig({ LICENSING_TOKENS_PER_TICK: "0" }).tokensPerTick).toBe(0);
+    expect(loadLicensingConfig({ LICENSING_TOKENS_PER_TICK: "12" }).tokensPerTick).toBe(12);
+    expect(loadLicensingConfig({ LICENSING_TOKENS_PER_TICK: "-3" }).tokensPerTick).toBe(5);
   });
 });

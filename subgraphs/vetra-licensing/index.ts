@@ -65,8 +65,8 @@ import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js"
 import { loadAppsConfig } from "../vetra-apps/config.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
+  createReportingTokenIssuer,
   deleteReportingToken,
-  ensureReportingTokens,
   newReportingToken,
   relayUserStat,
   type RelayDeps,
@@ -358,11 +358,15 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         const state = await envs.getState(id);
         return state?.genericSubdomain ? getTenantId(state.genericSubdomain, id) : null;
       },
+      envStatus: async (id) => (await envs.getState(id))?.status ?? null,
       licensingUrl: cfg.licensingPublicUrl,
       newToken: newReportingToken,
       now: () => new Date().toISOString(),
       logger: console,
     };
+    // One budget per handler tick across all apps: writing a token restarts
+    // a running environment once (asleep ones are free).
+    const tokenIssuer = createReportingTokenIssuer(reporting, cfg.tokensPerTick);
     const relayDeps: RelayDeps = {
       db,
       envRows: chainRows,
@@ -459,12 +463,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       onResumed: (_appId, env) => underChainOf(env, () => markResumed(offboarding, env)),
       afterApp: async (_appId, rows, confirmedEndedRoots) => {
         await tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots));
-        // Live environments only; ensureReportingTokens catches per environment.
-        await ensureReportingTokens(
-          reporting,
-          rows.filter((r) => r.ended_at === null).map((r) => r.environment_id),
-        );
+        // Live environments only; failures are caught per environment.
+        await tokenIssuer.issue(rows.filter((r) => r.ended_at === null).map((r) => r.environment_id));
       },
+      beforeTick: () => tokenIssuer.startTick(),
+      afterTick: () => tokenIssuer.endTick(),
       migrationComplete,
       cfg,
       logger: console,
@@ -493,8 +496,22 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper = null;
     this.handler?.stop();
     this.handler = null;
-    this.stats?.stop();
-    this.stats = null;
+    if (this.stats) {
+      const stats = this.stats;
+      this.stats = null;
+      stats.stop();
+      // Bounded: whatever Renown does not take within 2 s is dropped (current
+      // values; the next report carries the latest).
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        stats.flush(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 2_000);
+          timer.unref();
+        }),
+      ]);
+      clearTimeout(timer);
+    }
     await super.onDisconnect();
   }
 }

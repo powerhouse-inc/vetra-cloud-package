@@ -29,6 +29,12 @@ export interface LicensingConfig {
    * not counted (only the per-app cap applies to it). 0 pauses re-templating.
    */
   retemplatePerTick: number;
+  /**
+   * Reporting tokens issued per handler tick, across all apps
+   * (LICENSING_TOKENS_PER_TICK). Writing one restarts a running environment
+   * once; asleep environments do not count. 0 issues only to asleep ones.
+   */
+  tokensPerTick: number;
   /** A handler step (or read) that takes longer fails, so a hung call cannot stall every later tick. */
   stepTimeoutMs: number;
 }
@@ -74,5 +80,6 @@ export function loadLicensingConfig(
     licensingPublicUrl: trimmed("VETRA_LICENSING_URL"),
     retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),
     stepTimeoutMs: int("LICENSING_STEP_TIMEOUT_MS", 120 * 1000),
+    tokensPerTick: nonNegative("LICENSING_TOKENS_PER_TICK", 5),
   };
 }

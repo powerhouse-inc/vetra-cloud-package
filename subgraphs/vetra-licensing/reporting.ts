@@ -41,6 +41,8 @@ export interface ReportingDeps {
   secrets: Pick<SecretsService, "setSecrets"> | null;
   /** The environment's tenant id; null until it has a subdomain. */
   tenantIdOf(environmentId: string): Promise<string | null>;
+  /** The environment document's status; decides whether a secret write restarts it. */
+  envStatus(environmentId: string): Promise<string | null>;
   /** VETRA_LICENSING_URL. Null: no tokens are issued (an environment could not use one). */
   licensingUrl: string | null;
   newToken(): string;
@@ -48,19 +50,52 @@ export interface ReportingDeps {
   logger: Pick<Console, "info" | "warn">;
 }
 
+/**
+ * Environments with no running pods: a secret written now reaches them with
+ * their next start instead of restarting them (the secrets controller only
+ * reconciles tenants with a live namespace).
+ */
+const ASLEEP = new Set(["STOPPED", "DRAFT", "DESTROYED", "ARCHIVED"]);
+
+/** What one handler tick may still spend, shared by every app of the tick. */
+export interface TokenBudget {
+  /** Issues to running environments still allowed this tick. */
+  remaining: number;
+  /** Running environments that wait for a later tick. */
+  pending: number;
+}
+
 /** Environments whose token issue is running (a timed-out handler step may still be). */
 const issuing = new WeakMap<object, Set<string>>();
+/**
+ * Tokens already written into an environment's secret whose hash row is not
+ * yet recorded: the retry records this token instead of minting (and writing,
+ * and restarting the environment for) a new one. In memory only; a restart in
+ * between costs one more secret write.
+ */
+const written = new WeakMap<object, Map<string, string>>();
 const offLogged = new WeakMap<object, string>();
+
+function stateOf<T>(map: WeakMap<object, T>, deps: object, init: () => T): T {
+  let v = map.get(deps);
+  if (v === undefined) map.set(deps, (v = init()));
+  return v;
+}
 
 /**
  * Gives every listed environment a reporting token, once. The secret is
- * written first and the hash second: if the hash write fails the next call
- * mints a new token and overwrites the secret, so an environment never holds
- * a token whose hash is missing for longer than a tick, and a row always
- * means its token reached the secret. Failures are per environment and
- * logged (never with the token).
+ * written first and the hash second; the written token is remembered until
+ * its hash is recorded, so a failing hash write never writes the secret again.
+ * A row always means its token reached the secret. Asleep environments go
+ * first and cost nothing; every other issue spends one unit of `budget`
+ * (unlimited when absent), and those over it are counted as pending.
+ * Failures are per environment and logged (never with the token).
  */
-export async function ensureReportingTokens(deps: ReportingDeps, environmentIds: string[]): Promise<void> {
+export async function ensureReportingTokens(
+  deps: ReportingDeps,
+  environmentIds: string[],
+  budget?: TokenBudget,
+): Promise<void> {
   if (environmentIds.length === 0) return;
   const off = !deps.secrets
     ? "the secrets service (OPENBAO_ADDR) is not configured"
@@ -74,8 +109,10 @@ export async function ensureReportingTokens(deps: ReportingDeps, environmentIds:
     }
     return;
   }
-  let running = issuing.get(deps);
-  if (!running) issuing.set(deps, (running = new Set<string>()));
+  const secrets = deps.secrets;
+  const licensingUrl = deps.licensingUrl;
+  const running = stateOf(issuing, deps, () => new Set<string>());
+  const unrecorded = stateOf(written, deps, () => new Map<string, string>());
   const have = new Set(
     (
       await deps.db
@@ -85,23 +122,46 @@ export async function ensureReportingTokens(deps: ReportingDeps, environmentIds:
         .execute()
     ).map((r) => r.environment_id),
   );
-  for (const id of environmentIds) {
-    if (have.has(id) || running.has(id)) continue;
+  const todo = environmentIds.filter((id) => !have.has(id) && !running.has(id));
+  const free = new Set<string>();
+  for (const id of todo) {
+    if (unrecorded.has(id)) {
+      free.add(id);
+      continue;
+    }
+    const status = await deps.envStatus(id).catch(() => null);
+    if (status !== null && ASLEEP.has(status)) free.add(id);
+  }
+  const ordered = [...todo.filter((id) => free.has(id)), ...todo.filter((id) => !free.has(id))];
+
+  for (const id of ordered) {
     running.add(id);
     try {
-      const tenantId = await deps.tenantIdOf(id);
-      if (!tenantId) continue;
-      const token = deps.newToken();
-      await deps.secrets.setSecrets(tenantId, [
-        { key: REPORTING_TOKEN_SECRET, value: token },
-        { key: LICENSING_URL_ENV, value: deps.licensingUrl },
-      ]);
+      let token = unrecorded.get(id);
+      if (token === undefined) {
+        const tenantId = await deps.tenantIdOf(id);
+        if (!tenantId) continue;
+        if (!free.has(id) && budget) {
+          if (budget.remaining <= 0) {
+            budget.pending++;
+            continue;
+          }
+          budget.remaining--;
+        }
+        token = deps.newToken();
+        await secrets.setSecrets(tenantId, [
+          { key: REPORTING_TOKEN_SECRET, value: token },
+          { key: LICENSING_URL_ENV, value: licensingUrl },
+        ]);
+        unrecorded.set(id, token);
+      }
       const token_hash = hashToken(token);
       await deps.db
         .insertInto("environment_reporting_tokens")
         .values({ environment_id: id, token_hash, created_at: deps.now() })
         .onConflict((oc) => oc.column("environment_id").doUpdateSet({ token_hash }))
         .execute();
+      unrecorded.delete(id);
     } catch (err) {
       deps.logger.warn(
         `[licensing] reporting token for environment ${id} not issued: ${err instanceof Error ? err.message : "unknown error"}`,
@@ -110,6 +170,33 @@ export async function ensureReportingTokens(deps: ReportingDeps, environmentIds:
       running.delete(id);
     }
   }
+}
+
+/**
+ * One budget per handler tick across every app (LICENSING_TOKENS_PER_TICK):
+ * startTick() before the first app, issue() from each app's afterApp,
+ * endTick() after the last. The pending count is logged once per change.
+ */
+export function createReportingTokenIssuer(deps: ReportingDeps, perTick: number) {
+  let budget: TokenBudget = { remaining: perTick, pending: 0 };
+  let lastPending = 0;
+  return {
+    startTick(): void {
+      budget = { remaining: perTick, pending: 0 };
+    },
+    issue(environmentIds: string[]): Promise<void> {
+      return ensureReportingTokens(deps, environmentIds, budget);
+    },
+    endTick(): void {
+      if (budget.pending === lastPending) return;
+      lastPending = budget.pending;
+      deps.logger.info(
+        budget.pending > 0
+          ? `[licensing] ${budget.pending} reporting token(s) pending for running environments (at most ${perTick} per tick; each restarts its environment once)`
+          : "[licensing] all reporting tokens issued",
+      );
+    },
+  };
 }
 
 /** Offboarding's destroy: the environment's token goes with it. */

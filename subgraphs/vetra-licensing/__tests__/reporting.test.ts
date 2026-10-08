@@ -15,6 +15,7 @@ import {
   LICENSING_URL_ENV,
   REPORTING_HEADER,
   REPORTING_TOKEN_SECRET,
+  createReportingTokenIssuer,
   deleteReportingToken,
   ensureReportingTokens,
   environmentForToken,
@@ -44,6 +45,7 @@ beforeEach(async () => {
     db,
     secrets: { setSecrets },
     tenantIdOf: async (id) => (id === "pending" ? null : `tenant-${id}`),
+    envStatus: async (id) => (id.startsWith("asleep") ? "STOPPED" : "READY"),
     licensingUrl: "https://sb/graphql/vetra-licensing",
     newToken: () => `token-${++n}`,
     now: () => "t",
@@ -137,6 +139,87 @@ describe("ensureReportingTokens", () => {
     await deleteReportingToken(db, "e1");
     expect(await environmentForToken(db, "token-1")).toBeNull();
     expect(await environmentForToken(db, "token-2")).toBe("e2");
+  });
+});
+
+describe("reporting token issue without restart loops (fix round 1)", () => {
+  it("a failing hash write never writes the secret again: the minted token is reused", async () => {
+    const insert = vi.spyOn(db, "insertInto");
+    insert.mockImplementationOnce(() => { throw new Error("db down"); });
+    await ensureReportingTokens(rep, ["e1"]);
+    expect(setSecrets).toHaveBeenCalledTimes(1);
+    expect(await environmentForToken(db, "token-1")).toBeNull();
+    insert.mockRestore();
+    await ensureReportingTokens(rep, ["e1"]);
+    await ensureReportingTokens(rep, ["e1"]);
+    expect(setSecrets).toHaveBeenCalledTimes(1);
+    expect(await environmentForToken(db, "token-1")).toBe("e1");
+    expect(n).toBe(1);
+  });
+});
+
+describe("reporting token budget per tick (fix round 1)", () => {
+  const issued = () => setSecrets.mock.calls.map(([tenant]) => String(tenant).replace("tenant-", ""));
+
+  it("is one global budget per tick across apps; asleep environments are free and go first", async () => {
+    const issuer = createReportingTokenIssuer(rep, 2);
+    issuer.startTick();
+    await issuer.issue(["a1", "a2", "asleep-1"]); // app 1
+    await issuer.issue(["b1", "asleep-2", "b2"]); // app 2
+    issuer.endTick();
+    expect(issued()).toStrictEqual(["asleep-1", "a1", "a2", "asleep-2"]);
+    expect(rep.logger.info).toHaveBeenCalledWith(expect.stringContaining("2 reporting token(s) pending"));
+
+    // Pending environments are picked up on the next tick.
+    issuer.startTick();
+    await issuer.issue(["a1", "a2", "asleep-1"]);
+    await issuer.issue(["b1", "asleep-2", "b2"]);
+    issuer.endTick();
+    expect(issued()).toStrictEqual(["asleep-1", "a1", "a2", "asleep-2", "b1", "b2"]);
+    expect(rep.logger.info).toHaveBeenCalledWith(expect.stringContaining("all reporting tokens issued"));
+
+    // Nothing left: a quiet tick logs nothing new.
+    const logged = (rep.logger.info as ReturnType<typeof vi.fn>).mock.calls.length;
+    issuer.startTick();
+    await issuer.issue(["a1", "a2", "asleep-1"]);
+    issuer.endTick();
+    expect((rep.logger.info as ReturnType<typeof vi.fn>).mock.calls.length).toBe(logged);
+  });
+
+  it("logs the pending count once per change", async () => {
+    const issuer = createReportingTokenIssuer(rep, 1);
+    for (let i = 0; i < 2; i++) {
+      issuer.startTick();
+      await issuer.issue([`x${i}`, "y", "z"]);
+      issuer.endTick();
+    }
+    const pendingLogs = (rep.logger.info as ReturnType<typeof vi.fn>).mock.calls.filter(([m]) => String(m).includes("pending"));
+    // Tick 1: x0 issued, y z pending (2). Tick 2: x1 issued, y z still pending (2): not logged again.
+    expect(pendingLogs).toHaveLength(1);
+  });
+
+  it("a budget of 0 issues only to asleep environments", async () => {
+    const issuer = createReportingTokenIssuer(rep, 0);
+    issuer.startTick();
+    await issuer.issue(["e1", "asleep-1"]);
+    issuer.endTick();
+    expect(issued()).toStrictEqual(["asleep-1"]);
+  });
+
+  it("an environment without a tenant yet spends no budget", async () => {
+    const issuer = createReportingTokenIssuer(rep, 1);
+    issuer.startTick();
+    await issuer.issue(["pending", "e1"]);
+    issuer.endTick();
+    expect(issued()).toStrictEqual(["e1"]);
+  });
+
+  it("an environment whose status cannot be read counts as awake", async () => {
+    const issuer = createReportingTokenIssuer({ ...rep, envStatus: () => Promise.reject(new Error("x")) }, 1);
+    issuer.startTick();
+    await issuer.issue(["asleep-1", "e1"]);
+    issuer.endTick();
+    expect(issued()).toStrictEqual(["asleep-1"]);
   });
 });
 

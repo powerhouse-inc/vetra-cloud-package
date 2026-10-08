@@ -56,6 +56,13 @@ export interface HandlerDeps {
     environments: LicenseEnvironments[],
     confirmedEndedRoots: ReadonlySet<string>,
   ): Promise<void>;
+  /**
+   * Called once per tick before any app is reconciled, and once after all of
+   * them: lets afterApp work share a budget across every app of one tick
+   * (reporting tokens). Never called while the migration is incomplete.
+   */
+  beforeTick?(): void;
+  afterTick?(): void;
   /** True once the startup migration recorded `complete`. */
   migrationComplete(): Promise<boolean>;
   cfg: LicensingConfig;
@@ -329,6 +336,7 @@ export class AppLicenseHandler {
     this.retemplateBudget = this.d.cfg.retemplatePerTick;
     this.deferredRetemplates = 0;
     this.tickNo++;
+    this.d.beforeTick?.();
     // Rotated, so the same apps (and below, chains) do not always come first
     // and take the whole re-template budget.
     for (const [appId, appLicences] of rotate([...byApp], this.tickNo)) {
@@ -349,6 +357,7 @@ export class AppLicenseHandler {
         `[licensing] ${this.deferredRetemplates} environment re-template(s) deferred to later ticks (at most ${this.d.cfg.retemplatePerTick} per tick)`,
       );
     }
+    this.d.afterTick?.();
   }
 
   private async reconcileApp(
