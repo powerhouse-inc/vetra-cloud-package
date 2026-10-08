@@ -1,3 +1,4 @@
+import { UnsupportedDidError, normaliseUserDid } from "./did.js";
 import type { KeyVault } from "./key-vault.js";
 import type { AuthorisedLicence } from "./licence-view.js";
 
@@ -72,6 +73,18 @@ async function keyCiphertext(deps: StudioAccessDeps, did: string, h: Held): Prom
   return null;
 }
 
+const DENIED: StudioAccess = { allowed: false, licenseId: null, expires: null, hasAttachedKey: false };
+
+/** The holder's one spelling (chain normalised away); null for a DID that is no EVM wallet. */
+function holderOf(did: string): string | null {
+  try {
+    return normaliseUserDid(did);
+  } catch (err) {
+    if (err instanceof UnsupportedDidError) return null;
+    throw err;
+  }
+}
+
 /**
  * Whether the caller may use Vetra Studio. `licenseId` and `expires` name the
  * longest-lasting usable licence; when there is none, the caller's newest
@@ -79,7 +92,9 @@ async function keyCiphertext(deps: StudioAccessDeps, did: string, h: Held): Prom
  * warnings. Both are null only for someone who never held a studio licence.
  * `hasAttachedKey` is true only when applyStudioKey could deliver a key.
  */
-export async function studioAccess(deps: StudioAccessDeps, did: string): Promise<StudioAccess> {
+export async function studioAccess(deps: StudioAccessDeps, rawDid: string): Promise<StudioAccess> {
+  const did = holderOf(rawDid);
+  if (did === null) return DENIED;
   const h = await held(deps, did);
   const best = h.usable.at(0);
   if (best) {
@@ -91,8 +106,9 @@ export async function studioAccess(deps: StudioAccessDeps, did: string): Promise
 }
 
 /** The Claude key behind the caller's usable studio licence, decrypted; null when there is none. */
-export async function studioKeyForDid(deps: StudioAccessDeps, did: string): Promise<string | null> {
-  if (!deps.keyVault) return null;
+export async function studioKeyForDid(deps: StudioAccessDeps, rawDid: string): Promise<string | null> {
+  const did = holderOf(rawDid);
+  if (did === null || !deps.keyVault) return null;
   const ct = await keyCiphertext(deps, did, await held(deps, did));
   return ct === null ? null : deps.keyVault.decrypt(ct);
 }

@@ -12,14 +12,9 @@ import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-e
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
 import { createReactorLicenseReads } from "./reads.js";
-import { createAppReads } from "./app-reads.js";
 import { createOwnerAppLookup } from "./owner-apps.js";
-import { STUDIO_APP_ID, studioPublisherAddress } from "./studio-app.js";
-import {
-  createAppLedger,
-  createAppLicensingWriter,
-  reactorLedgerSource,
-} from "./licensing-ledger.js";
+import { studioPublisherAddress } from "./studio-app.js";
+import { createAppLicensingWriter } from "./licensing-ledger.js";
 import {
   createAppDocOwnerResolver,
   sweepAppDocumentProtection,
@@ -57,9 +52,8 @@ import { createKeyVault } from "./key-vault.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
-import { keyCiphertextForCode, redeemedCodeOf } from "./invite-codes.js";
 import { createHolderLicences } from "./licence-view.js";
-import type { StudioAccessDeps } from "./studio-access.js";
+import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "./studio-access-factory.js";
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
@@ -158,24 +152,10 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         .where("id", "=", id)
         .executeTakeFirst()
         .then((r) => r?.owner_address ?? null);
-    const appLedger = createAppLedger({
+    const { appLedger, appReads } = createLicensingAppReads({
+      client: this.reactorClient as never,
       db,
-      source: reactorLedgerSource(this.reactorClient as never),
-      now: () => new Date().toISOString(),
-    });
-    const appReads = createAppReads(this.reactorClient as never, {
-      // Licensing state that differs from what the system last wrote: held,
-      // unless the difference is journalled system writes (healed).
-      ledger: appLedger.lookup,
-      heal: appLedger.heal,
-      // Only an app with a row, or the studio app, is trusted by slug.
-      trustedIds: async () =>
-        new Set([
-          ...(await appsDb.selectFrom("apps").select("id").execute()).map(
-            (r) => r.id,
-          ),
-          STUDIO_APP_ID,
-        ]),
+      trustedIds: appsTrustedIds(appsDb),
     });
     const ownerLookup = createOwnerAppLookup({
       table: {
@@ -257,14 +237,13 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // Owner surface. Everything a holder owns is read from grant rows and the
     // lifecycle record (licence-view.ts), never from licence documents.
     const holderLicences = createHolderLicences({ licences: reads, lifecycle, grants });
-    const studio: StudioAccessDeps = {
-      studioAppId: async () => (await appReads.appBySlug(cfg.studioAppSlug))?.id ?? null,
-      licencesOf: holderLicences,
-      redeemedCode: (licenseId, userDid) => redeemedCodeOf(db, licenseId, userDid),
-      keyCiphertextForCode: (code) => keyCiphertextForCode(db, code),
+    const studio = buildStudioAccessDeps({
+      appReads,
+      holderLicences,
+      db,
       keyVault,
-      now: () => new Date().toISOString(),
-    };
+      slug: cfg.studioAppSlug,
+    });
     // Tenant secrets are written through the vetra-cloud-secrets service
     // in-process (its subgraph owns the schema), as vetra-access-codes did.
     const secretsService = transit
@@ -321,7 +300,10 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         await envs.execute(id, [wakeEnvironment({})]);
       },
       destroy: (id) => envs.delete(id),
-      forgetEnvironment: (id) => deleteReportingToken(db, id),
+      forgetEnvironment: async (id) => {
+        await deleteReportingToken(db, id);
+        tokenIssuer.forget(id);
+      },
       cfg,
       logger: console,
       now: () => new Date().toISOString(),

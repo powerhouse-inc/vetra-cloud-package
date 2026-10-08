@@ -223,6 +223,37 @@ describe("reporting token budget per tick (fix round 1)", () => {
   });
 });
 
+describe("environments that will never run again", () => {
+  const byName: Record<string, string> = { gone: "DESTROYED", shelved: "ARCHIVED", draft: "DRAFT", stopped: "STOPPED" };
+  const withStatuses = (): ReportingDeps => ({ ...rep, envStatus: async (id) => byName[id] ?? "READY" });
+
+  it("issues no token to a DESTROYED or ARCHIVED environment, while STOPPED and DRAFT stay free", async () => {
+    const issuer = createReportingTokenIssuer(withStatuses(), 0);
+    issuer.startTick();
+    await issuer.issue(["gone", "shelved", "draft", "stopped", "live"]);
+    issuer.endTick();
+    expect(setSecrets.mock.calls.map((c) => c[0])).toStrictEqual(["tenant-draft", "tenant-stopped"]);
+    expect(await db.selectFrom("environment_reporting_tokens").select("environment_id").execute()).toHaveLength(2);
+  });
+
+  it("forgets an unrecorded token when the environment is destroyed", async () => {
+    const insert = vi.spyOn(db, "insertInto");
+    insert.mockImplementationOnce(() => { throw new Error("db down"); });
+    const issuer = createReportingTokenIssuer(rep, 5);
+    issuer.startTick();
+    await issuer.issue(["e1"]);
+    insert.mockRestore();
+    expect(setSecrets).toHaveBeenCalledTimes(1);
+    issuer.forget("e1");
+    issuer.startTick();
+    await issuer.issue(["e1"]);
+    // The stale token was not reused: a new one was minted and written.
+    expect(setSecrets).toHaveBeenCalledTimes(2);
+    expect(await environmentForToken(db, "token-1")).toBeNull();
+    expect(await environmentForToken(db, "token-2")).toBe("e1");
+  });
+});
+
 describe("relayUserStat", () => {
   let relay: RelayDeps;
   let enqueue: ReturnType<typeof vi.fn>;

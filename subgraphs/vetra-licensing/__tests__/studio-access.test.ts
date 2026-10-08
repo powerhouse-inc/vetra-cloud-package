@@ -84,4 +84,13 @@ describe("studio access", () => {
     // client must offer manual entry instead.
     expect(await studioAccess(d, DID)).toMatchObject({ allowed: true, hasAttachedKey: false });
   });
+
+  it("answers for a holder on any chain spelling, and for nobody on a DID that is no wallet", async () => {
+    const d = deps([L("a")], { a: "with-key" });
+    const other = "did:pkh:eip155:137:0x1111111111111111111111111111111111111111";
+    expect(await studioAccess(d, other)).toMatchObject({ allowed: true, licenseId: "a", hasAttachedKey: true });
+    expect(await studioKeyForDid(d, other)).toBe("sk-ant");
+    expect(await studioAccess(d, "did:key:z6Mk")).toStrictEqual(DENIED);
+    expect(await studioKeyForDid(d, "did:key:z6Mk")).toBeNull();
+  });
 });

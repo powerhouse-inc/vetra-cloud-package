@@ -51,11 +51,13 @@ export interface ReportingDeps {
 }
 
 /**
- * Environments with no running pods: a secret written now reaches them with
- * their next start instead of restarting them (the secrets controller only
- * reconciles tenants with a live namespace).
+ * Environments with no running pods that can still start: a secret written
+ * now reaches them with their next start instead of restarting them (the
+ * secrets controller only reconciles tenants with a live namespace).
  */
-const ASLEEP = new Set(["STOPPED", "DRAFT", "DESTROYED", "ARCHIVED"]);
+const ASLEEP = new Set(["STOPPED", "DRAFT"]);
+/** Environments that will never run again: they get no token at all. */
+const GONE = new Set(["DESTROYED", "ARCHIVED"]);
 
 /** What one handler tick may still spend, shared by every app of the tick. */
 export interface TokenBudget {
@@ -82,12 +84,17 @@ function stateOf<T>(map: WeakMap<object, T>, deps: object, init: () => T): T {
   return v;
 }
 
+/** Drops what the issuer remembers of an environment (a token written but not yet recorded). */
+export function forgetReportingToken(deps: ReportingDeps, environmentId: string): void {
+  written.get(deps)?.delete(environmentId);
+}
+
 /**
  * Gives every listed environment a reporting token, once. The secret is
  * written first and the hash second; the written token is remembered until
  * its hash is recorded, so a failing hash write never writes the secret again.
  * A row always means its token reached the secret. Asleep environments go
- * first and cost nothing; every other issue spends one unit of `budget`
+ * first and cost nothing; destroyed and archived ones get none; every other issue spends one unit of `budget`
  * (unlimited when absent), and those over it are counted as pending.
  * Failures are per environment and logged (never with the token).
  */
@@ -122,14 +129,18 @@ export async function ensureReportingTokens(
         .execute()
     ).map((r) => r.environment_id),
   );
-  const todo = environmentIds.filter((id) => !have.has(id) && !running.has(id));
+  const candidates = environmentIds.filter((id) => !have.has(id) && !running.has(id));
+  const todo: string[] = [];
   const free = new Set<string>();
-  for (const id of todo) {
+  for (const id of candidates) {
     if (unrecorded.has(id)) {
+      todo.push(id);
       free.add(id);
       continue;
     }
     const status = await deps.envStatus(id).catch(() => null);
+    if (status !== null && GONE.has(status)) continue;
+    todo.push(id);
     if (status !== null && ASLEEP.has(status)) free.add(id);
   }
   const ordered = [...todo.filter((id) => free.has(id)), ...todo.filter((id) => !free.has(id))];
@@ -186,6 +197,10 @@ export function createReportingTokenIssuer(deps: ReportingDeps, perTick: number)
     },
     issue(environmentIds: string[]): Promise<void> {
       return ensureReportingTokens(deps, environmentIds, budget);
+    },
+    /** Offboarding destroyed the environment: forget its unrecorded token. */
+    forget(environmentId: string): void {
+      forgetReportingToken(deps, environmentId);
     },
     endTick(): void {
       if (budget.pending === lastPending) return;

@@ -23,9 +23,10 @@ import {
   type SecretsService,
 } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
-import { getRedeemedKeyCiphertext } from "../vetra-access-codes/db/codes.js";
-import { ACCESS_CODES_TRANSIT_TENANT } from "../vetra-access-codes/resolvers.js";
-import type { VetraAccessCodesDB } from "../vetra-access-codes/db/schema.js";
+import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
+import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
+import { studioKeyForDid } from "../vetra-licensing/studio-access.js";
+import { appsTrustedIds, createStudioAccessDeps } from "../vetra-licensing/studio-access-factory.js";
 
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
 const ENV_DOC_TYPE = "powerhouse/vetra-cloud-environment";
@@ -33,7 +34,7 @@ const ENV_DOC_TYPE = "powerhouse/vetra-cloud-environment";
 /**
  * Warm pool for Vetra Studio. Two responsibilities, both in-process:
  *  - `claimStudioEnvironment` mutation: atomically assigns a warm env to an
- *    invite-code caller, transfers ownership (system SET_OWNER), and injects the
+ *    caller with an active studio licence, transfers ownership (system SET_OWNER), and injects the
  *    code's attached key (reusing the access-codes lookup + secrets service).
  *  - PoolKeeper worker: creates/maintains STUDIO_POOL_SIZE warm envs via the
  *    reactor client directly (no wallet, no separate service). Started only when
@@ -68,9 +69,21 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     const secretsDb = (await this.relationalDb.createNamespace(
       "vetra-cloud-secrets",
     )) as unknown as Kysely<SecretsDB>;
-    const accessDb = (await this.relationalDb.createNamespace(
-      "vetra-access-codes",
-    )) as unknown as Kysely<VetraAccessCodesDB>;
+    // The studio licence gate: the key comes from the caller's ACTIVE
+    // vetra-studio licence, found through the licensing tables.
+    const licensingDb = (await this.relationalDb.createNamespace(
+      "vetra-licensing",
+    )) as unknown as Kysely<VetraLicensingDB>;
+    const appsDb = (await this.relationalDb.createNamespace(
+      "vetra-apps",
+    )) as unknown as Kysely<VetraAppsDB>;
+    const studioAccess = createStudioAccessDeps({
+      client: this.reactorClient as never,
+      licensingDb,
+      trustedIds: appsTrustedIds(appsDb),
+      transit,
+      slug: process.env.VETRA_STUDIO_APP_SLUG?.trim() || "vetra-studio",
+    });
 
     const secretsService: SecretsService = createSecretsService({
       db: secretsDb,
@@ -102,10 +115,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
       claimWarmEnvironment(
         {
           claimDb,
-          getKeyForDid: async (d) => {
-            const ct = await getRedeemedKeyCiphertext(accessDb, d);
-            return ct === null ? null : transit.decrypt(ACCESS_CODES_TRANSIT_TENANT, ct);
-          },
+          getKeyForDid: (d) => studioKeyForDid(studioAccess, d),
           setOwner: (documentId, address) =>
             reactor.execute(documentId, "main", [setOwner({ address })]),
           setSecrets: (tenantId, entries) =>
