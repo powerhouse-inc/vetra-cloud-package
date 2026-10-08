@@ -20,6 +20,7 @@ import { createAppLedger, reactorLedgerSource } from "../licensing-ledger.js";
 import { loadLicensingConfig } from "../config.js";
 import { createChainEnvironmentRows, provisionChain, type ChainEnvDeps } from "../environments.js";
 import { AppLicenseHandler } from "../handler.js";
+import { createLifecycleStore } from "../lifecycle.js";
 
 /**
  * The handler against a REAL reactor and a REAL database (PGlite), wired with
@@ -44,6 +45,7 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
   let reads: ReturnType<typeof createReactorLicenseReads>;
   let issueDeps: Parameters<typeof issueLicense>[0];
   let migrated = true;
+  const ended: string[] = [];
   let appReads: ReturnType<typeof createAppReads>;
 
   const countEnvDocuments = async (): Promise<number> => {
@@ -93,7 +95,8 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
     expect(await appReads.app(APP)).toMatchObject({ tampered: false, unverified: false });
 
     reads = createReactorLicenseReads(client as never);
-    const licenseGateway = createReactorLicenseGateway(client as never);
+    const lifecycle = createLifecycleStore(db, () => NOW);
+    const licenseGateway = createReactorLicenseGateway(client as never, { lifecycle });
     const grants = createGrantStore(db);
     envs = createReactorEnvGateway(client as never);
     issueDeps = {
@@ -113,13 +116,14 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
       licences: () => reads.allLicenceRecords(),
       chainRoots: () => grants.chainRoots(),
       grants: () => grants.provenance(),
+      lifecycle: () => lifecycle.all(),
       chainLabel: (root) => grants.chainLabel(root),
       app: (id) => appReads.app(id),
       environments: (appId) => chainRows.forApp(appId),
       environmentAppIds: () => chainRows.appIds(),
       provision: (input) => provisionChain(chainEnvDeps, input),
       setStage: (licenseId, stage) => licenseGateway.execute(licenseId, [licenseActions.setStage({ stage })]),
-      onEnded: async () => {},
+      onEnded: async (_appId, env) => { ended.push(env); },
       onResumed: async () => {},
       afterApp: async () => {},
       migrationComplete: async () => migrated,
@@ -180,6 +184,26 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
     expect(await countEnvDocuments()).toBe(before);
     expect((await reads.licenceRecord(licenseId))!.stage).toBe("env-app");
   });
+  it("a forged REVOKE on a licence document holds its chain instead of ending it", async () => {
+    const all = await rows();
+    const row = all.find((r) => r.label === "Vault A")!;
+    expect(await db.selectFrom("license_lifecycle").select("status").where("license_id", "=", row.license_id).executeTakeFirst())
+      .toStrictEqual({ status: "ACTIVE" });
+    // Bypasses the gateway, as a direct document write would.
+    await client.execute(row.license_id, "main", [licenseActions.revokeLicense({ reason: "forged" })]);
+    expect((await reads.licenceRecord(row.license_id))!.status).toBe("REVOKED");
+    await handler.reconcileOnce();
+    expect(ended).toStrictEqual([]);
+  });
+
+  it("a system REVOKE through the gateway ends the chain", async () => {
+    const gateway = createReactorLicenseGateway(client as never, { lifecycle: createLifecycleStore(db, () => NOW) });
+    const row = (await rows()).find((r) => r.label === "Vault B")!;
+    await gateway.execute(row.license_id, [licenseActions.revokeLicense({ reason: "refund" })]);
+    await handler.reconcileOnce();
+    expect(ended).toStrictEqual([row.environment_id]);
+  });
+
   it("a write to the app outside Vetra holds the app: nothing is re-templated", async () => {
     const before = await rows();
     // Bypasses the ledger, as a direct document write would.

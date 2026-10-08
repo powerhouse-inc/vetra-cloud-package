@@ -18,8 +18,13 @@ import { createAppLedger, reactorLedgerSource } from "./licensing-ledger.js";
 import {
   createAppDocOwnerResolver,
   sweepAppDocumentProtection,
+  createAppDocProtector,
 } from "../vetra-apps/app-doc-protection.js";
-import { createReactorLicenseGateway } from "./license-gateway.js";
+import {
+  createReactorLicenseGateway,
+  listLicenceDocumentIds,
+} from "./license-gateway.js";
+import { createLifecycleStore } from "./lifecycle.js";
 import { LicenseKeeper } from "./keeper.js";
 import { AppLicenseHandler } from "./handler.js";
 import {
@@ -62,7 +67,27 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     const cfg = loadLicensingConfig();
     const reads = createReactorLicenseReads(this.reactorClient as never);
-    const gateway = createReactorLicenseGateway(this.reactorClient as never);
+    // Licence documents are system-write-only, like vetra-app documents: the
+    // platform publisher is their only principal. Every system lifecycle write
+    // is also recorded in license_lifecycle, which the handler trusts over the
+    // document.
+    const studioPublisher = studioPublisherAddress();
+    const perm = this.documentPermissionService;
+    const platformOwner = () => Promise.resolve(studioPublisher);
+    const lifecycle = createLifecycleStore(db, () => new Date().toISOString());
+    const gateway = createReactorLicenseGateway(this.reactorClient as never, {
+      protect: perm
+        ? createAppDocProtector(
+            perm,
+            platformOwner,
+            this.reactorClient as never,
+            console,
+            "licence document",
+          )
+        : undefined,
+      lifecycle,
+      logger: console,
+    });
 
     const deps: ResolverDeps = {
       auth: {
@@ -144,7 +169,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // wins where one exists; an app that exists only as a document (the
     // vetra-studio app) falls back to the document's owner. Platform admins
     // (the ADMINS env) pass via resolveOwnerApp.
-    const studioPublisher = studioPublisherAddress();
     const rowOwner = (id: string) =>
       appsDb
         .selectFrom("apps")
@@ -200,9 +224,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     this.resolvers = mergeResolvers(machineResolvers, publisherResolvers);
 
-    // vetra-app documents are system-write-only. Protect every existing one;
-    // best-effort and in the background, so it never blocks or fails setup.
-    const perm = this.documentPermissionService;
+    // vetra-app and licence documents are system-write-only. Protect every
+    // existing one; best-effort and in the background, so it never blocks or
+    // fails setup.
     if (perm) {
       void sweepAppDocumentProtection({
         perm,
@@ -210,6 +234,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         listAppDocumentIds: () => appReads.allIds(),
         ownerFor: createAppDocOwnerResolver(rowOwner, studioPublisher),
         logger: console,
+      });
+      void sweepAppDocumentProtection({
+        perm,
+        relationships: this.reactorClient as never,
+        listAppDocumentIds: () => listLicenceDocumentIds(this.reactorClient as never),
+        ownerFor: platformOwner,
+        logger: console,
+        noun: "licence document",
       });
     }
 
@@ -227,6 +259,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       licences: () => reads.allLicenceRecords(),
       chainRoots: () => grants.chainRoots(),
       grants: () => grants.provenance(),
+      lifecycle: () => lifecycle.all(),
       chainLabel: (root) => grants.chainLabel(root),
       app: (id) => appReads.app(id),
       environments: (appId) => chainRows.forApp(appId),

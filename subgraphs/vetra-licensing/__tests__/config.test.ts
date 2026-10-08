@@ -6,7 +6,7 @@ describe("loadLicensingConfig", () => {
     expect(loadLicensingConfig({})).toMatchObject({
       enabled: false, dryRun: true, destroyEnabled: false, migration: "dry-run",
       deleteLicenseTypes: false, studioAppSlug: "vetra-studio", studioPublisher: null,
-      renownStatsUrl: null, licensingPublicUrl: null,
+      renownStatsUrl: null, licensingPublicUrl: null, retemplatePerTick: 5, stepTimeoutMs: 120_000,
     });
   });
   it("reads every switch", () => {
@@ -28,5 +28,12 @@ describe("loadLicensingConfig", () => {
   it("accepts the migration modes case-insensitively and off explicitly", () => {
     expect(loadLicensingConfig({ LICENSING_MIGRATION: "OFF" }).migration).toBe("off");
     expect(loadLicensingConfig({ LICENSING_MIGRATION: " Apply " }).migration).toBe("apply");
+  });
+  it("reads the re-template budget (0 pauses it) and the step timeout", () => {
+    expect(loadLicensingConfig({ LICENSING_RETEMPLATE_PER_TICK: "0", LICENSING_STEP_TIMEOUT_MS: "5000" }))
+      .toMatchObject({ retemplatePerTick: 0, stepTimeoutMs: 5000 });
+    expect(loadLicensingConfig({ LICENSING_RETEMPLATE_PER_TICK: "-1", LICENSING_STEP_TIMEOUT_MS: "0" }))
+      .toMatchObject({ retemplatePerTick: 5, stepTimeoutMs: 120_000 });
+    expect(loadLicensingConfig({ LICENSING_RETEMPLATE_PER_TICK: "lots" }).retemplatePerTick).toBe(5);
   });
 });

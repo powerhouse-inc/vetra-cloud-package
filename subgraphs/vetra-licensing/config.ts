@@ -18,6 +18,13 @@ export interface LicensingConfig {
   studioPublisher: string | null;
   renownStatsUrl: string | null;
   licensingPublicUrl: string | null;
+  /**
+   * How many live environments the handler re-templates per tick. Creation is
+   * not counted (only the per-app cap applies to it). 0 pauses re-templating.
+   */
+  retemplatePerTick: number;
+  /** A handler step (or read) that takes longer fails, so a hung call cannot stall every later tick. */
+  stepTimeoutMs: number;
 }
 
 export function loadLicensingConfig(
@@ -28,6 +35,11 @@ export function loadLicensingConfig(
     if (!v) return fallback;
     const n = Number.parseInt(v, 10);
     return Number.isNaN(n) || n <= 0 ? fallback : n;
+  };
+  const nonNegative = (name: string, fallback: number): number => {
+    const v = env[name]?.trim();
+    if (!v || !/^\d+$/.test(v)) return fallback;
+    return Number.parseInt(v, 10);
   };
   const trimmed = (name: string): string | null => {
     const v = env[name]?.trim();
@@ -54,5 +66,7 @@ export function loadLicensingConfig(
       trimmed("VETRA_STUDIO_PUBLISHER_ADDRESS")?.toLowerCase() ?? firstAdmin,
     renownStatsUrl: trimmed("RENOWN_STATS_URL"),
     licensingPublicUrl: trimmed("VETRA_LICENSING_URL"),
+    retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),
+    stepTimeoutMs: int("LICENSING_STEP_TIMEOUT_MS", 120 * 1000),
   };
 }

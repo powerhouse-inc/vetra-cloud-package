@@ -7,7 +7,7 @@ import { addressOfDid } from "./did.js";
 import { AppEnvironmentCapReachedError, UNAPPLIED_TEMPLATE_HASH } from "./provision.js";
 import {
   renderCreateActions,
-  renderUpdateActions,
+  renderFloorUpdateActions,
   validateTemplate,
   type TemplateShape,
 } from "./template.js";
@@ -125,6 +125,7 @@ export interface ChainEnvDeps {
     delete(id: string): Promise<void>;
   };
   generateSubdomain(id: string): string;
+  logger?: Pick<Console, "error">;
 }
 
 export interface ProvisionChainInput {
@@ -158,9 +159,11 @@ function assertSameOwner(row: LicenseEnvironments, input: ProvisionChainInput): 
  * Claim before act: a fresh document is written into the row (with
  * UNAPPLIED_TEMPLATE_HASH) before any action is applied, so a rejected action
  * list leaves a claim the next call reuses rather than an orphan. The per-app
- * cap applies only to creation. Nothing here deletes or stops an environment;
- * the one delete is of a document this call just created and lost the claim
- * race with, which nothing references.
+ * cap applies only to creation. Re-templating a live environment treats the
+ * template as a floor (renderFloorUpdateActions): it adds and upgrades, never
+ * removes, and never touches the label. Nothing here deletes or stops an
+ * environment; the only deletes are of a document this call just created and
+ * nothing references (a lost claim race, or a claim that failed).
  */
 export async function provisionChain(
   deps: ChainEnvDeps,
@@ -196,7 +199,7 @@ export async function provisionChain(
   let row = existing;
   if (!row) {
     const fresh = await deps.envs.create();
-    row = await deps.rows.claim({
+    const claim = deps.rows.claim({
       environment_id: fresh,
       root_license_id: input.root,
       app_id: input.appId,
@@ -211,6 +214,18 @@ export async function provisionChain(
       created_at: input.now,
       updated_at: input.now,
     });
+    try {
+      row = await claim;
+    } catch (err) {
+      // Nothing references the fresh DRAFT document: without this, a claim
+      // that keeps failing would leak one document per tick.
+      await deps.envs.delete(fresh).catch((deleteErr: unknown) => {
+        (deps.logger ?? console).error(
+          `[licensing] claim of chain ${input.root} failed and its fresh environment ${fresh} could not be deleted: ${String(deleteErr)}`,
+        );
+      });
+      throw err;
+    }
     if (row.environment_id !== fresh) {
       // Another caller claimed the chain first; our document is referenced
       // by nothing, so drop it rather than orphan it.
@@ -232,23 +247,25 @@ export async function provisionChain(
     throw new EnvironmentNotReadyError(`environment ${row.environment_id} is ${state.status}`);
   }
   // DRAFT is "created, never initialised": also what a claim whose action
-  // list was rejected leaves behind, so that retry is a create.
+  // list was rejected leaves behind, so that retry is a create. A live
+  // environment is only brought UP TO the template (a floor): its label, its
+  // extra packages and its other services are the holder's.
   const actions =
     state.status !== "DRAFT"
-      ? renderUpdateActions({ label: input.label, template: input.template, current: state })
+      ? renderFloorUpdateActions({ template: input.template, current: state })
       : renderCreateActions({
           label: input.label,
           subdomain: deps.generateSubdomain(row.environment_id),
           owner: addressOfDid(input.userDid),
           template: input.template,
         });
-  await deps.envs.execute(row.environment_id, actions);
+  if (actions.length > 0) await deps.envs.execute(row.environment_id, actions);
 
+  // The row's label is the one the environment was created with.
   const patch = {
     license_id: input.licenseId,
     template_id: input.templateId,
     template_hash: input.templateHash,
-    label: input.label,
     updated_at: input.now,
   };
   await deps.rows.update(row.environment_id, patch);

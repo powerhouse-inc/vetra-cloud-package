@@ -319,6 +319,94 @@ export function renderUpdateActions(input: UpdateRenderInput): Action[] {
   return actions;
 }
 
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** Negative, zero or positive as prerelease `a` sorts before, with or after `b` (semver rules, simplified). */
+function comparePrerelease(a: string | undefined, b: string | undefined): number {
+  if (a === b) return 0;
+  if (a === undefined) return 1; // a release sorts after any prerelease of it
+  if (b === undefined) return -1;
+  const pa = a.split(".");
+  const pb = b.split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if (i >= pa.length) return -1;
+    if (i >= pb.length) return 1;
+    const x = pa[i];
+    const y = pb[i];
+    const nx = /^\d+$/.test(x) ? Number(x) : null;
+    const ny = /^\d+$/.test(y) ? Number(y) : null;
+    if (nx !== null && ny !== null) {
+      if (nx !== ny) return nx - ny;
+    } else if (nx !== null) {
+      return -1;
+    } else if (ny !== null) {
+      return 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * True only when both are semver versions and `wanted` is newer. A dist-tag
+ * (latest, dev) or anything else unparseable on either side is never an
+ * upgrade: the floor never moves a package it cannot prove is older.
+ */
+export function isVersionUpgrade(current: string | null, wanted: string): boolean {
+  if (current === null) return false;
+  const c = SEMVER.exec(current);
+  const w = SEMVER.exec(wanted);
+  if (!c || !w) return false;
+  for (let i = 1; i <= 3; i++) {
+    const d = Number(w[i]) - Number(c[i]);
+    if (d !== 0) return d > 0;
+  }
+  return comparePrerelease(w[4], c[4]) > 0;
+}
+
+export interface FloorUpdateRenderInput {
+  template: TemplateShape;
+  /** The environment's current global state, as EnvGateway.getState returns it. */
+  current: VetraCloudEnvironmentState;
+}
+
+/**
+ * The action list that brings an existing, live environment UP TO a template,
+ * treating the template as a floor: missing template packages are added,
+ * template packages provably older than the template are upgraded, template
+ * services that are missing or disabled are enabled, and the FUSION image
+ * follows the template. Nothing is ever removed, disabled or downgraded, and
+ * the label and service prefixes the holder has are left alone. Returns []
+ * when the environment already meets the floor, so nothing is dispatched.
+ */
+export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[] {
+  const n = validateTemplate(input.template);
+  const current = input.current;
+  const actions: Action[] = [];
+
+  for (const p of n.packages) {
+    const have = current.packages.find((c) => c.name === p.name);
+    if (!have || isVersionUpgrade(have.version ?? null, p.version)) {
+      actions.push(addPackage({ packageName: p.name, version: p.version }));
+    }
+  }
+  for (const s of n.services) {
+    const have = current.services.find((c) => c.type === s.type);
+    if (!have || !have.enabled) {
+      actions.push(enableService({ type: s.type, prefix: have?.prefix ?? s.prefix }));
+    }
+    if (s.type === "FUSION") {
+      const sameImage = current.fusion?.image === s.repository;
+      const sameVersion = have?.version === s.version;
+      if (!sameImage || !sameVersion) actions.push(...fusionActions(s));
+    }
+  }
+
+  if (actions.length > 0) actions.push(approveChanges({}));
+  return actions;
+}
+
 /**
  * sha256 over a canonical form. Used to recognise an environment whose
  * template has changed since it was provisioned; never for security.

@@ -8,8 +8,14 @@ import {
 } from "./chain-plan.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { didForAddress, normaliseUserDid } from "./did.js";
-import type { ProvisionChainInput } from "./environments.js";
+import {
+  EnvironmentNotReadyError,
+  EnvironmentOwnershipMismatchError,
+  type ProvisionChainInput,
+} from "./environments.js";
 import type { GrantProvenance } from "./grants.js";
+import type { LifecycleRecord } from "./lifecycle.js";
+import { UNAPPLIED_TEMPLATE_HASH } from "./provision.js";
 import type { LicenceRecord } from "./reads.js";
 
 export interface HandlerDeps {
@@ -22,6 +28,12 @@ export interface HandlerDeps {
    * kind), is unauthorised: it provisions nothing and its chain is held.
    */
   grants(): Promise<Map<string, GrantProvenance>>;
+  /**
+   * licence id -> the lifecycle status the system last wrote
+   * (license_lifecycle). A document that disagrees holds its chain; a licence
+   * with no row (written before the table existed) falls back to its document.
+   */
+  lifecycle(): Promise<Map<string, LifecycleRecord>>;
   chainLabel(rootLicenseId: string): Promise<string | null>;
   /** Through createAppReads: carries the tampered/unverified integrity flags. */
   app(appId: string): Promise<AppDocView | null>;
@@ -39,6 +51,47 @@ export interface HandlerDeps {
   cfg: LicensingConfig;
   logger: Pick<Console, "info" | "warn" | "error">;
   now(): string;
+}
+
+/** A handler step (or read) did not settle within cfg.stepTimeoutMs. */
+export class StepTimeoutError extends Error {
+  override name = "StepTimeoutError";
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new StepTimeoutError(`${what} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+type Level = "info" | "warn" | "error";
+
+/**
+ * Logs a condition when it appears or its message changes, not every tick.
+ * A key not noted during a completed tick has resolved and is forgotten, so
+ * it is logged again if it comes back.
+ */
+class Notices {
+  private last = new Map<string, string>();
+  private seen = new Set<string>();
+  constructor(private readonly logger: Pick<Console, Level>) {}
+
+  note(key: string, level: Level, message: string): void {
+    this.seen.add(key);
+    if (this.last.get(key) === message) return;
+    this.last.set(key, message);
+    this.logger[level](message);
+  }
+
+  /** After an aborted tick nothing is forgotten: unvisited keys were not re-checked. */
+  endTick(completed: boolean): void {
+    if (completed) {
+      for (const key of [...this.last.keys()]) if (!this.seen.has(key)) this.last.delete(key);
+    }
+    this.seen.clear();
+  }
 }
 
 /** A parseable timestamp in canonical ISO form; anything else is null (sorts oldest). */
@@ -66,24 +119,48 @@ function unauthorisedBecause(l: LicenceRecord, grant: GrantProvenance | undefine
   return null;
 }
 
+/** Why the document's lifecycle disagrees with what the system recorded, or null. */
+function lifecycleMismatch(l: LicenceRecord, rec: LifecycleRecord | undefined): string | null {
+  if (!rec) return null; // pre-migration: the document is all there is
+  if (rec.status !== l.status) {
+    return `its document says ${l.status} but the system recorded ${rec.status}`;
+  }
+  if (rec.status === "REPLACED" && rec.replacedBy !== null && rec.replacedBy !== l.replacedBy) {
+    return `its document says replaced by ${l.replacedBy ?? "nothing"} but the system recorded ${rec.replacedBy}`;
+  }
+  return null;
+}
+
 const rootOfStep = (step: ChainStep, rootById: Map<string, string>): string | null =>
   step.kind === "set-stage" ? (rootById.get(step.licenseId) ?? null) : step.root;
+
+type ProvisionKind = "create" | "retemplate" | "repoint";
 
 /**
  * AppLicenseHandler: licence -> app.terms[kind] -> app.templates[templateId]
  * -> by mode. Timer-driven, re-entrancy guarded, every app (and every step)
- * isolated from every other's failures.
+ * isolated from every other's failures, and every call bounded by
+ * cfg.stepTimeoutMs so a hung call cannot stall later ticks.
  *
  * It never stops, releases or deletes an environment: an ended chain is only
  * reported (onEnded). Anything it cannot be sure of — the migration not yet
  * complete, an unreadable or tampered app, a licence without provenance or
- * disagreeing with it, an unreadable chain member — is held and logged.
+ * disagreeing with it, a lifecycle the system did not write, an unreadable
+ * chain member — is held and logged (once per change).
+ *
+ * Re-templating live environments is rate-limited (cfg.retemplatePerTick);
+ * creation is limited only by the per-app cap.
  */
 export class AppLicenseHandler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private readonly notices: Notices;
+  private retemplateBudget = 0;
+  private deferredRetemplates = 0;
 
-  constructor(private readonly d: HandlerDeps) {}
+  constructor(private readonly d: HandlerDeps) {
+    this.notices = new Notices(d.logger);
+  }
 
   start(): void {
     if (this.timer) return;
@@ -109,31 +186,53 @@ export class AppLicenseHandler {
 
   async reconcileOnce(): Promise<void> {
     if (!this.d.cfg.enabled) return;
+    let completed = false;
+    try {
+      await this.tick();
+      completed = true;
+    } finally {
+      this.notices.endTick(completed);
+    }
+  }
+
+  private timed<T>(p: Promise<T>, what: string): Promise<T> {
+    return withTimeout(p, this.d.cfg.stepTimeoutMs, what);
+  }
+
+  private async tick(): Promise<void> {
     // Before the migration, license_environments is empty while live
     // environments exist: planning now would provision a second environment
     // for every live holder.
-    if (!(await this.d.migrationComplete())) {
-      this.d.logger.info(
+    if (!(await this.timed(this.d.migrationComplete(), "migration check"))) {
+      this.notices.note(
+        "migration",
+        "info",
         "[licensing] handler idle: waiting for the licensing migration to complete",
       );
       return;
     }
 
-    const [licences, roots, grants] = await Promise.all([
-      this.d.licences(),
-      this.d.chainRoots(),
-      this.d.grants(),
-    ]);
+    const [licences, roots, grants, lifecycle] = await this.timed(
+      Promise.all([this.d.licences(), this.d.chainRoots(), this.d.grants(), this.d.lifecycle()]),
+      "licence reads",
+    );
     const byApp = new Map<string, PlanLicence[]>();
-    const add = (appId: string, l: PlanLicence) => {
-      const list = byApp.get(appId) ?? [];
-      list.push(l);
-      byApp.set(appId, list);
+    /** appId -> chain root -> why the whole chain is held. */
+    const heldRoots = new Map<string, Map<string, string>>();
+    const holdRoot = (appId: string, root: string, reason: string) => {
+      const perApp = heldRoots.get(appId) ?? new Map<string, string>();
+      if (!perApp.has(root)) perApp.set(root, reason);
+      heldRoots.set(appId, perApp);
     };
+
     const read = new Set<string>();
     for (const l of licences) {
       read.add(l.id);
       const grant = grants.get(l.id);
+      // The grant's app is authoritative: a licence document claiming another
+      // app is planned (unauthorised) where its grant says it belongs.
+      const appId = grant?.appId ?? l.app;
+      const root = roots.get(l.id) ?? l.id;
       let user = l.user;
       let usable = true;
       try {
@@ -142,70 +241,103 @@ export class AppLicenseHandler {
         usable = false;
         // Kept in its chain, unauthorised: dropping it could leave only
         // terminal siblings, which would read as an ended chain.
-        this.d.logger.warn(
+        this.notices.note(
+          `licence:${l.id}:holder`,
+          "warn",
           `[licensing] licence ${l.id} has an unusable holder ${l.user}; holding its chain`,
         );
       }
       const why = unauthorisedBecause(l, grant);
       if (why && grant && usable) {
-        this.d.logger.warn(`[licensing] licence ${l.id} ${why}; holding its chain`);
+        this.notices.note(
+          `licence:${l.id}:grant`,
+          "warn",
+          `[licensing] licence ${l.id} ${why}; holding its chain`,
+        );
       }
-      // The grant's app is authoritative: a licence document claiming another
-      // app is planned (unauthorised) where its grant says it belongs.
-      add(grant?.appId ?? l.app, {
+      const mismatch = lifecycleMismatch(l, lifecycle.get(l.id));
+      if (mismatch) {
+        this.notices.note(
+          `licence:${l.id}:lifecycle`,
+          "error",
+          `[licensing] licence ${l.id}: ${mismatch}; holding chain ${root} (was the document written outside Vetra?)`,
+        );
+        holdRoot(appId, root, `licence ${l.id}: ${mismatch}`);
+      }
+      const list = byApp.get(appId) ?? [];
+      list.push({
         id: l.id,
         user,
         kind: l.kind,
         status: l.status,
         issued: isoOrNull(l.issued ?? l.start),
         stage: l.stage,
-        root: roots.get(l.id) ?? l.id,
+        root,
         authorised: why === null,
         replacedBy: l.replacedBy,
       });
+      byApp.set(appId, list);
     }
 
     // Authorised licences whose document could not be read: their chain's
     // state is unknown, never ended.
-    const unreadable = new Map<string, Map<string, string>>();
     for (const [id, grant] of grants) {
       if (read.has(id)) continue;
-      const perApp = unreadable.get(grant.appId) ?? new Map<string, string>();
-      perApp.set(roots.get(id) ?? id, id);
-      unreadable.set(grant.appId, perApp);
+      holdRoot(
+        grant.appId,
+        roots.get(id) ?? id,
+        `licence ${id} has provenance but its document could not be read`,
+      );
     }
 
-    for (const appId of await this.d.environmentAppIds()) {
+    for (const appId of await this.timed(this.d.environmentAppIds(), "environment app ids")) {
       if (!byApp.has(appId)) byApp.set(appId, []);
     }
 
+    this.retemplateBudget = this.d.cfg.retemplatePerTick;
+    this.deferredRetemplates = 0;
     for (const [appId, appLicences] of byApp) {
       try {
-        await this.reconcileApp(appId, appLicences, unreadable.get(appId) ?? new Map<string, string>());
+        await this.reconcileApp(appId, appLicences, heldRoots.get(appId) ?? new Map<string, string>());
       } catch (err) {
-        this.d.logger.warn(`[licensing] reconcile of app ${appId} failed: ${String(err)}`);
+        this.notices.note(
+          `app:${appId}:failed`,
+          "warn",
+          `[licensing] reconcile of app ${appId} failed: ${String(err)}`,
+        );
       }
+    }
+    if (this.deferredRetemplates > 0) {
+      this.notices.note(
+        "retemplate-deferred",
+        "info",
+        `[licensing] ${this.deferredRetemplates} environment re-template(s) deferred to later ticks (at most ${this.d.cfg.retemplatePerTick} per tick)`,
+      );
     }
   }
 
   private async reconcileApp(
     appId: string,
     licences: PlanLicence[],
-    unreadableRoots: Map<string, string>,
+    heldRoots: Map<string, string>,
   ): Promise<void> {
-    const app = await this.d.app(appId);
+    const app = await this.timed(this.d.app(appId), `read of app ${appId}`);
     if (!app) {
-      this.d.logger.warn(
+      this.notices.note(
+        `app:${appId}`,
+        "warn",
         `[licensing] app ${appId} has no readable document; holding all its licences and environments`,
       );
       return;
     }
     if (app.tampered) {
-      this.d.logger.error(
+      this.notices.note(
+        `app:${appId}`,
+        "error",
         `[licensing] app ${appId} is TAMPERED (${app.tamperReason ?? "unknown"}); holding all its licences and environments`,
       );
     }
-    const environments = await this.d.environments(appId);
+    const environments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
     const resolve = (kind: string | null): PlanResolution => {
       const r = resolveKind(app, kind);
       return r.ok
@@ -234,59 +366,105 @@ export class AppLicenseHandler {
       // not one the system wrote, and is held.
       holdUnverified: true,
     });
-    const steps = this.holdUnreadable(planned, licences, unreadableRoots);
+    const steps = this.holdChains(planned, licences, heldRoots);
     const held = app.tampered || app.unverified;
+    this.noteHoldsAndAnomalies(appId, steps);
 
-    for (const step of steps) {
-      if (step.kind === "hold") {
-        this.d.logger.warn(`[licensing] holding chain ${step.root} of app ${appId}: ${step.reason}`);
-      } else if (step.kind === "anomaly") {
-        this.d.logger.warn(`[licensing] chain ${step.root} of app ${appId}: ${step.reason}`);
-      }
-    }
+    const envById = new Map(environments.map((e) => [e.environment_id, e]));
+    const provisionKind = (step: Extract<ChainStep, { kind: "provision" }>): ProvisionKind => {
+      const env = step.environmentId === null ? undefined : envById.get(step.environmentId);
+      if (!env || env.template_hash === UNAPPLIED_TEMPLATE_HASH) return "create";
+      return env.template_hash === step.templateHash ? "repoint" : "retemplate";
+    };
 
     if (this.d.cfg.dryRun) {
       const count = (k: ChainStep["kind"]) => steps.filter((s) => s.kind === k).length;
-      this.d.logger.info(
-        `[licensing] dry run: app ${appId} would provision ${count("provision")}, set-stage ${count("set-stage")}, end ${count("ended")}, resume ${count("resumed")}; holding ${count("hold")}`,
+      const provisions = steps.flatMap((s) => (s.kind === "provision" ? [provisionKind(s)] : []));
+      const of = (k: ProvisionKind) => provisions.filter((p) => p === k).length;
+      this.notices.note(
+        `app:${appId}:dry-run`,
+        "info",
+        `[licensing] dry run: app ${appId} would create ${of("create")}, retemplate ${of("retemplate")}, repoint ${of("repoint")}, set-stage ${count("set-stage")}, end ${count("ended")}, resume ${count("resumed")}; holding ${count("hold")}`,
       );
       return;
     }
 
     for (const step of steps) {
+      const key = step.kind === "set-stage" ? step.licenseId : step.root;
+      let budgeted = false;
+      if (step.kind === "provision" && provisionKind(step) === "retemplate") {
+        if (this.retemplateBudget <= 0) {
+          this.deferredRetemplates++;
+          continue;
+        }
+        this.retemplateBudget--;
+        budgeted = true;
+      }
       try {
-        await this.apply(app, step);
+        await this.timed(this.apply(app, step), `${step.kind} of ${key} (app ${appId})`);
       } catch (err) {
-        this.d.logger.warn(`[licensing] ${step.kind} for app ${appId} failed: ${String(err)}`);
+        // Refused before anything was dispatched: the budget was not spent.
+        if (
+          budgeted &&
+          (err instanceof EnvironmentNotReadyError || err instanceof EnvironmentOwnershipMismatchError)
+        ) {
+          this.retemplateBudget++;
+        }
+        this.notices.note(
+          `step:${appId}:${key}:${step.kind}`,
+          "warn",
+          `[licensing] ${step.kind} of ${key} for app ${appId} failed: ${String(err)}`,
+        );
       }
     }
-    if (!held) await this.d.afterApp(appId, await this.d.environments(appId));
+    if (!held) {
+      const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+      await this.timed(this.d.afterApp(appId, after), `after-app work of app ${appId}`);
+    }
   }
 
-  /** Replaces every step of a chain with an unreadable authorised member by one hold. */
-  private holdUnreadable(
+  private noteHoldsAndAnomalies(appId: string, steps: ChainStep[]): void {
+    const anomalies = new Map<string, string[]>();
+    for (const step of steps) {
+      if (step.kind === "hold") {
+        this.notices.note(
+          `chain:${appId}:${step.root}:hold`,
+          "warn",
+          `[licensing] holding chain ${step.root} of app ${appId}: ${step.reason}`,
+        );
+      } else if (step.kind === "anomaly") {
+        anomalies.set(step.root, [...(anomalies.get(step.root) ?? []), step.reason]);
+      }
+    }
+    for (const [root, reasons] of anomalies) {
+      this.notices.note(
+        `chain:${appId}:${root}:anomaly`,
+        "warn",
+        `[licensing] chain ${root} of app ${appId}: ${reasons.join("; ")}`,
+      );
+    }
+  }
+
+  /** Replaces every step of a held chain by one hold. */
+  private holdChains(
     steps: ChainStep[],
     licences: PlanLicence[],
-    unreadableRoots: Map<string, string>,
+    heldRoots: Map<string, string>,
   ): ChainStep[] {
-    if (unreadableRoots.size === 0) return steps;
+    if (heldRoots.size === 0) return steps;
     const rootById = new Map(licences.map((l) => [l.id, l.root]));
     const out: ChainStep[] = [];
-    const heldRoots = new Set<string>();
+    const done = new Set<string>();
     for (const step of steps) {
       const root = rootOfStep(step, rootById);
-      const missing = root === null ? undefined : unreadableRoots.get(root);
-      if (root === null || missing === undefined) {
+      const reason = root === null ? undefined : heldRoots.get(root);
+      if (root === null || reason === undefined) {
         out.push(step);
         continue;
       }
-      if (heldRoots.has(root)) continue;
-      heldRoots.add(root);
-      out.push({
-        kind: "hold",
-        root,
-        reason: `licence ${missing} has provenance but its document could not be read`,
-      });
+      if (done.has(root)) continue;
+      done.add(root);
+      out.push({ kind: "hold", root, reason });
     }
     return out;
   }
@@ -295,7 +473,7 @@ export class AppLicenseHandler {
     switch (step.kind) {
       case "hold":
       case "anomaly":
-        return; // logged above; never acted on
+        return; // logged; never acted on
       case "set-stage":
         await this.d.setStage(step.licenseId, step.stage);
         return;
@@ -309,7 +487,9 @@ export class AppLicenseHandler {
         // The same app snapshot the plan resolved from: the planner only
         // emits a provision for a kind that resolved.
         const resolved = resolveKind(app, step.licence.kind);
-        if (!resolved.ok) throw new Error(`kind ${step.licence.kind ?? "(none)"} no longer resolves: ${resolved.reason}`);
+        if (!resolved.ok) {
+          throw new Error(`kind ${step.licence.kind ?? "(none)"} no longer resolves: ${resolved.reason}`);
+        }
         const row = await this.d.provision({
           appId: app.id,
           root: step.root,

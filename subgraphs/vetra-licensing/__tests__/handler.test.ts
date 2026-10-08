@@ -5,6 +5,8 @@ import type { AppDocView } from "../app-reads.js";
 import type { GrantProvenance } from "../grants.js";
 import type { LicenceRecord } from "../reads.js";
 import type { LicenseEnvironments } from "../db/schema.js";
+import { EnvironmentNotReadyError } from "../environments.js";
+import type { LifecycleRecord } from "../lifecycle.js";
 
 const ADDR = "0x1111111111111111111111111111111111111111";
 const DID = `did:pkh:eip155:1:${ADDR}`;
@@ -44,6 +46,7 @@ function harness(over: Partial<HandlerDeps> = {}, licences: LicenceRecord[] = [l
     licences: vi.fn(async () => licences),
     chainRoots: async () => new Map(),
     grants: async () => grantsFor(licences),
+    lifecycle: async () => new Map(),
     chainLabel: async () => "Project A",
     app: async (id) => (id === "app-1" ? APP : null),
     environments: async () => [],
@@ -119,7 +122,7 @@ describe("AppLicenseHandler", () => {
     expect(h.provisioned).toStrictEqual([]);
     expect(h.staged).toStrictEqual([]);
     expect(h.deps.afterApp).not.toHaveBeenCalled();
-    expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("dry run: app app-1 would provision 1"));
+    expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("dry run: app app-1 would create 1, retemplate 0, repoint 0, set-stage 0"));
   });
 
   it("holds everything of an app whose document cannot be read", async () => {
@@ -293,7 +296,7 @@ describe("AppLicenseHandler", () => {
     const h = harness({ provision: vi.fn(async (i) => { if (i.root === "l1") throw new Error("cap"); return { environment_id: "env-l2" } as LicenseEnvironments; }) }, [lic("l1"), lic("l2")]);
     await h.handler.reconcileOnce();
     expect(h.staged).toStrictEqual([["l2", "env-l2"]]);
-    warned(h, "provision for app app-1 failed: Error: cap");
+    warned(h, "provision of l1 for app app-1 failed: Error: cap");
     expect(h.deps.afterApp).toHaveBeenCalled();
   });
 
@@ -352,6 +355,200 @@ describe("AppLicenseHandler", () => {
       await vi.advanceTimersByTimeAsync(0);
       h.handler.stop();
       warned(h, "handler tick failed: Error: db down");
+    });
+  });
+
+  describe("the lifecycle the system recorded is authoritative", () => {
+    const ended = () => {
+      const env = envRow({ environment_id: "e1", root_license_id: "l1", license_id: "l1" });
+      return { environments: async () => [env], environmentAppIds: async () => ["app-1"] };
+    };
+
+    it("holds, with an error, a chain whose document says terminal while the system recorded it live", async () => {
+      const lifecycle = new Map<string, LifecycleRecord>([["l1", { status: "ACTIVE", replacedBy: null }]]);
+      const h = harness({ ...ended(), lifecycle: async () => lifecycle }, [lic("l1", { status: "REVOKED" })]);
+      await h.handler.reconcileOnce();
+      await h.handler.reconcileOnce();
+      expect(h.deps.onEnded).not.toHaveBeenCalled();
+      expect(h.logger.error).toHaveBeenCalledTimes(1);
+      expect(h.logger.error).toHaveBeenCalledWith(expect.stringContaining("licence l1: its document says REVOKED but the system recorded ACTIVE; holding chain l1"));
+      warned(h, "holding chain l1 of app app-1: licence l1: its document says REVOKED");
+    });
+
+    it("ends a chain when the recorded lifecycle agrees", async () => {
+      const lifecycle = new Map<string, LifecycleRecord>([["l1", { status: "REVOKED", replacedBy: null }]]);
+      const h = harness({ ...ended(), lifecycle: async () => lifecycle }, [lic("l1", { status: "REVOKED" })]);
+      await h.handler.reconcileOnce();
+      expect(h.deps.onEnded).toHaveBeenCalledWith("app-1", "e1");
+      expect(h.logger.error).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the document for a licence the system has no record of (pre-migration)", async () => {
+      const h = harness(ended(), [lic("l1", { status: "EXPIRED" })]);
+      await h.handler.reconcileOnce();
+      expect(h.deps.onEnded).toHaveBeenCalledWith("app-1", "e1");
+    });
+
+    it("holds a chain whose recorded successor differs from the document's", async () => {
+      const lifecycle = new Map<string, LifecycleRecord>([
+        ["l1", { status: "REPLACED", replacedBy: "l2" }],
+        ["l3", { status: "ACTIVE", replacedBy: null }],
+      ]);
+      const licences = [lic("l1", { status: "REPLACED", replacedBy: "l3" }), lic("l3")];
+      const h = harness({ ...ended(), lifecycle: async () => lifecycle, chainRoots: async () => new Map([["l3", "l1"]]) }, licences);
+      await h.handler.reconcileOnce();
+      expect(h.provisioned).toStrictEqual([]);
+      expect(h.staged).toStrictEqual([]);
+      expect(h.logger.error).toHaveBeenCalledWith(expect.stringContaining("its document says replaced by l3 but the system recorded l2"));
+    });
+
+    it("holds a chain whose document is live while the system recorded it ended", async () => {
+      const lifecycle = new Map<string, LifecycleRecord>([["l1", { status: "EXPIRED", replacedBy: null }]]);
+      const h = harness({ lifecycle: async () => lifecycle });
+      await h.handler.reconcileOnce();
+      expect(h.provisioned).toStrictEqual([]);
+    });
+  });
+
+  describe("re-templating is rate-limited; creation is not", () => {
+    const stale = (n: number) => {
+      const licences = Array.from({ length: n }, (_, i) => lic(`l${i}`, { stage: `e${i}` }));
+      const envs = licences.map((l, i) => envRow({ environment_id: `e${i}`, root_license_id: l.id, license_id: l.id, template_hash: "old" }));
+      return { licences, envs };
+    };
+
+    it("re-templates at most retemplatePerTick live environments per tick, across apps", async () => {
+      const { licences, envs } = stale(3);
+      const h = harness({
+        environments: async () => envs,
+        cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 2 },
+      }, licences);
+      await h.handler.reconcileOnce();
+      expect(h.provisioned).toStrictEqual(["l0", "l1"]);
+      expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 environment re-template(s) deferred to later ticks (at most 2 per tick)"));
+      // The budget is per tick.
+      await h.handler.reconcileOnce();
+      expect(h.provisioned).toStrictEqual(["l0", "l1", "l0", "l1"]);
+    });
+
+    it("does not spend the budget on creation, a repoint or a refusal that dispatched nothing", async () => {
+      const { licences, envs } = stale(2);
+      envs[0]!.template_hash = "h-ded"; // l0's environment is right: a repoint once the licence moves
+      envs[0]!.license_id = "old-licence";
+      const fresh = [lic("n0"), lic("n1"), lic("n2")];
+      const provision = vi.fn(async (input: { root: string }) => {
+        if (input.root === "l1") throw new EnvironmentNotReadyError("e1 is STOPPED");
+        return { environment_id: `env-${input.root}` } as LicenseEnvironments;
+      });
+      const stuck = [...licences, lic("l2", { stage: "e2" })];
+      const stuckEnvs = [...envs, envRow({ environment_id: "e2", root_license_id: "l2", license_id: "l2", template_hash: "old" })];
+      const h = harness({
+        environments: async () => stuckEnvs,
+        provision,
+        cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+      }, [...stuck, ...fresh]);
+      await h.handler.reconcileOnce();
+      expect(provision.mock.calls.map((c) => c[0].root)).toStrictEqual(["l0", "l1", "l2", "n0", "n1", "n2"]);
+    });
+
+    it("pauses re-templating entirely at 0", async () => {
+      const { licences, envs } = stale(1);
+      const h = harness({ environments: async () => envs, cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 0 } }, licences);
+      await h.handler.reconcileOnce();
+      expect(h.provisioned).toStrictEqual([]);
+    });
+
+    it("dry run counts creations, re-templates and repoints separately", async () => {
+      const { licences, envs } = stale(2);
+      envs[1]!.template_hash = "h-ded";
+      envs[1]!.license_id = "older";
+      const unapplied = envRow({ environment_id: "e9", root_license_id: "l9", license_id: "l9", template_hash: "unapplied" });
+      const h = harness({
+        environments: async () => [...envs, unapplied],
+        cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: true },
+      }, [...licences, lic("l9"), lic("n0")]);
+      await h.handler.reconcileOnce();
+      expect(h.logger.info).toHaveBeenCalledWith(expect.stringContaining("would create 2, retemplate 1, repoint 1"));
+    });
+  });
+
+  describe("logs once per change", () => {
+    it("logs a hold, a tampered app and a failing step once, and again only after they change or come back", async () => {
+      const licences = [lic("l1", { kind: "nope" })];
+      let app: AppDocView = APP;
+      const env = envRow({});
+      const h = harness({ app: async () => app, environments: async () => [env] }, licences);
+      await h.handler.reconcileOnce();
+      await h.handler.reconcileOnce();
+      const holds = () => h.logger.warn.mock.calls.filter((c) => String(c[0]).includes("holding chain l1")).length;
+      expect(holds()).toBe(1);
+
+      app = { ...APP, tampered: true, tamperReason: "x" };
+      await h.handler.reconcileOnce();
+      await h.handler.reconcileOnce();
+      expect(h.logger.error).toHaveBeenCalledTimes(1);
+      expect(holds()).toBe(2); // the reason changed to "app is tampered"
+
+      app = APP;
+      await h.handler.reconcileOnce(); // back to the kind hold
+      app = { ...APP, tampered: true, tamperReason: "x" };
+      await h.handler.reconcileOnce(); // resolved in between, so logged again
+      expect(h.logger.error).toHaveBeenCalledTimes(2);
+    });
+
+    it("logs the dry-run summary only when it changes", async () => {
+      const h = harness({ cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: true } });
+      await h.handler.reconcileOnce();
+      await h.handler.reconcileOnce();
+      expect(h.logger.info.mock.calls.filter((c) => String(c[0]).includes("dry run"))).toHaveLength(1);
+    });
+
+    it("forgets nothing after an aborted tick", async () => {
+      let fail = false;
+      const h = harness({
+        app: async () => ({ ...APP, tampered: true, tamperReason: "x" }),
+        environmentAppIds: async () => { if (fail) throw new Error("db"); return []; },
+      });
+      await h.handler.reconcileOnce();
+      fail = true;
+      await expect(h.handler.reconcileOnce()).rejects.toThrow("db");
+      fail = false;
+      await h.handler.reconcileOnce();
+      expect(h.logger.error).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("a hung call cannot stall the handler", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("fails a step that does not settle within stepTimeoutMs and carries on", async () => {
+      vi.useFakeTimers();
+      const provision = vi.fn((input: { root: string }) =>
+        input.root === "l1"
+          ? new Promise<LicenseEnvironments>(() => {})
+          : Promise.resolve({ environment_id: `env-${input.root}` } as LicenseEnvironments));
+      const h = harness({ provision, cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, stepTimeoutMs: 120_000 } }, [lic("l1"), lic("l2")]);
+      const done = h.handler.reconcileOnce();
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(provision).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(h.staged).toStrictEqual([["l2", "env-l2"]]);
+      warned(h, "provision of l1 for app app-1 failed: StepTimeoutError: provision of l1 (app app-1) timed out after 120000ms");
+    });
+
+    it("fails a tick whose reads hang, so the next tick runs", async () => {
+      vi.useFakeTimers();
+      let hang = true;
+      const licences = vi.fn(() => (hang ? new Promise<LicenceRecord[]>(() => {}) : Promise.resolve([lic("l1")])));
+      const h = harness({ licences, cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, scanIntervalMs: 200_000, stepTimeoutMs: 1_000 } });
+      h.handler.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      warned(h, "handler tick failed: StepTimeoutError: licence reads timed out after 1000ms");
+      hang = false;
+      await vi.advanceTimersByTimeAsync(200_000);
+      h.handler.stop();
+      expect(h.provisioned).toStrictEqual(["l1"]);
     });
   });
 });

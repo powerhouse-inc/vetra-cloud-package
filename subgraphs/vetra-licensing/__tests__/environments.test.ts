@@ -77,6 +77,36 @@ describe("provisionChain", () => {
     expect(executed[1]!.actions.map((a) => a.type)).not.toContain("SET_OWNER");
   });
 
+  it("re-templates as a floor: no label, nothing removed, and nothing dispatched when already met", async () => {
+    await provisionChain(deps, input());
+    const live = { status: "READY", label: "Renamed by holder", packages: [{ registry: "r", name: "@me/extra", version: "1.0.0" }], services: [{ type: "CONNECT", prefix: "connect", enabled: true, version: null }], fusion: null };
+    states.set("env-1", live as never);
+    // A template that only drops things: the floor is already met.
+    const row = await provisionChain(deps, input({ templateHash: "h2", label: "Pro", template: { ...TEMPLATE, services: [] } }));
+    expect(executed).toHaveLength(1);
+    expect(row).toMatchObject({ template_hash: "h2", label: "My vault" });
+    expect(await deps.rows.byRoot("l1")).toMatchObject({ template_hash: "h2", label: "My vault" });
+    // A template that adds a service: only that, plus approval.
+    await provisionChain(deps, input({ templateHash: "h3", label: "Pro", template: { ...TEMPLATE, services: [{ id: "s", type: "CONNECT", prefix: null }, { id: "w", type: "SWITCHBOARD", prefix: null }] } }));
+    expect(executed[1]!.actions.map((a) => a.type)).toStrictEqual(["ENABLE_SERVICE", "APPROVE_CHANGES"]);
+  });
+
+  it("deletes its fresh document when the claim itself fails", async () => {
+    deps.rows.claim = async () => { throw new Error("insert failed"); };
+    await expect(provisionChain(deps, input())).rejects.toThrow("insert failed");
+    expect(deps.envs.delete).toHaveBeenCalledWith("env-1");
+    expect(states.size).toBe(0);
+  });
+
+  it("logs when the fresh document of a failed claim cannot be deleted either", async () => {
+    const error = vi.fn();
+    deps.logger = { error };
+    deps.rows.claim = async () => { throw new Error("insert failed"); };
+    deps.envs.delete = async () => { throw new Error("reactor down"); };
+    await expect(provisionChain(deps, input())).rejects.toThrow("insert failed");
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("fresh environment env-1 could not be deleted"));
+  });
+
   it("refuses to re-template a STOPPED environment until it is woken", async () => {
     await provisionChain(deps, input());
     states.get("env-1")!.status = "STOPPED";
