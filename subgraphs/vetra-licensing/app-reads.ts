@@ -58,7 +58,7 @@ export interface AppDocView {
    */
   tampered: boolean;
   tamperReason: string | null;
-  /** licensingStateHash over the document's raw templates and terms. */
+  /** licensingStateHash over the document's raw templates, terms and artifacts. */
   licensingStateHash: string;
   /**
    * No ledger row to check the licensing state against (licensing-ledger.ts):
@@ -190,7 +190,7 @@ export function parseAppDocument(doc: unknown): AppDocView | null {
     artifacts,
     tampered: false,
     tamperReason: null,
-    licensingStateHash: licensingStateHash(g.templates, g.terms),
+    licensingStateHash: licensingStateHash(g),
     unverified: true,
   };
 }

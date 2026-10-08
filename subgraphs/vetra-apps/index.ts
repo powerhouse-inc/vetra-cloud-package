@@ -21,6 +21,12 @@ import {
 } from "./app-doc-protection.js";
 import { studioPublisherAddress } from "../vetra-licensing/studio-app.js";
 import {
+  createAppStateLedger,
+  ensureAppLicensingStateTable,
+  type AppStateLedger,
+} from "../vetra-licensing/licensing-ledger.js";
+import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
+import {
   DRIFT_INTERVAL_MS,
   reportAppDocumentDrift,
 } from "./app-document-drift.js";
@@ -87,6 +93,26 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         )
       : undefined;
 
+    // The app-state ledger lives in the "vetra-licensing" namespace (one
+    // table, app_licensing_state). Every system write to an app document from
+    // here records into it, so artifacts registered by CI read as clean.
+    // Created here too because subgraph boot order is not fixed. Without it,
+    // writes are not recorded and licensing reads the documents as unverified.
+    let appLedger: AppStateLedger | undefined;
+    try {
+      const ledgerDb = (await this.relationalDb.createNamespace(
+        "vetra-licensing",
+      )) as unknown as Kysely<VetraLicensingDB>;
+      await ensureAppLicensingStateTable(ledgerDb as Kysely<any>);
+      appLedger = createAppStateLedger(ledgerDb, () =>
+        new Date().toISOString(),
+      );
+    } catch (err) {
+      console.error(
+        `[vetra-apps] app-state ledger unavailable, app document writes will not be recorded: ${String(err)}`,
+      );
+    }
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -98,7 +124,12 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
-      docs: createReactorAppDocStore(this.reactorClient as never, appDocProtect),
+      docs: createReactorAppDocStore(
+        this.reactorClient as never,
+        appDocProtect,
+        appLedger,
+        console,
+      ),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     deps.onPreviewRemoved = (app, preview, reason) =>
