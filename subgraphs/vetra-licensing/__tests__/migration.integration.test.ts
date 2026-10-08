@@ -6,7 +6,6 @@ import { ReactorBuilder, ReactorClientBuilder } from "@powerhousedao/reactor";
 import { createPresignedHeader, type Action } from "document-model";
 import { actions as appActions, utils as appUtils } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
-import { actions as typeActions } from "document-models/app-license-type";
 import { documentModels } from "../../../document-models/document-models.js";
 import { createReactorAppDocStore } from "../../vetra-apps/app-doc-store.js";
 import { createReactorEnvGateway } from "../../vetra-apps/envs.js";
@@ -17,7 +16,6 @@ import { APP_DOC_TYPE, createAppReads } from "../app-reads.js";
 import { createAppLedger, createAppLicensingWriter, reactorLedgerSource } from "../licensing-ledger.js";
 import { createReactorDocGateway } from "../doc-gateway.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
-import { createReactorLicenseTypeGateway } from "../license-type-gateway.js";
 import { createLifecycleStore } from "../lifecycle.js";
 import { createGrantStore } from "../grants.js";
 import { createReactorLicenseReads, findAllOfType, LICENSE_DOC_TYPE } from "../reads.js";
@@ -26,7 +24,7 @@ import { studioAccess, studioKeyForDid } from "../studio-access.js";
 import { createStudioAccessDeps } from "../studio-access-factory.js";
 import { renderCreateActions, templateHash, type TemplateShape } from "../template.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
-import { LEGACY_LICENSE_TYPE_DOC_TYPE, type LegacyAccessDB } from "../migration/legacy.js";
+import type { LegacyAccessDB } from "../migration/legacy.js";
 import { STUDIO_APP_ID, STUDIO_KIND, STUDIO_TERM_ID, STUDIO_TEMPLATE_ID } from "../migration/studio.js";
 import type { MigrationDeps } from "../migration/steps.js";
 import { runLicensingMigration } from "../migration/run.js";
@@ -147,25 +145,43 @@ async function legacyGrant(licenseId: string, app: string, type: string, holder:
   }).execute();
 }
 
+/**
+ * What release A left behind for one legacy licence type: its row in the type
+ * map and, when it had a term, the template and term on the app's document.
+ * The type document itself is gone (the model is unregistered).
+ */
 async function legacyType(input: {
   app: string; kind: string; label: string; validityDays: number; template: TemplateShape | null;
-  status: "DRAFT" | "ACTIVE" | "RETIRED";
+  status: "DRAFT" | "ACTIVE" | "RETIRED"; term: boolean;
 }): Promise<string> {
-  const gw = createReactorLicenseTypeGateway(client as never);
-  const id = await gw.create();
-  const acts: Action[] = [typeActions.setLicenseTypeDetails({ app: input.app, kind: input.kind, label: input.label, validityDays: input.validityDays })];
-  if (input.template) {
-    acts.push(typeActions.setTemplate({ size: input.template.size, baseDomain: input.template.baseDomain, packageRegistry: input.template.packageRegistry }));
-    for (const s of input.template.services) {
-      acts.push(typeActions.addTemplateService({ id: s.id, type: s.type as never, prefix: s.prefix, artifactName: s.artifactName, artifactChannel: null }));
+  const id = crypto.randomUUID();
+  const templateId = input.term && input.template ? `tpl-${id}` : null;
+  const termId = input.term ? `term-${id}` : null;
+  if (input.term) {
+    const acts: Action[] = [];
+    if (templateId && input.template) {
+      const tpl = input.template;
+      acts.push(
+        appActions.addTemplate({ id: templateId, name: input.label, mode: "DEDICATED" }),
+        appActions.setTemplateDetails({ id: templateId, size: tpl.size, baseDomain: tpl.baseDomain, packageRegistry: tpl.packageRegistry }),
+      );
+      for (const sv of tpl.services) {
+        acts.push(appActions.addTemplateService({
+          templateId, id: sv.id, type: sv.type as never, prefix: sv.prefix, artifactName: sv.artifactName, artifactChannel: null,
+        }));
+      }
+      for (const pk of tpl.packages) {
+        acts.push(appActions.addTemplatePackage({ templateId, id: pk.id, packageName: pk.packageName ?? "", version: pk.version }));
+      }
     }
-    for (const p of input.template.packages) {
-      acts.push(typeActions.addTemplatePackage({ id: p.id, packageName: p.packageName, version: p.version }));
-    }
+    acts.push(appActions.addTerm({ id: termId!, kind: input.kind, label: input.label, templateId, validityDays: input.validityDays, issuers: ["PUBLISHER_GRANT"] }));
+    if (input.status !== "DRAFT") acts.push(appActions.publishTerm({ id: termId! }));
+    if (input.status === "RETIRED") acts.push(appActions.retireTerm({ id: termId! }));
+    await appDocs.execute(input.app, acts);
   }
-  if (input.status !== "DRAFT") acts.push(typeActions.publishLicenseType({}));
-  if (input.status === "RETIRED") acts.push(typeActions.retireLicenseType({}));
-  await gw.execute(id, acts);
+  await db.insertInto("licensing_migration_type_map").values({
+    license_type_id: id, app_id: input.app, kind: input.kind, template_id: templateId ?? "", term_id: termId ?? "", created_at: NOW,
+  }).execute();
   return id;
 }
 
@@ -191,7 +207,7 @@ async function snapshot() {
     tables[t] = rows.map((r) => JSON.stringify(r)).sort();
   }
   const revisions: Record<string, unknown> = {};
-  for (const type of [APP_DOC_TYPE, LICENSE_DOC_TYPE, LEGACY_LICENSE_TYPE_DOC_TYPE, "powerhouse/vetra-cloud-environment"]) {
+  for (const type of [APP_DOC_TYPE, LICENSE_DOC_TYPE, "powerhouse/vetra-cloud-environment"]) {
     for (const d of (await findAllOfType(client as never, type)) as { header: { id: string; revision: unknown } }[]) {
       revisions[d.header.id] = d.header.revision;
     }
@@ -223,13 +239,12 @@ beforeAll(async () => {
   await appDocs.execute(APP_KV, [appActions.setAppDetails({ name: "KV", slug: "kv", owner: OWNER }), appActions.setStatus({ status: "ACTIVE" })]);
 
   // Legacy licence types. T_FREE is production's one: DRAFT, no template.
-  ids.T_FREE = await legacyType({ app: APP_DT, kind: "Free", label: "Friday", validityDays: 365, template: null, status: "DRAFT" });
-  ids.T_DEL = await legacyType({ app: APP_DEL, kind: "Gone", label: "Gone", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE" });
-  ids.T_PRO = await legacyType({ app: APP_KV, kind: "PRO", label: "Pro", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE" });
-  ids.T_OLD = await legacyType({ app: APP_KV, kind: "PRO", label: "Pro (old)", validityDays: 30, template: OLD_TEMPLATE, status: "RETIRED" });
-  // Anyone can create a licence-type document naming any app: no licence was
-  // ever issued on this one, so it must not become a live term (nor take the kind).
-  ids.T_FORGED = await legacyType({ app: APP_KV, kind: "PRO", label: "Forged", validityDays: 9999, template: PRO_TEMPLATE, status: "ACTIVE" });
+  ids.T_FREE = await legacyType({ app: APP_DT, kind: "Free", label: "Friday", validityDays: 365, template: null, status: "DRAFT", term: false });
+  ids.T_DEL = await legacyType({ app: APP_DEL, kind: "Gone", label: "Gone", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE", term: false });
+  ids.T_PRO = await legacyType({ app: APP_KV, kind: "PRO", label: "Pro", validityDays: 30, template: PRO_TEMPLATE, status: "ACTIVE", term: true });
+  ids.T_OLD = await legacyType({ app: APP_KV, kind: "PRO-old", label: "Pro (old)", validityDays: 30, template: OLD_TEMPLATE, status: "RETIRED", term: true });
+  // A type no licence was issued on: release A left it a DRAFT term.
+  ids.T_FORGED = await legacyType({ app: APP_KV, kind: "PRO-forged", label: "Forged", validityDays: 9999, template: PRO_TEMPLATE, status: "DRAFT", term: true });
 
   // Legacy licences of APP_KV.
   ids.L1 = await legacyLicence({ app: APP_KV, type: ids.T_PRO, holder: HOLDER_A, start: at(-40), end: at(20), status: "ACTIVE" });
@@ -314,7 +329,6 @@ beforeAll(async () => {
     db,
     accessDb,
     appRows: async () => appRows,
-    legacyTypeDocs: () => findAllOfType(client as never, LEGACY_LICENSE_TYPE_DOC_TYPE),
     licences: () => reads.allLicenceRecords(),
     apps: createAppReads(client as never, {
       ledger: appLedger.lookup,
@@ -351,14 +365,9 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect(protect).not.toHaveBeenCalled();
     expect(await db.selectFrom("licensing_migration_steps").selectAll().execute()).toStrictEqual([]);
 
-    // The licence type waits for its app's document; the DELETED app's is skipped, not pending.
-    expect(report.problems).toStrictEqual([
-      `licence type ${ids.T_FREE}: app ${APP_DT} has no document yet (waiting for the vetra-apps backfill)`,
-    ]);
-    expect(report.actions).toContain(
-      `licence type ${ids.T_DEL} ("Gone"): app ${APP_DEL} is DELETED; skipped, recorded in the type map without a term`,
-    );
-    expect(report.actions.filter((a) => a.startsWith(`app ${APP_KV}: licence type`))).toHaveLength(3);
+    // Licence types were migrated by release A: nothing about them is left to do or to read.
+    expect(report.problems).toStrictEqual([]);
+    expect(report.actions.filter((a) => a.includes("licence type"))).toStrictEqual([]);
     // Planned kinds carry into the licence plan: nothing is "not mapped yet".
     expect(report.actions).toContain(`licence ${ids.L1}: MIGRATE_LICENSE onto kind "PRO", holder ${didOf(HOLDER_A)}`);
     expect(report.actions.filter((a) => a.startsWith("studio: holder "))).toHaveLength(46);
@@ -370,50 +379,31 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     for (const code of ["cohort-1", "cohort-2", "lapsed", "filler-0"]) expect(logged).not.toContain(code);
     expect(logged).not.toContain("code#");
     expect(report.warnings.some((w) => w.includes("squatted"))).toBe(true);
-    expect(report.warnings).toContain(
-      `licence type ${ids.T_FORGED} is "ACTIVE" but no authorised licence was issued on it: its term stays DRAFT until the app's owner publishes it`,
-    );
 
     const lines = logger.warn.mock.calls.map((c) => String(c[0]));
     expect(lines).toContain(`[licensing] migration dry-run: ${moves[0]!}`);
     expect(logger.warn.mock.calls.map((c) => String(c[0]))).toContain(
-      `[licensing] migration (dry-run): ${report.actions.length} actions, 1 problems, ${report.warnings.length} warnings`,
+      `[licensing] migration (dry-run): ${report.actions.length} actions, 0 problems, ${report.warnings.length} warnings`,
     );
   });
 
-  it("apply migrates everything it can and is not complete while an app document is missing", async () => {
+  it("apply migrates everything and completes: the legacy licence types are read from the type map, never from documents", async () => {
+    const envsBefore = (await snapshot()).revisions;
+    const mapBefore = await db.selectFrom("licensing_migration_type_map").selectAll().execute();
     const report = await runLicensingMigration(deps);
-    expect(report.problems).toStrictEqual([
-      `licence type ${ids.T_FREE}: app ${APP_DT} has no document yet (waiting for the vetra-apps backfill)`,
-    ]);
-    expect(report.complete).toBe(false);
-    expect(await db.selectFrom("licensing_migration_steps").selectAll().execute()).toStrictEqual([]);
-  });
-
-  it("turns licence types into templates and terms with fidelity, through the ledger", async () => {
-    const app = (await deps.apps.app(APP_KV))!;
-    expect(app).toMatchObject({ tampered: false, unverified: false });
-    expect(app.terms.find((t) => t.id === `term-${ids.T_PRO}`)).toStrictEqual({
-      id: `term-${ids.T_PRO}`, kind: "PRO", label: "Pro", templateId: `tpl-${ids.T_PRO}`, validityDays: 30,
-      issuers: ["PUBLISHER_GRANT"], status: "ACTIVE",
-    });
-    const old = app.terms.find((t) => t.id === `term-${ids.T_OLD}`)!;
-    expect(old).toMatchObject({ kind: `PRO-${ids.T_OLD.slice(0, 8)}`, status: "RETIRED", label: "Pro (old)" });
-    // Unreferenced: DRAFT whatever the document says, and it never takes a referenced type's kind.
-    expect(app.terms.find((t) => t.id === `term-${ids.T_FORGED}`)).toMatchObject({
-      kind: `PRO-${ids.T_FORGED!.slice(0, 8)}`, status: "DRAFT", label: "Forged",
-    });
-    const tpl = app.templates.find((t) => t.id === `tpl-${ids.T_PRO}`)!;
-    expect(tpl).toMatchObject({ mode: "DEDICATED", name: "Pro" });
-    expect(tpl.template.services.map((s) => [s.type, s.prefix])).toStrictEqual([["CONNECT", "connect"], ["SWITCHBOARD", "switchboard"]]);
-    expect(tpl.template.packages).toStrictEqual([{ id: "p-kv", packageName: "@kv/pkg", version: "1.2.0" }]);
-    expect(await db.selectFrom("licensing_migration_type_map").select(["license_type_id", "app_id", "kind", "term_id"]).orderBy("license_type_id").execute())
-      .toStrictEqual([
-        { license_type_id: ids.T_DEL, app_id: APP_DEL, kind: "Gone", term_id: "" },
-        { license_type_id: ids.T_FORGED, app_id: APP_KV, kind: `PRO-${ids.T_FORGED!.slice(0, 8)}`, term_id: `term-${ids.T_FORGED}` },
-        { license_type_id: ids.T_OLD, app_id: APP_KV, kind: `PRO-${ids.T_OLD.slice(0, 8)}`, term_id: `term-${ids.T_OLD}` },
-        { license_type_id: ids.T_PRO, app_id: APP_KV, kind: "PRO", term_id: `term-${ids.T_PRO}` },
-      ].sort((a, b) => a.license_type_id.localeCompare(b.license_type_id)));
+    expect(report.problems).toStrictEqual([]);
+    expect(report.actions.filter((a) => a.includes("licence type"))).toStrictEqual([]);
+    expect(report.complete).toBe(true);
+    expect(await db.selectFrom("licensing_migration_steps").select("step").execute()).toStrictEqual([{ step: "complete" }]);
+    expect(logger.info).toHaveBeenCalledWith("[licensing] legacy licence types already migrated");
+    // The archive is kept as it was; no environment was touched.
+    expect(await db.selectFrom("licensing_migration_type_map").selectAll().execute()).toStrictEqual(mapBefore);
+    const after = (await snapshot()).revisions;
+    for (const id of [ids.ENV_A, ids.ENV_B]) expect(after[id]).toStrictEqual(envsBefore[id]);
+    // Every trusted app with a document is in the ledger: nothing reads as unverified.
+    for (const id of [APP_KV, STUDIO_APP_ID]) {
+      expect(await deps.apps.app(id)).toMatchObject({ unverified: false, tampered: false });
+    }
   });
 
   it("migrates licences onto kinds and DIDs, fills grants, and records the lifecycle of every chain member", async () => {
@@ -423,14 +413,14 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     const raw = await rawState(ids.L1);
     expect(Object.keys(raw)).not.toContain("licenseType");
     expect(Object.keys(raw)).not.toContain("issuedBy");
-    expect((await reads.licenceRecord(ids.L3))!.kind).toBe(`PRO-${ids.T_OLD.slice(0, 8)}`);
+    expect((await reads.licenceRecord(ids.L3))!.kind).toBe("PRO-old");
 
     expect(await db.selectFrom("app_license_grants").select(["license_id", "kind", "user_did"]).orderBy("license_id").execute())
       .toStrictEqual([
         { license_id: ids.L1, kind: "PRO", user_did: didOf(HOLDER_A) },
         { license_id: ids.L2, kind: "PRO", user_did: didOf(HOLDER_A) },
-        { license_id: ids.L3, kind: `PRO-${ids.T_OLD.slice(0, 8)}`, user_did: didOf(HOLDER_B) },
-        { license_id: ids.L5, kind: `PRO-${ids.T_OLD.slice(0, 8)}`, user_did: didOf(HOLDER_C) },
+        { license_id: ids.L3, kind: "PRO-old", user_did: didOf(HOLDER_B) },
+        { license_id: ids.L5, kind: "PRO-old", user_did: didOf(HOLDER_C) },
         { license_id: ids.L6, kind: "PRO", user_did: didOf(HOLDER_C) },
         ...(await db.selectFrom("app_license_grants").select(["license_id", "kind", "user_did"]).where("app_id", "=", STUDIO_APP_ID).execute()),
       ].sort((a, b) => a.license_id.localeCompare(b.license_id)));
@@ -516,38 +506,6 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect(await db.selectFrom("invite_redemptions").select("user_did").where("user_did", "like", "did:pkh:eip155:137:%").execute()).toStrictEqual([]);
   });
 
-  it("a second apply changes nothing while still waiting", async () => {
-    const before = await snapshot();
-    const report = await runLicensingMigration(deps);
-    expect(report.actions).toStrictEqual([]);
-    expect(report.complete).toBe(false);
-    expect(await snapshot()).toStrictEqual(before);
-  });
-
-  it("completes once the backfill creates the app document, and never touches an environment", async () => {
-    await appDocs.create(APP_DT);
-    await appDocs.execute(APP_DT, [appActions.setAppDetails({ name: "dtbau", slug: "dtbau-package", owner: OWNER }), appActions.setStatus({ status: "ACTIVE" })]);
-    const envsBefore = (await snapshot()).revisions;
-    const report = await runLicensingMigration(deps);
-    expect(report.problems).toStrictEqual([]);
-    expect(report.actions).toStrictEqual([
-      `app ${APP_DT}: licence type ${ids.T_FREE} ("Friday") -> term term-${ids.T_FREE} (kind "Free", DRAFT, 365 days, no template)`,
-    ]);
-    expect(report.complete).toBe(true);
-    expect(await db.selectFrom("licensing_migration_steps").select("step").execute()).toStrictEqual([{ step: "complete" }]);
-    const dt = (await deps.apps.app(APP_DT))!;
-    expect(dt.terms).toStrictEqual([{
-      id: `term-${ids.T_FREE}`, kind: "Free", label: "Friday", templateId: null, validityDays: 365, issuers: ["PUBLISHER_GRANT"], status: "DRAFT",
-    }]);
-    expect(dt.templates).toStrictEqual([]);
-    const after = (await snapshot()).revisions;
-    for (const id of [ids.ENV_A, ids.ENV_B]) expect(after[id]).toStrictEqual(envsBefore[id]);
-    // Every trusted app with a document is in the ledger: nothing reads as unverified.
-    for (const id of [APP_DT, APP_KV, STUDIO_APP_ID]) {
-      expect(await deps.apps.app(id)).toMatchObject({ unverified: false, tampered: false });
-    }
-  });
-
   it("a run after completion changes nothing", async () => {
     const before = await snapshot();
     const report = await runLicensingMigration(deps);
@@ -576,24 +534,11 @@ describe("startup migration on production-shaped data", { timeout: 60_000 }, () 
     expect((await holderLicences(STUDIO_APP_ID, didOf(h7.address))).map((l) => l.status)).toStrictEqual(["EXPIRED"]);
   });
 
-  it("deletes the legacy licence types only when asked, after completion, archiving each one", async () => {
-    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(5);
-    await runLicensingMigration({ ...deps, cfg: { ...deps.cfg, migration: "dry-run", deleteLicenseTypes: true } });
-    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(5);
+  it("asking for the legacy licence types to be deleted is a no-op now: the type map archive stays, nothing is written", async () => {
+    const before = await snapshot();
     const report = await runLicensingMigration({ ...deps, cfg: { ...deps.cfg, deleteLicenseTypes: true } });
-    expect(report.problems).toStrictEqual([]);
-    expect(report.actions.filter((a) => a.startsWith("delete licence type document "))).toHaveLength(5);
-    expect(report.deletionComplete).toBe(true);
-    expect(await countOf(LEGACY_LICENSE_TYPE_DOC_TYPE)).toBe(0);
-    const archived = await db.selectFrom("licensing_migration_steps").selectAll().where("step", "like", "legacy-license-type:%").execute();
-    expect(archived.map((r) => r.step).sort()).toStrictEqual(
-      [ids.T_FREE, ids.T_DEL, ids.T_PRO, ids.T_OLD, ids.T_FORGED].map((id) => `legacy-license-type:${id}`).sort(),
-    );
-    expect(JSON.parse(archived.find((r) => r.step.endsWith(ids.T_FREE!))!.detail!)).toMatchObject({ kind: "Free", label: "Friday", validityDays: 365, template: null });
-    expect(logger.warn.mock.calls.map((c) => String(c[0]))).toContain(
-      "[licensing] migration: deleted 5 app-license-type document(s); none remain",
-    );
-    // Licences and environments are untouched by the deletion.
-    expect(await db.selectFrom("license_environments").selectAll().execute()).toHaveLength(2);
+    expect(report).toMatchObject({ problems: [], actions: [], complete: true, deletionComplete: true });
+    expect(await snapshot()).toStrictEqual(before);
+    expect(await db.selectFrom("licensing_migration_type_map").selectAll().execute()).toHaveLength(5);
   });
 });

@@ -12,10 +12,6 @@
       "name": "Vetra Cloud Environment"
     },
     {
-      "id": "powerhouse/app-license-type",
-      "name": "AppLicenseType"
-    },
-    {
       "id": "powerhouse/app-owner-license",
       "name": "AppOwnerLicense"
     },
@@ -31,13 +27,6 @@
       "name": "vetra-cloud-environment",
       "documentTypes": [
         "powerhouse/vetra-cloud-environment"
-      ]
-    },
-    {
-      "id": "app-license-type",
-      "name": "app-license-type",
-      "documentTypes": [
-        "powerhouse/app-license-type"
       ]
     }
   ],
