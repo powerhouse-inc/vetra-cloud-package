@@ -62,12 +62,58 @@ export type Scalars = {
   Upload: { input: File; output: File };
 };
 
+export type AddTemplateInput = {
+  id: Scalars["OID"]["input"];
+  mode: TemplateInstanceMode;
+  name?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type AddTemplatePackageInput = {
+  id: Scalars["OID"]["input"];
+  packageName: Scalars["String"]["input"];
+  templateId: Scalars["OID"]["input"];
+  version?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type AddTemplateServiceInput = {
+  artifactChannel?: InputMaybe<AutoUpdateChannel>;
+  artifactName?: InputMaybe<Scalars["String"]["input"]>;
+  id: Scalars["OID"]["input"];
+  prefix?: InputMaybe<Scalars["String"]["input"]>;
+  templateId: Scalars["OID"]["input"];
+  type: TemplateServiceType;
+};
+
+export type AddTermInput = {
+  id: Scalars["OID"]["input"];
+  issuers?: InputMaybe<Array<LicenseIssuerKind>>;
+  kind: Scalars["String"]["input"];
+  label?: InputMaybe<Scalars["String"]["input"]>;
+  templateId?: InputMaybe<Scalars["OID"]["input"]>;
+  validityDays?: InputMaybe<Scalars["Int"]["input"]>;
+};
+
 export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
 
 export type ConnectRepositoryInput = {
   fullName?: InputMaybe<Scalars["String"]["input"]>;
   productionBranch?: InputMaybe<Scalars["String"]["input"]>;
   repositoryId?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type DeleteTemplateInput = {
+  id: Scalars["OID"]["input"];
+};
+
+export type LicenseIssuerKind =
+  | "ACHRA_SUBSCRIPTION"
+  | "INVITE_CODE"
+  | "PUBLISHER_GRANT";
+
+export type LicenseTermStatus = "ACTIVE" | "DRAFT" | "RETIRED";
+
+export type PublishTermInput = {
+  id: Scalars["OID"]["input"];
 };
 
 export type RecordArtifactVersionInput = {
@@ -78,6 +124,20 @@ export type RecordArtifactVersionInput = {
   reference: Scalars["String"]["input"];
   runId?: InputMaybe<Scalars["String"]["input"]>;
   version: Scalars["String"]["input"];
+};
+
+export type RemoveTemplatePackageInput = {
+  id: Scalars["OID"]["input"];
+  templateId: Scalars["OID"]["input"];
+};
+
+export type RemoveTemplateServiceInput = {
+  id: Scalars["OID"]["input"];
+  templateId: Scalars["OID"]["input"];
+};
+
+export type RetireTermInput = {
+  id: Scalars["OID"]["input"];
 };
 
 export type SetAppDetailsInput = {
@@ -112,6 +172,50 @@ export type SetStatusInput = {
   status: VetraAppStatus;
 };
 
+export type SetTemplateDetailsInput = {
+  baseDomain?: InputMaybe<Scalars["String"]["input"]>;
+  id: Scalars["OID"]["input"];
+  mode?: InputMaybe<TemplateInstanceMode>;
+  name?: InputMaybe<Scalars["String"]["input"]>;
+  packageRegistry?: InputMaybe<Scalars["URL"]["input"]>;
+  sharedEnvironment?: InputMaybe<Scalars["PHID"]["input"]>;
+  size?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type SetTermDetailsInput = {
+  id: Scalars["OID"]["input"];
+  issuers?: InputMaybe<Array<LicenseIssuerKind>>;
+  kind?: InputMaybe<Scalars["String"]["input"]>;
+  label?: InputMaybe<Scalars["String"]["input"]>;
+  templateId?: InputMaybe<Scalars["OID"]["input"]>;
+  validityDays?: InputMaybe<Scalars["Int"]["input"]>;
+};
+
+export type TemplateInstanceMode = "DEDICATED" | "SHARED";
+
+export type TemplatePackage = {
+  id: Scalars["OID"]["output"];
+  packageName: Maybe<Scalars["String"]["output"]>;
+  version: Maybe<Scalars["String"]["output"]>;
+};
+
+export type TemplateService = {
+  artifactChannel: Maybe<AutoUpdateChannel>;
+  artifactName: Maybe<Scalars["String"]["output"]>;
+  id: Scalars["OID"]["output"];
+  prefix: Maybe<Scalars["String"]["output"]>;
+  type: TemplateServiceType;
+};
+
+export type TemplateServiceType =
+  | "CLINT"
+  | "CONNECT"
+  | "DOCLING"
+  | "FUSION"
+  | "PAPERLESS"
+  | "SPECKLE"
+  | "SWITCHBOARD";
+
 export type VetraAppArtifact = {
   channels: Array<VetraAppArtifactChannel>;
   id: Scalars["OID"]["output"];
@@ -135,9 +239,31 @@ export type VetraAppArtifactVersion = {
   version: Scalars["String"]["output"];
 };
 
+export type VetraAppEnvironmentTemplate = {
+  baseDomain: Maybe<Scalars["String"]["output"]>;
+  id: Scalars["OID"]["output"];
+  mode: TemplateInstanceMode;
+  name: Maybe<Scalars["String"]["output"]>;
+  packageRegistry: Maybe<Scalars["URL"]["output"]>;
+  packages: Array<TemplatePackage>;
+  services: Array<TemplateService>;
+  sharedEnvironment: Maybe<Scalars["PHID"]["output"]>;
+  size: Maybe<Scalars["String"]["output"]>;
+};
+
 export type VetraAppIdentity = {
   did: Maybe<Scalars["String"]["output"]>;
   expiresAt: Maybe<Scalars["DateTime"]["output"]>;
+};
+
+export type VetraAppLicenseTerm = {
+  id: Scalars["OID"]["output"];
+  issuers: Array<LicenseIssuerKind>;
+  kind: Scalars["String"]["output"];
+  label: Maybe<Scalars["String"]["output"]>;
+  status: LicenseTermStatus;
+  templateId: Maybe<Scalars["OID"]["output"]>;
+  validityDays: Maybe<Scalars["Int"]["output"]>;
 };
 
 export type VetraAppPreviews = {
@@ -162,6 +288,8 @@ export type VetraAppState = {
   repository: Maybe<VetraAppRepository>;
   slug: Maybe<Scalars["String"]["output"]>;
   status: VetraAppStatus;
+  templates: Array<VetraAppEnvironmentTemplate>;
+  terms: Array<VetraAppLicenseTerm>;
 };
 
 export type VetraAppStatus =

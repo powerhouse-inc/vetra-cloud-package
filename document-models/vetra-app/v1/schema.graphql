@@ -29,6 +29,8 @@ type VetraAppState {
   productionEnvironmentId: OID
   previews: VetraAppPreviews
   artifacts: [VetraAppArtifact!]!
+  templates: [VetraAppEnvironmentTemplate!]!
+  terms: [VetraAppLicenseTerm!]!
 }
 
 enum VetraAppStatus {
@@ -87,6 +89,69 @@ enum AutoUpdateChannel {
   LATEST
 }
 
+type VetraAppEnvironmentTemplate {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode!
+  sharedEnvironment: PHID
+  services: [TemplateService!]!
+  packages: [TemplatePackage!]!
+  size: String
+  baseDomain: String
+  packageRegistry: URL
+}
+
+enum TemplateInstanceMode {
+  SHARED
+  DEDICATED
+}
+
+type TemplateService {
+  id: OID!
+  type: TemplateServiceType!
+  prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
+}
+
+enum TemplateServiceType {
+  CONNECT
+  SWITCHBOARD
+  FUSION
+  CLINT
+  DOCLING
+  PAPERLESS
+  SPECKLE
+}
+
+type TemplatePackage {
+  id: OID!
+  packageName: String
+  version: String
+}
+
+type VetraAppLicenseTerm {
+  id: OID!
+  kind: String!
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]!
+  status: LicenseTermStatus!
+}
+
+enum LicenseTermStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum LicenseIssuerKind {
+  INVITE_CODE
+  PUBLISHER_GRANT
+  ACHRA_SUBSCRIPTION
+}
+
 # app
 
 input SetAppDetailsInput {
@@ -135,4 +200,78 @@ input SetArtifactChannelInput {
   name: String!
   channel: AutoUpdateChannel!
   version: String!
+}
+
+# licensing
+
+input AddTemplateInput {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode!
+}
+
+input SetTemplateDetailsInput {
+  id: OID!
+  name: String
+  mode: TemplateInstanceMode
+  sharedEnvironment: PHID
+  size: String
+  baseDomain: String
+  packageRegistry: URL
+}
+
+input AddTemplateServiceInput {
+  templateId: OID!
+  id: OID!
+  type: TemplateServiceType!
+  prefix: String
+  artifactName: String
+  artifactChannel: AutoUpdateChannel
+}
+
+input RemoveTemplateServiceInput {
+  templateId: OID!
+  id: OID!
+}
+
+input AddTemplatePackageInput {
+  templateId: OID!
+  id: OID!
+  packageName: String!
+  version: String
+}
+
+input RemoveTemplatePackageInput {
+  templateId: OID!
+  id: OID!
+}
+
+input DeleteTemplateInput {
+  id: OID!
+}
+
+input AddTermInput {
+  id: OID!
+  kind: String!
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]
+}
+
+input SetTermDetailsInput {
+  id: OID!
+  kind: String
+  label: String
+  templateId: OID
+  validityDays: Int
+  issuers: [LicenseIssuerKind!]
+}
+
+input PublishTermInput {
+  id: OID!
+}
+
+input RetireTermInput {
+  id: OID!
 }

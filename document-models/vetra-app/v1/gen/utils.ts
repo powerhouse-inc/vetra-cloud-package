@@ -34,6 +34,8 @@ export const initialGlobalState: VetraAppGlobalState = {
   productionEnvironmentId: null,
   previews: null,
   artifacts: [],
+  templates: [],
+  terms: [],
 };
 export const initialLocalState: VetraAppLocalState = {};
 

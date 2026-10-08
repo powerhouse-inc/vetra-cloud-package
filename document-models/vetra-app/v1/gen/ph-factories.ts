@@ -24,6 +24,8 @@ export function defaultGlobalState(): VetraAppGlobalState {
     productionEnvironmentId: null,
     previews: null,
     artifacts: [],
+    templates: [],
+    terms: [],
   };
 }
 
