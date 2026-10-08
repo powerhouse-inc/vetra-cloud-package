@@ -225,10 +225,18 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("detail", "text")
     .addPrimaryKeyConstraint("licensing_migration_steps_pkey", ["step"])
     .ifNotExists().execute();
+
+  await db.schema.createTable("app_licensing_state")
+    .addColumn("app_id", "text", (c) => c.notNull())
+    .addColumn("state_hash", "text", (c) => c.notNull())
+    .addColumn("updated_at", "text", (c) => c.notNull())
+    .addPrimaryKeyConstraint("app_licensing_state_pkey", ["app_id"])
+    .ifNotExists().execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "app_licensing_state",
     "licensing_migration_steps",
     "licensing_migration_type_map",
     "environment_reporting_tokens",

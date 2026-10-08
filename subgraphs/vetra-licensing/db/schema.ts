@@ -128,7 +128,19 @@ export interface LicensingMigrationSteps {
   detail: string | null;
 }
 
+/**
+ * The licensing-state ledger: sha256 of an app document's templates + terms as
+ * the system last wrote them. A document whose state hashes differently was
+ * changed outside Vetra and is held (see licensing-ledger.ts).
+ */
+export interface AppLicensingState {
+  app_id: string;
+  state_hash: string;
+  updated_at: string;
+}
+
 export interface VetraLicensingDB {
+  app_licensing_state: AppLicensingState;
   app_license_grants: AppLicenseGrants;
   app_user_environments: AppUserEnvironments;
   app_environment_limits: AppEnvironmentLimits;

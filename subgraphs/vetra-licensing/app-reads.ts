@@ -4,6 +4,7 @@ import {
   type RelationshipClient,
 } from "../vetra-apps/app-doc-protection.js";
 import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
+import { licensingStateHash } from "./licensing-ledger.js";
 import type { AppArtifact, LicenseClientLike } from "./reads.js";
 import { templateHash, type TemplateService, type TemplateShape } from "./template.js";
 import { resolveTemplateArtifacts, templateNeedsArtifacts } from "./artifact-resolution.js";
@@ -57,6 +58,14 @@ export interface AppDocView {
    */
   tampered: boolean;
   tamperReason: string | null;
+  /** licensingStateHash over the document's raw templates and terms. */
+  licensingStateHash: string;
+  /**
+   * No ledger row to check the licensing state against (licensing-ledger.ts):
+   * neither verified nor tampered. Acceptable only until the migration seeds
+   * the ledger; after that the keeper must hold an unverified app.
+   */
+  unverified: boolean;
 }
 
 const TERM_STATUSES = ["DRAFT", "ACTIVE", "RETIRED"] as const;
@@ -181,6 +190,8 @@ export function parseAppDocument(doc: unknown): AppDocView | null {
     artifacts,
     tampered: false,
     tamperReason: null,
+    licensingStateHash: licensingStateHash(g.templates, g.terms),
+    unverified: true,
   };
 }
 
@@ -240,6 +251,8 @@ export interface AppReadsOptions {
   /** Ids an app document must have to be trusted by slug. */
   trustedIds?: () => Promise<ReadonlySet<string>>;
   logger?: Pick<Console, "warn" | "error">;
+  /** The recorded licensing-state hash of an app, null when none was recorded. */
+  ledger?: (appId: string) => Promise<string | null>;
 }
 
 export function createAppReads(
@@ -247,13 +260,27 @@ export function createAppReads(
   opts: AppReadsOptions = {},
 ): AppReads {
   const logger = opts.logger ?? console;
-  /** Fills in `tampered`. A failed relationship read propagates: unknown is not clean. */
+  /**
+   * Fills in `tampered` and `unverified`. Two independent checks, either of
+   * which holds the app: a parent relationship (whose grants can write it), and
+   * a licensing state that differs from what the system last recorded. A
+   * failed lookup propagates: unknown integrity is not clean.
+   */
   async function withIntegrity(view: AppDocView): Promise<AppDocView> {
+    const reasons: string[] = [];
     const parents = await incomingParentIds(client, view.id);
-    if (parents.length === 0) return view;
-    const reason = `has parent document(s) ${parents.join(", ")}, whose grants can write it`;
+    if (parents.length > 0) {
+      reasons.push(`has parent document(s) ${parents.join(", ")}, whose grants can write it`);
+    }
+    const recorded = opts.ledger ? await opts.ledger(view.id) : null;
+    if (recorded !== null && recorded !== view.licensingStateHash) {
+      reasons.push("licensing state changed outside Vetra");
+    }
+    const unverified = recorded === null;
+    if (reasons.length === 0) return { ...view, unverified };
+    const reason = reasons.join("; ");
     logger.error(`[licensing] app document ${view.id} is TAMPERED (${reason}); holding everything read from it`);
-    return { ...view, tampered: true, tamperReason: reason };
+    return { ...view, tampered: true, tamperReason: reason, unverified };
   }
   async function allDocs(): Promise<unknown[]> {
     const out: unknown[] = [];

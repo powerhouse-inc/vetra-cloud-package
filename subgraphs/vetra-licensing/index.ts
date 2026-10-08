@@ -14,6 +14,7 @@ import { createReactorLicenseReads } from "./reads.js";
 import { createAppReads } from "./app-reads.js";
 import { createOwnerAppLookup } from "./owner-apps.js";
 import { STUDIO_APP_ID, studioPublisherAddress } from "./studio-app.js";
+import { createLedgerLookup } from "./licensing-ledger.js";
 import {
   createAppDocOwnerResolver,
   sweepAppDocumentProtection,
@@ -152,6 +153,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         .executeTakeFirst()
         .then((r) => r?.owner_address ?? null);
     const appReads = createAppReads(this.reactorClient as never, {
+      // Templates/terms that differ from what the system last wrote: held.
+      ledger: createLedgerLookup(db),
       // Only an app with a row, or the studio app, is trusted by slug.
       trustedIds: async () =>
         new Set([
