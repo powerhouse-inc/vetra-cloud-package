@@ -105,6 +105,10 @@ export type DeleteTemplateInput = {
   id: Scalars["OID"]["input"];
 };
 
+export type DeleteTermInput = {
+  id: Scalars["OID"]["input"];
+};
+
 export type LicenseIssuerKind =
   | "ACHRA_SUBSCRIPTION"
   | "INVITE_CODE"

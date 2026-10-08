@@ -10,6 +10,7 @@ import type {
   AddTemplateServiceAction,
   AddTermAction,
   DeleteTemplateAction,
+  DeleteTermAction,
   PublishTermAction,
   RemoveTemplatePackageAction,
   RemoveTemplateServiceAction,
@@ -72,6 +73,11 @@ export interface VetraAppLicensingOperations {
   retireTermOperation: (
     state: VetraAppGlobalState,
     action: RetireTermAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  deleteTermOperation: (
+    state: VetraAppGlobalState,
+    action: DeleteTermAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

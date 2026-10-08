@@ -5,6 +5,7 @@ import {
   addTemplateService,
   addTerm,
   deleteTemplate,
+  deleteTerm,
   publishTerm,
   reducer,
   removeTemplatePackage,
@@ -570,6 +571,11 @@ describe("licensing: errors", () => {
       "term zz does not exist",
     ],
     [
+      "delete unknown term",
+      () => run(base(), deleteTerm({ id: "zz" })),
+      "term zz does not exist",
+    ],
+    [
       "retire a DRAFT",
       () => run(base(), retireTerm({ id: "k1" })),
       "only an ACTIVE term can be retired",
@@ -593,6 +599,19 @@ describe("licensing: errors", () => {
     );
     expect(doc.operations.global.filter((o) => o.error)).toStrictEqual([]);
     expect(doc.state.global.terms[0]!.kind).toBe("2027-pro");
+  });
+
+  it("deletes a term of any status, which frees its kind and its template", () => {
+    const doc = run(
+      base(),
+      publishTerm({ id: "k1" }),
+      deleteTerm({ id: "k1" }),
+      deleteTemplate({ id: "t1" }),
+      addTemplate({ id: "t1", name: null, mode: "SHARED" }),
+      addTerm({ id: "k9", kind: "2026-pro", label: null, templateId: "t1", validityDays: null, issuers: [] }),
+    );
+    expect(doc.operations.global.filter((o) => o.error)).toStrictEqual([]);
+    expect(doc.state.global.terms.map((t) => t.id)).toStrictEqual(["k9"]);
   });
 
   it("deletes an unused template", () => {

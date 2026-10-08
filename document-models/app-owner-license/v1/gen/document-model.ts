@@ -187,7 +187,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input MigrateLicenseInput {\n  kind: String!\n  user: String!\n  details: String\n}",
               template: "",
               reducer:
-                'if (!state.user) {\n  throw new NotIssuedError("this license has not been issued");\n}\nif (state.kind) {\n  throw new AlreadyMigratedError("this license already carries a kind");\n}\nstate.kind = action.input.kind;\nstate.user = action.input.user.toLowerCase();\nstate.details = action.input.details ?? null;',
+                'if (!state.user) {\n  throw new NotIssuedError("this license has not been issued");\n}\nif (state.kind) {\n  throw new AlreadyMigratedError("this license already carries a kind");\n}\nstate.kind = action.input.kind;\nstate.user = action.input.user.toLowerCase();\nstate.details = action.input.details ?? null;\n// A snapshot stored before the reshape still carries the old keys; a\n// replay never has them. Drop both so the two converge.\nReflect.deleteProperty(state, "licenseType");\nReflect.deleteProperty(state, "issuedBy");',
               errors: [
                 {
                   id: "err-not-issued-migrate",

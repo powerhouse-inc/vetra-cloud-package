@@ -9,6 +9,7 @@ import type {
   AutoUpdateChannel,
   ConnectRepositoryInput,
   DeleteTemplateInput,
+  DeleteTermInput,
   LicenseIssuerKind,
   LicenseTermStatus,
   PublishTermInput,
@@ -142,6 +143,14 @@ export function ConnectRepositoryInputSchema(): z.ZodObject<
 
 export function DeleteTemplateInputSchema(): z.ZodObject<
   Properties<DeleteTemplateInput>
+> {
+  return z.object({
+    id: z.string(),
+  });
+}
+
+export function DeleteTermInputSchema(): z.ZodObject<
+  Properties<DeleteTermInput>
 > {
   return z.object({
     id: z.string(),

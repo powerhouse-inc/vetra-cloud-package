@@ -14,6 +14,7 @@ import {
   AddTermInputSchema,
   ConnectRepositoryInputSchema,
   DeleteTemplateInputSchema,
+  DeleteTermInputSchema,
   PublishTermInputSchema,
   RecordArtifactVersionInputSchema,
   RemoveTemplatePackageInputSchema,
@@ -258,6 +259,18 @@ const stateReducer: StateReducer<VetraAppPHState> = (
       RetireTermInputSchema().parse(action.input);
 
       vetraAppLicensingOperations.retireTermOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "DELETE_TERM": {
+      DeleteTermInputSchema().parse(action.input);
+
+      vetraAppLicensingOperations.deleteTermOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

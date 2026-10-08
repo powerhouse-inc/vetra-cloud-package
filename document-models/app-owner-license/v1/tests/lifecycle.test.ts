@@ -228,4 +228,27 @@ describe("AppOwnerLicense lifecycle", () => {
       ),
     ).toBe("this license has not been issued");
   });
+
+  it("drops the pre-terms licenseType and issuedBy keys of a stored snapshot", () => {
+    // A document stored before the reshape carries the old keys in its
+    // snapshot; a replay through the reshaped reducer never has them. The
+    // migration must leave both in the same state.
+    const legacy = reducer(
+      utils.createDocument(),
+      issue({ kind: null, details: null, licenseType: "type-1", user: LEGACY_USER }),
+    );
+    const snapshot: Doc = {
+      ...legacy,
+      state: {
+        ...legacy.state,
+        global: { ...legacy.state.global, licenseType: "type-1", issuedBy: LEGACY_BY } as Doc["state"]["global"],
+      },
+    };
+    const fromSnapshot = reducer(snapshot, migrateLicense({ kind: "k", user: DID }));
+    const fromReplay = reducer(legacy, migrateLicense({ kind: "k", user: DID }));
+    expect(err(fromSnapshot)).toBeUndefined();
+    expect(Object.keys(fromSnapshot.state.global)).not.toContain("licenseType");
+    expect(Object.keys(fromSnapshot.state.global)).not.toContain("issuedBy");
+    expect(fromSnapshot.state.global).toStrictEqual(fromReplay.state.global);
+  });
 });

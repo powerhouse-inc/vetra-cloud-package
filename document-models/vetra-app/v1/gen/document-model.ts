@@ -173,7 +173,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input AddTemplateInput {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode!\n}",
               template: "",
               reducer:
-                "const { templates } = licensingLists(state);\nif (templates.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTemplateError(`template ${action.input.id} already exists`);\n}\ntemplates.push({\n  id: action.input.id,\n  name: action.input.name ?? null,\n  mode: action.input.mode,\n  sharedEnvironment: null,\n  services: [],\n  packages: [],\n  size: null,\n  baseDomain: null,\n  packageRegistry: null,\n});",
+                "const { templates } = licensingLists(state);\nif (templates.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTemplateError(\n    `template ${action.input.id} already exists`,\n  );\n}\ntemplates.push({\n  id: action.input.id,\n  name: action.input.name ?? null,\n  mode: action.input.mode,\n  sharedEnvironment: null,\n  services: [],\n  packages: [],\n  size: null,\n  baseDomain: null,\n  packageRegistry: null,\n});",
               errors: [
                 {
                   id: "err-duplicate-template",
@@ -194,7 +194,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input SetTemplateDetailsInput {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode\n  sharedEnvironment: PHID\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n}",
               template: "",
               reducer:
-                'const t = findTemplate(state, action.input.id);\nconst mode = action.input.mode ?? t.mode;\nif (mode === "SHARED" && (t.services.length > 0 || t.packages.length > 0)) {\n  throw new SharedTemplateServicesError(\n    "a SHARED template provisions nothing; remove its services and packages first",\n  );\n}\nt.mode = mode;\n// A field that is absent (undefined or null) is left unchanged, so an\n// edit of one field cannot wipe another.\nif (action.input.name != null) t.name = action.input.name;\nif (action.input.sharedEnvironment != null)\n  t.sharedEnvironment = action.input.sharedEnvironment;\nif (action.input.size != null) t.size = action.input.size;\nif (action.input.baseDomain != null) t.baseDomain = action.input.baseDomain;\nif (action.input.packageRegistry != null)\n  t.packageRegistry = action.input.packageRegistry;',
+                'const t = findTemplate(state, action.input.id);\nconst mode = action.input.mode ?? t.mode;\nif (mode === "SHARED" && (t.services.length > 0 || t.packages.length > 0)) {\n  throw new SharedTemplateServicesError(\n    "a SHARED template provisions nothing; remove its services and packages first",\n  );\n}\nt.mode = mode;\n// undefined = unchanged, explicit null = clear.\nif (action.input.name !== undefined) t.name = action.input.name ?? null;\nif (action.input.sharedEnvironment !== undefined)\n  t.sharedEnvironment = action.input.sharedEnvironment ?? null;\nif (action.input.size !== undefined) t.size = action.input.size ?? null;\nif (action.input.baseDomain !== undefined)\n  t.baseDomain = action.input.baseDomain ?? null;\nif (action.input.packageRegistry !== undefined)\n  t.packageRegistry = action.input.packageRegistry ?? null;',
               errors: [
                 {
                   id: "err-template-not-found-details",
@@ -223,7 +223,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input AddTemplateServiceInput {\n  templateId: OID!\n  id: OID!\n  type: TemplateServiceType!\n  prefix: String\n  artifactName: String\n  artifactChannel: AutoUpdateChannel\n}",
               template: "",
               reducer:
-                'const t = findTemplate(state, action.input.templateId);\nif (t.mode === "SHARED") {\n  throw new SharedTemplateServicesError("a SHARED template carries no services");\n}\nif (t.services.some((s) => s.id === action.input.id)) {\n  throw new DuplicateServiceError(`service ${action.input.id} already exists`);\n}\nif (action.input.artifactName && action.input.type !== "FUSION") {\n  throw new ArtifactOnNonFusionServiceError(\n    `only a FUSION service can reference an artifact, not ${action.input.type}`,\n  );\n}\nt.services.push({\n  id: action.input.id,\n  type: action.input.type,\n  prefix: action.input.prefix ?? action.input.artifactName ?? null,\n  artifactName: action.input.artifactName ?? null,\n  artifactChannel: action.input.artifactName\n    ? (action.input.artifactChannel ?? "LATEST")\n    : null,\n});',
+                'const t = findTemplate(state, action.input.templateId);\nif (t.mode === "SHARED") {\n  throw new SharedTemplateServicesError(\n    "a SHARED template carries no services",\n  );\n}\nif (t.services.some((s) => s.id === action.input.id)) {\n  throw new DuplicateServiceError(\n    `service ${action.input.id} already exists`,\n  );\n}\nif (action.input.artifactName && action.input.type !== "FUSION") {\n  throw new ArtifactOnNonFusionServiceError(\n    `only a FUSION service can reference an artifact, not ${action.input.type}`,\n  );\n}\nt.services.push({\n  id: action.input.id,\n  type: action.input.type,\n  prefix: action.input.prefix ?? action.input.artifactName ?? null,\n  artifactName: action.input.artifactName ?? null,\n  artifactChannel: action.input.artifactName\n    ? (action.input.artifactChannel ?? "LATEST")\n    : null,\n});',
               errors: [
                 {
                   id: "err-template-not-found-add-service",
@@ -267,7 +267,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input RemoveTemplateServiceInput {\n  templateId: OID!\n  id: OID!\n}",
               template: "",
               reducer:
-                "const t = findTemplate(state, action.input.templateId);\nconst at = t.services.findIndex((s) => s.id === action.input.id);\nif (at === -1) {\n  throw new UnknownServiceError(`service ${action.input.id} does not exist`);\n}\nt.services.splice(at, 1);",
+                "const t = findTemplate(state, action.input.templateId);\nconst at = t.services.findIndex((s) => s.id === action.input.id);\nif (at === -1) {\n  throw new UnknownServiceError(\n    `service ${action.input.id} does not exist`,\n  );\n}\nt.services.splice(at, 1);",
               errors: [
                 {
                   id: "err-template-not-found-remove-service",
@@ -295,7 +295,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input AddTemplatePackageInput {\n  templateId: OID!\n  id: OID!\n  packageName: String!\n  version: String\n}",
               template: "",
               reducer:
-                'const t = findTemplate(state, action.input.templateId);\nif (t.mode === "SHARED") {\n  throw new SharedTemplateServicesError("a SHARED template carries no packages");\n}\nif (t.packages.some((p) => p.id === action.input.id)) {\n  throw new DuplicatePackageError(`package ${action.input.id} already exists`);\n}\nt.packages.push({\n  id: action.input.id,\n  packageName: action.input.packageName,\n  version: action.input.version ?? null,\n});',
+                'const t = findTemplate(state, action.input.templateId);\nif (t.mode === "SHARED") {\n  throw new SharedTemplateServicesError(\n    "a SHARED template carries no packages",\n  );\n}\nif (t.packages.some((p) => p.id === action.input.id)) {\n  throw new DuplicatePackageError(\n    `package ${action.input.id} already exists`,\n  );\n}\nt.packages.push({\n  id: action.input.id,\n  packageName: action.input.packageName,\n  version: action.input.version ?? null,\n});',
               errors: [
                 {
                   id: "err-template-not-found-add-package",
@@ -331,7 +331,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input RemoveTemplatePackageInput {\n  templateId: OID!\n  id: OID!\n}",
               template: "",
               reducer:
-                "const t = findTemplate(state, action.input.templateId);\nconst at = t.packages.findIndex((p) => p.id === action.input.id);\nif (at === -1) {\n  throw new UnknownPackageError(`package ${action.input.id} does not exist`);\n}\nt.packages.splice(at, 1);",
+                "const t = findTemplate(state, action.input.templateId);\nconst at = t.packages.findIndex((p) => p.id === action.input.id);\nif (at === -1) {\n  throw new UnknownPackageError(\n    `package ${action.input.id} does not exist`,\n  );\n}\nt.packages.splice(at, 1);",
               errors: [
                 {
                   id: "err-template-not-found-remove-package",
@@ -358,7 +358,7 @@ export const documentModel: DocumentModelGlobalState = {
               schema: "input DeleteTemplateInput {\n  id: OID!\n}",
               template: "",
               reducer:
-                "const { templates, terms } = licensingLists(state);\nconst at = templates.findIndex((t) => t.id === action.input.id);\nif (at === -1) {\n  throw new TemplateNotFoundError(`template ${action.input.id} does not exist`);\n}\nif (terms.some((t) => t.templateId === action.input.id)) {\n  throw new TemplateInUseError(`template ${action.input.id} is used by a term`);\n}\ntemplates.splice(at, 1);",
+                "const { templates, terms } = licensingLists(state);\nconst at = templates.findIndex((t) => t.id === action.input.id);\nif (at === -1) {\n  throw new TemplateNotFoundError(\n    `template ${action.input.id} does not exist`,\n  );\n}\nif (terms.some((t) => t.templateId === action.input.id)) {\n  throw new TemplateInUseError(\n    `template ${action.input.id} is used by a term`,\n  );\n}\ntemplates.splice(at, 1);",
               errors: [
                 {
                   id: "err-template-not-found-delete",
@@ -386,7 +386,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input AddTermInput {\n  id: OID!\n  kind: String!\n  label: String\n  templateId: OID\n  validityDays: Int\n  issuers: [LicenseIssuerKind!]\n}",
               template: "",
               reducer:
-                'const { templates, terms } = licensingLists(state);\nif (terms.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTermError(`term ${action.input.id} already exists`);\n}\nif (!isValidKind(action.input.kind)) {\n  throw new InvalidKindError("a kind must be non-blank without surrounding spaces");\n}\nif (terms.some((t) => t.kind === action.input.kind)) {\n  throw new DuplicateKindError(`kind ${action.input.kind} is already used by this app`);\n}\nif (action.input.templateId && !templates.some((t) => t.id === action.input.templateId)) {\n  throw new TemplateNotFoundError(`template ${action.input.templateId} does not exist`);\n}\nif (action.input.validityDays != null && action.input.validityDays <= 0) {\n  throw new NegativeValidityError("validityDays must be positive");\n}\nterms.push({\n  id: action.input.id,\n  kind: action.input.kind,\n  label: action.input.label ?? null,\n  templateId: action.input.templateId ?? null,\n  validityDays: action.input.validityDays ?? null,\n  issuers: [...new Set(action.input.issuers ?? [])],\n  status: "DRAFT",\n});',
+                'const { templates, terms } = licensingLists(state);\nif (terms.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTermError(`term ${action.input.id} already exists`);\n}\nif (!isValidKind(action.input.kind)) {\n  throw new InvalidKindError(\n    "a kind must be non-blank without surrounding spaces",\n  );\n}\nif (terms.some((t) => t.kind === action.input.kind)) {\n  throw new DuplicateKindError(\n    `kind ${action.input.kind} is already used by this app`,\n  );\n}\nif (\n  action.input.templateId &&\n  !templates.some((t) => t.id === action.input.templateId)\n) {\n  throw new TemplateNotFoundError(\n    `template ${action.input.templateId} does not exist`,\n  );\n}\nif (action.input.validityDays != null && action.input.validityDays <= 0) {\n  throw new NegativeValidityError("validityDays must be positive");\n}\nterms.push({\n  id: action.input.id,\n  kind: action.input.kind,\n  label: action.input.label ?? null,\n  templateId: action.input.templateId ?? null,\n  validityDays: action.input.validityDays ?? null,\n  issuers: [...new Set(action.input.issuers ?? [])],\n  status: "DRAFT",\n});',
               errors: [
                 {
                   id: "err-duplicate-term",
@@ -437,7 +437,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input SetTermDetailsInput {\n  id: OID!\n  kind: String\n  label: String\n  templateId: OID\n  validityDays: Int\n  issuers: [LicenseIssuerKind!]\n}",
               template: "",
               reducer:
-                'const { templates, terms } = licensingLists(state);\nconst term = findTerm(state, action.input.id);\nconst kind = action.input.kind;\nif (kind != null && kind !== term.kind) {\n  if (!isValidKind(kind)) {\n    throw new InvalidKindError("a kind must be non-blank without surrounding spaces");\n  }\n  // Licences carry the kind; once one could exist, renaming orphans it.\n  if (term.status !== "DRAFT") {\n    throw new KindImmutableError(`term ${term.id} is ${term.status}; its kind is fixed`);\n  }\n  if (terms.some((t) => t.id !== term.id && t.kind === kind)) {\n    throw new DuplicateKindError(`kind ${kind} is already used by this app`);\n  }\n}\nconst templateId =\n  action.input.templateId != null ? action.input.templateId : term.templateId;\nif (templateId && !templates.some((t) => t.id === templateId)) {\n  throw new TemplateNotFoundError(`template ${templateId} does not exist`);\n}\nif (action.input.validityDays != null && action.input.validityDays <= 0) {\n  throw new NegativeValidityError("validityDays must be positive");\n}\nconst issuers =\n  action.input.issuers != null ? [...new Set(action.input.issuers)] : term.issuers;\nif (term.status === "ACTIVE" && (!templateId || issuers.length === 0)) {\n  throw new TermIncompleteError("an ACTIVE term needs a template and at least one issuer");\n}\nif (kind != null) term.kind = kind;\nif (action.input.label != null) term.label = action.input.label;\nterm.templateId = templateId;\nif (action.input.validityDays != null)\n  term.validityDays = action.input.validityDays;\nterm.issuers = issuers;',
+                'const { templates, terms } = licensingLists(state);\nconst term = findTerm(state, action.input.id);\nconst kind = action.input.kind;\nif (kind != null && kind !== term.kind) {\n  if (!isValidKind(kind)) {\n    throw new InvalidKindError(\n      "a kind must be non-blank without surrounding spaces",\n    );\n  }\n  // Licences carry the kind; once one could exist, renaming orphans it.\n  if (term.status !== "DRAFT") {\n    throw new KindImmutableError(\n      `term ${term.id} is ${term.status}; its kind is fixed`,\n    );\n  }\n  if (terms.some((t) => t.id !== term.id && t.kind === kind)) {\n    throw new DuplicateKindError(\n      `kind ${kind} is already used by this app`,\n    );\n  }\n}\nconst templateId =\n  action.input.templateId !== undefined\n    ? (action.input.templateId ?? null)\n    : term.templateId;\nif (templateId && !templates.some((t) => t.id === templateId)) {\n  throw new TemplateNotFoundError(`template ${templateId} does not exist`);\n}\nif (action.input.validityDays != null && action.input.validityDays <= 0) {\n  throw new NegativeValidityError("validityDays must be positive");\n}\nconst issuers =\n  action.input.issuers != null\n    ? [...new Set(action.input.issuers)]\n    : term.issuers;\nif (term.status === "ACTIVE" && (!templateId || issuers.length === 0)) {\n  throw new TermIncompleteError(\n    "an ACTIVE term needs a template and at least one issuer",\n  );\n}\nif (kind != null) term.kind = kind;\nif (action.input.label !== undefined)\n  term.label = action.input.label ?? null;\nterm.templateId = templateId;\nif (action.input.validityDays !== undefined)\n  term.validityDays = action.input.validityDays ?? null;\nterm.issuers = issuers;',
               errors: [
                 {
                   id: "err-term-not-found-details",
@@ -502,7 +502,7 @@ export const documentModel: DocumentModelGlobalState = {
               schema: "input PublishTermInput {\n  id: OID!\n}",
               template: "",
               reducer:
-                'const term = findTerm(state, action.input.id);\nif (!term.templateId || term.issuers.length === 0) {\n  throw new TermIncompleteError("a term needs a template and at least one issuer to be published");\n}\nterm.status = "ACTIVE";',
+                'const term = findTerm(state, action.input.id);\nif (!term.templateId || term.issuers.length === 0) {\n  throw new TermIncompleteError(\n    "a term needs a template and at least one issuer to be published",\n  );\n}\nterm.status = "ACTIVE";',
               errors: [
                 {
                   id: "err-term-not-found-publish",
@@ -544,6 +544,27 @@ export const documentModel: DocumentModelGlobalState = {
                   name: "TermNotPublishedError",
                   code: "TERM_NOT_PUBLISHED",
                   description: "Only an ACTIVE term can be retired.",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-delete-term",
+              name: "DELETE_TERM",
+              description:
+                "Delete a term, whatever its status. System-only: the licensing migration uses it to strip foreign terms from a squatted studio document. A licence still carrying the kind no longer resolves and is held.",
+              schema: "input DeleteTermInput {\n  id: OID!\n}",
+              template: "",
+              reducer:
+                "const { terms } = licensingLists(state);\nconst at = terms.findIndex((t) => t.id === action.input.id);\nif (at === -1) {\n  throw new TermNotFoundError(`term ${action.input.id} does not exist`);\n}\nterms.splice(at, 1);",
+              errors: [
+                {
+                  id: "err-term-not-found-delete",
+                  name: "TermNotFoundError",
+                  code: "TERM_NOT_FOUND",
+                  description: "No such term.",
                   template: "",
                 },
               ],

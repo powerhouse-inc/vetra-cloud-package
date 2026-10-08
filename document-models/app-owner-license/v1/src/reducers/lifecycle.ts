@@ -90,5 +90,9 @@ export const appOwnerLicenseLifecycleOperations: AppOwnerLicenseLifecycleOperati
       state.kind = action.input.kind;
       state.user = action.input.user.toLowerCase();
       state.details = action.input.details ?? null;
+      // A snapshot stored before the reshape still carries the old keys; a
+      // replay never has them. Drop both so the two converge.
+      Reflect.deleteProperty(state, "licenseType");
+      Reflect.deleteProperty(state, "issuedBy");
     },
   };

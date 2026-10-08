@@ -188,4 +188,6 @@ export const errors = {
   PublishTerm: { TermNotFoundError, TermIncompleteError },
 
   RetireTerm: { TermNotFoundError, TermNotPublishedError },
+
+  DeleteTerm: { TermNotFoundError },
 };

@@ -9,6 +9,7 @@ import type {
   AddTemplateServiceInput,
   AddTermInput,
   DeleteTemplateInput,
+  DeleteTermInput,
   PublishTermInput,
   RemoveTemplatePackageInput,
   RemoveTemplateServiceInput,
@@ -58,6 +59,10 @@ export type RetireTermAction = Action & {
   type: "RETIRE_TERM";
   input: RetireTermInput;
 };
+export type DeleteTermAction = Action & {
+  type: "DELETE_TERM";
+  input: DeleteTermInput;
+};
 
 export type VetraAppLicensingAction =
   | AddTemplateAction
@@ -70,4 +75,5 @@ export type VetraAppLicensingAction =
   | AddTermAction
   | SetTermDetailsAction
   | PublishTermAction
-  | RetireTermAction;
+  | RetireTermAction
+  | DeleteTermAction;

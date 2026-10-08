@@ -494,6 +494,25 @@
               ],
               "examples": [],
               "scope": "global"
+            },
+            {
+              "id": "op-delete-term",
+              "name": "DELETE_TERM",
+              "description": "Delete a term, whatever its status. System-only: the licensing migration uses it to strip foreign terms from a squatted studio document. A licence still carrying the kind no longer resolves and is held.",
+              "schema": "input DeleteTermInput {\n  id: OID!\n}",
+              "template": "",
+              "reducer": "const { terms } = licensingLists(state);\nconst at = terms.findIndex((t) => t.id === action.input.id);\nif (at === -1) {\n  throw new TermNotFoundError(`term ${action.input.id} does not exist`);\n}\nterms.splice(at, 1);",
+              "errors": [
+                {
+                  "id": "err-term-not-found-delete",
+                  "name": "TermNotFoundError",
+                  "code": "TERM_NOT_FOUND",
+                  "description": "No such term.",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
             }
           ]
         }

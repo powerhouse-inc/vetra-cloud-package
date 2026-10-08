@@ -13,6 +13,7 @@ import {
   TemplateInUseError,
   TemplateNotFoundError,
   TermIncompleteError,
+  TermNotFoundError,
   TermNotPublishedError,
   UnknownPackageError,
   UnknownServiceError,
@@ -243,5 +244,13 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
       throw new TermNotPublishedError("only an ACTIVE term can be retired");
     }
     term.status = "RETIRED";
+  },
+  deleteTermOperation(state, action) {
+    const { terms } = licensingLists(state);
+    const at = terms.findIndex((t) => t.id === action.input.id);
+    if (at === -1) {
+      throw new TermNotFoundError(`term ${action.input.id} does not exist`);
+    }
+    terms.splice(at, 1);
   },
 };

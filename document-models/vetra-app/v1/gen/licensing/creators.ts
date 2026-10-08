@@ -9,6 +9,7 @@ import {
   AddTemplateServiceInputSchema,
   AddTermInputSchema,
   DeleteTemplateInputSchema,
+  DeleteTermInputSchema,
   PublishTermInputSchema,
   RemoveTemplatePackageInputSchema,
   RemoveTemplateServiceInputSchema,
@@ -22,6 +23,7 @@ import type {
   AddTemplateServiceInput,
   AddTermInput,
   DeleteTemplateInput,
+  DeleteTermInput,
   PublishTermInput,
   RemoveTemplatePackageInput,
   RemoveTemplateServiceInput,
@@ -35,6 +37,7 @@ import type {
   AddTemplateServiceAction,
   AddTermAction,
   DeleteTemplateAction,
+  DeleteTermAction,
   PublishTermAction,
   RemoveTemplatePackageAction,
   RemoveTemplateServiceAction,
@@ -139,5 +142,14 @@ export const retireTerm = (input: RetireTermInput) =>
     { ...input },
     undefined,
     RetireTermInputSchema,
+    "global",
+  );
+
+export const deleteTerm = (input: DeleteTermInput) =>
+  createAction<DeleteTermAction>(
+    "DELETE_TERM",
+    { ...input },
+    undefined,
+    DeleteTermInputSchema,
     "global",
   );
