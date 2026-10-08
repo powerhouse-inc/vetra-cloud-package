@@ -148,21 +148,17 @@ export async function runLicensingMigration(deps: MigrationDeps, opts: RunOption
 }
 
 /**
- * The release after this one removes the app-license-type model; documents
- * of that type it cannot load are stranded. Loud until they are gone.
+ * This release no longer has the app-license-type model, so legacy licence
+ * types can only come from the type map release A filled. Loud when it is
+ * empty and the migration never completed: release A has not run here.
  */
 export async function checkLegacyTypesCovered(deps: MigrationDeps): Promise<void> {
   try {
-    const docs = (await deps.legacyTypeDocs()).length;
-    if (docs === 0) return;
+    if (await isComplete(deps)) return;
     const mapped = (await deps.db.selectFrom("licensing_migration_type_map").select("license_type_id").execute()).length;
     if (mapped === 0) {
       deps.logger.error(
-        `[licensing] ${docs} app-license-type document(s) exist and the licensing migration has mapped none of them: run LICENSING_MIGRATION=apply, then LICENSING_MIGRATION_DELETE_LICENSE_TYPES=true, BEFORE deploying the release that removes the app-license-type model`,
-      );
-    } else {
-      deps.logger.warn(
-        `[licensing] ${docs} app-license-type document(s) remain (${mapped} mapped): set LICENSING_MIGRATION_DELETE_LICENSE_TYPES=true once the migration is complete`,
+        "[licensing] the licensing migration has not completed and the legacy licence type map is empty: this release must not run before release A's migration (the app-license-type model is gone, its documents cannot be read); deploy release A and run LICENSING_MIGRATION=apply with LICENSING_MIGRATION_DELETE_LICENSE_TYPES=true first",
       );
     }
   } catch (err) {

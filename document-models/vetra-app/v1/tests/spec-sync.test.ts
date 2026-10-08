@@ -18,7 +18,6 @@ const root = join(__dirname, "..", "..", "..");
  * model's own change (JSON is what codegen reads). Keyed "<model> <OP_NAME>".
  */
 const KNOWN_DRIFT = new Set([
-  "app-license-type ADD_TEMPLATE_SERVICE",
   "vetra-cloud-environment SET_OWNER",
   "vetra-cloud-environment SET_LABEL",
   "vetra-cloud-environment SET_GENERIC_SUBDOMAIN",

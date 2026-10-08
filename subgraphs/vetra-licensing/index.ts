@@ -17,8 +17,8 @@ import { studioPublisherAddress } from "./studio-app.js";
 import { createAppLicensingWriter } from "./licensing-ledger.js";
 import { createReactorAppDocStore } from "../vetra-apps/app-doc-store.js";
 import { createAppReads } from "./app-reads.js";
-import { findAllOfType } from "./reads.js";
-import { LEGACY_LICENSE_TYPE_DOC_TYPE, type LegacyAccessDB } from "./migration/legacy.js";
+
+import { type LegacyAccessDB } from "./migration/legacy.js";
 import { startLicensingMigration } from "./migration/run.js";
 import {
   createAppDocOwnerResolver,
@@ -452,7 +452,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         db,
         accessDb,
         appRows: () => appsDb.selectFrom("apps").select(["id", "status"]).execute(),
-        legacyTypeDocs: () => findAllOfType(this.reactorClient as never, LEGACY_LICENSE_TYPE_DOC_TYPE),
         licences: () => reads.allLicenceRecords(),
         apps: migrationAppReads,
         appWriter,
