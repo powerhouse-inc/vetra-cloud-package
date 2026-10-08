@@ -82,8 +82,6 @@ function openBaoTransit(): OpenBaoTransitClient | null {
   });
 }
 
-const UNDEFINED_TABLE = "42P01";
-
 /**
  * Licence lifecycle and environment provisioning. Owns its own relational
  * tables in an isolated namespace. The licences themselves are documents;
@@ -355,21 +353,16 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       licenseGateway: gateway,
       studio,
       secrets: secretsService,
-      tenantOwners: async (tenantId) => {
-        try {
-          const rows = await envDb
+      // A missing table (42P01) propagates: applyStudioKey fails closed.
+      tenantOwners: async (tenantId) =>
+        (
+          await envDb
             .selectFrom("environments")
             .select("owner")
             .where("tenantId", "=", tenantId)
-            .execute();
-          return rows.map((r) => r.owner?.toLowerCase() ?? null);
-        } catch (err) {
-          // The processor has not created its table in this deployment yet.
-          if ((err as { code?: string }).code === UNDEFINED_TABLE) return [];
-          throw err;
-        }
-      },
-      logger: console,
+            .execute()
+        ).map((r) => r.owner?.toLowerCase() ?? null),
+      tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
       now: () => new Date().toISOString(),
     }) as Record<string, Record<string, unknown>>;
 

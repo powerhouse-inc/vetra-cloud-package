@@ -243,8 +243,8 @@ type VetraSubscriptionsMutations {
 }
 ```
 
-Errors: `INVALID_CODE` (unknown, inactive, expired or exhausted — one code, so
-codes cannot be probed for state), `ALREADY_HOLDS` (redeeming a code for a kind
+Errors: `INVALID_CODE` (unknown, inactive, expired or exhausted, or its term
+or app cannot issue it — one code, so codes cannot be probed for state), `ALREADY_HOLDS` (redeeming a code for a kind
 the caller already holds ACTIVE where that cannot be a renewal: with `upgrades`,
 the licence it names is already that kind and the term has no validity limit;
 without `upgrades`, a SHARED kind the caller already holds ACTIVE), `NOT_FOUND`,
@@ -263,10 +263,14 @@ issue them; it needs no login. `mySubscriptions` lists the newest licence of
 each of the caller's chains (by grant row): always while ISSUED or ACTIVE; once
 ended, while the chain's environment still exists (offboarding) and otherwise
 for 90 days after it ended. `cancelSubscription` revokes an ISSUED or ACTIVE
-licence of the caller's (`INVALID_INPUT` otherwise). `applyStudioKey` returns
-`false` when the caller has no usable studio licence with a key (or keys are
-not configured) and `FORBIDDEN` when the tenant belongs to an environment the
-caller does not own.
+licence of the caller's (`INVALID_INPUT` otherwise). `applyStudioKey` writes only
+the names `ANTHROPIC_API_KEY`, `VETRA_ANTHROPIC_API_KEY` and
+`VETRA_CLI_ANTHROPIC_API_KEY` (any other is `INVALID_INPUT`; the server also sets
+`VETRA_SESSION_EXPORT_SECRET`). It returns `false` when the caller has no usable
+studio licence with a key (or keys are not configured). The tenant must be a
+projected environment of the caller's: the server waits up to 10 s for a
+just-created environment to be projected, then answers `NOT_FOUND`; a tenant
+with an environment the caller does not own is `FORBIDDEN`.
 
 The studio app is found by slug `vetra-studio` (config `VETRA_STUDIO_APP_SLUG`,
 default `vetra-studio`).

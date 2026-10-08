@@ -195,6 +195,24 @@ describe("issueLicense", () => {
     expect(h.created).toStrictEqual([]);
   });
 
+  it("refuses a DEDICATED term whose template cannot be resolved, as the public code check does", async () => {
+    const tpl = (id: string, mode: "DEDICATED" | "SHARED", resolutionError: string | null) => ({
+      id, name: null, mode, sharedEnvironment: null, templateHash: "h", resolutionError,
+      template: { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null },
+    });
+    DOCS["app-1"] = { ...app, templates: [tpl("t", "DEDICATED", "artifact missing has no channel STAGING")] };
+    try {
+      const h = harness();
+      await expect(issueLicense(h.deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(TermNotIssuableError);
+      expect(h.created).toStrictEqual([]);
+      // A SHARED template is never provisioned from, so its resolution does not matter.
+      DOCS["app-1"] = { ...app, templates: [tpl("t", "SHARED", "artifact missing has no channel STAGING")] };
+      await expect(issueLicense(harness().deps, { appId: "app-1", user: DID, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", now: NOW })).resolves.toMatchObject({ licenseId: "lic-1" });
+    } finally {
+      DOCS["app-1"] = app;
+    }
+  });
+
   it("refuses a non-pkh DID before creating anything", async () => {
     const h = harness();
     await expect(issueLicense(h.deps, { appId: "app-1", user: "did:key:z6Mk", kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "x", now: NOW })).rejects.toBeInstanceOf(UnsupportedDidError);
@@ -281,12 +299,16 @@ describe("renewal: the same time-limited kind on an ACTIVE licence", () => {
     await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30) });
   });
 
-  it("uses the document's end for a licence from before the record existed", async () => {
-    const oldEnd = plus(NOW, 5);
-    const h = harness([lic({ kind: "pro", end: oldEnd })]);
-    await expect(renew(h)).resolves.toMatchObject({ end: plus(oldEnd, 30) });
-    const junk = harness([lic({ kind: "pro", end: "not a date" })]);
-    await expect(renew(junk)).resolves.toMatchObject({ end: plus(NOW, 30) });
+  it("renews a licence from before the record existed from now: its document's end is never trusted", async () => {
+    const h = harness([lic({ kind: "pro", end: plus(NOW, 5) })]);
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30), replaced: "old" });
+    const forged = harness([lic({ kind: "pro", end: "2099-01-01T00:00:00.000Z" })]);
+    await expect(renew(forged)).resolves.toMatchObject({ end: plus(NOW, 30) });
+  });
+
+  it("counts on from a recorded end that cannot be parsed as from now", async () => {
+    const h = harness([lic({ kind: "pro" })], { lifecycle: [["old", { status: "ACTIVE", replacedBy: null, endAt: "not a date" }]] });
+    await expect(renew(h)).resolves.toMatchObject({ end: plus(NOW, 30) });
   });
 
   it("an ISSUED predecessor is still refused", async () => {

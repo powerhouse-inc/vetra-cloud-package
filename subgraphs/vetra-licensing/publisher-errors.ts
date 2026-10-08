@@ -56,6 +56,19 @@ export class UnknownInviteCodeError extends Error {
   }
 }
 
+/** No environment is known to be deployed as this tenant (applyStudioKey). */
+export class UnknownTenantError extends Error {
+  override name = "UnknownTenantError";
+  constructor() {
+    super("no such tenant");
+  }
+}
+
+/** A secret name applyStudioKey may not write. */
+export class InvalidSecretNameError extends Error {
+  override name = "InvalidSecretNameError";
+}
+
 /** The caller is authenticated but may not do this. */
 export class ForbiddenError extends Error {
   override name = "ForbiddenError";
@@ -128,6 +141,7 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
       UnknownTemplateError,
       UnknownTermError,
       UnknownInviteCodeError,
+      UnknownTenantError,
     ],
   ],
   ["FORBIDDEN", [ForbiddenError, UnknownAppIdentityError]],
@@ -144,6 +158,7 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
       OperationRejectedError,
       InvalidPublisherInputError,
       InvalidCodeInputError,
+      InvalidSecretNameError,
       LicenceNotUpgradableError,
       KeyStorageUnavailableError,
       UnknownTemplateSizeError,

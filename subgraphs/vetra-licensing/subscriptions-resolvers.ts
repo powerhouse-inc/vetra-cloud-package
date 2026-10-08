@@ -9,8 +9,8 @@ import type { LicenseEnvironments } from "./db/schema.js";
 import { addressOfDid, callerDid } from "./did.js";
 import type { ChainEnvRows } from "./environments.js";
 import type { GrantStore } from "./grants.js";
-import { getCode, isUsable } from "./invite-codes.js";
-import { withLicenceLock } from "./issue.js";
+import { InvalidCodeError, getCode, isUsable } from "./invite-codes.js";
+import { TermNotIssuableError, withLicenceLock } from "./issue.js";
 import { redeemInviteCode, type InviteCodeIssuerDeps } from "./issuers/invite-code.js";
 import type { LicenseGateway } from "./license-gateway.js";
 import { authorisedLicences, isLive, type AuthorisedLicence } from "./licence-view.js";
@@ -18,8 +18,10 @@ import type { LifecycleStore } from "./lifecycle.js";
 import { DESTROY_AFTER_DAYS, addDays, subscriptionWarnings, type SubscriptionWarning } from "./offboarding.js";
 import {
   ForbiddenError,
+  InvalidSecretNameError,
   OperationRejectedError,
   UnknownLicenseError,
+  UnknownTenantError,
   toLicensingGraphQLError,
 } from "./publisher-errors.js";
 import type { LicenseReads } from "./reads.js";
@@ -43,10 +45,12 @@ export interface SubscriptionDeps {
   /**
    * The owners (lowercased addresses, null when unset) of the environments
    * deployed as this tenant, from the environment processor's projection.
-   * Empty when no environment is known by the tenant id (yet).
+   * Empty when no environment is known by the tenant id (yet). Throws (code
+   * 42P01) when the projection table does not exist: applyStudioKey refuses.
    */
   tenantOwners(tenantId: string): Promise<(string | null)[]>;
-  logger: Pick<Console, "info" | "warn">;
+  /** How long applyStudioKey waits for an unknown tenant to be projected (prod: 10 s, every 500 ms). */
+  tenantWait: { timeoutMs: number; intervalMs: number };
   now(): string;
 }
 
@@ -70,6 +74,15 @@ export interface Subscription {
 }
 
 type Ctx = { user?: { address?: string } };
+
+/** The only names applyStudioKey writes the key as (what the studio manifest reads). */
+export const STUDIO_KEY_SECRET_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "VETRA_ANTHROPIC_API_KEY",
+  "VETRA_CLI_ANTHROPIC_API_KEY",
+] as const;
+
+const UNDEFINED_TABLE = "42P01";
 
 const INVALID_CHECK = { valid: false, appId: null, appName: null, kind: null, termLabel: null, mode: null };
 
@@ -153,6 +166,31 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
       }
     };
 
+  /**
+   * The owners of a tenant's environments, waiting for the projection: the
+   * cold path calls applyStudioKey right after pushing the new environment
+   * document, before the processor may have projected it. Still unknown after
+   * the window: NOT_FOUND. A missing projection table fails closed.
+   */
+  const knownTenantOwners = async (tenantId: string): Promise<(string | null)[]> => {
+    const { timeoutMs, intervalMs } = deps.tenantWait;
+    const attempts = Math.floor(timeoutMs / intervalMs) + 1;
+    for (let i = 0; i < attempts; i++) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      let owners: (string | null)[];
+      try {
+        owners = await deps.tenantOwners(tenantId);
+      } catch (err) {
+        if ((err as { code?: unknown }).code === UNDEFINED_TABLE) {
+          throw new ForbiddenError("tenant ownership cannot be verified in this deployment");
+        }
+        throw err;
+      }
+      if (owners.length > 0) return owners;
+    }
+    throw new UnknownTenantError();
+  };
+
   /** One of the caller's licences, by its grant row; anyone else's fails like a missing one. */
   const owned = async (licenseId: string, caller: string): Promise<AuthorisedLicence> => {
     const grant = await deps.grants.grantFor(licenseId);
@@ -234,13 +272,23 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
       redeemInviteCode: withCodes(
         async (a: { input: { code: string; label?: string | null; upgrades?: string | null } }, ctx) => {
           const caller = did(ctx);
-          const { licenseId } = await redeemInviteCode(deps.issuer, {
-            code: a.input.code,
-            user: caller,
-            label: a.input.label ?? null,
-            upgrades: a.input.upgrades ?? null,
-            now: deps.now(),
-          });
+          let licenseId: string;
+          try {
+            ({ licenseId } = await redeemInviteCode(deps.issuer, {
+              code: a.input.code,
+              user: caller,
+              label: a.input.label ?? null,
+              upgrades: a.input.upgrades ?? null,
+              now: deps.now(),
+            }));
+          } catch (err) {
+            // The issuer has already given the reservation back. A code whose
+            // term or app cannot issue is, to its holder, just an invalid code:
+            // one answer, so codes cannot be probed for state. (The publisher
+            // surface keeps TERM_NOT_ISSUABLE.)
+            if (err instanceof TermNotIssuableError) throw new InvalidCodeError();
+            throw err;
+          }
           const l = await owned(licenseId, caller);
           const root = (await deps.grants.chainRootsFor([l.id])).get(l.id) ?? l.id;
           return subscriptionFor(deps, l, root);
@@ -269,23 +317,23 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
 
       applyStudioKey: withCodes(async (a: { tenantId: string; secretNames: string[] }, ctx) => {
         const caller = did(ctx);
+        const allowed = new Set<string>(STUDIO_KEY_SECRET_NAMES);
+        const bad = a.secretNames.filter((n) => !allowed.has(n));
+        if (bad.length > 0) {
+          throw new InvalidSecretNameError(
+            `the studio key can only be written as ${STUDIO_KEY_SECRET_NAMES.join(", ")}`,
+          );
+        }
         if (!deps.secrets) return false;
         const key = await studioKeyForDid(deps.studio, caller);
         if (key === null) return false;
         // Stricter than VetraAccessCodes.applyInviteCodeSecret, which wrote
-        // into any tenant: a tenant whose environment is known must be the
-        // caller's. One not projected yet (the cold path writes the key right
-        // after creating the environment) is allowed: nobody else's
-        // environment can be reached by it.
-        const owners = await deps.tenantOwners(a.tenantId);
+        // into any tenant: the tenant must be one the projection knows, and
+        // every environment on it the caller's.
+        const owners = await knownTenantOwners(a.tenantId);
         const address = addressOfDid(caller);
         if (owners.some((o) => o !== address)) {
           throw new ForbiddenError("this tenant is not one of your environments");
-        }
-        if (owners.length === 0) {
-          deps.logger.info(
-            `[licensing] studio key for ${caller} written to tenant ${a.tenantId}, not projected yet`,
-          );
         }
         // Sequential: setSecret notifies the reconciler per write.
         for (const name of a.secretNames) await deps.secrets.setSecret(a.tenantId, name, key);

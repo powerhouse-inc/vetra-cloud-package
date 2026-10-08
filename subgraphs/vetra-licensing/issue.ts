@@ -130,6 +130,12 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
   if (!term) throw notIssuable("no such term");
   if (term.status !== "ACTIVE") throw notIssuable(`the term is ${term.status}`);
   if (!term.issuers.includes(input.issuer)) throw notIssuable("the term does not allow this issuer");
+  // As the public code check: a DEDICATED template whose artifacts do not
+  // resolve could never be provisioned (the keeper would only hold the chain).
+  const template = app.templates.find((t) => t.id === term.templateId);
+  if (template?.mode === "DEDICATED" && template.resolutionError) {
+    throw notIssuable(`its template cannot be resolved: ${template.resolutionError}`);
+  }
 
   let previous: LicenceRecord | null = null;
   let previousStatus: string | null = null;
@@ -159,9 +165,10 @@ async function issueUnlocked(deps: IssueDeps, input: IssueInput): Promise<Issued
     const recorded = await deps.lifecycle.entry(doc.id);
     previous = { ...doc, user, kind: grant.kind ?? doc.kind };
     previousStatus = recorded?.status ?? doc.status;
-    // Never the document's end when a record exists: a forged far-future end
-    // would otherwise be carried into the renewal (and recorded as authority).
-    previousEnd = recorded ? recorded.endAt : doc.end;
+    // Never the document's end: a forged far-future end would otherwise be
+    // carried into the renewal (and recorded as authority). Without a record
+    // (a licence from before it existed) a renewal counts on from now.
+    previousEnd = recorded?.endAt ?? null;
     if (!UPGRADABLE.has(previousStatus)) {
       throw new LicenceNotUpgradableError(
         `licence ${previous.id} is ${previousStatus}; only an ACTIVE, EXPIRED or REVOKED licence can be upgraded`,

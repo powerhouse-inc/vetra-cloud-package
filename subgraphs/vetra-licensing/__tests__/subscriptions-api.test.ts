@@ -53,7 +53,13 @@ const travel = (to: string) => {
 };
 const tick = () => travel(new Date(Date.parse(clock) + 1000).toISOString());
 const setSecret = vi.fn(async (_t: string, key: string, _v: string) => ({ key }));
-const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+/** Everything the code under test logs, to prove the key never is. */
+const logger = {
+  info: vi.spyOn(console, "info"),
+  warn: vi.spyOn(console, "warn"),
+  error: vi.spyOn(console, "error"),
+  log: vi.spyOn(console, "log"),
+};
 /** tenantId -> owners of the environments deployed under it (the processor's projection). */
 const tenants = new Map<string, (string | null)[]>();
 let deps: SubscriptionDeps;
@@ -114,6 +120,13 @@ beforeAll(async () => {
   await pm("addTerm", { input: { appId: APP_DED, kind: "beta", templateId: tpl, validityDays: 7, issuers: ["INVITE_CODE"] } });
 
   for (const c of ["kv-pro-01", "kv-pro-02", "kv-pro-03", "kv-pro-04", "kv-pro-05", "kv-pro-06"]) await code(APP_DED, "pro", c, { maxUses: 5 });
+  // A DEDICATED template pointing at an artifact the app never published: it
+  // cannot be resolved, so its published term issues nothing.
+  const broken = (await pm("addTemplate", { input: { appId: APP_DED, name: "Broken", mode: "DEDICATED" } })) as string;
+  await pm("addTemplateService", { input: { appId: APP_DED, templateId: broken, type: "FUSION", artifactName: "missing", artifactChannel: "STAGING" } });
+  const brokenTerm = (await pm("addTerm", { input: { appId: APP_DED, kind: "broken", templateId: broken, validityDays: 30, issuers: ["INVITE_CODE"] } })) as string;
+  await pm("publishTerm", { appId: APP_DED, termId: brokenTerm });
+  await code(APP_DED, "broken", "kv-broken-01");
   await code(APP_DED, "max", "kv-max-01");
   await code(APP_DED, "max", "kv-max-02");
   await code(APP_DED, "beta", "kv-beta-01");
@@ -158,7 +171,8 @@ beforeAll(async () => {
     },
     secrets: { setSecret },
     tenantOwners: async (t) => tenants.get(t) ?? [],
-    logger,
+    // Short here; the polling itself is covered with fake timers in apply-studio-key.test.ts.
+    tenantWait: { timeoutMs: 20, intervalMs: 5 },
     now: () => clock,
   };
   sub = createSubscriptionResolvers(deps) as unknown as typeof sub;
@@ -180,7 +194,7 @@ describe("vetraSubscriptions: invite codes", () => {
 
   it("answers unknown, paused, expired, used-up and unredeemable codes identically: no oracle", async () => {
     await redeem({ code: "kv-used-up", label: "Burner" }, asOther);
-    for (const c of ["nope-nope", "KV-PRO-01", "kv-paused", "kv-expired", "kv-used-up", "kv-beta-01"]) {
+    for (const c of ["nope-nope", "KV-PRO-01", "kv-paused", "kv-expired", "kv-used-up", "kv-beta-01", "kv-broken-01"]) {
       expect(await q("inviteCode", { code: c }, anon)).toStrictEqual(INVALID);
     }
   });
@@ -197,9 +211,12 @@ describe("vetraSubscriptions: invite codes", () => {
     for (const c of ["nope-nope", "kv-paused", "kv-expired", "kv-used-up"]) {
       expect(await codeOf(redeem({ code: c }))).toBe("INVALID_CODE");
     }
-    // A code whose term cannot issue: refused as such, nothing consumed.
-    expect(await codeOf(redeem({ code: "kv-beta-01" }))).toBe("TERM_NOT_ISSUABLE");
-    expect(await h.db.selectFrom("invite_redemptions").selectAll().where("code", "=", "kv-beta-01").execute()).toStrictEqual([]);
+    // A code whose term cannot issue (DRAFT, or a DEDICATED template whose
+    // artifacts do not resolve) is INVALID_CODE too, and nothing is consumed.
+    for (const c of ["kv-beta-01", "kv-broken-01"]) {
+      expect(await codeOf(redeem({ code: c }))).toBe("INVALID_CODE");
+      expect(await h.db.selectFrom("invite_redemptions").selectAll().where("code", "=", c).execute()).toStrictEqual([]);
+    }
   });
 });
 
@@ -395,15 +412,16 @@ describe("vetraSubscriptions: studio", () => {
     });
   });
 
-  it("writes the key into the caller's own tenant, and into one not projected yet", async () => {
+  it("writes the key into the caller's own tenant only; an unprojected one is NOT_FOUND", async () => {
     tenants.set("t-1", [HOLDER]);
-    expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY", "CLAUDE_KEY"] }, asHolder)).toBe(true);
+    expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY", "VETRA_CLI_ANTHROPIC_API_KEY"] }, asHolder)).toBe(true);
     expect(setSecret).toHaveBeenCalledWith("t-1", "ANTHROPIC_API_KEY", "sk-ant-1");
-    expect(setSecret).toHaveBeenCalledWith("t-1", "CLAUDE_KEY", "sk-ant-1");
+    expect(setSecret).toHaveBeenCalledWith("t-1", "VETRA_CLI_ANTHROPIC_API_KEY", "sk-ant-1");
     expect(setSecret).toHaveBeenCalledWith("t-1", "VETRA_SESSION_EXPORT_SECRET", expect.stringMatching(/^[0-9a-f]{64}$/));
     setSecret.mockClear();
-    expect(await m("applyStudioKey", { tenantId: "t-new", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder)).toBe(true);
-    expect(setSecret).toHaveBeenCalledWith("t-new", "ANTHROPIC_API_KEY", "sk-ant-1");
+    expect(await codeOf(m("applyStudioKey", { tenantId: "t-new", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder))).toBe("NOT_FOUND");
+    expect(await codeOf(m("applyStudioKey", { tenantId: "t-1", secretNames: ["CLAUDE_KEY"] }, asHolder))).toBe("INVALID_INPUT");
+    expect(setSecret).not.toHaveBeenCalled();
   });
 
   it("refuses another owner's tenant (FORBIDDEN) and a caller without a key (false), writing nothing", async () => {
@@ -414,12 +432,12 @@ describe("vetraSubscriptions: studio", () => {
     for (const t of ["t-theirs", "t-unowned", "t-mixed"]) {
       expect(await codeOf(m("applyStudioKey", { tenantId: t, secretNames: ["ANTHROPIC_API_KEY"] }, asHolder))).toBe("FORBIDDEN");
     }
-    expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["X"] }, asOther)).toBe(false);
+    expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asOther)).toBe(false);
     expect(setSecret).not.toHaveBeenCalled();
   });
 
   it("never logs the key", () => {
-    const logged = JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls]);
+    const logged = JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls, logger.log.mock.calls]);
     expect(logged).not.toContain("sk-ant-1");
   });
 
@@ -435,6 +453,6 @@ describe("vetraSubscriptions: studio", () => {
     const again = await redeem({ code: "studio-nokey-1", upgrades: studio.licenseId });
     expect(await q("studioAccess", {}, asHolder)).toMatchObject({ allowed: true, licenseId: again.licenseId, hasAttachedKey: false });
     const noSecrets = createSubscriptionResolvers({ ...deps, secrets: null }) as unknown as typeof sub;
-    expect(await noSecrets.VetraSubscriptionsMutations.applyStudioKey!({}, { tenantId: "t-1", secretNames: ["X"] }, asHolder)).toBe(false);
+    expect(await noSecrets.VetraSubscriptionsMutations.applyStudioKey!({}, { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder)).toBe(false);
   });
 });
