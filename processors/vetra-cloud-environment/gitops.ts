@@ -963,6 +963,34 @@ function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
 }
 
 /**
+ * First Connect build whose entrypoint re-syncs the CSP `script-src` registry
+ * origin to the effective registry at boot. Earlier builds bake
+ * registry.dev.vetra.io into index.html, so they cannot load packages from the
+ * platform registry (v6.2.2-dev.44 has no sync, v6.2.2-dev.49 does).
+ */
+const CONNECT_CSP_SYNC_MIN_VERSION = "v6.2.2-dev.49";
+
+/**
+ * Connect image tag to render. A pin below CONNECT_CSP_SYNC_MIN_VERSION renders
+ * at the default tag instead, since that image would block every package from
+ * the platform registry. PR previews keep their pin: they stay on the dev
+ * registry, which those builds allow. Floating or unparseable tags are kept.
+ */
+export function connectImageTag(state: VetraCloudEnvironmentState): string {
+  const pinned = (state.services ?? []).find((s) => s.type === "CONNECT")?.version;
+  if (!pinned) return defaultAppImageTag();
+  if (isPreviewEnv(state)) return pinned;
+  const parsed = parseImageVersion(pinned);
+  if (
+    parsed &&
+    compareVersions(parsed, parseImageVersion(CONNECT_CSP_SYNC_MIN_VERSION)!) < 0
+  ) {
+    return defaultAppImageTag();
+  }
+  return pinned;
+}
+
+/**
  * Whether a switchboard image tag serves /ready. Floating tags (`dev`,
  * `latest`) and anything unparseable are treated as current.
  */
@@ -1205,7 +1233,7 @@ export async function generateValuesYaml(
   const switchboardReadinessPath = switchboardHasReadyEndpoint(switchboardTag)
     ? "/ready"
     : "/health";
-  const connectTag = connectService?.version ?? defaultAppImageTag();
+  const connectTag = connectImageTag(state);
   const switchboardResources =
     APP_RESOURCE_MAP[effectiveAppSize(state, switchboardService)];
   // Connect uses its own flat spec, not APP_RESOURCE_MAP — see CONNECT_RESOURCES.
