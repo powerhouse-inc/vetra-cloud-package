@@ -55,7 +55,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_PENDING = 10_000;
 
 /** Failures worth keeping the report for: the next flush tries again. */
-const TRANSIENT = new Set(["NETWORK", "HTTP_5XX", "RATE_LIMITED"]);
+const TRANSIENT = new Set(["NETWORK", "HTTP_5XX", "RATE_LIMITED", "SERVICE_UNAVAILABLE"]);
 /** The token was not accepted: drop it and re-mint once. */
 const AUTH = new Set(["HTTP_401", "UNAUTHENTICATED", "FORBIDDEN"]);
 

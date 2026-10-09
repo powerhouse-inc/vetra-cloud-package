@@ -81,6 +81,7 @@ export interface RenownProfileRelayConfig {
   registrationToken: string | null;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  logger?: Pick<Console, "warn">;
 }
 
 const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!], $metrics: [AppMetricInput!]) {
@@ -120,6 +121,12 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
   const registrationToken = cfg.registrationToken;
   const fetchImpl = cfg.fetch ?? fetch;
   const timeoutMs = cfg.timeoutMs ?? 10_000;
+  const logger = cfg.logger ?? console;
+  /** Operators need the cause; the publisher gets the generic message. Never log the bearer or token. */
+  const unavailable = (cause: string): RenownProfileError => {
+    logger.warn(`[licensing] renown app profile unavailable (${cause})`);
+    return new RenownProfileError("PROFILE_UNAVAILABLE", UNAVAILABLE);
+  };
 
   return {
     async upsert(appDid, bearer, fields) {
@@ -140,19 +147,25 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch {
-        throw new RenownProfileError("PROFILE_UNAVAILABLE", UNAVAILABLE);
+        throw unavailable("network");
       }
       const body = (await res.json().catch(() => null)) as UpsertBody;
       const error = body?.errors?.[0];
       if (error) {
-        throw refusal(
+        const refused = refusal(
           error.extensions?.code,
           (error.message ?? "").trim() || "Renown refused the profile.",
           error.extensions?.field,
         );
+        if (refused.code === "PROFILE_UNAVAILABLE") {
+          const code = error.extensions?.code;
+          throw unavailable(`Renown error ${typeof code === "string" ? code : "without a code"}`);
+        }
+        throw refused;
       }
       if (res.status === 401) throw refusal("UNAUTHENTICATED", "", null);
-      if (!res.ok || body?.data?.upsertAppProfile !== true) throw refusal(null, "", null);
+      if (!res.ok) throw unavailable(`HTTP ${res.status}`);
+      if (body?.data?.upsertAppProfile !== true) throw unavailable("validation: unexpected response shape");
     },
   };
 }

@@ -76,7 +76,7 @@ describe("createAppIdentityLookup", () => {
   });
 
   it.each([
-    ["tampered", view({ tampered: true, tamperReason: "parent" })],
+    ["tampered (as passed by a direct caller; the relay refuses tampered apps before this)", view({ tampered: true, tamperReason: "parent" })],
     ["unverified", view({ unverified: true })],
   ])("warns about a %s document but still uses the configured identity", async (_, doc) => {
     const { logger, identityOf } = setup(null);

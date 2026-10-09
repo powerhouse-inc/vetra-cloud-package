@@ -16,7 +16,7 @@ export interface AppIdentity {
  * licensing ledger does not cover the document's `identityDid`, and the
  * document's status is untrusted, so the studio reports as ACTIVE whenever a
  * DID is configured. Unconfigured, studio stats are not relayed. A document
- * naming a different DID (or a tampered/unverified one) only raises a
+ * naming a different DID (or an unverified one) only raises a
  * once-per-process warning; the configured DID is still used. Renown refuses
  * the report unless that DID is a registered workload identity whose owner
  * holds a live delegation.
@@ -45,6 +45,8 @@ export function createAppIdentityLookup(deps: {
       }
       return null;
     }
+    // The stats relay (reporting.ts) refuses tampered apps before calling this, so for relayed
+    // reports the tampered branch never fires; it covers other callers handing in a view.
     if (
       !warnedMismatch &&
       app &&
