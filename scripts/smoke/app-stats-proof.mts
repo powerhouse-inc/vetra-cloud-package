@@ -36,6 +36,7 @@ const { values: args } = parseArgs({
     "renown-switchboard": { type: "string", default: "https://switchboard.renown-staging.vetra.io" },
     "renown-web": { type: "string", default: "https://renown-staging.vetra.io" },
     timeout: { type: "string", default: "180" },
+    "allow-prod": { type: "boolean", default: false },
   },
 });
 
@@ -67,11 +68,49 @@ const web = String(args["renown-web"]).replace(/\/+$/, "");
 const deadline = Date.now() + Number(args.timeout) * 1000;
 const address = /^did:pkh:eip155:\d+:(0x[0-9a-fA-F]{40})$/.exec(user)?.[1]?.toLowerCase() ?? null;
 
+// Staging guard: this script writes a stat, so it must never hit production by accident.
+function isStagingHost(raw: string): boolean {
+  let host: string;
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    return false;
+  }
+  return host.includes("staging") || host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+const PROD_NAMESPACES = ["vetra", "renown"];
+let kubeContext = "unknown";
+try {
+  kubeContext = execFileSync("kubectl", ["config", "current-context"], { encoding: "utf8", timeout: 15000 }).trim();
+} catch {
+  kubeContext = "unreadable";
+}
+const problems: string[] = [];
+if (!isStagingHost(String(args["renown-switchboard"]))) problems.push("--renown-switchboard is not a staging host");
+if (!isStagingHost(String(args["renown-web"]))) problems.push("--renown-web is not a staging host");
+if (PROD_NAMESPACES.includes(namespace)) problems.push(`namespace "${namespace}" is a production tenant`);
+// Contexts are not reliably named (a single k3s cluster hosts both), so only a context that
+// says "prod" or cannot be read is refused; the namespace and hosts carry the real check.
+if (kubeContext === "unreadable" || kubeContext.toLowerCase().includes("prod")) problems.push(`kubectl context "${kubeContext}" is not usable for staging`);
+if (problems.length > 0 && !args["allow-prod"]) {
+  fail(`staging guard refused (pass --allow-prod to override): ${problems.join("; ")}`);
+}
+console.log(problems.length > 0 ? `guard OVERRIDDEN by --allow-prod: ${problems.join("; ")}` : `guard ok: no production target (context ${kubeContext}, namespace ${namespace})`);
+
+const excerpt = (text: string): string => text.replace(/\s+/g, " ").slice(0, 200);
+
 function inPod(command: string[]): string {
   const container = args.container ? ["-c", args.container] : [];
-  return execFileSync("kubectl", ["-n", namespace, "exec", `deploy/${deployment}`, ...container, "--", ...command], {
-    encoding: "utf8",
-  });
+  try {
+    return execFileSync("kubectl", ["-n", namespace, "exec", `deploy/${deployment}`, ...container, "--", ...command], {
+      encoding: "utf8",
+      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    return fail(`kubectl exec failed: ${excerpt(typeof stderr === "string" && stderr ? stderr : String(error))}`);
+  }
 }
 
 // 1. The environment holds both variables (values never leave the pod).
@@ -98,13 +137,18 @@ const REPORT = [
   "  .catch((e) => console.log(JSON.stringify({ error: String(e) })));",
 ].join("\n");
 const answerLine = inPod(["node", "-e", REPORT, user, metric, String(value)]).trim().split("\n").at(-1) ?? "{}";
-const answer = JSON.parse(answerLine) as {
+let answer: {
   status?: number;
   error?: string;
   body?: { data?: { vetraLicensing?: { reportUserStat?: boolean } }; errors?: unknown } | null;
 };
+try {
+  answer = JSON.parse(answerLine) as typeof answer;
+} catch {
+  fail(`the pod printed something unexpected: ${excerpt(answerLine)}`);
+}
 if (answer.body?.data?.vetraLicensing?.reportUserStat !== true) {
-  fail(`Vetra did not queue the report: ${answerLine} (see the Task 15 decision table)`);
+  fail(`Vetra did not queue the report: ${excerpt(answerLine)} (see the Task 15 decision table)`);
 }
 ok(`Vetra queued ${metric}=${value} for ${user}`);
 
@@ -113,8 +157,9 @@ async function stats<T>(query: string, variables: Record<string, unknown>): Prom
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(15000),
   });
-  const body = (await res.json()) as { data?: T; errors?: { message?: string }[] };
+  const body = (await res.json().catch(() => ({}))) as { data?: T; errors?: { message?: string }[] };
   if (body.errors?.length || !body.data) throw new Error(body.errors?.[0]?.message ?? `HTTP ${res.status}`);
   return body.data;
 }
@@ -134,13 +179,13 @@ async function until<T>(what: string, probe: () => Promise<T | null>): Promise<T
 }
 
 async function page(url: string): Promise<string> {
-  const res = await fetch(url, { redirect: "follow" });
+  const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`${url} answered ${res.status}`);
   return res.text();
 }
 
 type UserStat = { appDid: string; metric: string; value: number; label: string | null };
-type AppStats = { metrics: { key: string; value: number; top: { value: number }[] }[] } | null;
+type AppStats = { metrics: { key: string; value: number; top: { userDid: string; value: number }[] }[] } | null;
 
 // 3. Renown stored it (the relay flushes every 5 s).
 const stored = await until("Renown to store the value", async () => {
@@ -154,26 +199,31 @@ ok(`Renown userStats has ${metric}=${value}`);
 if (stored.label === null) fail(`${metric} is not declared as a public metric: declare it in the app's Profile tab`);
 ok(`${metric} is declared public ("${stored.label}")`);
 
-// 4. appStats shows it, with this user among the top contributors.
+// 4. appStats lists THIS user's fresh value among the top contributors.
 const aggregate = await until("appStats to show the value", async () => {
   const data = await stats<{ appStats: AppStats }>(
-    "query S($d: String!) { appStats(appDid: $d) { metrics { key value top { value } } } }",
+    "query S($d: String!) { appStats(appDid: $d) { metrics { key value top { userDid value } } } }",
     { d: appDid },
   );
   const m = data.appStats?.metrics.find((x) => x.key === metric);
-  return m && m.top.some((t) => t.value === value) ? m : null;
+  return m && m.top.some((t) => t.userDid === user && t.value === value) ? m : null;
 });
 ok(`appStats ${metric} = ${aggregate.value}`);
 
 // 5. The public pages render it (server-rendered; markers carry raw values).
+// The app page tile is a consistency check on the aggregate, not proof of this report.
 const tile = new RegExp(`data-metric="${metric.replace(/[.]/g, "\\.")}"[^>]*data-value="${aggregate.value}"`);
 await until(`${web}/app/<did> to show the tile`, async () => (tile.test(await page(`${web}/app/${appDid}`)) ? true : null));
-ok(`${web}/app/${appDid} shows ${metric}`);
+ok(`${web}/app/${appDid} tile matches the aggregate (consistency)`);
 if (address) {
-  const row = new RegExp(`data-metric="${metric.replace(/[.]/g, "\\.")}"[^>]*data-value="${value}"`);
+  const marker = new RegExp(`data-metric="${metric.replace(/[.]/g, "\\.")}"[^>]*data-value="${value}"`);
   await until("the user's profile to show the stat", async () => {
     const html = await page(`${web}/profile/${address}`);
-    return html.includes(`data-app-did="${appDid}"`) && row.test(html) ? true : null;
+    const start = html.indexOf(`data-app-did="${appDid}"`);
+    if (start < 0) return null;
+    const next = html.indexOf('data-app-did="', start + 1);
+    const group = html.slice(start, next < 0 ? undefined : next);
+    return marker.test(group) ? true : null;
   });
   ok(`${web}/profile/${address} shows ${metric}=${value}`);
 } else {

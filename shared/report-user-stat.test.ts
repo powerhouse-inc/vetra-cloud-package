@@ -76,4 +76,16 @@ describe("reportUserStat (package authors' helper)", () => {
     });
     expect((await refusal(reportUserStat(USER, "notes", 1, { env: ENV, fetch: down as never }))).code).toBe("NETWORK");
   });
+  it("reports a stalled response body as NETWORK", async () => {
+    const stalled = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const error = await refusal(reportUserStat(USER, "notes", 1, { env: ENV, fetch: stalled as never, timeoutMs: 50 }));
+    expect(error.code).toBe("NETWORK");
+  });
 });
