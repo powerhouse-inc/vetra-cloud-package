@@ -52,8 +52,8 @@ describe("vetraPublisher end to end", () => {
 
   it("lists the caller's apps from the apps table", async () => {
     expect(await q("myApps", {})).toStrictEqual([
-      { id: APP, name: `App ${APP.slice(0, 4)}`, status: "ACTIVE" },
-      { id: HELD, name: `App ${HELD.slice(0, 4)}`, status: "ACTIVE" },
+      { id: APP, name: `App ${APP.slice(0, 4)}`, status: "ACTIVE", identityDid: null },
+      { id: HELD, name: `App ${HELD.slice(0, 4)}`, status: "ACTIVE", identityDid: null },
     ]);
     expect(await r.VetraPublisherQueries.myApps!({}, {}, asUser(OTHER))).toStrictEqual([]);
   });

@@ -26,7 +26,18 @@ is logged server-side only.
 ## vetraPublisher
 
 ```graphql
-type PublisherApp { id: String!  name: String!  status: String! }
+type PublisherApp { id: String!  name: String!  status: String!  identityDid: String }
+
+input PublisherAppLinkInput { id: String!  label: String!  url: String! }
+
+"Absent or null: unchanged. Empty string: clear. links replaces the whole list."
+input UpdateAppProfileInput {
+  appId: String!
+  name: String  tagline: String  website: String
+  description: String  category: String
+  logoRef: String  coverRef: String
+  links: [PublisherAppLinkInput!]
+}
 
 type PublisherTemplate {
   id: String!
@@ -163,6 +174,7 @@ type VetraPublisherMutations {
   setInviteCodeActive(appId: String!, code: String!, active: Boolean!): Boolean!
   addToAllowList(appId: String!, user: String!): Boolean!
   removeFromAllowList(appId: String!, user: String!): Boolean!
+  updateAppProfile(input: UpdateAppProfileInput!): Boolean!   # Renown app profile (relayed)
 }
 ```
 
@@ -175,7 +187,7 @@ Error codes (`extensions.code`, existing mechanism): `NOT_FOUND`, `FORBIDDEN`,
 `UNSUPPORTED_DID`, `LICENSING_DISABLED`, `ALREADY_HOLDS` (`replaceGrant` to the
 kind the licence already holds ACTIVE, where that cannot be a renewal: the
 term has no validity limit), plus reducer errors surfaced as `INVALID_INPUT`
-with the reducer message.
+with the reducer message. `updateAppProfile` adds `NO_IDENTITY` (the app has no Renown identity yet), `RATE_LIMITED`, `PROFILE_UNAVAILABLE` (relay off or Renown unreachable) and `INVALID_INPUT` with `extensions.field` naming the input to fix.
 
 ## vetraSubscriptions
 

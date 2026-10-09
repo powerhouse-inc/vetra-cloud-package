@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Action } from "document-model";
+import { GraphQLError } from "graphql";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { UnauthenticatedError, type AuthContext } from "./auth.js";
@@ -21,6 +22,7 @@ import { KeyStorageUnavailableError, type KeyVault } from "./key-vault.js";
 import type { LicensingConfig } from "./config.js";
 import { makeRequireEnabled } from "./resolvers.js";
 import { normaliseUserDid } from "./did.js";
+import { RenownProfileError, type AppProfileWrite, type RenownProfileRelay } from "./renown-profile.js";
 import { authorisedLicences } from "./licence-view.js";
 import { grantLicense, replaceGrant, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
 import { TermNotIssuableError, withLicenceLock } from "./issue.js";
@@ -62,11 +64,16 @@ export interface PublisherDeps {
   /** Null when OPENBAO_ADDR is unset: attached Claude keys are then refused. */
   keyVault: KeyVault | null;
   cfg: Pick<LicensingConfig, "enabled">;
+  /** App profiles on Renown. Null or absent: updateAppProfile answers PROFILE_UNAVAILABLE. */
+  renownProfile?: RenownProfileRelay | null;
   newId(): string;
   now(): string;
 }
 
-type Ctx = AuthContext & { isAdmin?: (a: string) => boolean };
+type Ctx = AuthContext & {
+  isAdmin?: (a: string) => boolean;
+  headers?: Record<string, string | string[] | undefined>;
+};
 type In<T> = { input: T };
 type Opt<T> = T | null | undefined;
 
@@ -114,6 +121,15 @@ function callerAddress(ctx: Ctx): string {
   const address = ctx.user?.address;
   if (!address) throw new UnauthenticatedError("sign in to manage licences");
   return address;
+}
+
+/** The caller's own Renown bearer, forwarded to Renown with a profile write. */
+function bearerOf(ctx: Ctx): string {
+  const raw = ctx.headers?.authorization;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const match = /^Bearer\s+(\S+)$/i.exec(value ?? "");
+  if (!match) throw new UnauthenticatedError("sign in to edit the app profile");
+  return match[1];
 }
 
 /**
@@ -230,7 +246,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
     VetraPublisherQueries: {
       myApps: withCodes(async (_a: unknown, ctx) => {
         const apps = await deps.auth.listAppsForOwner(callerAddress(ctx).toLowerCase());
-        return apps.map((a) => ({ id: a.id, name: a.name, status: a.status }));
+        return apps.map((a) => ({ id: a.id, name: a.name, status: a.status, identityDid: a.identity_did ?? null }));
       }),
 
       templates: withCodes(async (a: { appId: string }, ctx) => {
@@ -311,6 +327,37 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
     },
 
     VetraPublisherMutations: {
+      updateAppProfile: async (
+        _p: unknown,
+        a: In<{ appId: string } & AppProfileWrite>,
+        ctx: Ctx,
+      ): Promise<boolean> => {
+        try {
+          // Ownership exactly as every publisher field; the licensing switch does not apply.
+          const appId = await owned(a.input.appId, ctx, false);
+          const bearer = bearerOf(ctx);
+          if (!deps.renownProfile) {
+            throw new RenownProfileError("PROFILE_UNAVAILABLE", "App profiles are not configured on this deployment.");
+          }
+          const appDid = (await deps.auth.findAppById(appId))?.identity_did ?? null;
+          if (!appDid) {
+            throw new RenownProfileError(
+              "NO_IDENTITY",
+              "This app has no Renown identity yet. Authorize its deploy identity first.",
+            );
+          }
+          await deps.renownProfile.upsert(appDid, bearer, a.input);
+          return true;
+        } catch (err) {
+          if (err instanceof RenownProfileError) {
+            throw new GraphQLError(err.message, {
+              extensions: { code: err.code, ...(err.field ? { field: err.field } : {}) },
+            });
+          }
+          throw toLicensingGraphQLError(err);
+        }
+      },
+
       addTemplate: withCodes(async (a: In<{ appId: string; name?: Opt<string>; mode: string }>, ctx) => {
         const app = await writable(a.input.appId, ctx);
         const id = deps.newId();

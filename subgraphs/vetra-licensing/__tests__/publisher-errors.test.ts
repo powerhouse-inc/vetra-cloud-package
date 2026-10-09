@@ -227,7 +227,8 @@ describe("publisher resolvers carry codes end to end", () => {
     }
   });
 
-  const writes = Object.keys(build().VetraPublisherMutations as object);
+  // updateAppProfile is not a licensing write: the licensing switch does not apply to it.
+  const writes = Object.keys(build().VetraPublisherMutations as object).filter((n) => n !== "updateAppProfile");
   it.each(writes)("%s: licensing disabled is LICENSING_DISABLED, after authorisation, before anything is touched", async (name) => {
     const f = fieldsOf(build({ enabled: false }))[name]!;
     const err = await f({}, args("app-1", "lic-1"), { user: { address: OWNER } }).catch((e: unknown) => e);

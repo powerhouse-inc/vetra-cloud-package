@@ -14,6 +14,29 @@ export const publisherSchema: DocumentNode = gql`
     id: String!
     name: String!
     status: String!
+    "The app's Renown identity (did:key); null before one is registered."
+    identityDid: String
+  }
+
+  input PublisherAppLinkInput {
+    id: String!
+    label: String!
+    url: String!
+  }
+
+  "Absent or null: unchanged. Empty string: clear. links replaces the whole list."
+  input UpdateAppProfileInput {
+    appId: String!
+    name: String
+    tagline: String
+    website: String
+    "Markdown subset, at most 2000 characters"
+    description: String
+    category: String
+    "attachment://v1:<sha256> from Renown's upload route"
+    logoRef: String
+    coverRef: String
+    links: [PublisherAppLinkInput!]
   }
 
   type PublisherTemplate {
@@ -246,6 +269,12 @@ export const publisherSchema: DocumentNode = gql`
     setInviteCodeActive(appId: String!, code: String!, active: Boolean!): Boolean!
     addToAllowList(appId: String!, user: String!): Boolean!
     removeFromAllowList(appId: String!, user: String!): Boolean!
+    """
+    Writes the app's public Renown profile (through Renown's relay).
+    Errors: INVALID_INPUT (extensions.field), FORBIDDEN, NO_IDENTITY,
+    RATE_LIMITED, PROFILE_UNAVAILABLE, plus the ownership codes.
+    """
+    updateAppProfile(input: UpdateAppProfileInput!): Boolean!
   }
 
   extend type Query {
