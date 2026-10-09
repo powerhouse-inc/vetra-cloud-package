@@ -72,3 +72,25 @@ describe("vetraPublisher.updateAppProfile", () => {
     expect(error.message).toBe("Description must be at most 2000 characters");
   });
 });
+
+describe("vetraPublisher.updateAppProfile metrics", () => {
+  it("passes the metric list to Renown with the owner's bearer", async () => {
+    const fake = relay();
+    const input = {
+      appId: APP,
+      metrics: [{ id: "m1", key: "notes", label: "Notes", unit: null, description: null, aggregation: "SUM", public: true }],
+    };
+    expect(await update(h.build({ renownProfile: fake }), input, withBearer(OWNER))).toBe(true);
+    expect(fake.upsert).toHaveBeenCalledWith(DID, "user-bearer", input);
+  });
+
+  it("shows Renown's refusal of a metric list on the metrics field", async () => {
+    const fake = relay(async () => {
+      throw new RenownProfileError("INVALID_INPUT", 'Metric key "notes" is declared twice', "metrics");
+    });
+    const error = (await update(h.build({ renownProfile: fake }), { appId: APP, metrics: [] }, withBearer(OWNER)).catch(
+      (e: unknown) => e,
+    )) as GraphQLError;
+    expect(error.extensions).toEqual({ code: "INVALID_INPUT", field: "metrics" });
+  });
+});

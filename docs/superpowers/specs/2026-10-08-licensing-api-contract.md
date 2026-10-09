@@ -37,6 +37,14 @@ input UpdateAppProfileInput {
   description: String  category: String
   logoRef: String  coverRef: String
   links: [PublisherAppLinkInput!]
+  metrics: [PublisherAppMetricInput!]
+}
+enum PublisherMetricAggregation { SUM MAX AVG COUNT_USERS }
+"A publisher-defined metric: key is what environments report; the rest is how Renown shows it."
+input PublisherAppMetricInput {
+  id: String!  key: String!  label: String!
+  unit: String  description: String
+  aggregation: PublisherMetricAggregation!  public: Boolean!
 }
 
 type PublisherTemplate {
@@ -187,7 +195,7 @@ Error codes (`extensions.code`, existing mechanism): `NOT_FOUND`, `FORBIDDEN`,
 `UNSUPPORTED_DID`, `LICENSING_DISABLED`, `ALREADY_HOLDS` (`replaceGrant` to the
 kind the licence already holds ACTIVE, where that cannot be a renewal: the
 term has no validity limit), plus reducer errors surfaced as `INVALID_INPUT`
-with the reducer message. `updateAppProfile` adds `NO_IDENTITY` (the app has no Renown identity yet), `RATE_LIMITED`, `PROFILE_UNAVAILABLE` (relay off or Renown unreachable) and `INVALID_INPUT` with `extensions.field` naming the input to fix.
+with the reducer message. `updateAppProfile` adds `NO_IDENTITY` (the app has no Renown identity yet), `RATE_LIMITED`, `PROFILE_UNAVAILABLE` (relay off or Renown unreachable) and `INVALID_INPUT` with `extensions.field` naming the input to fix. `updateAppProfile.metrics` replaces the whole list (`[]` clears); Renown refuses an invalid list with `INVALID_INPUT`, `extensions.field = "metrics"`.
 
 ## vetraSubscriptions
 

@@ -19,7 +19,20 @@ export interface AppProfileLinkInput {
   url: string;
 }
 
-/** What a publisher may change. Absent or null: unchanged; "": clear; links: the whole list. */
+export type MetricAggregation = "SUM" | "MAX" | "AVG" | "COUNT_USERS";
+
+/** A publisher-defined metric (Renown's AppMetricInput). */
+export interface AppProfileMetricInput {
+  id: string;
+  key: string;
+  label: string;
+  unit?: string | null;
+  description?: string | null;
+  aggregation: MetricAggregation;
+  public: boolean;
+}
+
+/** What a publisher may change. Absent or null: unchanged; "": clear; links and metrics: the whole list. */
 export interface AppProfileWrite {
   name?: string | null;
   tagline?: string | null;
@@ -29,6 +42,7 @@ export interface AppProfileWrite {
   logoRef?: string | null;
   coverRef?: string | null;
   links?: AppProfileLinkInput[] | null;
+  metrics?: AppProfileMetricInput[] | null;
 }
 
 export const PROFILE_WRITE_KEYS = [
@@ -40,6 +54,7 @@ export const PROFILE_WRITE_KEYS = [
   "logoRef",
   "coverRef",
   "links",
+  "metrics",
 ] as const;
 
 /** A refusal shown to the publisher: `code` is the wire code, `field` the input to fix. */
@@ -66,10 +81,11 @@ export interface RenownProfileRelayConfig {
   registrationToken: string | null;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  logger?: Pick<Console, "warn">;
 }
 
-const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!]) {
-  upsertAppProfile(appDid: $appDid, name: $name, tagline: $tagline, website: $website, description: $description, category: $category, logoRef: $logoRef, coverRef: $coverRef, links: $links)
+const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!], $metrics: [AppMetricInput!]) {
+  upsertAppProfile(appDid: $appDid, name: $name, tagline: $tagline, website: $website, description: $description, category: $category, logoRef: $logoRef, coverRef: $coverRef, links: $links, metrics: $metrics)
 }`;
 
 const UNAVAILABLE = "Renown is not reachable right now. Try again in a minute.";
@@ -105,6 +121,12 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
   const registrationToken = cfg.registrationToken;
   const fetchImpl = cfg.fetch ?? fetch;
   const timeoutMs = cfg.timeoutMs ?? 10_000;
+  const logger = cfg.logger ?? console;
+  /** Operators need the cause; the publisher gets the generic message. Never log the bearer or token. */
+  const unavailable = (cause: string): RenownProfileError => {
+    logger.warn(`[licensing] renown app profile unavailable (${cause})`);
+    return new RenownProfileError("PROFILE_UNAVAILABLE", UNAVAILABLE);
+  };
 
   return {
     async upsert(appDid, bearer, fields) {
@@ -125,19 +147,25 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch {
-        throw new RenownProfileError("PROFILE_UNAVAILABLE", UNAVAILABLE);
+        throw unavailable("network");
       }
       const body = (await res.json().catch(() => null)) as UpsertBody;
       const error = body?.errors?.[0];
       if (error) {
-        throw refusal(
+        const refused = refusal(
           error.extensions?.code,
           (error.message ?? "").trim() || "Renown refused the profile.",
           error.extensions?.field,
         );
+        if (refused.code === "PROFILE_UNAVAILABLE") {
+          const code = error.extensions?.code;
+          throw unavailable(`Renown error ${typeof code === "string" ? code : "without a code"}`);
+        }
+        throw refused;
       }
       if (res.status === 401) throw refusal("UNAUTHENTICATED", "", null);
-      if (!res.ok || body?.data?.upsertAppProfile !== true) throw refusal(null, "", null);
+      if (!res.ok) throw unavailable(`HTTP ${res.status}`);
+      if (body?.data?.upsertAppProfile !== true) throw unavailable("validation: unexpected response shape");
     },
   };
 }

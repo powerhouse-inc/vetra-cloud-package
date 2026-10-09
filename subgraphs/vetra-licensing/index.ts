@@ -51,6 +51,7 @@ import type { AcquireOptions } from "./keyed-mutex.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
 import { createRenownProfileRelay } from "./renown-profile.js";
+import { createAppIdentityLookup } from "./app-identity.js";
 import { mergeResolvers } from "./merge-resolvers.js";
 import { APP_DOC_TYPE } from "./app-reads.js";
 import { createReactorDocGateway } from "./doc-gateway.js";
@@ -368,15 +369,17 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       grants,
       lifecycle,
       apps: appReads,
-      // The app DID comes from the apps row, never the app document.
-      appIdentity: async (appId) => {
-        const row = await appsDb
-          .selectFrom("apps")
-          .select(["identity_did", "status"])
-          .where("id", "=", appId)
-          .executeTakeFirst();
-        return row ? { identityDid: row.identity_did, status: row.status } : null;
-      },
+      // The apps row; the studio app (no row) from configuration.
+      appIdentity: createAppIdentityLookup({
+        row: async (appId) =>
+          (await appsDb
+            .selectFrom("apps")
+            .select(["identity_did", "status"])
+            .where("id", "=", appId)
+            .executeTakeFirst()) ?? null,
+        studioIdentityDid: cfg.studioIdentityDid,
+        logger: console,
+      }),
       stats,
       logger: console,
       now: () => new Date().toISOString(),

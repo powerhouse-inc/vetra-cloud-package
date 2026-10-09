@@ -25,6 +25,11 @@ describe("loadLicensingConfig", () => {
     expect(loadLicensingConfig({ ADMINS: "0xaa", VETRA_STUDIO_PUBLISHER_ADDRESS: "0xCC", LICENSING_MIGRATION: "yes" }))
       .toMatchObject({ studioPublisher: "0xcc", migration: "dry-run" });
   });
+  it("reads the studio identity DID trimmed, and only when it is a did: string", () => {
+    expect(loadLicensingConfig({ VETRA_STUDIO_IDENTITY_DID: " did:key:zS " }).studioIdentityDid).toBe("did:key:zS");
+    expect(loadLicensingConfig({ VETRA_STUDIO_IDENTITY_DID: "nope" }).studioIdentityDid).toBeNull();
+    expect(loadLicensingConfig({}).studioIdentityDid).toBeNull();
+  });
   it("accepts the migration modes case-insensitively and off explicitly", () => {
     expect(loadLicensingConfig({ LICENSING_MIGRATION: "OFF" }).migration).toBe("off");
     expect(loadLicensingConfig({ LICENSING_MIGRATION: " Apply " }).migration).toBe("apply");

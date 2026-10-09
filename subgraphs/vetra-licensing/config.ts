@@ -22,6 +22,12 @@ export interface LicensingConfig {
   studioAppSlug: string;
   /** Lowercased address of the studio app's publisher; null when unconfigured. */
   studioPublisher: string | null;
+  /**
+   * The studio app's Renown workload identity (VETRA_STUDIO_IDENTITY_DID); null
+   * when unset or not a `did:` string. The studio has no apps row, so this is
+   * the only source of its identity.
+   */
+  studioIdentityDid: string | null;
   renownStatsUrl: string | null;
   licensingPublicUrl: string | null;
   /**
@@ -76,6 +82,9 @@ export function loadLicensingConfig(
     studioAppSlug: trimmed("VETRA_STUDIO_APP_SLUG") ?? "vetra-studio",
     studioPublisher:
       trimmed("VETRA_STUDIO_PUBLISHER_ADDRESS")?.toLowerCase() ?? firstAdmin,
+    studioIdentityDid: ((v) => (v?.startsWith("did:") ? v : null))(
+      trimmed("VETRA_STUDIO_IDENTITY_DID"),
+    ),
     renownStatsUrl: trimmed("RENOWN_STATS_URL"),
     licensingPublicUrl: trimmed("VETRA_LICENSING_URL"),
     retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),

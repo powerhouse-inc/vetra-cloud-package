@@ -83,3 +83,44 @@ describe("createRenownProfileRelay", () => {
     expect((await refusal(make(down).upsert(DID, "b", {}))).code).toBe("PROFILE_UNAVAILABLE");
   });
 });
+
+describe("metric definitions (identity hub phase 3)", () => {
+  it("forwards the metric list as Renown's AppMetricInput", async () => {
+    const fetch = answering(200, { data: { upsertAppProfile: true } });
+    const relay = createRenownProfileRelay({ statsUrl: URL_, registrationToken: "reg", fetch: fetch as never })!;
+    const metrics = [
+      { id: "m1", key: "notes", label: "Notes", unit: "notes", description: null, aggregation: "SUM" as const, public: true },
+    ];
+    await relay.upsert(DID, "user-bearer", { metrics });
+    const [, init] = fetch.mock.calls[0]!;
+    const body = JSON.parse(init.body as string) as { query: string; variables: Record<string, unknown> };
+    expect(body.query).toContain("$metrics: [AppMetricInput!]");
+    expect(body.query).toContain("metrics: $metrics");
+    expect(body.variables).toEqual({ appDid: DID, metrics });
+  });
+
+  describe("PROFILE_UNAVAILABLE logs its cause, never the credentials", () => {
+    const run = async (fetch: unknown, logger: { warn: ReturnType<typeof vi.fn> }) => {
+      const relay = createRenownProfileRelay({
+        statsUrl: URL_, registrationToken: "reg-secret", fetch: fetch as never, logger,
+      } as never)!;
+      return refusal(relay.upsert(DID, "bearer-secret", { name: "x" }));
+    };
+    const cases: [string, unknown, string][] = [
+      ["network", vi.fn(async () => { throw new Error("boom bearer-secret"); }), "network"],
+      ["http status", answering(502, undefined), "502"],
+      ["error code", answering(200, { errors: [{ message: "m", extensions: { code: "INTERNAL" } }] }), "INTERNAL"],
+      ["contract drift", answering(200, { data: { upsertAppProfile: "nope" } }), "validation"],
+    ];
+    it.each(cases)("%s", async (_n, fetch, expected) => {
+      const logger = { warn: vi.fn() };
+      const e = await run(fetch, logger);
+      expect(e.code).toBe("PROFILE_UNAVAILABLE");
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const line = String(logger.warn.mock.calls[0]![0]);
+      expect(line).toContain(expected);
+      expect(line).not.toContain("bearer-secret");
+      expect(line).not.toContain("reg-secret");
+    });
+  });
+});

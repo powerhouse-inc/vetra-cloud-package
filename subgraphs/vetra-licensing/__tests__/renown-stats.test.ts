@@ -301,6 +301,18 @@ describe("Renown stats client", () => {
     expect(s.reports()).toHaveLength(1);
   });
 
+  it("SERVICE_UNAVAILABLE on a report is retried on the next flush, not dropped", async () => {
+    let n = 0;
+    const s = setup({
+      [WORKLOAD]: () => token("tok"),
+      [STATS]: () => (++n === 1 ? gqlError("SERVICE_UNAVAILABLE") : ok({ reportUserStat: true })),
+    });
+    s.client.enqueue(R); await s.client.flush();
+    await s.client.flush();
+    expect(s.reports()).toHaveLength(2);
+    expect(s.client.enqueue(R)).toBe(true);
+  });
+
   it("RATE_LIMITED skips that app for the rest of the flush and keeps its reports queued", async () => {
     let n = 0;
     const s = setup({
