@@ -660,7 +660,8 @@ describe("generateValuesYaml — connect runtime config", () => {
       packages: [
         { packageName: "@memo/builder-profile", version: "1.1.0-dev.24" },
       ],
-      packageRegistryUrl: "https://registry.dev.vetra.io",
+      // The fixture stores the legacy dev registry; it resolves to prod.
+      packageRegistryUrl: "https://registry.vetra.io",
     });
   });
 
@@ -688,7 +689,8 @@ describe("generateValuesYaml — connect runtime config", () => {
       packages: [
         { packageName: "@memo/builder-profile", version: "1.1.0-dev.24" },
       ],
-      packageRegistryUrl: "https://registry.dev.vetra.io",
+      // The fixture stores the legacy dev registry; it resolves to prod.
+      packageRegistryUrl: "https://registry.vetra.io",
     });
   });
 
@@ -815,10 +817,11 @@ describe("generateValuesYaml — tenant cluster issuer (ZeroSSL routing)", () =>
   });
 });
 
-describe("generateValuesYaml — fallback package registry", () => {
-  // An environment without its own defaultPackageRegistry falls back to the
-  // switchboard's DEFAULT_PACKAGE_REGISTRY: prod sets registry.vetra.io, so
-  // prod tenants no longer land on the dev registry; unset keeps dev.
+describe("generateValuesYaml — package registry", () => {
+  // Every environment installs from the prod registry (registry.vetra.io):
+  // an unset registry, and the legacy dev registry older documents stored,
+  // both resolve to it. Only PR previews stay on the dev registry, where their
+  // CI builds are published. A custom third-party registry is kept.
   const registryEnv = "DEFAULT_PACKAGE_REGISTRY";
   afterEach(() => {
     delete process.env[registryEnv];
@@ -841,35 +844,74 @@ describe("generateValuesYaml — fallback package registry", () => {
     // environment's registry (or the fallback) does.
     packages: [{ name: "minesweeper", version: "1.0.6", registry: "https://registry.vetra.io" }],
   });
+  const preview = (): Partial<VetraCloudEnvironmentState> =>
+    ({ app: { role: "PREVIEW" } }) as unknown as Partial<VetraCloudEnvironmentState>;
   const registryUrls = (yaml: string) =>
     [...yaml.matchAll(/PH_REGISTRY_URL: "?([^"\n]+)"?/g)].map((m) => m[1]);
   const connectPayloadRegistry = (yaml: string) => {
     const m = yaml.match(/PH_CONNECT_CONFIG_JSON: (.+)/);
     return m ? (JSON.parse(JSON.parse(m[1])) as { packageRegistryUrl?: string }).packageRegistryUrl : undefined;
   };
+  const PROD = "https://registry.vetra.io";
+  const DEV = "https://registry.dev.vetra.io";
 
-  it("falls back to the dev registry when DEFAULT_PACKAGE_REGISTRY is unset", async () => {
+  it("uses the prod registry when the environment sets none", async () => {
     const yaml = await generateValuesYaml(dbStub, envState(withoutRegistry()), "doc-reg-unset");
-    expect(registryUrls(yaml)).toEqual(["https://registry.dev.vetra.io", "https://registry.dev.vetra.io"]);
-    expect(connectPayloadRegistry(yaml)).toBe("https://registry.dev.vetra.io");
-  });
-
-  it("falls back to DEFAULT_PACKAGE_REGISTRY when set (prod)", async () => {
-    process.env[registryEnv] = "https://registry.vetra.io";
-    const yaml = await generateValuesYaml(dbStub, envState(withoutRegistry()), "doc-reg-prod");
-    expect(registryUrls(yaml)).toEqual(["https://registry.vetra.io", "https://registry.vetra.io"]);
-    expect(connectPayloadRegistry(yaml)).toBe("https://registry.vetra.io");
+    expect(registryUrls(yaml)).toEqual([PROD, PROD]);
+    expect(connectPayloadRegistry(yaml)).toBe(PROD);
     expect(yaml).not.toContain("registry.dev.vetra.io");
   });
 
-  it("keeps an environment's own registry over the fallback", async () => {
-    process.env[registryEnv] = "https://registry.vetra.io";
+  it("uses DEFAULT_PACKAGE_REGISTRY as the platform registry when set", async () => {
+    process.env[registryEnv] = "https://npm.example.com";
+    const yaml = await generateValuesYaml(dbStub, envState(withoutRegistry()), "doc-reg-env");
+    expect(registryUrls(yaml)).toEqual(["https://npm.example.com", "https://npm.example.com"]);
+  });
+
+  it("moves an environment that stored the dev registry onto the prod registry", async () => {
     const yaml = await generateValuesYaml(
       dbStub,
-      envState({ ...withoutRegistry(), defaultPackageRegistry: "https://registry.dev.vetra.io" }),
-      "doc-reg-explicit",
+      envState({ ...withoutRegistry(), defaultPackageRegistry: `${DEV}/` }),
+      "doc-reg-legacy-dev",
     );
-    expect(registryUrls(yaml)).toEqual(["https://registry.dev.vetra.io", "https://registry.dev.vetra.io"]);
+    expect(registryUrls(yaml)).toEqual([PROD, PROD]);
+    expect(connectPayloadRegistry(yaml)).toBe(PROD);
+  });
+
+  it("moves a stored connect-config packageRegistryUrl off the dev registry", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({
+        ...withoutRegistry(),
+        runtimeConfig: JSON.stringify({ packageRegistryUrl: DEV }),
+      } as Partial<VetraCloudEnvironmentState>),
+      "doc-reg-payload-dev",
+    );
+    expect(connectPayloadRegistry(yaml)).toBe(PROD);
+  });
+
+  it("keeps a custom third-party registry", async () => {
+    const yaml = await generateValuesYaml(
+      dbStub,
+      envState({ ...withoutRegistry(), defaultPackageRegistry: "https://npm.example.com" }),
+      "doc-reg-custom",
+    );
+    expect(registryUrls(yaml)).toEqual(["https://npm.example.com", "https://npm.example.com"]);
+  });
+
+  it("keeps PR previews on the dev registry their CI builds publish to", async () => {
+    const stored = await generateValuesYaml(
+      dbStub,
+      envState({ ...withoutRegistry(), ...preview(), defaultPackageRegistry: DEV }),
+      "doc-reg-preview",
+    );
+    expect(registryUrls(stored)).toEqual([DEV, DEV]);
+    const unset = await generateValuesYaml(
+      dbStub,
+      envState({ ...withoutRegistry(), ...preview() }),
+      "doc-reg-preview-unset",
+    );
+    expect(registryUrls(unset)).toEqual([DEV, DEV]);
   });
 });
 

@@ -14,7 +14,7 @@ const DEFAULTS = {
   size: 5,
   version: "0.0.1-dev.19",
   sizeName: "VETRA_AGENT_XXL",
-  registry: "https://registry.dev.vetra.io",
+  registry: "https://registry.vetra.io",
   switchboardUrl: "https://switchboard.staging.vetra.io",
 };
 

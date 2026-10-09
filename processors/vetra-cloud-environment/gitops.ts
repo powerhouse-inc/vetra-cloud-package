@@ -217,14 +217,40 @@ function tenantClusterIssuer(): string {
   return process.env.TENANT_CLUSTER_ISSUER ?? "letsencrypt-prod";
 }
 
+const PROD_PACKAGE_REGISTRY = "https://registry.vetra.io";
+const DEV_PACKAGE_REGISTRY = "https://registry.dev.vetra.io";
+
 /**
- * Registry for an environment that has no defaultPackageRegistry of its own.
- * Per switchboard: prod sets DEFAULT_PACKAGE_REGISTRY=https://registry.vetra.io
- * so its tenants never fall onto the dev registry, which is for testing; unset
- * keeps the dev registry (staging). Read lazily, like tenantClusterIssuer.
+ * The platform package registry: registry.vetra.io, unless the switchboard
+ * overrides it with DEFAULT_PACKAGE_REGISTRY. Read lazily, like
+ * tenantClusterIssuer.
  */
-function fallbackPackageRegistry(): string {
-  return process.env.DEFAULT_PACKAGE_REGISTRY || "https://registry.dev.vetra.io";
+function platformPackageRegistry(): string {
+  return process.env.DEFAULT_PACKAGE_REGISTRY || PROD_PACKAGE_REGISTRY;
+}
+
+function isDevRegistry(url: string): boolean {
+  return url.trim().replace(/\/+$/, "") === DEV_PACKAGE_REGISTRY;
+}
+
+/**
+ * Registry a tenant installs packages from, given what its document stored
+ * (`url`, the env's defaultPackageRegistry or a package's own registry).
+ *
+ * Every environment uses the platform registry. Unset, or the dev registry
+ * older documents stored (vetra.io once stamped it on new envs, and the plan
+ * templates left it unset over a dev fallback), both resolve to it, so prod
+ * packages load everywhere. PR previews are the one exception: their CI builds
+ * publish to the dev registry, so they install from it. A custom third-party
+ * registry is kept as is.
+ */
+export function resolvePackageRegistry(
+  state: VetraCloudEnvironmentState,
+  url: string | null | undefined,
+): string {
+  if (isPreviewEnv(state)) return url || DEV_PACKAGE_REGISTRY;
+  if (!url || isDevRegistry(url)) return platformPackageRegistry();
+  return url;
 }
 
 /**
@@ -244,7 +270,7 @@ function fallbackPackageRegistry(): string {
  * replays once on the first render that carries this. The rollout is naturally
  * staged: a tenant only re-renders when it next reaches CHANGES_APPROVED.
  * Set TENANT_LEGACY_PROCESSOR_IDS=true on the switchboard to revert the fleet
- * without a release. Read lazily, like fallbackPackageRegistry.
+ * without a release. Read lazily, like platformPackageRegistry.
  */
 function tenantLegacyProcessorIds(): string {
   return process.env.TENANT_LEGACY_PROCESSOR_IDS === "true" ? "true" : "false";
@@ -637,10 +663,10 @@ async function generateClintBlock(
     const command = cfg?.serviceCommand ?? pkg.name;
     const envVars = cfg?.env ?? [];
 
-    const registry =
-      pkg.registry ||
-      state.defaultPackageRegistry ||
-      `${fallbackPackageRegistry()}/`;
+    const registry = resolvePackageRegistry(
+      state,
+      pkg.registry || state.defaultPackageRegistry,
+    );
     // Resolve dist-tags (latest/dev) to a concrete version so the image tag
     // matches a prebuilt clint-agent tag.
     const agentVersion = await resolveConcreteVersion(
@@ -1350,10 +1376,12 @@ export async function generateValuesYaml(
   }));
   if (connectPackages.length > 0) {
     connectConfigPayload.packages = connectPackages;
-    if (typeof connectConfigPayload.packageRegistryUrl !== "string") {
-      connectConfigPayload.packageRegistryUrl =
-        state.defaultPackageRegistry || fallbackPackageRegistry();
-    }
+    connectConfigPayload.packageRegistryUrl = resolvePackageRegistry(
+      state,
+      typeof connectConfigPayload.packageRegistryUrl === "string"
+        ? connectConfigPayload.packageRegistryUrl
+        : state.defaultPackageRegistry,
+    );
   }
   const connectConfigEnvLine =
     Object.keys(connectConfigPayload).length > 0
@@ -1451,7 +1479,7 @@ switchboard:
     PORT: "3000"
     NODE_ENV: production
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${switchboardResources.nodeMaxOldSpaceMb}`)}
-    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || fallbackPackageRegistry())}
+    PH_REGISTRY_URL: ${yamlQuote(resolvePackageRegistry(state, state.defaultPackageRegistry))}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     REACTOR_LEGACY_PROCESSOR_IDS: ${yamlQuote(tenantLegacyProcessorIds())}
     OPENBAO_ADDR: https://openbao.vetra.io
@@ -1527,7 +1555,7 @@ connect:
     PORT: "3001"
     NODE_ENV: production
     NODE_OPTIONS: ${yamlQuote(`--max-old-space-size=${connectResources.nodeMaxOldSpaceMb}`)}
-    PH_REGISTRY_URL: ${yamlQuote(state.defaultPackageRegistry || fallbackPackageRegistry())}
+    PH_REGISTRY_URL: ${yamlQuote(resolvePackageRegistry(state, state.defaultPackageRegistry))}
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}${connectConfigEnvLine}
   envConfigMap:
     TENANT_ID: ${tenantId}
