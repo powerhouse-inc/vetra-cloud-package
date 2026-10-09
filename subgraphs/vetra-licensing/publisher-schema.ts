@@ -37,6 +37,26 @@ export const publisherSchema: DocumentNode = gql`
     logoRef: String
     coverRef: String
     links: [PublisherAppLinkInput!]
+    "Publisher-defined metrics, the whole list (at most 16); [] clears."
+    metrics: [PublisherAppMetricInput!]
+  }
+
+  enum PublisherMetricAggregation {
+    SUM
+    MAX
+    AVG
+    COUNT_USERS
+  }
+
+  "A publisher-defined metric: key is what environments report; the rest is how Renown shows it."
+  input PublisherAppMetricInput {
+    id: String!
+    key: String!
+    label: String!
+    unit: String
+    description: String
+    aggregation: PublisherMetricAggregation!
+    public: Boolean!
   }
 
   type PublisherTemplate {

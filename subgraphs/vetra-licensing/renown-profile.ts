@@ -19,7 +19,20 @@ export interface AppProfileLinkInput {
   url: string;
 }
 
-/** What a publisher may change. Absent or null: unchanged; "": clear; links: the whole list. */
+export type MetricAggregation = "SUM" | "MAX" | "AVG" | "COUNT_USERS";
+
+/** A publisher-defined metric (Renown's AppMetricInput). */
+export interface AppProfileMetricInput {
+  id: string;
+  key: string;
+  label: string;
+  unit?: string | null;
+  description?: string | null;
+  aggregation: MetricAggregation;
+  public: boolean;
+}
+
+/** What a publisher may change. Absent or null: unchanged; "": clear; links and metrics: the whole list. */
 export interface AppProfileWrite {
   name?: string | null;
   tagline?: string | null;
@@ -29,6 +42,7 @@ export interface AppProfileWrite {
   logoRef?: string | null;
   coverRef?: string | null;
   links?: AppProfileLinkInput[] | null;
+  metrics?: AppProfileMetricInput[] | null;
 }
 
 export const PROFILE_WRITE_KEYS = [
@@ -40,6 +54,7 @@ export const PROFILE_WRITE_KEYS = [
   "logoRef",
   "coverRef",
   "links",
+  "metrics",
 ] as const;
 
 /** A refusal shown to the publisher: `code` is the wire code, `field` the input to fix. */
@@ -68,8 +83,8 @@ export interface RenownProfileRelayConfig {
   timeoutMs?: number;
 }
 
-const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!]) {
-  upsertAppProfile(appDid: $appDid, name: $name, tagline: $tagline, website: $website, description: $description, category: $category, logoRef: $logoRef, coverRef: $coverRef, links: $links)
+const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!], $metrics: [AppMetricInput!]) {
+  upsertAppProfile(appDid: $appDid, name: $name, tagline: $tagline, website: $website, description: $description, category: $category, logoRef: $logoRef, coverRef: $coverRef, links: $links, metrics: $metrics)
 }`;
 
 const UNAVAILABLE = "Renown is not reachable right now. Try again in a minute.";
