@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
-import type { AppReads } from "./app-reads.js";
+import type { AppDocView, AppReads } from "./app-reads.js";
 import { UnauthenticatedError } from "./auth.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
@@ -239,10 +239,14 @@ export interface RelayDeps {
   envRows: Pick<ChainEnvRows, "byEnvironment">;
   grants: Pick<GrantStore, "chainHead" | "grantFor">;
   lifecycle: Pick<LifecycleStore, "entry">;
-  /** Ledger-checked app reads: only `tampered` is used, never the document's identity. */
+  /** Ledger-checked app reads: only `tampered` is used here; the document's identity is never the source of an app's DID. */
   apps: Pick<AppReads, "app">;
-  /** The apps row (vetra-apps): the App's Renown workload identity and status. */
-  appIdentity(appId: string): Promise<{ identityDid: string | null; status: string } | null>;
+  /**
+   * The App's Renown workload identity and status: the apps row, or for the
+   * row-less studio app the configured DID. `app` is the view the relay has
+   * already read (only used for diagnostics, never as evidence).
+   */
+  appIdentity(appId: string, app?: AppDocView | null): Promise<{ identityDid: string | null; status: string } | null>;
   stats: RenownStatsClient;
   logger: Pick<Console, "info" | "warn">;
   now(): string;
@@ -269,7 +273,8 @@ function refuse(deps: RelayDeps, environmentId: string, reason: string): false {
  * head, recorded ACTIVE, granted for the same app and holder -> the app's
  * recorded workload identity -> Renown. Only the holder's own stats are
  * relayed. Documents are never evidence: holder, app and status come from
- * DB rows, the app DID from the apps row. A refusal is `false` (logged once
+ * DB rows, the app DID from the apps row (the row-less studio app: from
+ * configuration). A refusal is `false` (logged once
  * per change), with no detail for the caller. `true` means queued: delivery
  * is asynchronous and coalesced.
  */
@@ -303,7 +308,7 @@ export async function relayUserStat(
   const app = await deps.apps.app(row.app_id);
   if (!app) return refuse(deps, environmentId, `app ${row.app_id} has no readable document`);
   if (app.tampered) return refuse(deps, environmentId, `app ${row.app_id} is tampered`);
-  const identity = await deps.appIdentity(row.app_id);
+  const identity = await deps.appIdentity(row.app_id, app);
   if (!identity?.identityDid || !REPORTING_APP_STATUSES.has(identity.status)) {
     return refuse(deps, environmentId, `app ${row.app_id} has no usable Renown identity`);
   }

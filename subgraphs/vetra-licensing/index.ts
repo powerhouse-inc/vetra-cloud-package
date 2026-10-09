@@ -369,7 +369,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       grants,
       lifecycle,
       apps: appReads,
-      // The apps row; the studio app (no row) from its ledger-checked document.
+      // The apps row; the studio app (no row) from configuration.
       appIdentity: createAppIdentityLookup({
         row: async (appId) =>
           (await appsDb
@@ -377,7 +377,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
             .select(["identity_did", "status"])
             .where("id", "=", appId)
             .executeTakeFirst()) ?? null,
-        apps: appReads,
+        studioIdentityDid: cfg.studioIdentityDid,
+        logger: console,
       }),
       stats,
       logger: console,
