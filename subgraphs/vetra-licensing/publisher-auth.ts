@@ -22,6 +22,8 @@ export interface OwnerAppRecord {
   name: string;
   status: string;
   owner_address: string;
+  /** The app's Renown workload identity (did:key); absent/null before one exists. */
+  identity_did?: string | null;
 }
 
 export interface PublisherAuthDeps {

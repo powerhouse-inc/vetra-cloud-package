@@ -31,6 +31,7 @@ const CONTRACT_MUTATIONS = [
   "addTemplatePackage", "removeTemplatePackage", "deleteTemplate", "addTerm", "setTermDetails",
   "publishTerm", "retireTerm", "issueGrant", "replaceGrant", "revokeLicense", "createInviteCode",
   "setInviteCodeActive", "addToAllowList", "removeFromAllowList",
+  "updateAppProfile",
 ];
 
 /** One app's ids, as its own owner created them through the publisher API. */
@@ -116,6 +117,7 @@ const CASES: Case[] = [
   ["setInviteCodeActive", "m", (x) => ({ appId: x.app, code: x.code, active: false })],
   ["addToAllowList", "m", (x) => ({ appId: x.app, user: "0x3333333333333333333333333333333333333333" })],
   ["removeFromAllowList", "m", (x) => ({ appId: x.app, user: HOLDER })],
+  ["updateAppProfile", "m", (x) => ({ input: { appId: x.app, name: "renamed" } })],
 ];
 
 /** A's appId with one of B's inner ids: still B's, still NOT_FOUND. */
@@ -159,7 +161,7 @@ describe("publisher isolation", () => {
 
   it("myApps lists only the caller's apps", async () => {
     expect(await r.VetraPublisherQueries.myApps!({}, {}, asUser(A))).toStrictEqual([
-      { id: APP_A, name: `App ${APP_A.slice(0, 4)}`, status: "ACTIVE" },
+      { id: APP_A, name: `App ${APP_A.slice(0, 4)}`, status: "ACTIVE", identityDid: null },
     ]);
   });
 

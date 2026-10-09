@@ -104,6 +104,7 @@ describe("subgraph schema composition", () => {
       "setInviteCodeActive",
       "addToAllowList",
       "removeFromAllowList",
+      "updateAppProfile",
     ]);
   });
 

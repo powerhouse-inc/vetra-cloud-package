@@ -50,6 +50,7 @@ import { createGrantStore } from "./grants.js";
 import type { AcquireOptions } from "./keyed-mutex.js";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { createPublisherResolvers } from "./publisher-resolvers.js";
+import { createRenownProfileRelay } from "./renown-profile.js";
 import { mergeResolvers } from "./merge-resolvers.js";
 import { APP_DOC_TYPE } from "./app-reads.js";
 import { createReactorDocGateway } from "./doc-gateway.js";
@@ -168,14 +169,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         byId: (id) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address"])
+            .select(["id", "name", "status", "owner_address", "identity_did"])
             .where("id", "=", id)
             .executeTakeFirst()
             .then((r) => r ?? null),
         byOwner: (address) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address"])
+            .select(["id", "name", "status", "owner_address", "identity_did"])
             .where("owner_address", "=", address)
             .execute(),
       },
@@ -245,6 +246,12 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       cfg,
       newId: () => randomUUID(),
       now: () => new Date().toISOString(),
+      // App profiles on Renown, relayed with the registration token. Off
+      // while RENOWN_STATS_URL or RENOWN_WORKLOAD_REGISTRATION_TOKEN is unset.
+      renownProfile: createRenownProfileRelay({
+        statsUrl: cfg.renownStatsUrl,
+        registrationToken: loadAppsConfig(process.env).renown?.registrationToken ?? null,
+      }),
     }) as Record<string, Record<string, unknown>>;
 
     // Owner surface. Everything a holder owns is read from grant rows and the

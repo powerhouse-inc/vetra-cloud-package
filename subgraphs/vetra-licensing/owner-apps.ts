@@ -36,6 +36,9 @@ export function createOwnerAppLookup(deps: {
       name: doc.name ?? doc.slug ?? STUDIO_APP_ID,
       status: "ACTIVE",
       owner_address: deps.studioPublisher,
+      // Only used to address its Renown profile; Renown itself checks that the
+      // caller's wallet owns this identity.
+      ...(doc.identityDid ? { identity_did: doc.identityDid } : {}),
     };
   }
 
