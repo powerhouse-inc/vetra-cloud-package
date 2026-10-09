@@ -962,6 +962,60 @@ describe("generateValuesYaml — switchboard / connect default image tag", () =>
     expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?pullPolicy: IfNotPresent/);
   });
 
+  describe("connect CSP floor", () => {
+    // Connect images before v6.2.2-dev.49 bake a CSP that only allows
+    // registry.dev.vetra.io, so they cannot load packages from the platform
+    // registry. A pin below the floor renders at the default tag instead.
+    afterEach(() => {
+      delete process.env.DEFAULT_APP_IMAGE_TAG;
+    });
+
+    it("lifts a connect pin below the floor to the default tag", async () => {
+      process.env.DEFAULT_APP_IMAGE_TAG = "v6.2.3";
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({ services: [appService("CONNECT", "v6.2.0-rc.8")] }),
+        "doc-connect-floor",
+      );
+      expect(yaml).toMatch(/connect:[\s\S]*?image:[\s\S]*?tag: v6\.2\.3\b/);
+      expect(yaml).not.toContain("v6.2.0-rc.8");
+    });
+
+    it("keeps connect pins at or above the floor, and unparseable tags", async () => {
+      for (const tag of ["v6.2.2-dev.49", "v6.2.3-dev.20", "dev"]) {
+        const yaml = await generateValuesYaml(
+          dbStub,
+          envState({ services: [appService("CONNECT", tag)] }),
+          `doc-connect-floor-${tag}`,
+        );
+        expect(yaml).toContain(`tag: ${tag}`);
+      }
+    });
+
+    it("keeps an old connect pin on a PR preview, which stays on the dev registry", async () => {
+      process.env.DEFAULT_APP_IMAGE_TAG = "v6.2.3";
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({
+          services: [appService("CONNECT", "v6.2.0-rc.8")],
+          app: { role: "PREVIEW" },
+        } as unknown as Partial<VetraCloudEnvironmentState>),
+        "doc-connect-floor-preview",
+      );
+      expect(yaml).toContain("tag: v6.2.0-rc.8");
+    });
+
+    it("leaves a switchboard pin below the floor alone", async () => {
+      process.env.DEFAULT_APP_IMAGE_TAG = "v6.2.3";
+      const yaml = await generateValuesYaml(
+        dbStub,
+        envState({ services: [appService("SWITCHBOARD", "v6.2.0-rc.8")] }),
+        "doc-sb-below-floor",
+      );
+      expect(yaml).toMatch(/switchboard:[\s\S]*?image:[\s\S]*?tag: v6\.2\.0-rc\.8/);
+    });
+  });
+
   describe("DEFAULT_APP_IMAGE_TAG env override", () => {
     afterEach(() => {
       delete process.env.DEFAULT_APP_IMAGE_TAG;
