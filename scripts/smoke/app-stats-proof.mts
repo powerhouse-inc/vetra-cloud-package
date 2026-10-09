@@ -122,6 +122,22 @@ const presence = inPod([
 if (presence.includes("MISSING")) fail(`the environment lacks its reporting variables:\n${presence.trim()}`);
 ok("the environment has VETRA_REPORTING_TOKEN and VETRA_LICENSING_URL");
 
+// The report goes to the pod's own endpoint: it must be a staging Vetra, whatever the namespace.
+const podUrl = inPod(["sh", "-c", "printenv VETRA_LICENSING_URL"]).trim();
+let podHost = "";
+try {
+  podHost = new URL(podUrl).hostname;
+} catch {
+  podHost = "";
+}
+if (!isStagingHost(podUrl)) {
+  const message = `the environment's VETRA_LICENSING_URL host "${podHost || "unparseable"}" is not a staging host`;
+  if (!args["allow-prod"]) fail(`staging guard refused (pass --allow-prod to override): ${message}`);
+  console.log(`guard OVERRIDDEN by --allow-prod: ${message}`);
+} else {
+  ok(`the environment reports to ${podHost}`);
+}
+
 // 2. Report from inside the pod, exactly as package code there would.
 const REPORT = [
   "const [user, metric, value] = process.argv.slice(-3);",
