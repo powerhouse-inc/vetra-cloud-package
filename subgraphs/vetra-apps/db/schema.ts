@@ -40,6 +40,8 @@ export interface AppsTable {
   identity_did: string;
   /** expirationDate of the owner's delegation credential (null = unknown / never). */
   identity_expires_at: string | null;
+  /** Renown organisation owning the App (null: personal). */
+  owner_org_id: string | null;
   created_at: string;
   updated_at: string;
 }

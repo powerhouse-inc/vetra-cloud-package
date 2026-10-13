@@ -1,6 +1,9 @@
 export type ErrorCode =
   | "NotOwnerError"
   | "SelfClaimRequiredError"
+  | "OrgOwnedError"
+  | "OrgSyncSystemOnlyError"
+  | "NotOrgOwnedError"
   | "ServiceNotEnabledError"
   | "InvalidRuntimeConfigError"
   | "AppLinkSystemOnlyError";
@@ -19,6 +22,27 @@ export class NotOwnerError extends Error implements ReducerError {
 export class SelfClaimRequiredError extends Error implements ReducerError {
   errorCode = "SelfClaimRequiredError" as ErrorCode;
   constructor(message = "SelfClaimRequiredError") {
+    super(message);
+  }
+}
+
+export class OrgOwnedError extends Error implements ReducerError {
+  errorCode = "OrgOwnedError" as ErrorCode;
+  constructor(message = "OrgOwnedError") {
+    super(message);
+  }
+}
+
+export class OrgSyncSystemOnlyError extends Error implements ReducerError {
+  errorCode = "OrgSyncSystemOnlyError" as ErrorCode;
+  constructor(message = "OrgSyncSystemOnlyError") {
+    super(message);
+  }
+}
+
+export class NotOrgOwnedError extends Error implements ReducerError {
+  errorCode = "NotOrgOwnedError" as ErrorCode;
+  constructor(message = "NotOrgOwnedError") {
     super(message);
   }
 }
@@ -46,6 +70,10 @@ export class AppLinkSystemOnlyError extends Error implements ReducerError {
 
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
+
+  SetOwnerOrg: { NotOwnerError, OrgOwnedError },
+
+  SyncOrgOperators: { OrgSyncSystemOnlyError, NotOrgOwnedError },
 
   SetLabel: { NotOwnerError },
 

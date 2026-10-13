@@ -34,10 +34,15 @@ export const schema: DocumentNode = gql`
     """
     Returns environments scoped to the calling user.
     - Without a verified Renown bearer token: returns an empty list.
-    - With scope=MINE (default): returns environments where owner matches the caller.
+    - With scope=MINE (default): personal environments (no organisation) owned by the caller, plus unclaimed ones.
     - With scope=ALL: requires admin status; returns all environments.
+    - With scope=ORG: environments of organisation \`orgId\`; active members (and admins) only.
     """
-    myEnvironments(scope: ListScope = MINE): [VetraCloudEnvironmentSummary!]!
+    myEnvironments(
+      scope: ListScope = MINE
+      "Required with scope ORG"
+      orgId: String
+    ): [VetraCloudEnvironmentSummary!]!
 
     """Studio products owned or just-claimed by the caller, fully resolved."""
     myStudioProducts: [StudioProduct!]!
@@ -75,7 +80,9 @@ export const schema: DocumentNode = gql`
 
     """
     On-demand pg_dump exports of the env's Postgres, newest first
-    (capped at 20). Owner-only. Each entry has a 24h-TTL file on S3;
+    (capped at 20). Personal envs: owner only. Organisation envs: an
+    OWNER or ADMIN of the owning organisation. No platform-admin bypass.
+    Each entry has a 24h-TTL file on S3;
     \`downloadUrl\` is a 15-min presigned URL minted on every read,
     only present when status=READY and the file hasn't expired.
     """
@@ -113,12 +120,33 @@ export const schema: DocumentNode = gql`
 
   type Mutation {
     """
+    Called by vetra.io before signed actions on an environment: refreshes
+    the caller's operator entry (publishers) or read grant (members) from
+    Renown and answers their access. The sync work is rate-limited per
+    caller and environment (successful syncs only); the access answer is
+    always fresh, and canOperate is true only once the caller is an operator
+    of the document (a sync that could not run answers false for newcomers).
+    """
+    syncEnvironmentOrg(environmentId: String!): EnvironmentOrgAccess!
+
+    """
+    Hand a personal, non-app environment to a Renown organisation. Caller:
+    the environment's personal owner (no admin bypass), who must be a
+    PUBLISHER or above in the organisation. One-way: an organisation
+    environment is refused (ALREADY_ORG_OWNED); app environments follow
+    their app (APP_ENVIRONMENT); released environments (TERMINATING,
+    DESTROYED, ARCHIVED) are refused (ENV_NOT_ACTIVE).
+    """
+    setEnvironmentOrg(environmentId: String!, orgId: String!): EnvironmentOrgAccess!
+
+    """
     Set (or clear) the custom domain on an environment. Enforces global
     uniqueness across live environments and optionally pins one service to
     the apex of the custom domain (Connect served at admin.vetra.io rather
     than connect.admin.vetra.io).
 
-    Caller must be the environment's owner or an admin. Uniqueness is
+    Caller must be the environment's owner (personal), a covering
+    publisher of its organisation (org-owned) or an admin. Uniqueness is
     checked against environments whose status is not in
     {TERMINATING, DESTROYED, ARCHIVED}. Raises DOMAIN_TAKEN if another
     live environment already claims the same host.
@@ -150,7 +178,7 @@ export const schema: DocumentNode = gql`
 
     """
     Immediately bump one environment's enabled services to the latest
-    known tag on its subscribed channel. Owner-only. Raises
+    known tag on its subscribed channel. Owner, covering org publisher, or admin. Raises
     NO_CHANNEL if the env has no autoUpdateChannel set, and
     NO_RELEASE_KNOWN if the subgraph has never seen a release on that
     channel for any of the enabled services. Returns the same shape as
@@ -160,13 +188,15 @@ export const schema: DocumentNode = gql`
 
     """
     Revert an environment's enabled services to the previous tag
-    recorded in release_history. Owner-only. Raises NO_PRIOR_RELEASE if
+    recorded in release_history. Owner, covering org publisher, or admin. Raises NO_PRIOR_RELEASE if
     there's no history to roll back to for any enabled service.
     """
     rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
 
     """
-    Owner-gated. Creates a new on-demand pg_dump export. Returns the
+    Personal envs: owner only. Organisation envs: an OWNER or ADMIN of
+    the owning organisation (publishers are refused). No platform-admin
+    bypass. Creates a new on-demand pg_dump export. Returns the
     new dump in PENDING. Caller polls environmentDumps to observe
     state transitions. Raises DUMP_IN_PROGRESS if a previous dump is
     still PENDING or RUNNING.
@@ -174,17 +204,18 @@ export const schema: DocumentNode = gql`
     requestEnvironmentDump(tenantId: String!): DatabaseDump!
 
     """
-    Owner-gated. Cancels an in-flight (PENDING or RUNNING) dump:
+    Personal envs: owner only. Organisation envs: an OWNER or ADMIN of
+    the owning organisation. No platform-admin bypass. Cancels an in-flight (PENDING or RUNNING) dump:
     deletes its k8s Job (best-effort) and marks the row FAILED with
     'Cancelled by user'. No-op for terminal rows (READY/FAILED) —
     returns them unchanged. Raises ENV_NOT_FOUND if the dump's tenant
-    has no env, FORBIDDEN for non-owners, DUMP_NOT_FOUND if the id
+    has no env, FORBIDDEN for anyone else, DUMP_NOT_FOUND if the id
     doesn't exist.
     """
     cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
 
     """
-    Owner-gated. Trigger a rolling restart of one of an environment's
+    Owner, covering org publisher, or admin. Trigger a rolling restart of one of an environment's
     Deployments by stamping the standard rollout-restart annotation on its
     pod template. 'service' selects CONNECT/SWITCHBOARD; for CLINT pass the
     agent's 'agentPrefix' to disambiguate (each agent is its own
@@ -202,7 +233,7 @@ export const schema: DocumentNode = gql`
     ): RestartEnvironmentServiceResult!
 
     """
-    Owner-or-admin. Set the package registry an environment installs from:
+    Owner, covering org publisher, or admin. Set the package registry an environment installs from:
     https://registry.vetra.io (production) or https://registry.dev.vetra.io
     (testing). A deployed environment is redeployed so the change reaches the
     tenant; a slept one picks it up on wake, a DRAFT or CHANGES_PENDING one on
@@ -285,7 +316,15 @@ export const schema: DocumentNode = gql`
     description: String
   }
 
-  enum ListScope { MINE, ALL }
+  enum ListScope { MINE, ALL, ORG }
+
+  """The caller's access to an environment after an organisation sync."""
+  type EnvironmentOrgAccess {
+    environmentId: String!
+    ownerOrgId: String
+    canOperate: Boolean!
+    canView: Boolean!
+  }
 
   type Viewer {
     """The caller's wallet address (lowercased), if authenticated; otherwise null."""
@@ -317,6 +356,10 @@ export const schema: DocumentNode = gql`
     appRole: String
     """PR number of an App preview environment."""
     prNumber: Int
+    """Renown organisation owning this environment; null for personal environments."""
+    ownerOrgId: String
+    """Addresses allowed to sign on an organisation environment (lowercased)."""
+    orgOperators: [String!]!
   }
 
   type VetraCloudEnvPackage {

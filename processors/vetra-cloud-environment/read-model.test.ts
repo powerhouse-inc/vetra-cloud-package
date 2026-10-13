@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "./migrations.js";
-import { appLinkColumns } from "./processor.js";
+import { appLinkColumns, orgColumns } from "./processor.js";
 import type { DB } from "./schema.js";
 
 describe("environments read model — App link columns", () => {
@@ -47,5 +47,33 @@ describe("environments read model — App link columns", () => {
     const nulls = { appId: null, appRole: null, prNumber: null };
     expect(appLinkColumns({ app: null })).toStrictEqual(nulls);
     expect(appLinkColumns({})).toStrictEqual(nulls);
+  });
+});
+
+describe("environments read model — organisation columns", () => {
+  it("adds ownerOrgId / orgOperators (idempotently)", async () => {
+    const db = new Kysely<DB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    await db
+      .insertInto("environments")
+      .values({ id: "e1", ownerOrgId: "org-1", orgOperators: '["0xabc"]' } as never)
+      .execute();
+    const row = await db
+      .selectFrom("environments")
+      .select(["ownerOrgId", "orgOperators"])
+      .where("id", "=", "e1")
+      .executeTakeFirstOrThrow();
+    expect(row).toStrictEqual({ ownerOrgId: "org-1", orgOperators: '["0xabc"]' });
+    await db.destroy();
+  });
+
+  it("maps the state to the columns; personal and legacy states map to NULL and []", () => {
+    expect(orgColumns({ ownerOrgId: "org-1", orgOperators: ["0xabc"] })).toStrictEqual({
+      ownerOrgId: "org-1",
+      orgOperators: '["0xabc"]',
+    });
+    expect(orgColumns({ ownerOrgId: null, orgOperators: [] })).toStrictEqual({ ownerOrgId: null, orgOperators: "[]" });
+    expect(orgColumns({})).toStrictEqual({ ownerOrgId: null, orgOperators: "[]" });
   });
 });

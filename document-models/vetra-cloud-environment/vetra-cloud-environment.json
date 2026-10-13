@@ -16,9 +16,9 @@
           "initialValue": ""
         },
         "global": {
-          "schema": "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n  fusion: VetraCloudFusionConfig\n  app: VetraCloudAppLink\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ntype VetraCloudFusionConfig {\n  image: String\n  env: [VetraCloudServiceEnv!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}\n\ntype VetraCloudAppLink {\n  appId: String!\n  role: AppEnvironmentRole!\n  prNumber: Int\n  gitRef: String\n  imageProject: String\n}\n\nenum AppEnvironmentRole {\n  PRODUCTION\n  PREVIEW\n}",
+          "schema": "type VetraCloudEnvironmentState {\n  owner: EthereumAddress\n  ownerOrgId: String\n  orgOperators: [EthereumAddress!]!\n  label: String\n  genericSubdomain: String\n  genericBaseDomain: String\n  customDomain: VetraCustomDomain\n  defaultPackageRegistry: URL\n  services: [VetraCloudEnvironmentService!]!\n  packages: [VetraCloudPackage!]!\n  status: VetraCloudEnvironmentStatus!\n  apexService: VetraCloudEnvironmentServiceType\n  autoUpdateChannel: AutoUpdateChannel\n  runtimeConfig: String\n  studioInstanceId: OID\n  fusion: VetraCloudFusionConfig\n  app: VetraCloudAppLink\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraCustomDomain {\n  enabled: Boolean!\n  domain: String\n  dnsRecords: [DnsRecord!]!\n}\n\ntype DnsRecord {\n  type: String!\n  host: String!\n  value: String!\n}\n\ntype VetraCloudEnvironmentService {\n  type: VetraCloudEnvironmentServiceType!\n  prefix: String!\n  enabled: Boolean!\n  url: String\n  status: ServiceStatus!\n  version: String\n  config: VetraCloudServiceClint\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceClint {\n  package: VetraCloudPackage!\n  env: [VetraCloudServiceEnv!]!\n  serviceCommand: String\n  selectedRessource: VetraCloudRessourceSize\n}\n\ntype VetraCloudServiceEnv {\n  name: String!\n  value: String\n  isSecret: Boolean\n}\n\nenum VetraCloudRessourceSize {\n  VETRA_AGENT_S\n  VETRA_AGENT_M\n  VETRA_AGENT_L\n  VETRA_AGENT_XL\n  VETRA_AGENT_XXL\n}\n\nenum VetraCloudEnvironmentServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\nenum ServiceStatus {\n  ACTIVE\n  SUSPENDED\n  PROVISIONING\n  BILLING_ISSUE\n}\n\nenum VetraCloudEnvironmentStatus {\n  DRAFT\n  CHANGES_PENDING\n  CHANGES_APPROVED\n  CHANGES_PUSHED\n  DEPLOYING\n  DEPLOYMENt_FAILED\n  READY\n  TERMINATING\n  DESTROYED\n  ARCHIVED\n  STOPPED\n}\n\ntype VetraCloudPackage {\n  registry: URL!\n  name: String!\n  version: String\n}\n\ntype VetraCloudFusionConfig {\n  image: String\n  env: [VetraCloudServiceEnv!]!\n  autoUpdate: Boolean!\n  autoUpdateTagPattern: String\n}\n\ntype VetraCloudAppLink {\n  appId: String!\n  role: AppEnvironmentRole!\n  prNumber: Int\n  gitRef: String\n  imageProject: String\n}\n\nenum AppEnvironmentRole {\n  PRODUCTION\n  PREVIEW\n}",
           "examples": [],
-          "initialValue": "{\n  \"owner\": null,\n  \"label\": null,\n  \"genericSubdomain\": null,\n  \"genericBaseDomain\": null,\n  \"customDomain\": {\n    \"enabled\": false,\n    \"domain\": null,\n    \"dnsRecords\": []\n  },\n  \"defaultPackageRegistry\": null,\n  \"services\": [],\n  \"packages\": [],\n  \"status\": \"DRAFT\",\n  \"apexService\": null,\n  \"autoUpdateChannel\": null,\n  \"runtimeConfig\": null,\n  \"studioInstanceId\": null,\n  \"fusion\": null,\n  \"app\": null\n}"
+          "initialValue": "{\n  \"owner\": null,\n  \"ownerOrgId\": null,\n  \"orgOperators\": [],\n  \"label\": null,\n  \"genericSubdomain\": null,\n  \"genericBaseDomain\": null,\n  \"customDomain\": {\n    \"enabled\": false,\n    \"domain\": null,\n    \"dnsRecords\": []\n  },\n  \"defaultPackageRegistry\": null,\n  \"services\": [],\n  \"packages\": [],\n  \"status\": \"DRAFT\",\n  \"apexService\": null,\n  \"autoUpdateChannel\": null,\n  \"runtimeConfig\": null,\n  \"studioInstanceId\": null,\n  \"fusion\": null,\n  \"app\": null\n}"
         }
       },
       "modules": [
@@ -30,10 +30,10 @@
             {
               "id": "op-set-owner",
               "name": "SET_OWNER",
-              "description": "Claim or transfer ownership. If owner is null, signer (user-signed actions) can only set their own address; system-signed actions may set any address (used for backfill). If owner is already set, current owner must sign and may pass any new address.",
+              "description": "Claim or transfer ownership. A user-signed claim of an unowned env must set the signer's own address; a user-signed transfer needs the current owner and is refused on organisation environments. System-signed actions may set any address (backfill, app transfers).",
               "schema": "input SetOwnerInput {\n  address: EthereumAddress!\n}",
               "template": "",
-              "reducer": "const signerUser = action.context?.signer?.user;\nconst userAddr = signerUser?.address ? signerUser.address.toLowerCase() : null;\nconst inputAddr = action.input.address.toLowerCase();\nif (state.owner) {\n  if (!userAddr || userAddr !== state.owner) {\n    throw new NotOwnerError(\"Only the current owner can transfer ownership\");\n  }\n} else if (userAddr && userAddr !== inputAddr) {\n  throw new SelfClaimRequiredError(\"A user-signed claim must set the signer's own address as owner\");\n}\nstate.owner = inputAddr;",
+              "reducer": "const userAddr = action.context?.signer?.user?.address?.toLowerCase() ?? null;\nconst inputAddr = action.input.address.toLowerCase();\nif (userAddr && state.ownerOrgId) {\n  throw new NotOwnerError(\"The owner of an organisation environment changes through Vetra\");\n}\nif (state.owner) {\n  if (userAddr && userAddr !== state.owner) {\n    throw new NotOwnerError(\"Only the current owner can transfer ownership\");\n  }\n} else if (userAddr && userAddr !== inputAddr) {\n  throw new SelfClaimRequiredError(\"A user-signed claim must set the signer's own address as owner\");\n}\nstate.owner = inputAddr;",
               "errors": [
                 {
                   "id": "err-not-owner-0",
@@ -47,6 +47,58 @@
                   "name": "SelfClaimRequiredError",
                   "code": "SELF_CLAIM_REQUIRED",
                   "description": "A user-signed claim of an unowned environment must set the signer's own address as owner",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-set-owner-org",
+              "name": "SET_OWNER_ORG",
+              "description": "Hand the environment to a Renown organisation (or, system-signed, change or clear it). System-signed: sets ownerOrgId and operators as given. User-signed: only the current owner, only while the env is personal; the signer becomes the only operator.",
+              "schema": "input SetOwnerOrgInput {\n  ownerOrgId: String\n  operators: [EthereumAddress!]!\n}",
+              "template": "",
+              "reducer": "const userAddr = action.context?.signer?.user?.address?.toLowerCase() ?? null;\nif (userAddr) {\n  if (!state.owner || userAddr !== state.owner) {\n    throw new NotOwnerError(\"Only the current owner can hand this environment to an organisation\");\n  }\n  if (state.ownerOrgId) {\n    throw new OrgOwnedError(\"An organisation environment changes organisation only through Vetra\");\n  }\n}\nstate.ownerOrgId = action.input.ownerOrgId || null;\nif (!state.ownerOrgId) {\n  state.orgOperators = [];\n} else {\n  state.orgOperators = userAddr ? [userAddr] : normalizeOperators(action.input.operators);\n}",
+              "errors": [
+                {
+                  "id": "err-not-owner-set-owner-org",
+                  "name": "NotOwnerError",
+                  "code": "NOT_OWNER",
+                  "description": "The action signer is not the current owner of this environment",
+                  "template": ""
+                },
+                {
+                  "id": "err-org-owned",
+                  "name": "OrgOwnedError",
+                  "code": "ORG_OWNED",
+                  "description": "A user may only hand a personal environment to an organisation",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-sync-org-operators",
+              "name": "SYNC_ORG_OPERATORS",
+              "description": "Replace the addresses allowed to sign on an organisation environment. System-only: written by the observability subgraph's operator sync from Renown memberships.",
+              "schema": "input SyncOrgOperatorsInput {\n  operators: [EthereumAddress!]!\n}",
+              "template": "",
+              "reducer": "const userAddr = action.context?.signer?.user?.address;\nif (userAddr) {\n  throw new OrgSyncSystemOnlyError(\n    `OrgSyncSystemOnly: SYNC_ORG_OPERATORS can only be dispatched by the system, not by ${userAddr.toLowerCase()}`,\n  );\n}\nif (!state.ownerOrgId) {\n  throw new NotOrgOwnedError(\"This environment does not belong to an organisation\");\n}\nstate.orgOperators = normalizeOperators(action.input.operators);",
+              "errors": [
+                {
+                  "id": "err-org-sync-system-only",
+                  "name": "OrgSyncSystemOnlyError",
+                  "code": "ORG_SYNC_SYSTEM_ONLY",
+                  "description": "OrgSyncSystemOnly: operators are only synced by the system",
+                  "template": ""
+                },
+                {
+                  "id": "err-not-org-owned",
+                  "name": "NotOrgOwnedError",
+                  "code": "NOT_ORG_OWNED",
+                  "description": "The environment does not belong to an organisation",
                   "template": ""
                 }
               ],

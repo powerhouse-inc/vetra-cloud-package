@@ -73,6 +73,65 @@ describe("vetraPublisher.updateAppProfile", () => {
   });
 });
 
+describe("vetraPublisher.updateAppProfile for an organisation app", () => {
+  const ORG_APP = "9e1d2e3f-5d0e-4e3e-9a55-1c3b9b8f2a66";
+  const PUBLISHER = "0x3333333333333333333333333333333333333333";
+  const orgs = {
+    membership: async (_o: string, a: string) =>
+      a === PUBLISHER ? { role: "PUBLISHER" as const, effectiveScope: { all: true, appDids: [] } } : null,
+  } as never;
+  const input = { appId: ORG_APP, supportContact: "help@acme.example", securityContact: "" };
+
+  beforeAll(async () => {
+    await h.addApp(ORG_APP, OWNER);
+    const row = h.rows.get(ORG_APP);
+    if (row) h.rows.set(ORG_APP, { ...row, owner_org_id: "o1", identity_did: DID });
+  });
+
+  const build = (fake: ReturnType<typeof relay>, publisher: unknown) =>
+    h.build({ renownProfile: fake, auth: { ...h.deps.auth, orgs }, appPublisher: { appPublisher: async () => publisher } as never });
+
+  it("sends publisherOrgId on the first claim only, with the contacts passed through", async () => {
+    const fake = relay();
+    expect(await update(build(fake, null), input, withBearer(PUBLISHER))).toBe(true);
+    expect(fake.upsert).toHaveBeenCalledWith(DID, "user-bearer", { ...input, publisherOrgId: "o1" });
+  });
+
+  it("omits publisherOrgId once Renown has a publisher for the app", async () => {
+    const fake = relay();
+    await update(build(fake, { orgId: "o2", address: null }), input, withBearer(PUBLISHER));
+    expect(fake.upsert).toHaveBeenCalledWith(DID, "user-bearer", input);
+  });
+
+  it("refuses the creator who is no longer a publisher, without calling Renown", async () => {
+    const fake = relay();
+    expect(await codeOf(update(build(fake, null), input, withBearer(OWNER)))).toBe("NOT_FOUND");
+    expect(fake.upsert).not.toHaveBeenCalled();
+  });
+
+  it("answers PROFILE_UNAVAILABLE when the first-claim check cannot reach Renown", async () => {
+    const fake = relay();
+    const r = h.build({
+      renownProfile: fake,
+      auth: { ...h.deps.auth, orgs },
+      appPublisher: { appPublisher: async () => { throw new Error("down"); } } as never,
+    });
+    expect(await codeOf(update(r, input, withBearer(PUBLISHER)))).toBe("PROFILE_UNAVAILABLE");
+    expect(fake.upsert).not.toHaveBeenCalled();
+  });
+
+  it("lists the org's apps for an operator, and none for a stranger", async () => {
+    const withLister = {
+      ...h.deps.auth,
+      orgs,
+      listAppsForOrg: async () => [h.rows.get(ORG_APP)!],
+    };
+    const q = (addr: string) => h.build({ auth: withLister }).VetraPublisherQueries.myApps!({}, { orgId: "o1" }, asUser(addr));
+    expect(((await q(PUBLISHER)) as { id: string }[]).map((a) => a.id)).toStrictEqual([ORG_APP]);
+    expect(await q(OTHER)).toStrictEqual([]);
+  });
+});
+
 describe("vetraPublisher.updateAppProfile metrics", () => {
   it("passes the metric list to Renown with the owner's bearer", async () => {
     const fake = relay();

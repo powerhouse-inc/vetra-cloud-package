@@ -75,6 +75,8 @@ export const schema: DocumentNode = gql`
     slug: String!
     name: String!
     ownerAddress: String!
+    "Renown organisation owning the App; null for personal Apps."
+    ownerOrgId: String
     status: AppStatus!
     repository: AppRepository!
     productionBranch: String!
@@ -128,6 +130,8 @@ export const schema: DocumentNode = gql`
     repositoryId: String!
     productionBranch: String
     productionEnvironmentId: String
+    "Create the App for this Renown organisation (OWNER/ADMIN, or PUBLISHER with access to all apps)."
+    orgId: String
   }
 
   input UpdateAppInput {
@@ -156,7 +160,8 @@ export const schema: DocumentNode = gql`
   }
 
   type Query {
-    myApps: [App!]!
+    "Personal Apps, or with orgId the organisation's Apps (members only)"
+    myApps(orgId: String): [App!]!
     app(id: ID!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appDeployment(id: ID!): AppDeployment

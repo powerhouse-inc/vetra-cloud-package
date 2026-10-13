@@ -60,6 +60,8 @@ function envState(
 ): VetraCloudEnvironmentState {
   return {
     owner: null,
+    ownerOrgId: null,
+    orgOperators: [],
     label: "test",
     genericSubdomain: "test",
     genericBaseDomain: "vetra.io",

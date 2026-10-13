@@ -1,13 +1,20 @@
 import type { Kysely } from "kysely";
 import type { V1Job } from "@kubernetes/client-node";
 import type { DumpsRepo } from "./repo.js";
-import { requireOwner } from "./auth.js";
+import { authorizeDump } from "./auth.js";
+import { OWNER_ONLY_ACCESS, type EnvAccess } from "../env-access.js";
 import { buildDumpJob } from "./job-spec.js";
 import type { DatabaseDumps } from "../db/schema.js";
 
 type Caller = { user?: { address: string } };
 
-type EnvRow = { id: string; tenantId: string | null; owner: string | null };
+type EnvRow = {
+  id: string;
+  tenantId: string | null;
+  owner: string | null;
+  ownerOrgId: string | null;
+  appId: string | null;
+};
 
 async function loadEnv(
   envDb: Kysely<any>,
@@ -15,7 +22,7 @@ async function loadEnv(
 ): Promise<EnvRow | null> {
   const row = (await envDb
     .selectFrom("environments")
-    .select(["id", "tenantId", "owner"])
+    .select(["id", "tenantId", "owner", "ownerOrgId", "appId"])
     .where("tenantId", "=", tenantId)
     .executeTakeFirst()) as EnvRow | undefined;
   return row ?? null;
@@ -50,6 +57,8 @@ export type DumpResolverDeps = {
   /** Inlined into the Job's pod env. See buildDumpJob's note on threat model. */
   s3AccessKey: string;
   s3SecretKey: string;
+  /** Org-aware access checks; default: owner only (org envs refused). */
+  access?: EnvAccess;
 };
 
 export function createDumpResolvers(deps: DumpResolverDeps) {
@@ -65,6 +74,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
     s3AccessKey,
     s3SecretKey,
   } = deps;
+  const access = deps.access ?? OWNER_ONLY_ACCESS;
 
   return {
     Query: {
@@ -74,10 +84,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         ctx: Caller,
       ) => {
         const env = await loadEnv(envDb, args.tenantId);
-        requireOwner({
-          caller: ctx.user?.address ?? null,
-          envOwner: env?.owner ?? null,
-        });
+        await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
 
         const rows = await repo.listByTenant(args.tenantId);
         const now = Date.now();
@@ -100,13 +107,9 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         ctx: Caller,
       ) => {
         const env = await loadEnv(envDb, args.tenantId);
-        requireOwner({
-          caller: ctx.user?.address ?? null,
-          envOwner: env?.owner ?? null,
-        });
-        // requireOwner already throws ENV_NOT_FOUND when owner is null,
-        // but loadEnv may return null (env doesn't exist at all). Be
-        // explicit so we don't pass undefined to repo.create.
+        await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
+        // authorizeDump already throws ENV_NOT_FOUND for a missing env;
+        // the explicit check narrows the type for repo.create.
         if (!env) throw new Error("ENV_NOT_FOUND");
 
         const dump = await repo.create({
@@ -145,10 +148,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         if (!row) throw new Error("DUMP_NOT_FOUND");
 
         const env = await loadEnv(envDb, row.tenantId);
-        requireOwner({
-          caller: ctx.user?.address ?? null,
-          envOwner: env?.owner ?? null,
-        });
+        await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
 
         // Terminal states: nothing to cancel. Return the row as-is so
         // the UI can refresh without special-casing the response.

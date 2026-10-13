@@ -29,6 +29,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   for (const [column, type] of [
     ["harbor_robot_id", "integer"],
     ["identity_expires_at", "varchar(64)"],
+    ["owner_org_id", "varchar(255)"],
   ] as const) {
     try {
       await db.schema.alterTable("apps").addColumn(column, type).execute();
@@ -36,6 +37,12 @@ export async function up(db: Kysely<any>): Promise<void> {
       // Column already exists
     }
   }
+  await db.schema
+    .createIndex("apps_owner_org_idx")
+    .on("apps")
+    .column("owner_org_id")
+    .ifNotExists()
+    .execute();
   await db.schema
     .createIndex("apps_owner_idx")
     .on("apps")
@@ -137,5 +144,18 @@ export async function down(db: Kysely<any>): Promise<void> {
     "apps",
   ]) {
     await db.schema.dropTable(t).ifExists().execute();
+  }
+}
+
+/**
+ * The organisation column licensing reads from the apps table, added by
+ * licensing itself at setup so its first queries do not depend on vetra-apps
+ * having migrated first (m4). Idempotent; a missing table is left alone.
+ */
+export async function ensureAppsOrgColumn(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema.alterTable("apps").addColumn("owner_org_id", "varchar(255)").execute();
+  } catch {
+    // Column already exists, or no apps table yet
   }
 }

@@ -193,6 +193,11 @@ export type SetOwnerInput = {
   address: Scalars["EthereumAddress"]["input"];
 };
 
+export type SetOwnerOrgInput = {
+  operators: Array<Scalars["EthereumAddress"]["input"]>;
+  ownerOrgId?: InputMaybe<Scalars["String"]["input"]>;
+};
+
 export type SetPackageVersionInput = {
   packageName: Scalars["String"]["input"];
   version: Scalars["String"]["input"];
@@ -230,6 +235,10 @@ export type SetStudioInstanceInput = {
 
 export type SleepEnvironmentInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
+};
+
+export type SyncOrgOperatorsInput = {
+  operators: Array<Scalars["EthereumAddress"]["input"]>;
 };
 
 export type TerminateEnvironmentInput = {
@@ -287,7 +296,9 @@ export type VetraCloudEnvironmentState = {
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
   label: Maybe<Scalars["String"]["output"]>;
+  orgOperators: Array<Scalars["EthereumAddress"]["output"]>;
   owner: Maybe<Scalars["EthereumAddress"]["output"]>;
+  ownerOrgId: Maybe<Scalars["String"]["output"]>;
   packages: Array<VetraCloudPackage>;
   runtimeConfig: Maybe<Scalars["String"]["output"]>;
   services: Array<VetraCloudEnvironmentService>;

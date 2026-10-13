@@ -30,6 +30,7 @@ import type {
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
+  SetOwnerOrgInput,
   SetPackageVersionInput,
   SetRuntimeConfigInput,
   SetServiceConfigInput,
@@ -38,6 +39,7 @@ import type {
   SetServiceVersionInput,
   SetStudioInstanceInput,
   SleepEnvironmentInput,
+  SyncOrgOperatorsInput,
   TerminateEnvironmentInput,
   ToggleServiceInput,
   UnarchiveInput,
@@ -336,6 +338,21 @@ export function SetOwnerInputSchema(): z.ZodObject<Properties<SetOwnerInput>> {
   });
 }
 
+export function SetOwnerOrgInputSchema(): z.ZodObject<
+  Properties<SetOwnerOrgInput>
+> {
+  return z.object({
+    operators: z.array(
+      z
+        .string()
+        .regex(/^0x[a-fA-F0-9]{40}$/, {
+          message: "Invalid Ethereum address format",
+        }),
+    ),
+    ownerOrgId: z.string().nullish(),
+  });
+}
+
 export function SetPackageVersionInputSchema(): z.ZodObject<
   Properties<SetPackageVersionInput>
 > {
@@ -404,6 +421,20 @@ export function SleepEnvironmentInputSchema(): z.ZodObject<
 > {
   return z.object({
     _placeholder: z.string().nullish(),
+  });
+}
+
+export function SyncOrgOperatorsInputSchema(): z.ZodObject<
+  Properties<SyncOrgOperatorsInput>
+> {
+  return z.object({
+    operators: z.array(
+      z
+        .string()
+        .regex(/^0x[a-fA-F0-9]{40}$/, {
+          message: "Invalid Ethereum address format",
+        }),
+    ),
   });
 }
 
@@ -483,12 +514,20 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),
     label: z.string().nullish(),
+    orgOperators: z.array(
+      z
+        .string()
+        .regex(/^0x[a-fA-F0-9]{40}$/, {
+          message: "Invalid Ethereum address format",
+        }),
+    ),
     owner: z
       .string()
       .regex(/^0x[a-fA-F0-9]{40}$/, {
         message: "Invalid Ethereum address format",
       })
       .nullish(),
+    ownerOrgId: z.string().nullish(),
     packages: z.array(z.lazy(() => VetraCloudPackageSchema())),
     runtimeConfig: z.string().nullish(),
     services: z.array(z.lazy(() => VetraCloudEnvironmentServiceSchema())),

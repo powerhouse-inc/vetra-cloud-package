@@ -146,6 +146,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         studioInstanceId: studioInstanceId ?? null,
         fusion: state.fusion ? JSON.stringify(state.fusion) : null,
         ...appLinkColumns(state),
+        ...orgColumns(state),
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
@@ -289,5 +290,16 @@ export function appLinkColumns(state: {
     appId: app?.appId ?? null,
     appRole: app?.role ?? null,
     prNumber: app?.prNumber ?? null,
+  };
+}
+
+/** Read-model columns mirroring organisation ownership. */
+export function orgColumns(state: {
+  ownerOrgId?: string | null;
+  orgOperators?: readonly string[] | null;
+}): { ownerOrgId: string | null; orgOperators: string } {
+  return {
+    ownerOrgId: state.ownerOrgId ?? null,
+    orgOperators: JSON.stringify(state.orgOperators ?? []),
   };
 }

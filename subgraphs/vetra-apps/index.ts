@@ -13,11 +13,16 @@ import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
+import { adoptPersonApps, appDocumentRowOwner } from "./org-ownership.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import { setPersonAppAdopter } from "../../shared/person-app-adoption.js";
+import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
   createAppDocOwnerResolver,
   createAppDocProtector,
+  protectAppDocument,
 } from "./app-doc-protection.js";
 import { studioPublisherAddress } from "../vetra-licensing/studio-app.js";
 import {
@@ -80,13 +85,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ? createAppDocProtector(
           perm,
           createAppDocOwnerResolver(
-            (id) =>
-              db
-                .selectFrom("apps")
-                .select("owner_address")
-                .where("id", "=", id)
-                .executeTakeFirst()
-                .then((r) => r?.owner_address ?? null),
+            appDocumentRowOwner(db),
             studioPublisherAddress(),
           ),
           this.reactorClient as never,
@@ -119,6 +118,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       }
     });
 
+    // Organisation moves of envs are announced in the observability namespace
+    // (its tables are created by that subgraph; until it has booted a move
+    // fails and is retried on the next read).
+    const orgHandoverDb = (await this.relationalDb.createNamespace(
+      "vetra-cloud-observability",
+    )) as unknown as Kysely<ObservabilityDB>;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -130,6 +136,11 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
+      orgs: defaultRenownOrgs(),
+      orgHandoverDb,
+      protectAppDoc: perm
+        ? (id, owner) => protectAppDocument(perm, id, owner)
+        : null,
       docs: createReactorAppDocStore(
         this.reactorClient as never,
         appDocProtect,
@@ -142,6 +153,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       reportPreviewRemovedToGithub(deps, app, preview, reason);
 
     this.resolvers = createResolvers(deps);
+    // Licensing's personal app list adopts transferred Apps through us.
+    setPersonAppAdopter((address) => adoptPersonApps(deps, address));
 
     // GitHub App webhook: /api/@powerhousedao/vetra-cloud-package/github/webhook
     try {

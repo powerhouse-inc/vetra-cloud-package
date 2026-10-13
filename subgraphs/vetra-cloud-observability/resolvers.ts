@@ -13,6 +13,16 @@ import {
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
 import { callerIsAdmin } from "../../shared/admins.js";
+import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
+import {
+  grantViewer,
+  orgProtectionOptions,
+  syncEnvironmentOrgOnce,
+  withEnvLock,
+  type OrgEnvRow,
+  type OrgSyncDeps,
+} from "./org-sync.js";
+import { expectOrgHandover, protectEnvironment, withdrawOrgHandover } from "./env-protection.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -44,6 +54,36 @@ export interface ResolverConfig {
    * `restartEnvironmentService` then throws RESTART_NOT_CONFIGURED.
    */
   restartDeps?: RestartResolverDeps;
+  /** Org-aware access checks; default: owner/admin only. */
+  access?: EnvAccess;
+  /** Organisation operator sync (orgOperators + document grants); omitted: no sync. */
+  orgSync?: OrgSyncDeps;
+  /** Minimum gap between two syncs by `syncEnvironmentOrg` for one caller and env (default 10 s). */
+  orgSyncMinIntervalMs?: number;
+}
+
+/**
+ * Remembers when each key last completed; bounded so it cannot grow without
+ * limit. Only successful runs are marked, so a failure can be retried at once.
+ */
+function createKeyedRateLimiter(minIntervalMs: number, maxKeys = 10_000) {
+  const last = new Map<string, number>();
+  return {
+    limited(key: string): boolean {
+      if (minIntervalMs <= 0) return false;
+      const prev = last.get(key);
+      return prev !== undefined && Date.now() - prev < minIntervalMs;
+    },
+    mark(key: string): void {
+      if (minIntervalMs <= 0) return;
+      last.delete(key);
+      last.set(key, Date.now());
+      if (last.size > maxKeys) {
+        const oldest = last.keys().next().value;
+        if (oldest !== undefined) last.delete(oldest);
+      }
+    },
+  };
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -86,13 +126,21 @@ export function createResolvers(
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
   const dispatch = config.dispatch;
+  const access = config.access ?? OWNER_ONLY_ACCESS;
+  const orgSyncLimiter = createKeyedRateLimiter(config.orgSyncMinIntervalMs ?? 10_000);
+  const loadOrgEnv = async (environmentId: string) =>
+    (await envDb
+      .selectFrom("environments")
+      .select(["id", "owner", "ownerOrgId", "orgOperators", "appId", "status"])
+      .where("id", "=", environmentId)
+      .executeTakeFirst()) as (OrgEnvRow & { status: string | null }) | undefined;
   // Dump resolvers are always registered so the schema's non-nullable
   // `environmentDumps` field never resolves to undefined (which would
   // crash with "Cannot return null for non-nullable field"). When the
   // host hasn't configured S3/k8s deps, the query returns an empty
   // list and the mutation throws DUMPS_NOT_CONFIGURED.
   const dumpResolvers = config.dumpDeps
-    ? createDumpResolvers(config.dumpDeps)
+    ? createDumpResolvers({ ...config.dumpDeps, access })
     : {
         Query: {
           environmentDumps: async () => [] as never[],
@@ -109,8 +157,10 @@ export function createResolvers(
 
   // Always registered; the resolver throws RESTART_NOT_CONFIGURED when the
   // host couldn't build the in-cluster k8s client (restartDeps omitted).
-  const restartResolvers = createRestartResolver(config.restartDeps);
-  const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch });
+  const restartResolvers = createRestartResolver(
+    config.restartDeps && { ...config.restartDeps, access },
+  );
+  const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch, access });
 
   return {
     Query: {
@@ -249,7 +299,7 @@ export function createResolvers(
 
       myEnvironments: async (
         _parent: unknown,
-        { scope }: { scope?: "MINE" | "ALL" | null },
+        { scope, orgId }: { scope?: "MINE" | "ALL" | "ORG" | null; orgId?: string | null },
         ctx: AuthAwareContext,
       ) => {
         const userAddress = ctx.user?.address?.toLowerCase();
@@ -282,18 +332,27 @@ export function createResolvers(
             "appId",
             "appRole",
             "prNumber",
+            "ownerOrgId",
+            "orgOperators",
           ]);
 
-        const rows = wantAll && isAdmin
-          ? await query.execute()
-          : await query
-              .where((eb) =>
-                eb.or([
-                  eb("owner", "=", userAddress),
-                  eb("owner", "is", null),
-                ]),
-              )
-              .execute();
+        let rows;
+        if (scope === "ORG") {
+          const org = orgId?.trim();
+          if (!org) throw new Error("ORG_ID_REQUIRED");
+          if (!(await access.isMember({ address: userAddress, isAdmin }, org))) {
+            throw new Error("FORBIDDEN");
+          }
+          rows = await query.where("ownerOrgId", "=", org).execute();
+        } else if (wantAll && isAdmin) {
+          rows = await query.execute();
+        } else {
+          // Personal envs only: org envs are listed under their organisation.
+          rows = await query
+            .where("ownerOrgId", "is", null)
+            .where((eb) => eb.or([eb("owner", "=", userAddress), eb("owner", "is", null)]))
+            .execute();
+        }
 
         // packages/services are stored as JSON text; parse them into the
         // arrays the summary type declares so env cards can render package
@@ -302,6 +361,7 @@ export function createResolvers(
           ...row,
           packages: parseEnvSummaryPackages(row.packages as string | null),
           services: parseEnvSummaryServices(row.services as string | null),
+          orgOperators: parseOperators(row.orgOperators as string | null),
         }));
       },
 
@@ -542,6 +602,120 @@ export function createResolvers(
     },
 
     Mutation: {
+      syncEnvironmentOrg: async (
+        _parent: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const caller = ctx.user?.address.toLowerCase();
+        if (!caller) throw new Error("UNAUTHENTICATED");
+        const isAdmin = callerIsAdmin(ctx, caller);
+        const env = await loadOrgEnv(environmentId);
+        if (!env) throw new Error("ENV_NOT_FOUND");
+        const who = { address: caller, isAdmin };
+        if (!env.ownerOrgId) {
+          // An unowned env is claimed by the first signed action (reducer auto-claim).
+          if (!env.owner) return { environmentId, ownerOrgId: null, canOperate: true, canView: true };
+          const own = await access.canOperate(who, env);
+          return { environmentId, ownerOrgId: null, canOperate: own, canView: own };
+        }
+        const operate = await access.canOperate(who, env);
+        const view = operate || (await access.canView(who, env));
+        // Admins operate through the admin bypass, not as org operators.
+        let canOperateNow = operate;
+        // The mode is part of the key: a viewer promoted to publisher syncs at once.
+        const key = `${caller}|${env.id}|${operate ? "operate" : "view"}`;
+        if (config.orgSync && !isAdmin && view && !orgSyncLimiter.limited(key)) {
+          try {
+            if (operate) {
+              const out = await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
+              // Not synced (outage): only an existing operator may sign now.
+              if (out.result === "SKIPPED") canOperateNow = out.operators.includes(caller);
+              else orgSyncLimiter.mark(key);
+            } else {
+              await grantViewer(config.orgSync, env, caller);
+              orgSyncLimiter.mark(key);
+            }
+          } catch (err) {
+            console.warn(`[org-sync] syncEnvironmentOrg ${env.id}:`, err);
+            if (operate) canOperateNow = parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
+          }
+        }
+        return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: canOperateNow, canView: view };
+      },
+
+      setEnvironmentOrg: async (
+        _parent: unknown,
+        { environmentId, orgId }: { environmentId: string; orgId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const caller = ctx.user?.address.toLowerCase();
+        if (!caller) throw new Error("UNAUTHENTICATED");
+        const org = orgId.trim();
+        if (!org) throw new Error("ORG_ID_REQUIRED");
+        const env = await loadOrgEnv(environmentId);
+        if (!env) throw new Error("ENV_NOT_FOUND");
+        // One-way: an org env never goes back (or elsewhere) through this call.
+        if (env.ownerOrgId) throw new Error("ALREADY_ORG_OWNED");
+        if (env.appId) throw new Error("APP_ENVIRONMENT");
+        if (env.status && RELEASED_STATUSES.has(env.status)) throw new Error("ENV_NOT_ACTIVE");
+        // Only the env's own (personal) owner hands it over: no admin bypass,
+        // so nobody can pull someone else's env into an organisation. In the
+        // org they need publisher capability for a standalone env (PUBLISHER+).
+        const isOwner = !!env.owner && env.owner.toLowerCase() === caller;
+        const publishesInOrg =
+          isOwner &&
+          (await access.canOperate({ address: caller, isAdmin: false }, { owner: null, ownerOrgId: org, appId: null }));
+        if (!publishesInOrg) throw new Error("FORBIDDEN");
+        const sync = config.orgSync;
+        const perm = sync?.perm ?? null;
+        const opts = sync ? orgProtectionOptions(sync) : null;
+        await withEnvLock(env.id, async () => {
+          // The read model lags behind dispatches: decide again on the
+          // document (or the re-read row) under the lock, so a second call
+          // right after a hand-over cannot move the env on to another org.
+          const fresh = sync?.readOrgState ? await sync.readOrgState(env.id) : await loadOrgEnv(environmentId);
+          if (!fresh) throw new Error("ENV_NOT_FOUND");
+          if (fresh.ownerOrgId) throw new Error("ALREADY_ORG_OWNED");
+          if (fresh.owner?.toLowerCase() !== caller) throw new Error("FORBIDDEN");
+          // Restrict the system-only operations before the hand-over and
+          // announce it, so the change is recognised as Vetra's own…
+          if (perm && opts) {
+            await protectEnvironment(perm, { id: env.id, owner: env.owner, ownerOrgId: null }, opts);
+          }
+          if (sync) await expectOrgHandover(sync.db, env.id, org);
+          try {
+            await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
+          } catch (err) {
+            // A failed dispatch leaves no announcement behind (parked M1).
+            if (sync) {
+              await withdrawOrgHandover(sync.db, env.id, org).catch((e: unknown) =>
+                console.warn(`[org-sync] withdrawing the hand-over of ${env.id} failed:`, e),
+              );
+            }
+            throw err;
+          }
+          // …then move the document to the service identity, so the former
+          // owner keeps no ADMIN (the hook and reconciler retry on failure).
+          if (perm && opts) {
+            try {
+              await protectEnvironment(perm, { id: env.id, owner: env.owner, ownerOrgId: org }, opts);
+            } catch (err) {
+              console.warn(`[org-sync] setEnvironmentOrg protection ${env.id}:`, err);
+            }
+          }
+        });
+        if (config.orgSync) {
+          // The hand-over is done; a failed first sync is caught up by the job.
+          try {
+            await syncEnvironmentOrgOnce(config.orgSync, { ...env, ownerOrgId: org, orgOperators: JSON.stringify([caller]) });
+          } catch (err) {
+            console.warn(`[org-sync] setEnvironmentOrg ${env.id}:`, err);
+          }
+        }
+        return { environmentId, ownerOrgId: org, canOperate: true, canView: true };
+      },
+
       setCustomDomain: async (
         _parent: unknown,
         args: {
@@ -569,18 +743,27 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "tenantId",
+            "customDomain",
+            "status",
+            "owner",
+            "createdBy",
+            "ownerOrgId",
+            "orgOperators",
+            "appId",
+          ])
           .where("id", "=", args.documentId)
           .executeTakeFirst()) as EnvSummaryRow | undefined;
         if (!envRow) {
           throw new Error("ENV_NOT_FOUND");
         }
 
-        const isOwner = !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) {
-          // Unclaimed envs stay open for now — the protection reconciler
-          // only locks down envs that already have an owner. Allow admins
-          // through regardless.
+        // Owner (personal), covering publisher (org) or admin.
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
           throw new Error("FORBIDDEN");
         }
 
@@ -627,10 +810,23 @@ export function createResolvers(
 
         const refreshed = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "tenantId",
+            "customDomain",
+            "status",
+            "owner",
+            "createdBy",
+            "ownerOrgId",
+            "orgOperators",
+            "appId",
+          ])
           .where("id", "=", args.documentId)
           .executeTakeFirst()) as EnvSummaryRow | undefined;
-        return refreshed ?? envRow;
+        const out = refreshed ?? envRow;
+        return { ...out, orgOperators: parseOperators(out.orgOperators) };
       },
 
       notifyNewImageRelease: async (
@@ -737,16 +933,26 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services", "owner", "autoUpdateChannel"])
+          .select([
+            "id",
+            "name",
+            "tenantId",
+            "status",
+            "services",
+            "owner",
+            "autoUpdateChannel",
+            "ownerOrgId",
+            "appId",
+          ])
           .where("id", "=", documentId)
           .executeTakeFirst()) as
-          | (EnvForBump & { owner: string | null; autoUpdateChannel: string | null })
+          | (EnvForBump & EnvAccessFields & { autoUpdateChannel: string | null })
           | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
 
-        const isOwner =
-          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
+          throw new Error("FORBIDDEN");
+        }
 
         const channel = envRow.autoUpdateChannel;
         if (!channel) throw new Error("NO_CHANNEL");
@@ -808,15 +1014,13 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services", "owner"])
+          .select(["id", "name", "tenantId", "status", "services", "owner", "ownerOrgId", "appId"])
           .where("id", "=", documentId)
-          .executeTakeFirst()) as
-          | (EnvForBump & { owner: string | null })
-          | undefined;
+          .executeTakeFirst()) as (EnvForBump & EnvAccessFields) | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
-        const isOwner =
-          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
+          throw new Error("FORBIDDEN");
+        }
 
         const services = parseEnvServices(envRow.services);
         const enabledServices = services.filter((s) => s.enabled);
@@ -1126,13 +1330,21 @@ function resolveChannelDomain(channel: string): string | null {
   return null;
 }
 
-type EnvSummaryRow = {
+/** The environments-row columns the org-aware access check reads. */
+type EnvAccessFields = {
+  owner: string | null;
+  ownerOrgId: string | null;
+  appId: string | null;
+};
+
+type EnvSummaryRow = EnvAccessFields & {
   id: string;
   name: string | null;
   subdomain: string | null;
   tenantId: string | null;
   customDomain: string | null;
   status: string | null;
-  owner: string | null;
   createdBy: string | null;
+  /** JSON text in the read model; parsed before it is returned. */
+  orgOperators: string | null;
 };

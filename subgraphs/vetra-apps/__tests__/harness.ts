@@ -15,6 +15,13 @@ import {
 } from "../../../document-models/vetra-cloud-environment/v1/index.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { up } from "../db/migrations.js";
+import { up as upObservability } from "../../vetra-cloud-observability/db/migrations.js";
+import type { ObservabilityDB } from "../../vetra-cloud-observability/db/schema.js";
+import {
+  RenownOrgsUnavailableError,
+  type AppPublisher,
+  type OrgMembership,
+} from "../../../shared/renown-orgs.js";
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
@@ -56,6 +63,59 @@ export const admin: Caller = {
   appKey: null,
   isAdmin: true,
 };
+export const ORG = "org-acme";
+export const MEMBER = "0xdddddddddddddddddddddddddddddddddddddddd";
+export const member: Caller = {
+  address: MEMBER,
+  chainId: 1,
+  appKey: null,
+  isAdmin: false,
+};
+
+export function fakeOrgs() {
+  const self = {
+    members: new Map<string, OrgMembership>(),
+    apps: new Map<string, string[]>(),
+    publishers: new Map<string, AppPublisher>(),
+    down: false,
+    join(
+      orgId: string,
+      address: string,
+      role: OrgMembership["role"],
+      scope: string[] | "ALL" = "ALL",
+    ) {
+      self.members.set(`${orgId}|${address.toLowerCase()}`, {
+        role,
+        effectiveScope:
+          scope === "ALL"
+            ? { all: true, appDids: [] }
+            : { all: false, appDids: scope },
+      });
+    },
+    async membership(orgId: string, address: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.members.get(`${orgId}|${address.toLowerCase()}`) ?? null;
+    },
+    async orgApps(orgId: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.apps.get(orgId) ?? null;
+    },
+    async appPublisher(appDid: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.publishers.get(appDid) ?? null;
+    },
+    /** Profiles whose publisher is this person (as appProfilesByPublisher). */
+    async personApps(address: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      const addr = address.toLowerCase();
+      return [...self.publishers]
+        .filter(([, p]) => !p.orgId && p.address?.toLowerCase() === addr)
+        .map(([did]) => did);
+    },
+  };
+  return self;
+}
+
 export const appIdentity: Caller = {
   address: OWNER,
   chainId: 1,
@@ -231,15 +291,18 @@ export function fakeHarbor(): HarborApi & {
   projects: string[];
   existing: Set<string>;
   deletedRobots: number[];
+  deletedProjects: string[];
 } {
   const projects: string[] = [];
   const existing = new Set<string>();
   const deletedRobots: number[] = [];
+  const deletedProjects: string[] = [];
   let robotSeq = 0;
   return {
     projects,
     existing,
     deletedRobots,
+    deletedProjects,
     async createProject(p) {
       if (existing.has(p)) return false;
       existing.add(p);
@@ -256,32 +319,81 @@ export function fakeHarbor(): HarborApi & {
     async deleteRobot(id) {
       deletedRobots.push(id);
     },
+    async deleteProject(p) {
+      existing.delete(p);
+      deletedProjects.push(p);
+    },
   };
+}
+
+/** A workload identity as the fake Renown stores it, per repository id. */
+export interface FakeIdentity {
+  did: string;
+  ownerOrgId: string | null;
+  ownerAddress: string;
 }
 
 export function fakeRenown(): RenownApi & {
   /** The owner's newest valid delegation for the App DID, or null. */
   delegation: { expiresAt: string | null } | null;
   registered: unknown[];
+  /** Registered identities by repository id (Renown is idempotent per repo). */
+  identities: Map<string, FakeIdentity>;
   deleted: string[];
   updated: unknown[];
 } {
   const self = {
     delegation: null as { expiresAt: string | null } | null,
     registered: [] as unknown[],
+    identities: new Map<string, FakeIdentity>(),
     deleted: [] as string[],
     updated: [] as unknown[],
-    async registerWorkloadIdentity(input: unknown) {
+    // As the served API (A5/M11): the same address gets the existing identity
+    // back unchanged (whatever its organisation); another address, CONFLICT.
+    async registerWorkloadIdentity(input: {
+      repositoryId: string;
+      ownerAddress: string;
+      ownerOrgId?: string;
+    }) {
       self.registered.push(input);
-      return { did: APP_DID };
+      const existing = self.identities.get(input.repositoryId);
+      if (existing) {
+        if (
+          existing.ownerAddress.toLowerCase() !==
+          input.ownerAddress.toLowerCase()
+        ) {
+          throw new Error(
+            "renown: CONFLICT repository is registered by another address",
+          );
+        }
+        return { did: existing.did, ownerOrgId: existing.ownerOrgId };
+      }
+      // One DID per repository (the seeded App's repository gets APP_DID).
+      const created: FakeIdentity = {
+        did:
+          input.repositoryId === REPO_ID
+            ? APP_DID
+            : `did:key:zDnaeRepo${input.repositoryId}`,
+        ownerOrgId: input.ownerOrgId ?? null,
+        ownerAddress: input.ownerAddress,
+      };
+      self.identities.set(input.repositoryId, created);
+      return { did: created.did, ownerOrgId: created.ownerOrgId };
     },
     async updateWorkloadIdentity(did: string, patch: unknown) {
       self.updated.push({ did, patch });
     },
     async deleteWorkloadIdentity(did: string) {
       self.deleted.push(did);
+      for (const [repo, id] of self.identities) {
+        if (id.did === did) self.identities.delete(repo);
+      }
     },
-    async getDelegation() {
+    async getDelegation(_input: {
+      address: string;
+      chainId: number;
+      did: string;
+    }): Promise<{ expiresAt: string | null } | null> {
       return self.delegation;
     },
   };
@@ -328,6 +440,9 @@ export interface Harness {
   github: ReturnType<typeof fakeGithub>;
   harbor: ReturnType<typeof fakeHarbor>;
   renown: ReturnType<typeof fakeRenown>;
+  orgs: ReturnType<typeof fakeOrgs>;
+  /** The observability tables (expected organisation hand-overs), same database. */
+  obsDb: Kysely<ObservabilityDB>;
   clock: { now: Date };
   close(): Promise<void>;
 }
@@ -339,6 +454,11 @@ export async function makeHarness(
     dialect: new PGliteDialect(new PGlite()),
   });
   await up(db as Kysely<any>);
+  // Observability's tables live in their own namespace in production; one
+  // database is enough here (no table names overlap).
+  await upObservability(db as Kysely<any>);
+  const obsDb = db as unknown as Kysely<ObservabilityDB>;
+  const orgs = fakeOrgs();
   const envs = new FakeEnvs();
   const github = fakeGithub();
   const harbor = fakeHarbor();
@@ -352,6 +472,8 @@ export async function makeHarness(
     github,
     harbor,
     renown,
+    orgs,
+    orgHandoverDb: obsDb,
     generateSubdomain: (id) => `sub-${id}`,
     now: () => {
       // strictly increasing timestamps keep created_at ordering deterministic
@@ -368,6 +490,8 @@ export async function makeHarness(
     github,
     harbor,
     renown,
+    orgs,
+    obsDb,
     clock,
     close: () => db.destroy(),
   };

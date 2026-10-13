@@ -33,6 +33,7 @@ import {
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
   SetOwnerInputSchema,
+  SetOwnerOrgInputSchema,
   SetPackageVersionInputSchema,
   SetRuntimeConfigInputSchema,
   SetServiceConfigInputSchema,
@@ -41,6 +42,7 @@ import {
   SetServiceVersionInputSchema,
   SetStudioInstanceInputSchema,
   SleepEnvironmentInputSchema,
+  SyncOrgOperatorsInputSchema,
   TerminateEnvironmentInputSchema,
   ToggleServiceInputSchema,
   UnarchiveInputSchema,
@@ -61,6 +63,30 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetOwnerInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setOwnerOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_OWNER_ORG": {
+      SetOwnerOrgInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setOwnerOrgOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SYNC_ORG_OPERATORS": {
+      SyncOrgOperatorsInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.syncOrgOperatorsOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

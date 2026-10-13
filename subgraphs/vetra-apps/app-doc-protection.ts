@@ -12,6 +12,8 @@
  * Mirrors the env protection reconciler in vetra-cloud-observability.
  */
 
+import { documentModel as appDocumentModel } from "../../document-models/vetra-app/v1/index.js";
+
 /**
  * The slice of the reactor client that reads and removes relationships.
  *
@@ -86,7 +88,26 @@ export interface DocProtectionService {
     documentId: string,
   ): Promise<{ userAddress: string }[]>;
   revokePermission(documentId: string, userAddress: string): Promise<void>;
+  /** Operation grants (absent: none are checked). */
+  getOperationUserPermissions?(
+    documentId: string,
+    operationType: string,
+  ): Promise<{ userAddress: string }[]>;
+  revokeOperationPermission?(
+    documentId: string,
+    operationType: string,
+    userAddress: string,
+  ): Promise<void>;
 }
+
+/** Every operation of the vetra-app model. */
+export const APP_OPERATIONS: readonly string[] = [
+  ...new Set(
+    (appDocumentModel.specifications.at(-1)?.modules ?? []).flatMap((m) =>
+      m.operations.map((o) => o.name ?? ""),
+    ),
+  ),
+].filter(Boolean);
 
 /**
  * Protects one app document with `owner` as its only principal. Idempotent.
@@ -110,6 +131,16 @@ export async function protectAppDocument(
   for (const g of await perm.getDocumentPermissions(documentId)) {
     if (g.userAddress.toLowerCase() !== want) {
       await perm.revokePermission(documentId, g.userAddress);
+    }
+  }
+  // An operation grant lets its holder submit that operation past the
+  // document checks (e.g. a previous owner's), so none survive (m13).
+  if (perm.getOperationUserPermissions && perm.revokeOperationPermission) {
+    for (const op of APP_OPERATIONS) {
+      for (const g of await perm.getOperationUserPermissions(documentId, op)) {
+        if (g.userAddress.toLowerCase() === want) continue;
+        await perm.revokeOperationPermission(documentId, op, g.userAddress);
+      }
     }
   }
 }

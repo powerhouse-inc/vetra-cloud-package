@@ -43,6 +43,10 @@ export interface AppProfileWrite {
   coverRef?: string | null;
   links?: AppProfileLinkInput[] | null;
   metrics?: AppProfileMetricInput[] | null;
+  supportContact?: string | null;
+  securityContact?: string | null;
+  /** First claim of an org-owned app: the organisation. */
+  publisherOrgId?: string | null;
 }
 
 export const PROFILE_WRITE_KEYS = [
@@ -55,7 +59,11 @@ export const PROFILE_WRITE_KEYS = [
   "coverRef",
   "links",
   "metrics",
+  "supportContact",
+  "securityContact",
+  "publisherOrgId",
 ] as const;
+export type ProfileWriteKey = (typeof PROFILE_WRITE_KEYS)[number];
 
 /** A refusal shown to the publisher: `code` is the wire code, `field` the input to fix. */
 export class RenownProfileError extends Error {
@@ -84,9 +92,18 @@ export interface RenownProfileRelayConfig {
   logger?: Pick<Console, "warn">;
 }
 
-const UPSERT = `mutation UpsertAppProfile($appDid: String!, $name: String, $tagline: String, $website: String, $description: String, $category: String, $logoRef: String, $coverRef: String, $links: [AppProfileLinkInput!], $metrics: [AppMetricInput!]) {
-  upsertAppProfile(appDid: $appDid, name: $name, tagline: $tagline, website: $website, description: $description, category: $category, logoRef: $logoRef, coverRef: $coverRef, links: $links, metrics: $metrics)
-}`;
+const ARG_TYPES: Record<ProfileWriteKey, string> = {
+  name: "String", tagline: "String", website: "String", description: "String", category: "String",
+  logoRef: "String", coverRef: "String", links: "[AppProfileLinkInput!]", metrics: "[AppMetricInput!]",
+  supportContact: "String", securityContact: "String", publisherOrgId: "String",
+};
+
+/** The mutation for exactly these arguments, so older Renowns accept writes that do not use newer ones. */
+export function upsertMutation(keys: readonly ProfileWriteKey[]): string {
+  const defs = ["$appDid: String!", ...keys.map((k) => `$${k}: ${ARG_TYPES[k]}`)].join(", ");
+  const args = ["appDid: $appDid", ...keys.map((k) => `${k}: $${k}`)].join(", ");
+  return `mutation UpsertAppProfile(${defs}) {\n  upsertAppProfile(${args})\n}`;
+}
 
 const UNAVAILABLE = "Renown is not reachable right now. Try again in a minute.";
 
@@ -101,6 +118,8 @@ function refusal(code: unknown, message: string, field: unknown): RenownProfileE
         "FORBIDDEN",
         "Renown refused: this wallet does not own the app's Renown identity.",
       );
+    case "APP_FROZEN":
+      return new RenownProfileError("APP_FROZEN", "This app is frozen by its organisation.");
     case "RATE_LIMITED":
       return new RenownProfileError("RATE_LIMITED", "Too many profile saves. Wait a minute and try again.");
     case "UNAUTHENTICATED":
@@ -130,10 +149,9 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
 
   return {
     async upsert(appDid, bearer, fields) {
+      const keys = PROFILE_WRITE_KEYS.filter((k) => fields[k] !== undefined);
       const variables: Record<string, unknown> = { appDid };
-      for (const key of PROFILE_WRITE_KEYS) {
-        if (fields[key] !== undefined) variables[key] = fields[key];
-      }
+      for (const key of keys) variables[key] = fields[key];
       let res: Response;
       try {
         res = await fetchImpl(statsUrl, {
@@ -143,7 +161,7 @@ export function createRenownProfileRelay(cfg: RenownProfileRelayConfig): RenownP
             authorization: `Bearer ${bearer}`,
             [REGISTRATION_TOKEN_HEADER]: registrationToken,
           },
-          body: JSON.stringify({ query: UPSERT, variables }),
+          body: JSON.stringify({ query: upsertMutation(keys), variables }),
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch {

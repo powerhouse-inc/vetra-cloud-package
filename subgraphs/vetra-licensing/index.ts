@@ -64,6 +64,10 @@ import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
+import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
+import { ensureAppsOrgColumn } from "../vetra-apps/db/migrations.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
   createReportingTokenIssuer,
@@ -123,6 +127,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const appsDb = (await this.relationalDb.createNamespace(
       "vetra-apps",
     )) as unknown as Kysely<VetraAppsDB>;
+    // Licensing reads apps.owner_org_id; do not depend on setup order (m4).
+    await ensureAppsOrgColumn(appsDb as unknown as Kysely<any>);
 
     const envs = createReactorEnvGateway(this.reactorClient as never);
 
@@ -153,13 +159,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // Human surface. Ownership is checked on every call against the apps
     // table row (the studio app: the configured studio publisher), never the
     // document. Platform admins (the ADMINS env) pass via resolveOwnerApp.
-    const rowOwner = (id: string) =>
-      appsDb
-        .selectFrom("apps")
-        .select("owner_address")
-        .where("id", "=", id)
-        .executeTakeFirst()
-        .then((r) => r?.owner_address ?? null);
+    // App documents are protected for the row owner, or the Vetra service
+    // identity for an organisation's App.
+    const rowOwner = appDocumentRowOwner(appsDb);
     const { appLedger, appReads } = createLicensingAppReads({
       client: this.reactorClient as never,
       db,
@@ -170,19 +172,29 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         byId: (id) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address", "identity_did"])
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
             .where("id", "=", id)
             .executeTakeFirst()
             .then((r) => r ?? null),
         byOwner: (address) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address", "identity_did"])
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
             .where("owner_address", "=", address)
+            .where("owner_org_id", "is", null)
+            .execute(),
+        byOrg: (orgId) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
+            .where("owner_org_id", "=", orgId)
+            .where("status", "!=", "DELETED")
             .execute(),
       },
       apps: appReads,
       studioPublisher,
+      // Apps transferred to the caller at Renown (through vetra-apps).
+      adoptPersonApps: adoptPersonAppsViaVetraApps,
     });
     // Template and term writes go through the ledger writer only, so the
     // app's recorded licensing-state hash stays valid.
@@ -233,7 +245,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           ...previews.map((p) => p.environment_id),
         ];
       },
-      auth: ownerLookup,
+      auth: { ...ownerLookup, orgs: defaultRenownOrgs() },
+      appPublisher: defaultRenownOrgs(),
       apps: appReads,
       appWriter,
       licences: reads,

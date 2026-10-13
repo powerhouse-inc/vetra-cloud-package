@@ -49,6 +49,23 @@ describe("createRenownProfileRelay", () => {
     });
   });
 
+  it("declares only the arguments it sends, including contacts and the publishing organisation", async () => {
+    const fetch = answering(200, { data: { upsertAppProfile: true } });
+    const relay = createRenownProfileRelay({ statsUrl: URL_, registrationToken: "reg", fetch: fetch as never })!;
+    await relay.upsert(DID, "bearer", { supportContact: "help@acme.example", securityContact: "", publisherOrgId: "o1" });
+    const body = JSON.parse(fetch.mock.calls[0]![1].body as string) as { query: string; variables: Record<string, unknown> };
+    expect(body.query).toContain("$supportContact: String");
+    expect(body.query).toContain("publisherOrgId: $publisherOrgId");
+    expect(body.query).not.toContain("$name");
+    expect(body.variables).toStrictEqual({ appDid: DID, supportContact: "help@acme.example", securityContact: "", publisherOrgId: "o1" });
+  });
+
+  it("maps APP_FROZEN", async () => {
+    const fetch = answering(200, { errors: [{ message: "frozen", extensions: { code: "APP_FROZEN" } }] });
+    const relay = createRenownProfileRelay({ statsUrl: URL_, registrationToken: "reg", fetch: fetch as never })!;
+    expect((await refusal(relay.upsert(DID, "b", { name: "x" }))).code).toBe("APP_FROZEN");
+  });
+
   it.each([
     ["BAD_USER_INPUT", "description", "INVALID_INPUT", "description"],
     ["INVALID_IMAGE", "logoRef", "INVALID_INPUT", "logoRef"],

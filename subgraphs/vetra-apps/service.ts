@@ -11,6 +11,7 @@ import {
   setFusionConfig,
   setLabel,
   setOwner,
+  setOwnerOrg,
   setServiceVersion,
   wakeEnvironment,
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
@@ -26,7 +27,28 @@ import {
   type GithubUserTokens,
 } from "./github.js";
 import type { HarborApi } from "./harbor.js";
-import type { RenownApi } from "./renown.js";
+import { isRenownConflict, type RenownApi } from "./renown.js";
+import type { RenownOrgs } from "../../shared/renown-orgs.js";
+import {
+  canCreateOrgApp,
+  canOperate,
+  canView,
+  isOrgMember,
+} from "../../shared/org-access.js";
+import { withEnvLock } from "../../shared/key-lock.js";
+import {
+  expectOrgHandover,
+  withdrawOrgHandover,
+} from "../vetra-cloud-observability/env-protection.js";
+import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
+import {
+  adoptOrgApps,
+  adoptPersonApps,
+  appResource,
+  callerAccess,
+  syncAppOrg,
+  syncApps,
+} from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
 import { appsError, notConfigured } from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
@@ -76,6 +98,26 @@ export interface AppsDeps {
   now: () => Date;
   newId: () => string;
   logger: AppsLogger;
+  /** Renown organisations; null/absent: org-owned Apps are admin-only. */
+  orgs?: RenownOrgs | null;
+  /**
+   * Cut-off for Renown lookups on the ownership-sync path (default 1.5 s);
+   * after a failure Renown is skipped there for 30 s.
+   */
+  renownSyncTimeoutMs?: number;
+  /**
+   * The observability namespace, where every organisation move of an env
+   * Vetra dispatches is announced first (expectOrgHandover); unannounced
+   * moves are reverted by the observability protection hook.
+   */
+  orgHandoverDb?: Kysely<ObservabilityDB> | null;
+  /**
+   * Re-protects an App's vetra-app document for `owner` (and revokes every
+   * other grant) when the App changes hands. Absent: no document permissions.
+   */
+  protectAppDoc?: ((appId: string, owner: string) => Promise<void>) | null;
+  /** The Vetra service identity (VETRA_SERVICE_ADDRESS) owning org documents. */
+  serviceOwner?: string;
   /**
    * The reactor surface the app documents live on. Absent = no mirroring; reads
    * are served from the table either way in this step.
@@ -134,17 +176,25 @@ function assertBranch(branch: string): void {
 // Authorization
 // ---------------------------------------------------------------------------
 
+export interface AppAccessOptions {
+  includeDeleted?: boolean;
+  /** "view": any member of the owning org; "operate" (default): publishers. */
+  need?: "view" | "operate";
+}
+
 /**
- * Owner-level access: the owner signed in as themselves, or an admin. A token
- * of any App identity (CI) is refused here — CI may only deploy, fetch its
- * registry credentials and read its deployments. That keeps a PR-branch token
- * from e.g. rolling back production or editing the App.
+ * Owner-level access: the personal owner signed in as themselves, a member
+ * with publisher capability for an org-owned App (any member to view), or an
+ * admin. The App's ownership is first reconciled with Renown (syncAppOrg). A
+ * token of any App identity (CI) is refused here — CI may only deploy, fetch
+ * its registry credentials and read its deployments. That keeps a PR-branch
+ * token from e.g. rolling back production or editing the App.
  */
 async function loadAppForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
-  opts: { includeDeleted?: boolean } = {},
+  opts: AppAccessOptions = {},
 ): Promise<AppRow> {
   await assertNotWorkload(deps, caller);
   const app = await getApp(deps.db, appId);
@@ -153,10 +203,14 @@ async function loadAppForOwner(
   if (app.status === "DELETED" && !(opts.includeDeleted && caller.isAdmin)) {
     throw appsError("NOT_FOUND", "App not found");
   }
-  if (app.owner_address !== caller.address && !caller.isAdmin) {
-    throw appsError("FORBIDDEN", "Not the owner of this App");
+  const synced = await syncAppOrg(deps, app);
+  const check = opts.need === "view" ? canView : canOperate;
+  if (
+    !(await check(deps.orgs ?? null, callerAccess(caller), appResource(synced)))
+  ) {
+    throw appsError("FORBIDDEN", "Not allowed to manage this App");
   }
-  return app;
+  return synced;
 }
 
 async function assertNotWorkload(
@@ -181,19 +235,34 @@ export interface CiIdentity {
   claim: VetraClaim | null;
 }
 
-/** The App, if the CI token was issued by its identity on behalf of its owner. */
+/**
+ * The App, if the CI token was issued by its identity on behalf of someone
+ * who acts for it: the owner of a personal App, or (Ruling 12) an address with
+ * publisher capability for an org App right now — the creator included, so
+ * leaving the org stops their CI tokens. Ownership is reconciled with Renown
+ * first, so CI sees a transfer too; a Renown outage refuses org Apps only.
+ */
 async function authorizeCi(
   deps: AppsDeps,
   ci: CiIdentity,
   appId: string,
 ): Promise<AppRow> {
-  const app = await getApp(deps.db, appId);
-  if (!app || app.status === "DELETED")
+  const found = await getApp(deps.db, appId);
+  if (!found || found.status === "DELETED")
     throw appsError("NOT_FOUND", "App not found");
-  if (ci.appDid !== app.identity_did) {
+  if (ci.appDid !== found.identity_did) {
     throw appsError("FORBIDDEN", "Token was not issued by this App's identity");
   }
-  if (ci.address.toLowerCase() !== app.owner_address) {
+  const app = await syncAppOrg(deps, found);
+  const ciAddress = ci.address.toLowerCase();
+  const actsFor = app.owner_org_id
+    ? await canOperate(
+        deps.orgs ?? null,
+        { address: ciAddress, isAdmin: false },
+        appResource(app),
+      )
+    : ciAddress === app.owner_address;
+  if (!actsFor) {
     throw appsError(
       "FORBIDDEN",
       "App identity does not act for this App's owner",
@@ -411,26 +480,54 @@ export async function githubDeployRepositories(
 // Apps
 // ---------------------------------------------------------------------------
 
+/**
+ * Personal Apps (owner_org_id IS NULL), or with `orgId` the organisation's
+ * Apps (members and admins only; Apps Renown lists for it are adopted first).
+ */
 export async function myApps(
   deps: AppsDeps,
   caller: Caller,
+  orgId?: string | null,
 ): Promise<AppRow[]> {
   await assertNotWorkload(deps, caller);
+  const org = orgId?.trim() || null;
+  if (org) {
+    if (!(await isOrgMember(deps.orgs ?? null, callerAccess(caller), org))) {
+      throw appsError("FORBIDDEN", "Not a member of this organisation");
+    }
+    await adoptOrgApps(deps, org);
+    const rows = await deps.db
+      .selectFrom("apps")
+      .selectAll()
+      .where("owner_org_id", "=", org)
+      .where("status", "!=", "DELETED")
+      .orderBy("created_at", "desc")
+      .execute();
+    // Apps transferred out of the org at Renown drop out of the list.
+    const synced = await syncApps(deps, rows.map(normalizeApp));
+    return synced.filter((a) => a.owner_org_id === org);
+  }
+  // Apps transferred to the caller at Renown join the list.
+  await adoptPersonApps(deps, caller.address);
   const rows = await deps.db
     .selectFrom("apps")
     .selectAll()
     .where("owner_address", "=", caller.address)
+    .where("owner_org_id", "is", null)
     .where("status", "!=", "DELETED")
     .orderBy("created_at", "desc")
     .execute();
-  return rows.map(normalizeApp);
+  const synced = await syncApps(deps, rows.map(normalizeApp));
+  return synced.filter(
+    (a) => a.owner_org_id === null && a.owner_address === caller.address,
+  );
 }
 
 export async function appForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
-  opts: { includeDeleted?: boolean } = {},
+  opts: AppAccessOptions = {},
 ) {
   return loadAppForOwner(deps, caller, appId, opts);
 }
@@ -479,7 +576,12 @@ export interface CreateAppInput {
   repositoryId: string;
   productionBranch?: string | null;
   productionEnvironmentId?: string | null;
+  /** Create the App for this Renown organisation (Ruling 10). */
+  orgId?: string | null;
 }
+
+const IDENTITY_OWNED_ELSEWHERE =
+  "This repository's Renown identity belongs to another owner; delete the old App or ask its creator";
 
 export async function createApp(
   deps: AppsDeps,
@@ -490,10 +592,26 @@ export async function createApp(
   const name = input.name.trim();
   if (!name || name.length > 100)
     throw appsError("BAD_USER_INPUT", "Name must be 1-100 characters");
-  const github = requireGithub(deps);
+  // OWNER/ADMIN, or PUBLISHER with every app in scope; admins get no bypass,
+  // and a Renown outage refuses (fail closed).
+  const orgId = input.orgId?.trim() || null;
+  if (
+    orgId &&
+    !(await canCreateOrgApp(deps.orgs ?? null, callerAccess(caller), orgId))
+  ) {
+    throw appsError(
+      "FORBIDDEN",
+      "Creating Apps in this organisation needs the publisher role with access to all its apps",
+    );
+  }
+  requireGithub(deps);
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   if (!deps.renown) throw notConfigured("Renown workload identities");
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
+  // An org App's env is handed over with an announced move; without the
+  // announcement store the move would be reverted.
+  if (orgId && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
   // Only a repo the USER can access on GitHub (not merely the installation).
   const repo = (await userRepos(deps, caller, input.installationId)).find(
     (r) => r.id === String(input.repositoryId),
@@ -519,12 +637,27 @@ export async function createApp(
   const productionBranch = input.productionBranch?.trim() || "main";
   assertBranch(productionBranch);
 
-  // Attaching an existing env: caller must own it and it must be standalone.
+  // Attaching an existing env: caller must operate it, it must be standalone
+  // and personal or of the App's own organisation.
   let attachEnvState: VetraCloudEnvironmentState | null = null;
   if (input.productionEnvironmentId) {
     attachEnvState = await deps.envs.getState(input.productionEnvironmentId);
     if (!attachEnvState) throw appsError("NOT_FOUND", "Environment not found");
-    if ((attachEnvState.owner ?? "").toLowerCase() !== caller.address) {
+    const envOrg = attachEnvState.ownerOrgId ?? null;
+    if (envOrg !== null && envOrg !== orgId) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        orgId
+          ? "Environment belongs to another organisation"
+          : "This environment belongs to an organisation; create the App there",
+      );
+    }
+    const mayAttach = await canOperate(
+      deps.orgs ?? null,
+      { address: caller.address, isAdmin: false },
+      { owner: attachEnvState.owner ?? null, ownerOrgId: envOrg, appDid: null },
+    );
+    if (!mayAttach) {
       throw appsError("FORBIDDEN", "You do not own this environment");
     }
     if (attachEnvState.app)
@@ -537,87 +670,119 @@ export async function createApp(
     }
   }
 
-  // Harbor 409 = someone else's project: never reuse it, take the next suffix.
-  let slug: string | null = null;
-  const conflicts = new Set<string>();
-  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-    const candidate = await uniqueSlug(deps, name, conflicts);
-    if (await deps.harbor.createProject(`app-${candidate}`)) {
-      slug = candidate;
-      break;
-    }
-    conflicts.add(candidate);
-  }
-  if (!slug) {
-    throw appsError(
-      "BAD_USER_INPUT",
-      "Could not reserve a Harbor project for this name; pick another name",
-    );
-  }
-  const harborProject = `app-${slug}`;
-  const robot = await deps.harbor.createPushRobot(harborProject);
-  const { did } = await deps.renown.registerWorkloadIdentity({
+  // The workload identity first (R2), so a refusal leaves nothing behind.
+  const did = await registerAppIdentity(deps, deps.renown, {
     repositoryId: repo.id,
     repository: repo.fullName,
     productionBranch,
     ownerAddress: caller.address,
     chainId: caller.chainId,
+    orgId,
   });
 
-  const appId = deps.newId();
-  const link = setAppLink({
-    appId,
-    role: "PRODUCTION",
-    prNumber: null,
-    gitRef: `refs/heads/${productionBranch}`,
-    imageProject: harborProject,
-  });
-  // The apps row goes in before the env actions: the gitops render resolves
-  // the App's Harbor project from it (see app-image-project.ts).
-  const attach = Boolean(input.productionEnvironmentId && attachEnvState);
-  const envId = attach
-    ? input.productionEnvironmentId!
-    : await deps.envs.create();
-  const nowIso = deps.now().toISOString();
-  await deps.db
-    .insertInto("apps")
-    .values({
-      id: appId,
-      slug,
-      name,
-      owner_address: caller.address,
-      owner_chain_id: caller.chainId,
-      status: "PENDING_IDENTITY",
-      installation_id: input.installationId,
-      repository_id: repo.id,
-      repository_full_name: repo.fullName,
-      production_branch: productionBranch,
-      production_environment_id: envId,
-      previews_enabled: true,
-      preview_limit: DEFAULT_PREVIEW_LIMIT,
-      preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
-      harbor_project: harborProject,
-      harbor_robot_name: robot.name,
-      harbor_robot_id: robot.id,
-      identity_expires_at: null,
-      harbor_robot_secret_enc: encryptSecret(
-        deps.cfg.encryptionKey,
-        robot.secret,
-      ),
-      identity_did: did,
-      created_at: nowIso,
-      updated_at: nowIso,
-    })
-    .execute();
+  // Everything made from here on is undone when a later step fails, so a
+  // retry (in another organisation, or personally) is not blocked.
+  const harbor = deps.harbor;
+  const encryptionKey = deps.cfg.encryptionKey;
+  const made: CreateMade = {
+    project: null,
+    robotId: null,
+    appId: null,
+    announced: null,
+  };
+  let appId: string;
+  let slug: string | null = null;
+  let envId: string;
   try {
+    // Harbor 409 = someone else's project: never reuse it, take the next suffix.
+    const conflicts = new Set<string>();
+    for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
+      const candidate = await uniqueSlug(deps, name, conflicts);
+      if (await harbor.createProject(`app-${candidate}`)) {
+        slug = candidate;
+        made.project = `app-${candidate}`;
+        break;
+      }
+      conflicts.add(candidate);
+    }
+    if (!slug) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Could not reserve a Harbor project for this name; pick another name",
+      );
+    }
+    const harborProject = `app-${slug}`;
+    const robot = await harbor.createPushRobot(harborProject);
+    made.robotId = robot.id;
+
+    appId = deps.newId();
+    const link = setAppLink({
+      appId,
+      role: "PRODUCTION",
+      prNumber: null,
+      gitRef: `refs/heads/${productionBranch}`,
+      imageProject: harborProject,
+    });
+    // The apps row goes in before the env actions: the gitops render resolves
+    // the App's Harbor project from it (see app-image-project.ts).
+    const attach = Boolean(input.productionEnvironmentId && attachEnvState);
+    envId = attach ? input.productionEnvironmentId! : await deps.envs.create();
+    const nowIso = deps.now().toISOString();
+    made.appId = appId;
+    await deps.db
+      .insertInto("apps")
+      .values({
+        id: appId,
+        slug,
+        name,
+        owner_address: caller.address,
+        owner_chain_id: caller.chainId,
+        status: "PENDING_IDENTITY",
+        installation_id: input.installationId,
+        repository_id: repo.id,
+        repository_full_name: repo.fullName,
+        production_branch: productionBranch,
+        production_environment_id: envId,
+        previews_enabled: true,
+        preview_limit: DEFAULT_PREVIEW_LIMIT,
+        preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
+        harbor_project: harborProject,
+        harbor_robot_name: robot.name,
+        harbor_robot_id: robot.id,
+        identity_expires_at: null,
+        // Set from the start: the app document is protected for the Vetra
+        // service identity the moment it exists (appDocumentRowOwner).
+        owner_org_id: orgId,
+        harbor_robot_secret_enc: encryptSecret(encryptionKey, robot.secret),
+        identity_did: did,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .execute();
+    // An org App's env is handed to the org (the creator its first operator;
+    // the operator sync refills the list). The move is announced first,
+    // inside the env lock, so the observability protection keeps it.
+    const handOver =
+      orgId && !(attach && attachEnvState!.ownerOrgId)
+        ? [setOwnerOrg({ ownerOrgId: orgId, operators: [caller.address] })]
+        : [];
+    const targetEnv = envId;
+    const dispatch = (actions: Action[]) =>
+      withEnvLock(targetEnv, async () => {
+        if (handOver.length > 0) {
+          await expectOrgHandover(deps.orgHandoverDb!, targetEnv, orgId);
+          made.announced = { envId: targetEnv, orgId };
+        }
+        await deps.envs.execute(targetEnv, actions);
+      });
     if (attach) {
       const wasReady = attachEnvState!.status === "READY";
       // The link widens the FUSION allowlist, so it re-renders; re-approve only
       // a settled env (never ship an owner's unapproved pending edits).
-      await deps.envs.execute(envId, [link]);
+      await dispatch([link, ...handOver]);
       if (wasReady) await deps.envs.execute(envId, [approveChanges({})]);
     } else {
-      await deps.envs.execute(envId, [
+      await dispatch([
         setLabel({ label: name }),
         initialize({
           genericSubdomain: deps.generateSubdomain(envId),
@@ -625,6 +790,7 @@ export async function createApp(
           defaultPackageRegistry: deps.cfg.productionRegistry,
         }),
         setOwner({ address: caller.address }),
+        ...handOver,
         link,
         enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
         enableService({ type: "CONNECT", prefix: "connect" }),
@@ -632,7 +798,7 @@ export async function createApp(
       await deps.envs.execute(envId, [approveChanges({})]);
     }
   } catch (err) {
-    await deps.db.deleteFrom("apps").where("id", "=", appId).execute();
+    await undoFailedCreate(deps, harbor, deps.renown, did, made);
     throw err;
   }
   deps.logger.info(
@@ -644,10 +810,153 @@ export async function createApp(
 }
 
 /**
- * Re-check the owner's delegation of the App identity. The newest valid
- * credential → ACTIVE with its expiry; none (never signed, expired or
- * revoked) → PENDING_IDENTITY. A DISCONNECTED App keeps its status (only the
- * expiry is refreshed).
+ * Register the repository's workload identity for `orgId` (null: personally).
+ * Renown is idempotent per repository and returns an existing identity
+ * unchanged, whoever it belongs to; another address gets CONFLICT (M11). An
+ * identity of another owner (person vs organisation, or another organisation)
+ * would make the App's profile unclaimable. When no live App uses it, it is
+ * an orphan of this same address (a failed or deleted App): it is deleted and
+ * registered once more. Otherwise, or when Renown hands it back unchanged,
+ * the create is refused.
+ */
+async function registerAppIdentity(
+  deps: AppsDeps,
+  renown: RenownApi,
+  input: {
+    repositoryId: string;
+    repository: string;
+    productionBranch: string;
+    ownerAddress: string;
+    chainId: number;
+    orgId: string | null;
+  },
+): Promise<string> {
+  const { orgId, ...rest } = input;
+  const register = async () => {
+    try {
+      return await renown.registerWorkloadIdentity({
+        ...rest,
+        ...(orgId ? { ownerOrgId: orgId } : {}),
+      });
+    } catch (err) {
+      if (isRenownConflict(err))
+        throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+      throw err;
+    }
+  };
+  const matches = (r: { ownerOrgId: string | null }) =>
+    (r.ownerOrgId ?? null) === orgId;
+  const first = await register();
+  if (matches(first)) return first.did;
+  if (
+    (await identityInUse(deps, first.did)) ||
+    (await identityHasProfile(deps, first.did))
+  ) {
+    throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+  }
+  deps.logger.warn(
+    `[vetra-apps] re-registering the orphaned identity ${first.did} of ${input.repository} for ${orgId ?? input.ownerAddress}`,
+  );
+  await renown.deleteWorkloadIdentity(first.did);
+  const second = await register();
+  if (!matches(second))
+    throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+  return second.did;
+}
+
+/**
+ * Whether the identity still has a Renown app profile (its listing and
+ * licences may live on although no Vetra App uses it), or that cannot be
+ * told: such an identity is never deleted to be re-registered (m9).
+ */
+async function identityHasProfile(
+  deps: AppsDeps,
+  did: string,
+): Promise<boolean> {
+  if (!deps.orgs) return false;
+  try {
+    return (await deps.orgs.appPublisher(did)) !== null;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether a live (not DELETED) App uses the identity. */
+async function identityInUse(deps: AppsDeps, did: string): Promise<boolean> {
+  const row = await deps.db
+    .selectFrom("apps")
+    .select("id")
+    .where("identity_did", "=", did)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  return !!row;
+}
+
+interface CreateMade {
+  project: string | null;
+  robotId: number | null;
+  appId: string | null;
+  /** The announced organisation move (withdrawn on failure). */
+  announced: { envId: string; orgId: string | null } | null;
+}
+
+/**
+ * Undo a createApp that failed after the identity was registered: the apps
+ * row, the announcement, the robot, the project, and the identity when no
+ * live App uses it. Best effort: every failure is logged, none is thrown.
+ */
+async function undoFailedCreate(
+  deps: AppsDeps,
+  harbor: HarborApi,
+  renown: RenownApi,
+  did: string,
+  made: CreateMade,
+): Promise<void> {
+  const step = async (what: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] cleaning up a failed createApp: ${what} failed: ${String(err)}`,
+      );
+    }
+  };
+  const { appId, announced, robotId, project } = made;
+  if (appId)
+    await step("deleting the row", () =>
+      deps.db.deleteFrom("apps").where("id", "=", appId).execute(),
+    );
+  if (announced && deps.orgHandoverDb) {
+    const db = deps.orgHandoverDb;
+    await step("withdrawing the hand-over", () =>
+      withdrawOrgHandover(db, announced.envId, announced.orgId),
+    );
+  }
+  if (robotId !== null)
+    await step("deleting the robot", () => harbor.deleteRobot(robotId));
+  if (project)
+    await step("deleting the Harbor project", () =>
+      harbor.deleteProject(project),
+    );
+  await step("deleting the identity", async () => {
+    if (!(await identityInUse(deps, did)))
+      await renown.deleteWorkloadIdentity(did);
+  });
+}
+
+/**
+ * Re-check the delegation of the App identity.
+ *
+ * Personal App: the owner's. The newest valid credential → ACTIVE with its
+ * expiry; none (never signed, expired or revoked) → PENDING_IDENTITY.
+ *
+ * Org App: the caller's (any operator may authorise it, Ruling 12). One
+ * operator's lookup never speaks for the others, so it only upgrades
+ * (PENDING_IDENTITY → ACTIVE) or extends the expiry; a caller without a
+ * delegation, or with a shorter one, changes nothing. Expiry is left to the
+ * identity-expiry sweep.
+ *
+ * A DISCONNECTED App keeps its status either way.
  */
 export async function confirmAppIdentity(
   deps: AppsDeps,
@@ -657,21 +966,29 @@ export async function confirmAppIdentity(
   const app = await loadAppForOwner(deps, caller, appId);
   if (!deps.renown) throw notConfigured("Renown workload identities");
   const delegation = await deps.renown.getDelegation({
-    address: app.owner_address,
-    chainId: app.owner_chain_id,
+    address: app.owner_org_id ? caller.address : app.owner_address,
+    chainId: app.owner_org_id ? caller.chainId : app.owner_chain_id,
     did: app.identity_did,
   });
-  const status =
+  let status: AppRow["status"] =
     app.status === "DISCONNECTED"
       ? app.status
       : delegation
         ? "ACTIVE"
         : "PENDING_IDENTITY";
+  let expiresAt = delegation?.expiresAt ?? null;
+  if (app.owner_org_id) {
+    if (!delegation) return app;
+    if (app.status === "ACTIVE" || app.status === "DISCONNECTED") {
+      status = app.status;
+      expiresAt = laterExpiry(app.identity_expires_at, expiresAt);
+    }
+  }
   await deps.db
     .updateTable("apps")
     .set({
       status,
-      identity_expires_at: delegation?.expiresAt ?? null,
+      identity_expires_at: expiresAt,
       updated_at: deps.now().toISOString(),
     })
     .where("id", "=", app.id)
@@ -679,6 +996,12 @@ export async function confirmAppIdentity(
   const confirmed = (await getApp(deps.db, app.id))!;
   await mirrorAppRow(deps, confirmed);
   return confirmed;
+}
+
+/** The later of two expiries; null (no expiry) is the latest. */
+function laterExpiry(a: string | null, b: string | null): string | null {
+  if (a === null || b === null) return null;
+  return Date.parse(b) > Date.parse(a) ? b : a;
 }
 
 export interface UpdateAppInput {
@@ -984,7 +1307,7 @@ export async function appDeploymentsFor(
   appId: string,
   limit: number | null | undefined,
 ): Promise<DeploymentRow[]> {
-  const app = await loadAppForOwner(deps, caller, appId);
+  const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
   return deps.db
     .selectFrom("app_deployments")
     .selectAll()
@@ -1003,7 +1326,7 @@ export async function appDeploymentFor(
   await assertNotWorkload(deps, caller);
   const d = await getDeployment(deps.db, deploymentId);
   if (!d) return null;
-  await loadAppForOwner(deps, caller, d.app_id);
+  await loadAppForOwner(deps, caller, d.app_id, { need: "view" });
   return d;
 }
 
@@ -1398,6 +1721,11 @@ async function ensurePreview(
   createActions: Action[];
   fusionEnvTemplate: FusionEnvInput[];
 }> {
+  // An org App's preview belongs to the org from its first action; the move
+  // is announced before it is dispatched (performDeploy, minutes at most).
+  // Checked first, so a misconfiguration evicts no preview.
+  if (app.owner_org_id && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
   const existing = await getPreview(deps.db, app.id, prNumber);
   if (existing) {
     if (await deps.envs.getState(existing.environment_id)) {
@@ -1426,6 +1754,8 @@ async function ensurePreview(
   }
 
   const envId = await deps.envs.create();
+  if (app.owner_org_id)
+    await expectOrgHandover(deps.orgHandoverDb!, envId, app.owner_org_id);
   // Non-secret FUSION env of production as the template; previews get no secrets.
   const fusionEnvTemplate: FusionEnvInput[] = (
     productionState?.fusion?.env ?? []
@@ -1442,6 +1772,14 @@ async function ensurePreview(
       defaultPackageRegistry: deps.cfg.previewRegistry,
     }),
     setOwner({ address: app.owner_address }),
+    ...(app.owner_org_id
+      ? [
+          setOwnerOrg({
+            ownerOrgId: app.owner_org_id,
+            operators: productionState?.orgOperators ?? [],
+          }),
+        ]
+      : []),
     setAppLink({
       appId: app.id,
       role: "PREVIEW",
@@ -1636,6 +1974,16 @@ async function performDeploy(
       deps.now().toISOString(),
     );
   } catch (err) {
+    // A new org preview whose hand-over never landed leaves no announcement.
+    const orgId = app.owner_org_id;
+    if (createActions.length > 0 && orgId && deps.orgHandoverDb) {
+      await withdrawOrgHandover(deps.orgHandoverDb, envId, orgId).catch(
+        (e: unknown) =>
+          deps.logger.warn(
+            `[vetra-apps] withdrawing the hand-over of preview env ${envId} failed: ${String(e)}`,
+          ),
+      );
+    }
     await updateDeployment(
       deps.db,
       id,

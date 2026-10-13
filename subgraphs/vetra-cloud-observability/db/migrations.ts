@@ -155,9 +155,53 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("updatedAt", "varchar(255)")
     .ifNotExists()
     .execute();
+
+  // Document permissions Vetra granted for organisation access. Only grants
+  // recorded here are ever revoked by the organisation operator sync.
+  await db.schema
+    .createTable("org_document_grants")
+    .addColumn("documentId", "varchar(255)", (c) => c.notNull())
+    .addColumn("address", "varchar(255)", (c) => c.notNull())
+    .addColumn("level", "varchar(16)", (c) => c.notNull())
+    .addColumn("grantedAt", "varchar(64)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("org_document_grants_pkey", ["documentId", "address"])
+    .ifNotExists()
+    .execute();
+
+  // Organisation envs whose protection ownership moved to the Vetra service identity.
+  await db.schema
+    .createTable("org_document_protection")
+    .addColumn("documentId", "varchar(255)", (c) => c.primaryKey())
+    .addColumn("orgId", "varchar(255)")
+    .addColumn("previousOwner", "varchar(255)")
+    .addColumn("transferredAt", "varchar(64)", (c) => c.notNull())
+    .ifNotExists()
+    .execute();
+
+  // Organisation moves Vetra announced (setEnvironmentOrg & co.); any other move is reverted.
+  await db.schema
+    .createTable("org_expected_handovers")
+    .addColumn("documentId", "varchar(255)", (c) => c.primaryKey())
+    .addColumn("orgId", "varchar(255)")
+    .addColumn("expiresAt", "varchar(64)", (c) => c.notNull())
+    .ifNotExists()
+    .execute();
+
+  // The operator list the sync last computed (detects SYNC_ORG_OPERATORS from elsewhere).
+  await db.schema
+    .createTable("org_env_operators")
+    .addColumn("documentId", "varchar(255)", (c) => c.primaryKey())
+    .addColumn("operators", "text", (c) => c.notNull())
+    .addColumn("computedAt", "varchar(64)", (c) => c.notNull())
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("org_env_operators").ifExists().execute();
+  await db.schema.dropTable("org_expected_handovers").ifExists().execute();
+  await db.schema.dropTable("org_document_protection").ifExists().execute();
+  await db.schema.dropTable("org_document_grants").ifExists().execute();
   await db.schema.dropTable("studio_brand").ifExists().execute();
   await db.schema.dropTable("database_dumps").ifExists().execute();
   await db.schema.dropTable("clint_runtime_endpoints").execute();

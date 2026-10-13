@@ -112,6 +112,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     slug: app.slug,
     name: app.name,
     ownerAddress: app.owner_address,
+    ownerOrgId: app.owner_org_id ?? null,
     status: app.status,
     repository: {
       installationId: app.installation_id,
@@ -155,9 +156,15 @@ function mapApp(deps: AppsDeps, app: AppRow) {
 export function createResolvers(deps: AppsDeps) {
   return {
     Query: {
-      myApps: (_: unknown, __: unknown, ctx: AppsContext) =>
+      myApps: (
+        _: unknown,
+        { orgId }: { orgId?: string | null },
+        ctx: AppsContext,
+      ) =>
         guard(deps, "myApps", async () =>
-          (await myApps(deps, requireCaller(ctx))).map((a) => mapApp(deps, a)),
+          (await myApps(deps, requireCaller(ctx), orgId)).map((a) =>
+            mapApp(deps, a),
+          ),
         ),
       app: (_: unknown, { id }: { id: string }, ctx: AppsContext) =>
         guard(deps, "app", async () => {
@@ -165,7 +172,10 @@ export function createResolvers(deps: AppsDeps) {
           try {
             return mapApp(
               deps,
-              await appForOwner(deps, caller, id, { includeDeleted: true }),
+              await appForOwner(deps, caller, id, {
+                includeDeleted: true,
+                need: "view",
+              }),
             );
           } catch (err) {
             if (

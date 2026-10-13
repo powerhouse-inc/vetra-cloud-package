@@ -5,7 +5,9 @@ import {
 } from "@renown/sdk/node";
 import { decodeJwtPayloadUnverified, parseVetraClaim } from "./auth.js";
 import { envUrls } from "./envs.js";
-import type { DeploymentRow } from "./repo.js";
+import { normalizeApp, type DeploymentRow } from "./repo.js";
+import { canOperate } from "../../shared/org-access.js";
+import { appResource } from "./org-ownership.js";
 import { deploymentFields } from "./resolvers.js";
 import {
   ciDeployApp,
@@ -106,11 +108,11 @@ async function markIdentityExpired(
   address: string,
 ) {
   const nowIso = deps.now().toISOString();
-  const expired = await deps.db
-    .updateTable("apps")
-    .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
+  const addr = address.toLowerCase();
+  const rows = await deps.db
+    .selectFrom("apps")
+    .selectAll()
     .where("identity_did", "=", appDid)
-    .where("owner_address", "=", address)
     .where("status", "=", "ACTIVE")
     .where((eb) =>
       eb.or([
@@ -118,9 +120,30 @@ async function markIdentityExpired(
         eb("identity_expires_at", "<=", nowIso),
       ]),
     )
-    .returning(["id"])
     .execute();
-  for (const row of expired) await mirrorAppById(deps, row.id);
+  for (const raw of rows) {
+    const row = normalizeApp(raw);
+    // Personal App: only the owner's token. Org App: only a token of an
+    // address that operates it now (Ruling 12) — any operator may have
+    // authorised the identity, but an arbitrary address (e.g. a repository
+    // collaborator) must not be able to stop the org's deploys (m3).
+    const actsFor = row.owner_org_id
+      ? await canOperate(
+          deps.orgs ?? null,
+          { address: addr, isAdmin: false },
+          appResource(row),
+        )
+      : row.owner_address === addr;
+    if (!actsFor) continue;
+    const flipped = await deps.db
+      .updateTable("apps")
+      .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
+      .where("id", "=", row.id)
+      .where("status", "=", "ACTIVE")
+      .returning(["id"])
+      .execute();
+    if (flipped.length) await mirrorAppById(deps, row.id);
+  }
 }
 
 const STATUS: Record<string, number> = {

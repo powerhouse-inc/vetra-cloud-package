@@ -148,4 +148,34 @@ export interface ObservabilityDB {
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
   studio_brand: StudioBrand;
+  /** Document permissions Vetra granted for organisation access (revoked only by Vetra). */
+  org_document_grants: {
+    documentId: string;
+    address: string;
+    /** READ | WRITE */
+    level: string;
+    grantedAt: string;
+  };
+  /** Organisation envs whose reactor-api protection Vetra moved to its service identity. */
+  org_document_protection: {
+    documentId: string;
+    /** The organisation it was handed to. */
+    orgId: string | null;
+    /** Protection owner before the hand-over (the creator), if any. */
+    previousOwner: string | null;
+    transferredAt: string;
+  };
+  /** Organisation moves Vetra announced before dispatching them (expire after 10 minutes). */
+  org_expected_handovers: {
+    documentId: string;
+    /** Target organisation; null for a move back to a person. */
+    orgId: string | null;
+    expiresAt: string;
+  };
+  /** The operator list the sync last computed per organisation env (JSON). */
+  org_env_operators: {
+    documentId: string;
+    operators: string;
+    computedAt: string;
+  };
 }

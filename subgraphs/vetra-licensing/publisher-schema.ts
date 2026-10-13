@@ -36,6 +36,10 @@ export const publisherSchema: DocumentNode = gql`
     "attachment://v1:<sha256> from Renown's upload route"
     logoRef: String
     coverRef: String
+    "Support contact: an email address or an https URL, at most 200 characters; empty clears"
+    supportContact: String
+    "Security contact: same rules"
+    securityContact: String
     links: [PublisherAppLinkInput!]
     "Publisher-defined metrics, the whole list (at most 16); [] clears."
     metrics: [PublisherAppMetricInput!]
@@ -256,7 +260,8 @@ export const publisherSchema: DocumentNode = gql`
   }
 
   type VetraPublisherQueries {
-    myApps: [PublisherApp!]!
+    "Your apps, or with orgId the organisation's apps you operate"
+    myApps(orgId: String): [PublisherApp!]!
     templates(appId: String!): [PublisherTemplate!]!
     terms(appId: String!): [PublisherTerm!]!
     appArtifacts(appId: String!): [PublisherAppArtifact!]!
@@ -292,7 +297,7 @@ export const publisherSchema: DocumentNode = gql`
     """
     Writes the app's public Renown profile (through Renown's relay).
     Errors: INVALID_INPUT (extensions.field), FORBIDDEN, NO_IDENTITY,
-    RATE_LIMITED, PROFILE_UNAVAILABLE, plus the ownership codes.
+    RATE_LIMITED, APP_FROZEN, PROFILE_UNAVAILABLE, plus the ownership codes.
     """
     updateAppProfile(input: UpdateAppProfileInput!): Boolean!
   }

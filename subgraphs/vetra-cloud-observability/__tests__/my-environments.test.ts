@@ -29,6 +29,8 @@ async function createEnvTable(database: Kysely<any>): Promise<void> {
     .addColumn("appId", "varchar(255)")
     .addColumn("appRole", "varchar(32)")
     .addColumn("prNumber", "integer")
+    .addColumn("ownerOrgId", "varchar(255)")
+    .addColumn("orgOperators", "text")
     .ifNotExists()
     .execute();
 }

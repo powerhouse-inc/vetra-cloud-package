@@ -36,6 +36,7 @@ input UpdateAppProfileInput {
   name: String  tagline: String  website: String
   description: String  category: String
   logoRef: String  coverRef: String
+  supportContact: String  securityContact: String
   links: [PublisherAppLinkInput!]
   metrics: [PublisherAppMetricInput!]
 }
@@ -153,7 +154,7 @@ input CreateInviteCodeInput {
 }
 
 type VetraPublisherQueries {
-  myApps: [PublisherApp!]!
+  myApps(orgId: String): [PublisherApp!]!
   templates(appId: String!): [PublisherTemplate!]!
   terms(appId: String!): [PublisherTerm!]!
   appArtifacts(appId: String!): [PublisherAppArtifact!]!

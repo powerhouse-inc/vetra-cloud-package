@@ -17,10 +17,16 @@ export function createOwnerAppLookup(deps: {
   table: {
     byId(id: string): Promise<OwnerAppRecord | null>;
     byOwner(address: string): Promise<OwnerAppRecord[]>;
+    byOrg(orgId: string): Promise<OwnerAppRecord[]>;
   };
   apps: Pick<AppReads, "app">;
   /** Lowercased; null when unconfigured, which leaves the studio app unknown. */
   studioPublisher: string | null;
+  /**
+   * Moves the Apps Renown lists as this person's own onto their rows first
+   * (vetra-apps' adoptPersonApps); never throws.
+   */
+  adoptPersonApps?(address: string): Promise<void>;
   logger?: Pick<Console, "warn">;
 }): PublisherAuthDeps {
   async function studioApp(): Promise<OwnerAppRecord | null> {
@@ -43,12 +49,14 @@ export function createOwnerAppLookup(deps: {
   }
 
   return {
+    listAppsForOrg: (orgId) => deps.table.byOrg(orgId),
     async findAppById(id) {
       const row = await deps.table.byId(id);
       if (row) return row;
       return id === STUDIO_APP_ID ? studioApp() : null;
     },
     async listAppsForOwner(address) {
+      await deps.adoptPersonApps?.(address);
       const rows = await deps.table.byOwner(address);
       if (
         !deps.studioPublisher ||

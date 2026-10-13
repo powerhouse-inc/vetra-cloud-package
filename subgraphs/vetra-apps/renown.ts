@@ -9,7 +9,9 @@ export interface RenownApi {
     productionBranch: string;
     ownerAddress: string;
     chainId: number;
-  }): Promise<{ did: string }>;
+    /** Register for this Renown organisation (A2). */
+    ownerOrgId?: string;
+  }): Promise<{ did: string; ownerOrgId: string | null }>;
   updateWorkloadIdentity(
     did: string,
     patch: { repository?: string; productionBranch?: string },
@@ -27,6 +29,14 @@ export interface RenownApi {
 }
 
 type FetchLike = typeof fetch;
+
+/**
+ * Renown refused a registration because the repository's identity was
+ * registered by another address (M11).
+ */
+export function isRenownConflict(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith("renown: CONFLICT");
+}
 
 export const REGISTRATION_TOKEN_HEADER = "x-renown-workload-registration-token";
 
@@ -66,13 +76,18 @@ export function createRenownApi(
 
   return {
     async registerWorkloadIdentity(input) {
-      const data = await gql<{ registerWorkloadIdentity: { did: string } }>(
+      const data = await gql<{
+        registerWorkloadIdentity: { did: string; ownerOrgId?: string | null };
+      }>(
         `mutation Register($input: RegisterWorkloadIdentityInput!) {
-          registerWorkloadIdentity(input: $input) { did }
+          registerWorkloadIdentity(input: $input) { did ownerOrgId }
         }`,
         { input },
       );
-      return { did: data.registerWorkloadIdentity.did };
+      return {
+        did: data.registerWorkloadIdentity.did,
+        ownerOrgId: data.registerWorkloadIdentity.ownerOrgId ?? null,
+      };
     },
 
     async updateWorkloadIdentity(did, patch) {

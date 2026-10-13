@@ -14,6 +14,11 @@ export interface HarborApi {
   ): Promise<{ id: number; name: string; secret: string }>;
   /** Delete a robot (CI loses push access); an already-gone robot is fine. */
   deleteRobot(id: number): Promise<void>;
+  /**
+   * Delete a project this process just created (a failed createApp, before
+   * anything was pushed); an already-gone project is fine.
+   */
+  deleteProject(project: string): Promise<void>;
 }
 
 type FetchLike = typeof fetch;
@@ -82,6 +87,22 @@ export function createHarborApi(
       });
       if (res.ok || res.status === 404) return;
       throw new Error(`harbor: delete robot ${id} → ${res.status}`);
+    },
+
+    async deleteProject(project) {
+      const res = await fetchImpl(
+        `${cfg.url}/api/v2.0/projects/${encodeURIComponent(project)}`,
+        {
+          method: "DELETE",
+          headers: {
+            authorization: auth,
+            accept: "application/json",
+            "x-is-resource-name": "true",
+          },
+        },
+      );
+      if (res.ok || res.status === 404) return;
+      throw new Error(`harbor: delete project ${project} → ${res.status}`);
     },
   };
 }

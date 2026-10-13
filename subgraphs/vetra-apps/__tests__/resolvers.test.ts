@@ -437,6 +437,11 @@ describe("HTTP clients", () => {
       ["DELETE", "https://cr.vetra.io/api/v2.0/robots/7"],
       ["DELETE", "https://cr.vetra.io/api/v2.0/robots/8"],
     ]);
+    await harbor.deleteProject("app-x");
+    expect(calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      url: "https://cr.vetra.io/api/v2.0/projects/app-x",
+    });
   });
 
   it("Renown: sends the registration token and checks the delegation credential", async () => {
@@ -474,7 +479,7 @@ describe("HTTP clients", () => {
         ownerAddress: OWNER,
         chainId: 1,
       }),
-    ).toStrictEqual({ did: APP_DID });
+    ).toStrictEqual({ did: APP_DID, ownerOrgId: null });
     expect(seen[0].url).toBe(
       "https://switchboard.renown.vetra.io/graphql/renown-workload",
     );

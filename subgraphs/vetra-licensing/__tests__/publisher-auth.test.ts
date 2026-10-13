@@ -125,3 +125,26 @@ describe("resolveOwnerApp", () => {
     ).resolves.toEqual({ appId: "app-1" });
   });
 });
+
+describe("resolveOwnerApp for organisation apps", () => {
+  const orgApp = (membership: unknown) => ({
+    ...deps({ owner_address: OWNER }),
+    findAppById: vi.fn(async () => ({
+      id: "app-1", name: "Vault", status: "ACTIVE", owner_address: OWNER,
+      owner_org_id: "o1", identity_did: "did:key:vault",
+    })),
+    orgs: { membership: vi.fn(async () => membership as never) },
+  });
+
+  it("authorises a publisher of the org and refuses the creator who left", async () => {
+    const publisher = { role: "PUBLISHER", effectiveScope: { all: false, appDids: ["did:key:vault"] } };
+    await expect(resolveOwnerApp(orgApp(publisher), ctx(STRANGER), "app-1")).resolves.toEqual({ appId: "app-1" });
+    await expect(resolveOwnerApp(orgApp(null), ctx(OWNER), "app-1")).rejects.toBeInstanceOf(NotAppOwnerError);
+  });
+
+  it("fails closed with the same opaque refusal when Renown is down", async () => {
+    const down = orgApp(null);
+    down.orgs.membership.mockRejectedValue(new Error("down"));
+    await expect(resolveOwnerApp(down, ctx(STRANGER), "app-1")).rejects.toThrow("no such app");
+  });
+});
