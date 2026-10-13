@@ -35,6 +35,7 @@ import {
   appResource,
   callerAccess,
   syncAppOrg,
+  syncApps,
 } from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
 import { appsError, notConfigured } from "./errors.js";
@@ -93,6 +94,13 @@ export interface AppsDeps {
    * moves are reverted by the observability protection hook.
    */
   orgHandoverDb?: Kysely<ObservabilityDB> | null;
+  /**
+   * Re-protects an App's vetra-app document for `owner` (and revokes every
+   * other grant) when the App changes hands. Absent: no document permissions.
+   */
+  protectAppDoc?: ((appId: string, owner: string) => Promise<void>) | null;
+  /** The Vetra service identity (VETRA_SERVICE_ADDRESS) owning org documents. */
+  serviceOwner?: string;
   /**
    * The reactor surface the app documents live on. Absent = no mirroring; reads
    * are served from the table either way in this step.
@@ -463,7 +471,9 @@ export async function myApps(
       .where("status", "!=", "DELETED")
       .orderBy("created_at", "desc")
       .execute();
-    return rows.map(normalizeApp);
+    // Apps transferred out of the org at Renown drop out of the list.
+    const synced = await syncApps(deps, rows.map(normalizeApp));
+    return synced.filter((a) => a.owner_org_id === org);
   }
   const rows = await deps.db
     .selectFrom("apps")
@@ -473,9 +483,7 @@ export async function myApps(
     .where("status", "!=", "DELETED")
     .orderBy("created_at", "desc")
     .execute();
-  const synced = await Promise.all(
-    rows.map((r) => syncAppOrg(deps, normalizeApp(r))),
-  );
+  const synced = await syncApps(deps, rows.map(normalizeApp));
   return synced.filter(
     (a) => a.owner_org_id === null && a.owner_address === caller.address,
   );

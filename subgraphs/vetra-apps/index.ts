@@ -13,6 +13,7 @@ import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
+import { appDocumentRowOwner } from "./org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import { backfillAppDocuments } from "./app-document.js";
@@ -20,6 +21,7 @@ import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
   createAppDocOwnerResolver,
   createAppDocProtector,
+  protectAppDocument,
 } from "./app-doc-protection.js";
 import { studioPublisherAddress } from "../vetra-licensing/studio-app.js";
 import {
@@ -82,13 +84,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ? createAppDocProtector(
           perm,
           createAppDocOwnerResolver(
-            (id) =>
-              db
-                .selectFrom("apps")
-                .select("owner_address")
-                .where("id", "=", id)
-                .executeTakeFirst()
-                .then((r) => r?.owner_address ?? null),
+            appDocumentRowOwner(db),
             studioPublisherAddress(),
           ),
           this.reactorClient as never,
@@ -141,6 +137,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
+      protectAppDoc: perm
+        ? (id, owner) => protectAppDocument(perm, id, owner)
+        : null,
       docs: createReactorAppDocStore(
         this.reactorClient as never,
         appDocProtect,

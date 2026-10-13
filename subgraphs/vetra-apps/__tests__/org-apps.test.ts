@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appForOwner, myApps, updateApp } from "../service.js";
+import {
+  appDeploymentsFor,
+  appForOwner,
+  myApps,
+  updateApp,
+} from "../service.js";
+import {
+  createAppDocOwnerResolver,
+  protectAppDocument,
+  sweepAppDocumentProtection,
+} from "../app-doc-protection.js";
+import { appDocumentRowOwner } from "../org-ownership.js";
 import { getApp, type AppRow } from "../repo.js";
 import {
   protectEnvironment,
@@ -197,5 +208,179 @@ describe("org-owned apps", () => {
     } finally {
       await reactor.db.destroy();
     }
+  });
+
+  it("myApps(orgId) drops an app transferred out of the org at Renown", async () => {
+    await moveToOrg();
+    h.orgs.join(ORG, MEMBER, "MEMBER");
+    expect((await myApps(h.deps, member, ORG)).map((a) => a.id)).toStrictEqual([
+      app.id,
+    ]);
+    h.orgs.publishers.set(APP_DID, { orgId: "org-other", address: null });
+    expect(await myApps(h.deps, member, ORG)).toStrictEqual([]);
+    expect((await getApp(h.db, app.id))?.owner_org_id).toBe("org-other");
+  });
+
+  it("myApps(orgId) is refused while Renown is down", async () => {
+    h.orgs.join(ORG, MEMBER, "MEMBER");
+    h.orgs.down = true;
+    expect(await code(myApps(h.deps, member, ORG))).toBe("FORBIDDEN");
+  });
+
+  it("members view an org app's deployments; strangers do not", async () => {
+    await moveToOrg();
+    h.orgs.join(ORG, MEMBER, "MEMBER");
+    expect(await code(appDeploymentsFor(h.deps, member, app.id, 10))).toBe(
+      "OK",
+    );
+    expect(await code(appDeploymentsFor(h.deps, stranger, app.id, 10))).toBe(
+      "FORBIDDEN",
+    );
+    expect(await code(appDeploymentsFor(h.deps, owner, app.id, 10))).toBe(
+      "FORBIDDEN",
+    );
+  });
+
+  it("racing reads move an app once", async () => {
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    const [a, b, c] = await Promise.all([
+      appForOwner(h.deps, admin, app.id),
+      appForOwner(h.deps, admin, app.id),
+      myApps(h.deps, owner),
+    ]);
+    expect([a.owner_org_id, b.owner_org_id, c]).toStrictEqual([ORG, ORG, []]);
+    const moves = h.envs.executed.filter(
+      (e) =>
+        e.id === app.production_environment_id &&
+        e.types.includes("SET_OWNER_ORG"),
+    );
+    expect(moves).toHaveLength(1);
+  });
+
+  it("without a hand-over store nothing is dispatched and the row stays (fail closed)", async () => {
+    h.deps.orgHandoverDb = null;
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    const before = h.envs.executed.length;
+    expect((await appForOwner(h.deps, admin, app.id)).owner_org_id).toBeNull();
+    expect(h.envs.executed.length).toBe(before);
+    expect((await getApp(h.db, app.id))?.owner_org_id).toBeNull();
+    expect(
+      (await h.envs.getState(app.production_environment_id))?.ownerOrgId ??
+        null,
+    ).toBeNull();
+  });
+
+  it("re-announces and re-makes a move the protection hook reverted", async () => {
+    await moveToOrg();
+    const envId = app.production_environment_id;
+    // What the observability hook does to an unrecognised move.
+    await h.envs.execute(envId, [
+      setOwnerOrg({ ownerOrgId: null, operators: [] }),
+    ]);
+    expect((await appForOwner(h.deps, admin, app.id)).owner_org_id).toBe(ORG);
+    expect((await h.envs.getState(envId))?.ownerOrgId).toBe(ORG);
+    expect(
+      await h.obsDb
+        .selectFrom("org_expected_handovers")
+        .select(["documentId", "orgId"])
+        .where("documentId", "=", envId)
+        .execute(),
+    ).toStrictEqual([{ documentId: envId, orgId: ORG }]);
+  });
+
+  it("the personal list survives a failed sync of one app", async () => {
+    h.orgs.appPublisher = async () => ({
+      get orgId(): string | null {
+        throw new Error("boom");
+      },
+      address: null,
+    });
+    expect((await myApps(h.deps, owner)).map((a) => a.id)).toStrictEqual([
+      app.id,
+    ]);
+  });
+
+  describe("app document protection follows ownership", () => {
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    let reactor: Awaited<ReturnType<typeof createReactorPermissions>>;
+    beforeEach(async () => {
+      reactor = await createReactorPermissions([SERVICE]);
+      h.deps.serviceOwner = SERVICE;
+      h.deps.protectAppDoc = (id, o) => protectAppDocument(reactor.perm, id, o);
+      // As at creation: protected for the creator.
+      await protectAppDocument(reactor.perm, app.id, OWNER);
+    });
+    afterEach(async () => reactor.db.destroy());
+    const protection = () => reactor.real.getDocumentProtection(app.id);
+    const grant = (who: string) => reactor.real.getUserPermission(app.id, who);
+
+    it("person → org → org → person: service-owned while org-owned, the creator loses ADMIN", async () => {
+      expect(await grant(OWNER)).toBe("ADMIN");
+      await moveToOrg();
+      expect(await protection()).toMatchObject({
+        protected: true,
+        ownerAddress: SERVICE,
+      });
+      expect(await grant(OWNER)).toBeNull();
+      expect(await reactor.auth.canRead(app.id, OWNER)).toBe(false);
+
+      h.orgs.publishers.set(APP_DID, { orgId: "org-other", address: null });
+      await appForOwner(h.deps, admin, app.id);
+      expect(await protection()).toMatchObject({ ownerAddress: SERVICE });
+
+      h.orgs.publishers.set(APP_DID, { orgId: null, address: STRANGER });
+      await appForOwner(h.deps, admin, app.id);
+      expect(await protection()).toMatchObject({
+        protected: true,
+        ownerAddress: STRANGER,
+      });
+      expect(await grant(STRANGER)).toBe("ADMIN");
+      expect(await grant(SERVICE)).toBeNull();
+      expect(await grant(OWNER)).toBeNull();
+    });
+
+    it("a failed re-protection leaves the row unchanged (retried on the next read)", async () => {
+      h.deps.protectAppDoc = async () => {
+        throw new Error("permissions down");
+      };
+      expect((await moveToOrg()).owner_org_id).toBeNull();
+      expect((await getApp(h.db, app.id))?.owner_org_id).toBeNull();
+      expect(await protection()).toMatchObject({ ownerAddress: OWNER });
+    });
+
+    it("the boot sweep protects org apps for the service and person → person for the new owner", async () => {
+      const sweep = () =>
+        sweepAppDocumentProtection({
+          perm: reactor.perm,
+          relationships: {
+            getIncomingRelationships: async () => ({ results: [] }),
+            removeRelationship: async () => undefined,
+          },
+          listAppDocumentIds: async () => [app.id],
+          ownerFor: createAppDocOwnerResolver(
+            appDocumentRowOwner(h.db, SERVICE),
+            null,
+          ),
+          logger: { warn: () => undefined, info: () => undefined },
+        });
+      await h.db
+        .updateTable("apps")
+        .set({ owner_org_id: ORG })
+        .where("id", "=", app.id)
+        .execute();
+      await sweep();
+      expect(await protection()).toMatchObject({ ownerAddress: SERVICE });
+      expect(await grant(OWNER)).toBeNull();
+
+      await protectAppDocument(reactor.perm, app.id, OWNER);
+      await h.db
+        .updateTable("apps")
+        .set({ owner_org_id: null, owner_address: STRANGER })
+        .where("id", "=", app.id)
+        .execute();
+      await sweep();
+      expect(await protection()).toMatchObject({ ownerAddress: STRANGER });
+      expect(await grant(OWNER)).toBeNull();
+    });
   });
 });

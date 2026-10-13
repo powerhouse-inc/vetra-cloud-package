@@ -2,6 +2,7 @@ import type { Kysely } from "kysely";
 import type { ObservabilityDB } from "./db/schema.js";
 import { hasPublisherCapability, type MembershipReader } from "../../shared/org-access.js";
 import type { OrgMembership } from "../../shared/renown-orgs.js";
+import { withEnvLock } from "../../shared/key-lock.js";
 import { parseOperators, unresolvedAppDid } from "./env-access.js";
 import {
   GRANTED_BY,
@@ -72,22 +73,12 @@ const sameSet = (a: string[], b: string[]) => {
 };
 
 /**
- * In-process lock per environment: the job and on-demand syncs of one env run
- * one after the other, so a full-list SYNC_ORG_OPERATORS never overwrites an
- * operator another sync just added.
+ * In-process lock per environment (shared/key-lock.ts): the job and on-demand
+ * syncs of one env run one after the other, so a full-list SYNC_ORG_OPERATORS
+ * never overwrites an operator another sync just added. vetra-apps' ownership
+ * moves take the same lock.
  */
-const envLocks = new Map<string, Promise<unknown>>();
-export async function withEnvLock<T>(envId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = envLocks.get(envId) ?? Promise.resolve();
-  const run = prev.then(fn, fn);
-  const tail = run.catch(() => undefined);
-  envLocks.set(envId, tail);
-  try {
-    return await run;
-  } finally {
-    if (envLocks.get(envId) === tail) envLocks.delete(envId);
-  }
-}
+export { withEnvLock };
 
 /**
  * Recompute the operators of one org env from Renown: the creator, every

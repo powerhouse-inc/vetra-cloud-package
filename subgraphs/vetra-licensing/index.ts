@@ -64,6 +64,7 @@ import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
+import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
   createReportingTokenIssuer,
@@ -153,13 +154,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // Human surface. Ownership is checked on every call against the apps
     // table row (the studio app: the configured studio publisher), never the
     // document. Platform admins (the ADMINS env) pass via resolveOwnerApp.
-    const rowOwner = (id: string) =>
-      appsDb
-        .selectFrom("apps")
-        .select("owner_address")
-        .where("id", "=", id)
-        .executeTakeFirst()
-        .then((r) => r?.owner_address ?? null);
+    // App documents are protected for the row owner, or the Vetra service
+    // identity for an organisation's App.
+    const rowOwner = appDocumentRowOwner(appsDb);
     const { appLedger, appReads } = createLicensingAppReads({
       client: this.reactorClient as never,
       db,
