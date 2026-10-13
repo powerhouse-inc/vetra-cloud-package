@@ -14,6 +14,7 @@ import {
 import { createPackageRegistryResolver } from "./package-registry.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
+import { grantViewer, syncEnvironmentOrgOnce, type OrgEnvRow, type OrgSyncDeps } from "./org-sync.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -47,6 +48,28 @@ export interface ResolverConfig {
   restartDeps?: RestartResolverDeps;
   /** Org-aware access checks; default: owner/admin only. */
   access?: EnvAccess;
+  /** Organisation operator sync (orgOperators + document grants); omitted: no sync. */
+  orgSync?: OrgSyncDeps;
+  /** Minimum gap between two syncs by `syncEnvironmentOrg` for one caller and env (default 10 s). */
+  orgSyncMinIntervalMs?: number;
+}
+
+/** Remembers when each key last ran; bounded so it cannot grow without limit. */
+function createKeyedRateLimiter(minIntervalMs: number, maxKeys = 10_000) {
+  const last = new Map<string, number>();
+  return (key: string): boolean => {
+    if (minIntervalMs <= 0) return true;
+    const now = Date.now();
+    const prev = last.get(key);
+    if (prev !== undefined && now - prev < minIntervalMs) return false;
+    last.delete(key);
+    last.set(key, now);
+    if (last.size > maxKeys) {
+      const oldest = last.keys().next().value;
+      if (oldest !== undefined) last.delete(oldest);
+    }
+    return true;
+  };
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -90,6 +113,13 @@ export function createResolvers(
   const envDb = config.envDb;
   const dispatch = config.dispatch;
   const access = config.access ?? OWNER_ONLY_ACCESS;
+  const allowOrgSync = createKeyedRateLimiter(config.orgSyncMinIntervalMs ?? 10_000);
+  const loadOrgEnv = async (environmentId: string) =>
+    (await envDb
+      .selectFrom("environments")
+      .select(["id", "owner", "ownerOrgId", "orgOperators", "appId"])
+      .where("id", "=", environmentId)
+      .executeTakeFirst()) as OrgEnvRow | undefined;
   // Dump resolvers are always registered so the schema's non-nullable
   // `environmentDumps` field never resolves to undefined (which would
   // crash with "Cannot return null for non-nullable field"). When the
@@ -558,6 +588,60 @@ export function createResolvers(
     },
 
     Mutation: {
+      syncEnvironmentOrg: async (
+        _parent: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const caller = ctx.user?.address.toLowerCase();
+        if (!caller) throw new Error("UNAUTHENTICATED");
+        const isAdmin = callerIsAdmin(ctx, caller);
+        const env = await loadOrgEnv(environmentId);
+        if (!env) throw new Error("ENV_NOT_FOUND");
+        const who = { address: caller, isAdmin };
+        if (!env.ownerOrgId) {
+          const own = await access.canOperate(who, env);
+          return { environmentId, ownerOrgId: null, canOperate: own, canView: own };
+        }
+        const operate = await access.canOperate(who, env);
+        const view = operate || (await access.canView(who, env));
+        // Admins operate through the admin bypass, not as org operators.
+        if (config.orgSync && !isAdmin && (operate || view) && allowOrgSync(`${caller}|${env.id}`)) {
+          if (operate) await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
+          else await grantViewer(config.orgSync, env, caller);
+        }
+        return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: operate, canView: view };
+      },
+
+      setEnvironmentOrg: async (
+        _parent: unknown,
+        { environmentId, orgId }: { environmentId: string; orgId: string },
+        ctx: AuthAwareContext,
+      ) => {
+        const caller = ctx.user?.address.toLowerCase();
+        if (!caller) throw new Error("UNAUTHENTICATED");
+        const org = orgId.trim();
+        if (!org) throw new Error("ORG_ID_REQUIRED");
+        const env = await loadOrgEnv(environmentId);
+        if (!env) throw new Error("ENV_NOT_FOUND");
+        // One-way: an org env never goes back (or elsewhere) through this call.
+        if (env.ownerOrgId) throw new Error("ALREADY_ORG_OWNED");
+        if (env.appId) throw new Error("APP_ENVIRONMENT");
+        // Only the env's own (personal) owner hands it over: no admin bypass,
+        // so nobody can pull someone else's env into an organisation. In the
+        // org they need publisher capability for a standalone env (PUBLISHER+).
+        const isOwner = !!env.owner && env.owner.toLowerCase() === caller;
+        const publishesInOrg =
+          isOwner &&
+          (await access.canOperate({ address: caller, isAdmin: false }, { owner: null, ownerOrgId: org, appId: null }));
+        if (!publishesInOrg) throw new Error("FORBIDDEN");
+        await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
+        if (config.orgSync) {
+          await syncEnvironmentOrgOnce(config.orgSync, { ...env, ownerOrgId: org, orgOperators: JSON.stringify([caller]) });
+        }
+        return { environmentId, ownerOrgId: org, canOperate: true, canView: true };
+      },
+
       setCustomDomain: async (
         _parent: unknown,
         args: {

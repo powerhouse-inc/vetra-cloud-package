@@ -10,6 +10,7 @@ import { createRestartResolver } from "../restart.js";
 import { createPackageRegistryResolver } from "../package-registry.js";
 import { createDumpResolvers } from "../dumps/resolvers.js";
 import { DumpsRepo } from "../dumps/repo.js";
+import type { OrgSyncDeps } from "../org-sync.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -240,5 +241,108 @@ describe("owner checks on org environments", () => {
     await expect(outage(null, { tenantId: "t-org-env" }, ctx(DAVE))).rejects.toThrow("FORBIDDEN");
     await expect(outage(null, { tenantId: "t-personal" }, ctx(OWNER))).resolves.toStrictEqual([]);
     await expect(outage(null, { tenantId: "t-personal" }, ctx(ADMIN))).rejects.toThrow("FORBIDDEN");
+  });
+});
+
+describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
+  let dispatch: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    dispatch = vi.fn(async () => undefined);
+  });
+  function resolversWithSync(extra: { orgSyncMinIntervalMs?: number; orgSync?: Partial<OrgSyncDeps> } = {}) {
+    const orgSync: OrgSyncDeps = {
+      envDb,
+      db,
+      orgs: { membership: async (o, a) => members[`${o}|${a}`] ?? null },
+      appDidOf: async () => null,
+      dispatch,
+      perm: null,
+      ...extra.orgSync,
+    };
+    return createResolvers(db, {
+      prometheusUrl: "http://p",
+      lokiUrl: "http://l",
+      envDb,
+      dispatch,
+      access,
+      orgSync,
+      orgSyncMinIntervalMs: extra.orgSyncMinIntervalMs,
+    });
+  }
+
+  it("syncs the caller in as operator and answers their access", async () => {
+    await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1", orgOperators: [] });
+    const out = await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB));
+    expect(out).toStrictEqual({ environmentId: "org-env", ownerOrgId: "o1", canOperate: true, canView: true });
+    expect(dispatch).toHaveBeenCalledWith("org-env", "SYNC_ORG_OPERATORS", { operators: [BOB] });
+    const carol = await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(CAROL));
+    expect(carol).toMatchObject({ canOperate: false, canView: true });
+  });
+
+  it("answers personal envs without touching Renown", async () => {
+    await seedEnv({ id: "personal", owner: OWNER });
+    expect(await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "personal" }, ctx(OWNER)))
+      .toStrictEqual({ environmentId: "personal", ownerOrgId: null, canOperate: true, canView: true });
+  });
+
+  it("answers strangers with no access, and refuses unknown envs and anonymous callers", async () => {
+    await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1" });
+    const r = resolversWithSync().Mutation;
+    expect(await r.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(OWNER)))
+      .toStrictEqual({ environmentId: "org-env", ownerOrgId: "o1", canOperate: false, canView: false });
+    expect(dispatch).not.toHaveBeenCalled();
+    await expect(r.syncEnvironmentOrg(null, { environmentId: "nope" }, ctx(BOB))).rejects.toThrow("ENV_NOT_FOUND");
+    await expect(r.syncEnvironmentOrg(null, { environmentId: "org-env" }, {})).rejects.toThrow("UNAUTHENTICATED");
+  });
+
+  it("rate-limits the sync work per caller and environment, still answering access", async () => {
+    await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1" });
+    await seedEnv({ id: "org-env-2", owner: OWNER, ownerOrgId: "o1" });
+    const r = resolversWithSync().Mutation;
+    await r.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB));
+    // dispatch is a no-op here, so the row still lacks BOB: only the limiter stops a second dispatch.
+    const again = await r.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB));
+    expect(again).toMatchObject({ canOperate: true, canView: true });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await r.syncEnvironmentOrg(null, { environmentId: "org-env-2" }, ctx(BOB));
+    expect(dispatch).toHaveBeenCalledTimes(2);
+
+    const unlimited = resolversWithSync({ orgSyncMinIntervalMs: 0 }).Mutation;
+    await unlimited.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB));
+    await unlimited.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB));
+    expect(dispatch).toHaveBeenCalledTimes(4);
+  });
+
+  it("hands a personal env to an org for its owner when they publish there", async () => {
+    await seedEnv({ id: "mine", owner: BOB });
+    const out = await resolversWithSync().Mutation.setEnvironmentOrg(null, { environmentId: "mine", orgId: "o1" }, ctx(BOB));
+    expect(out).toStrictEqual({ environmentId: "mine", ownerOrgId: "o1", canOperate: true, canView: true });
+    expect(dispatch).toHaveBeenCalledWith("mine", "SET_OWNER_ORG", { ownerOrgId: "o1", operators: [BOB] });
+  });
+
+  it("refuses strangers, plain members, app envs and envs already in an org", async () => {
+    await seedEnv({ id: "carols", owner: CAROL });
+    await seedEnv({ id: "app-env", owner: BOB, appId: "app-1" });
+    await seedEnv({ id: "org-env", owner: BOB, ownerOrgId: "o2" });
+    const r = resolversWithSync().Mutation;
+    await expect(r.setEnvironmentOrg(null, { environmentId: "carols", orgId: "o1" }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "carols", orgId: "o1" }, ctx(CAROL))).rejects.toThrow("FORBIDDEN");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "app-env", orgId: "o1" }, ctx(BOB))).rejects.toThrow("APP_ENVIRONMENT");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "org-env", orgId: "o1" }, ctx(BOB))).rejects.toThrow("ALREADY_ORG_OWNED");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("only the personal owner hands over: no platform-admin pull, no org-admin pull, fail closed on outage", async () => {
+    await seedEnv({ id: "carols", owner: CAROL });
+    await seedEnv({ id: "bobs", owner: BOB });
+    const r = resolversWithSync().Mutation;
+    // DAVE is ADMIN of o1, ADMIN is a platform admin: neither may pull CAROL's env in.
+    await expect(r.setEnvironmentOrg(null, { environmentId: "carols", orgId: "o1" }, ctx(DAVE))).rejects.toThrow("FORBIDDEN");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "carols", orgId: "o1" }, ctx(ADMIN))).rejects.toThrow("FORBIDDEN");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "bobs", orgId: " " }, ctx(BOB))).rejects.toThrow("ORG_ID_REQUIRED");
+    await expect(r.setEnvironmentOrg(null, { environmentId: "nope", orgId: "o1" }, ctx(BOB))).rejects.toThrow("ENV_NOT_FOUND");
+    const down = createResolvers(db, { prometheusUrl: "http://p", lokiUrl: "http://l", envDb, dispatch, access: renownDown });
+    await expect(down.Mutation.setEnvironmentOrg(null, { environmentId: "bobs", orgId: "o1" }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

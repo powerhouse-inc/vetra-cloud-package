@@ -155,9 +155,22 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("updatedAt", "varchar(255)")
     .ifNotExists()
     .execute();
+
+  // Document permissions Vetra granted for organisation access. Only grants
+  // recorded here are ever revoked by the organisation operator sync.
+  await db.schema
+    .createTable("org_document_grants")
+    .addColumn("documentId", "varchar(255)", (c) => c.notNull())
+    .addColumn("address", "varchar(255)", (c) => c.notNull())
+    .addColumn("level", "varchar(16)", (c) => c.notNull())
+    .addColumn("grantedAt", "varchar(64)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("org_document_grants_pkey", ["documentId", "address"])
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("org_document_grants").ifExists().execute();
   await db.schema.dropTable("studio_brand").ifExists().execute();
   await db.schema.dropTable("database_dumps").ifExists().execute();
   await db.schema.dropTable("clint_runtime_endpoints").execute();

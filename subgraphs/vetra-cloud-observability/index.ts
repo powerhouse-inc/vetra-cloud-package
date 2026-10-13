@@ -30,6 +30,7 @@ import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
 import { appDidLookup, createEnvAccess } from "./env-access.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import { runOrgSyncOnce, type OrgSyncDeps } from "./org-sync.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -40,6 +41,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private watcherHandle: WatcherHandle | null = null;
   private deploymentReconciler: ReturnType<typeof setInterval> | null = null;
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
+  private orgOperatorSync: ReturnType<typeof setInterval> | null = null;
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
   private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
@@ -87,6 +89,19 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       await this.reactorClient.execute(documentId, "main", [action]);
     };
 
+    // Organisation operator sync. The dispatch is in-process, so its actions
+    // are system-signed. Without a permission service (set in the subgraph
+    // constructor) only orgOperators are synced, no document grants.
+    const orgSync: OrgSyncDeps = {
+      envDb,
+      db,
+      orgs: defaultRenownOrgs(),
+      appDidOf: appDidLookup(appsDb),
+      dispatch,
+      perm: this.documentPermissionService ?? null,
+      logger: console,
+    };
+
     const dumpDeps = await this.buildDumpDeps(db, envDb);
 
     // Restart feature: build the in-cluster Deployments client. If it can't
@@ -110,6 +125,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       dumpDeps: dumpDeps ?? undefined,
       restartDeps,
       access,
+      orgSync,
     });
 
     // FUSION auto-deploy: follow the newest matching Harbor tag per env.
@@ -195,6 +211,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // Idempotent — skips rows that already have owner set or no createdBy.
     this.startOwnerBackfill();
 
+    // Organisation operators: refresh orgOperators and document grants from Renown.
+    this.startOrgOperatorSync(orgSync);
+
     // Start protection reconciler: for each owned env, ensure the document is
     // marked "protected" at the reactor-api layer and the owner has an ADMIN
     // permission grant. This is what locks down direct getDocument(id) reads
@@ -247,6 +266,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.ownerBackfill) {
       clearInterval(this.ownerBackfill);
       this.ownerBackfill = null;
+    }
+    if (this.orgOperatorSync) {
+      clearInterval(this.orgOperatorSync);
+      this.orgOperatorSync = null;
     }
     if (this.protectionReconciler) {
       clearInterval(this.protectionReconciler);
@@ -657,6 +680,25 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * Runs on startup and every 5 minutes as a safety net in case a dispatch
    * failed (e.g., document was locked).
    */
+  /**
+   * Every 5 minutes: recompute orgOperators of every organisation env from
+   * Renown and reconcile the document grants Vetra made. A Renown outage
+   * leaves documents and grants untouched (see org-sync.ts).
+   */
+  private startOrgOperatorSync(orgSync: OrgSyncDeps) {
+    const syncOrgs = async () => {
+      try {
+        const n = await runOrgSyncOnce(orgSync);
+        if (n > 0) console.info(`[org-sync] checked ${n} organisation environment(s)`);
+      } catch (err) {
+        if (String(err).includes("does not exist")) return;
+        console.warn("[org-sync] error:", err);
+      }
+    };
+    this.orgOperatorSync = setInterval(() => void syncOrgs(), 5 * 60 * 1000);
+    void syncOrgs();
+  }
+
   private startOwnerBackfill() {
     const backfill = async () => {
       try {

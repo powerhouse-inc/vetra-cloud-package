@@ -148,4 +148,12 @@ export interface ObservabilityDB {
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
   studio_brand: StudioBrand;
+  /** Document permissions Vetra granted for organisation access (revoked only by Vetra). */
+  org_document_grants: {
+    documentId: string;
+    address: string;
+    /** READ | WRITE */
+    level: string;
+    grantedAt: string;
+  };
 }

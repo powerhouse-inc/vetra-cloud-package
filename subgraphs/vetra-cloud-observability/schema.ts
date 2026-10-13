@@ -120,6 +120,23 @@ export const schema: DocumentNode = gql`
 
   type Mutation {
     """
+    Called by vetra.io before signed actions on an environment: refreshes
+    the caller's operator entry (publishers) or read grant (members) from
+    Renown and answers their access. The sync work is rate-limited per
+    caller and environment; the access answer is always fresh.
+    """
+    syncEnvironmentOrg(environmentId: String!): EnvironmentOrgAccess!
+
+    """
+    Hand a personal, non-app environment to a Renown organisation. Caller:
+    the environment's personal owner (no admin bypass), who must be a
+    PUBLISHER or above in the organisation. One-way: an organisation
+    environment is refused (ALREADY_ORG_OWNED); app environments follow
+    their app (APP_ENVIRONMENT).
+    """
+    setEnvironmentOrg(environmentId: String!, orgId: String!): EnvironmentOrgAccess!
+
+    """
     Set (or clear) the custom domain on an environment. Enforces global
     uniqueness across live environments and optionally pins one service to
     the apex of the custom domain (Connect served at admin.vetra.io rather
@@ -297,6 +314,14 @@ export const schema: DocumentNode = gql`
   }
 
   enum ListScope { MINE, ALL, ORG }
+
+  """The caller's access to an environment after an organisation sync."""
+  type EnvironmentOrgAccess {
+    environmentId: String!
+    ownerOrgId: String
+    canOperate: Boolean!
+    canView: Boolean!
+  }
 
   type Viewer {
     """The caller's wallet address (lowercased), if authenticated; otherwise null."""
