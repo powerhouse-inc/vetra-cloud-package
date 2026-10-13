@@ -21,6 +21,8 @@ scalar Upload
 
 type VetraCloudEnvironmentState {
   owner: EthereumAddress
+  ownerOrgId: String
+  orgOperators: [EthereumAddress!]!
   label: String
   genericSubdomain: String
   genericBaseDomain: String
@@ -148,6 +150,15 @@ enum AppEnvironmentRole {
 
 input SetOwnerInput {
   address: EthereumAddress!
+}
+
+input SetOwnerOrgInput {
+  ownerOrgId: String
+  operators: [EthereumAddress!]!
+}
+
+input SyncOrgOperatorsInput {
+  operators: [EthereumAddress!]!
 }
 
 input SetLabelInput {

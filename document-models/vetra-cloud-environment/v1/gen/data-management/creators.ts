@@ -14,8 +14,10 @@ import {
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
   SetOwnerInputSchema,
+  SetOwnerOrgInputSchema,
   SetRuntimeConfigInputSchema,
   SetStudioInstanceInputSchema,
+  SyncOrgOperatorsInputSchema,
 } from "../schema/zod.js";
 import type {
   ClearAppLinkInput,
@@ -28,8 +30,10 @@ import type {
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
+  SetOwnerOrgInput,
   SetRuntimeConfigInput,
   SetStudioInstanceInput,
+  SyncOrgOperatorsInput,
 } from "../types.js";
 import type {
   ClearAppLinkAction,
@@ -42,8 +46,10 @@ import type {
   SetGenericSubdomainAction,
   SetLabelAction,
   SetOwnerAction,
+  SetOwnerOrgAction,
   SetRuntimeConfigAction,
   SetStudioInstanceAction,
+  SyncOrgOperatorsAction,
 } from "./actions.js";
 
 export const setOwner = (input: SetOwnerInput) =>
@@ -52,6 +58,24 @@ export const setOwner = (input: SetOwnerInput) =>
     { ...input },
     undefined,
     SetOwnerInputSchema,
+    "global",
+  );
+
+export const setOwnerOrg = (input: SetOwnerOrgInput) =>
+  createAction<SetOwnerOrgAction>(
+    "SET_OWNER_ORG",
+    { ...input },
+    undefined,
+    SetOwnerOrgInputSchema,
+    "global",
+  );
+
+export const syncOrgOperators = (input: SyncOrgOperatorsInput) =>
+  createAction<SyncOrgOperatorsAction>(
+    "SYNC_ORG_OPERATORS",
+    { ...input },
+    undefined,
+    SyncOrgOperatorsInputSchema,
     "global",
   );
 

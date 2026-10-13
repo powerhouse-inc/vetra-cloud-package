@@ -14,13 +14,23 @@ import type {
   SetGenericSubdomainInput,
   SetLabelInput,
   SetOwnerInput,
+  SetOwnerOrgInput,
   SetRuntimeConfigInput,
   SetStudioInstanceInput,
+  SyncOrgOperatorsInput,
 } from "../types.js";
 
 export type SetOwnerAction = Action & {
   type: "SET_OWNER";
   input: SetOwnerInput;
+};
+export type SetOwnerOrgAction = Action & {
+  type: "SET_OWNER_ORG";
+  input: SetOwnerOrgInput;
+};
+export type SyncOrgOperatorsAction = Action & {
+  type: "SYNC_ORG_OPERATORS";
+  input: SyncOrgOperatorsInput;
 };
 export type SetLabelAction = Action & {
   type: "SET_LABEL";
@@ -69,6 +79,8 @@ export type ClearAppLinkAction = Action & {
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
+  | SetOwnerOrgAction
+  | SyncOrgOperatorsAction
   | SetLabelAction
   | SetGenericSubdomainAction
   | SetCustomDomainAction

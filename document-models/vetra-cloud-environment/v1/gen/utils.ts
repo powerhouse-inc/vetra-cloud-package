@@ -26,6 +26,8 @@ import type {
 
 export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   owner: null,
+  ownerOrgId: null,
+  orgOperators: [],
   label: null,
   genericSubdomain: null,
   genericBaseDomain: null,

@@ -15,14 +15,26 @@ import type {
   SetGenericSubdomainAction,
   SetLabelAction,
   SetOwnerAction,
+  SetOwnerOrgAction,
   SetRuntimeConfigAction,
   SetStudioInstanceAction,
+  SyncOrgOperatorsAction,
 } from "./actions.js";
 
 export interface VetraCloudEnvironmentDataManagementOperations {
   setOwnerOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetOwnerAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setOwnerOrgOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetOwnerOrgAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  syncOrgOperatorsOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SyncOrgOperatorsAction,
     dispatch?: SignalDispatch,
   ) => void;
   setLabelOperation: (

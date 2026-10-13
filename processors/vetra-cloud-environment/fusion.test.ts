@@ -48,6 +48,8 @@ function envState(
 ): VetraCloudEnvironmentState {
   return {
     owner: null,
+    ownerOrgId: null,
+    orgOperators: [],
     label: "achra",
     genericSubdomain: SUB,
     genericBaseDomain: "vetra.io",

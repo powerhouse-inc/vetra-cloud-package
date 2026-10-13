@@ -1,7 +1,10 @@
 import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 import {
   InvalidRuntimeConfigError,
+  NotOrgOwnedError,
   NotOwnerError,
+  OrgOwnedError,
+  OrgSyncSystemOnlyError,
   SelfClaimRequiredError,
   ServiceNotEnabledError,
 } from "../../gen/data-management/error.js";
@@ -10,6 +13,7 @@ import {
   assertOwner,
   assertSystemOnly,
   markPendingIfDeployed,
+  normalizeOperators,
   regenerateDnsRecords,
 } from "./utils.js";
 
@@ -19,23 +23,61 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       const userAddr =
         action.context?.signer?.user?.address?.toLowerCase() ?? null;
       const inputAddr = action.input.address.toLowerCase();
-
+      if (userAddr && state.ownerOrgId) {
+        throw new NotOwnerError(
+          "The owner of an organisation environment changes through Vetra",
+        );
+      }
       if (state.owner) {
-        if (!userAddr || userAddr !== state.owner) {
+        if (userAddr && userAddr !== state.owner) {
           throw new NotOwnerError(
             "Only the current owner can transfer ownership",
           );
         }
       } else if (userAddr && userAddr !== inputAddr) {
-        // User-signed claim of an unowned env must set the signer's own address.
-        // System-signed claims (no user in signer) may set any address — this
-        // is how the backfill assigns owner for historical envs.
         throw new SelfClaimRequiredError(
           "A user-signed claim must set the signer's own address as owner",
         );
       }
-
       state.owner = inputAddr;
+    },
+    setOwnerOrgOperation(state, action) {
+      const userAddr =
+        action.context?.signer?.user?.address?.toLowerCase() ?? null;
+      if (userAddr) {
+        if (!state.owner || userAddr !== state.owner) {
+          throw new NotOwnerError(
+            "Only the current owner can hand this environment to an organisation",
+          );
+        }
+        if (state.ownerOrgId) {
+          throw new OrgOwnedError(
+            "An organisation environment changes organisation only through Vetra",
+          );
+        }
+      }
+      state.ownerOrgId = action.input.ownerOrgId || null;
+      if (!state.ownerOrgId) {
+        state.orgOperators = [];
+      } else {
+        state.orgOperators = userAddr
+          ? [userAddr]
+          : normalizeOperators(action.input.operators);
+      }
+    },
+    syncOrgOperatorsOperation(state, action) {
+      const userAddr = action.context?.signer?.user?.address;
+      if (userAddr) {
+        throw new OrgSyncSystemOnlyError(
+          `OrgSyncSystemOnly: SYNC_ORG_OPERATORS can only be dispatched by the system, not by ${userAddr.toLowerCase()}`,
+        );
+      }
+      if (!state.ownerOrgId) {
+        throw new NotOrgOwnedError(
+          "This environment does not belong to an organisation",
+        );
+      }
+      state.orgOperators = normalizeOperators(action.input.operators);
     },
     setLabelOperation(state, action) {
       assertOwner(state, action);

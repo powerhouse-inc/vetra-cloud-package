@@ -66,6 +66,8 @@ const dbStub = {} as Kysely<DB>;
 function state(over: Partial<VetraCloudEnvironmentState> = {}): VetraCloudEnvironmentState {
   return {
     owner: null,
+    ownerOrgId: null,
+    orgOperators: [],
     label: "shop",
     genericSubdomain: "calm-wolf",
     genericBaseDomain: "vetra.io",

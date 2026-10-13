@@ -24,15 +24,31 @@ type MaybeSigner = {
  *  - Owned env + system-signed action: pass (bypass).
  *  - Owned env + user-signed action: signer.user.address.toLowerCase() must
  *    equal state.owner, else NotOwnerError.
+ *  - Organisation env (ownerOrgId set): a user signer must be in orgOperators.
  *
  * Mutates state.owner when auto-claiming (the reducers that call this run
  * inside mutative's Draft wrapper, so direct assignment is correct).
  */
 export function assertOwner(
-  state: { owner: string | null | undefined },
+  state: {
+    owner: string | null | undefined;
+    ownerOrgId?: string | null;
+    orgOperators?: readonly string[] | null;
+  },
   action: MaybeSigner,
 ) {
   const userAddr = action.context?.signer?.user?.address?.toLowerCase();
+
+  if (state.ownerOrgId) {
+    // Organisation env: only the synced operators sign; the creator gets nothing
+    // for being `owner` (derived revocation). System actions still pass.
+    if (userAddr && !(state.orgOperators ?? []).includes(userAddr)) {
+      throw new NotOwnerError(
+        `Signer ${userAddr} is not an operator of this organisation environment`,
+      );
+    }
+    return;
+  }
 
   if (!state.owner) {
     // Auto-claim only for user-signed actions; system actions pass through.
@@ -109,4 +125,9 @@ export function regenerateDnsRecords(state: {
       host: `${s.prefix}.${domain}`,
       value: LB_IP,
     }));
+}
+
+/** Lowercased, de-duplicated, order kept. */
+export function normalizeOperators(list: readonly string[]): string[] {
+  return [...new Set(list.map((a) => a.toLowerCase()))];
 }

@@ -16,6 +16,8 @@ import { utils } from "./utils.js";
 export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
   return {
     owner: null,
+    ownerOrgId: null,
+    orgOperators: [],
     label: null,
     genericSubdomain: null,
     genericBaseDomain: null,
