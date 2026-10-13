@@ -142,6 +142,24 @@ export async function up(db: Kysely<any>): Promise<void> {
     }
   }
 
+  // Renown organisation ownership (state.ownerOrgId / state.orgOperators).
+  for (const [column, type] of [
+    ["ownerOrgId", "varchar(255)"],
+    ["orgOperators", "text"],
+  ] as const) {
+    try {
+      await db.schema.alterTable("environments").addColumn(column, type).execute();
+    } catch {
+      // Column already exists
+    }
+  }
+  await db.schema
+    .createIndex("environments_owner_org_idx")
+    .on("environments")
+    .column("ownerOrgId")
+    .ifNotExists()
+    .execute();
+
   // Fast claim selection: index only the rows the atomic claim query scans.
   try {
     await db.schema

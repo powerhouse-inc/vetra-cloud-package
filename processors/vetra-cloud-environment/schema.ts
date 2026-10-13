@@ -16,6 +16,10 @@ export interface Environments {
    * Used by `myEnvironments` resolver to scope listings per-user.
    */
   owner: string | null;
+  /** Renown organisation id owning this env (state.ownerOrgId), else NULL. */
+  ownerOrgId: string | null;
+  /** JSON array of lowercased addresses allowed to sign (state.orgOperators). */
+  orgOperators: string | null;
   /**
    * Release channel the environment is subscribed to for auto-updates
    * (DEV, STAGING, LATEST, or null for off). Mirrors doc state's
