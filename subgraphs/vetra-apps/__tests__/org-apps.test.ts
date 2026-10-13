@@ -423,6 +423,34 @@ describe("createApp in an organisation", () => {
     });
   });
 
+  it("m2: re-makes a reverted hand-over of an org App that has no Renown profile yet", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const created = await createApp(h.deps, owner, input);
+    const envId = created.production_environment_id;
+    // The announcement expired before observability could protect it: reverted.
+    await h.envs.execute(envId, [setOwnerOrg({ ownerOrgId: null, operators: [] })]);
+    h.clock.now = new Date(h.clock.now.getTime() + ENV_RECONCILE_INTERVAL_MS + 1);
+    expect((await appForOwner(h.deps, admin, created.id)).owner_org_id).toBe(ORG);
+    expect((await h.envs.getState(envId))?.ownerOrgId).toBe(ORG);
+    expect(
+      await h.obsDb
+        .selectFrom("org_expected_handovers")
+        .select(["documentId", "orgId"])
+        .where("documentId", "=", envId)
+        .execute(),
+    ).toStrictEqual([{ documentId: envId, orgId: ORG }]);
+  });
+
+  it("m10: a publisher that is neither an org nor an address is logged and ownership kept", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const created = await createApp(h.deps, owner, input);
+    h.orgs.publishers.set(created.identity_did, { orgId: null, address: null });
+    expect((await appForOwner(h.deps, admin, created.id)).owner_org_id).toBe(ORG);
+    expect(h.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("neither an organisation nor an address"),
+    );
+  });
+
   it("announces the hand-over of a new env, so the observability protection keeps it", async () => {
     h.orgs.join(ORG, OWNER, "ADMIN");
     const created = await createApp(h.deps, owner, input);
@@ -570,6 +598,23 @@ describe("createApp in an organisation", () => {
     const personal = await createApp(h.deps, owner, { ...input, orgId: null });
     expect(personal.owner_org_id).toBeNull();
     expect(h.renown.identities.get("4343")).toMatchObject({ ownerOrgId: null });
+  });
+
+  it("m9: never deletes an orphaned identity that still has a Renown profile (or when that cannot be told)", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: null,
+      ownerAddress: OWNER,
+    });
+    h.orgs.publishers.set("did:key:zOld", { orgId: "org-other", address: null });
+    expect(await code(createApp(h.deps, owner, input))).toBe("BAD_USER_INPUT");
+    h.orgs.publishers.delete("did:key:zOld");
+    h.orgs.appPublisher = async () => {
+      throw new Error("renown-stats down");
+    };
+    expect(await code(createApp(h.deps, owner, input))).toBe("BAD_USER_INPUT");
+    expect(h.renown.deleted).toStrictEqual([]);
   });
 
   it("refuses when the re-registration still belongs to another owner", async () => {

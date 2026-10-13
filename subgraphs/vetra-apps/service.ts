@@ -848,7 +848,10 @@ async function registerAppIdentity(
     (r.ownerOrgId ?? null) === orgId;
   const first = await register();
   if (matches(first)) return first.did;
-  if (await identityInUse(deps, first.did)) {
+  if (
+    (await identityInUse(deps, first.did)) ||
+    (await identityHasProfile(deps, first.did))
+  ) {
     throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
   }
   deps.logger.warn(
@@ -859,6 +862,23 @@ async function registerAppIdentity(
   if (!matches(second))
     throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
   return second.did;
+}
+
+/**
+ * Whether the identity still has a Renown app profile (its listing and
+ * licences may live on although no Vetra App uses it), or that cannot be
+ * told: such an identity is never deleted to be re-registered (m9).
+ */
+async function identityHasProfile(
+  deps: AppsDeps,
+  did: string,
+): Promise<boolean> {
+  if (!deps.orgs) return false;
+  try {
+    return (await deps.orgs.appPublisher(did)) !== null;
+  } catch {
+    return true;
+  }
 }
 
 /** Whether a live (not DELETED) App uses the identity. */

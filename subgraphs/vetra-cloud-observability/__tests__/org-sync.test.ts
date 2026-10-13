@@ -332,6 +332,8 @@ describe("operator sync", () => {
     await reactor.real.grantPermission("e1", CAROL, "WRITE", BOB);
     await reactor.real.grantOperationPermission("e1", "SET_OWNER", BOB, BOB);
     await reactor.real.grantOperationPermission("e1", "SET_APP_LINK", CAROL, BOB);
+    // A grant on an ordinary operation restricts it to the grantee, who could then submit it unsigned.
+    await reactor.real.grantOperationPermission("e1", "SET_LABEL", CAROL, BOB);
     expect(await reactor.auth.canMutate("e1", "SET_OWNER", BOB)).toBe(true);
 
     members.set(`o1|${BOB}`, publisher);
@@ -347,6 +349,7 @@ describe("operator sync", () => {
       { documentId: "e1", address: BOB, level: "WRITE" },
       { documentId: "e1", address: DAVE, level: "WRITE" },
     ]);
+    expect(await restrictedBy("e1", "SET_LABEL")).toStrictEqual([]);
     for (const who of [BOB, CAROL]) {
       for (const op of ["SET_OWNER", "SET_APP_LINK", "SET_OWNER_ORG"]) expect(await reactor.auth.canMutate("e1", op, who)).toBe(false);
     }

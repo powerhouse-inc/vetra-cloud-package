@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { createReactorPermissions } from "../../vetra-cloud-observability/__tests__/reactor-permissions.js";
 import {
+  APP_OPERATIONS,
   createAppDocOwnerResolver,
   detachAppDocumentParents,
   createAppDocProtector,
@@ -80,6 +82,27 @@ describe("protectAppDocument", () => {
     await protectAppDocument(perm, "d", "0xA");
     expect(init).not.toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("protectAppDocument: operation grants (m13)", () => {
+  it("revokes every operation grant of anyone but the owner", async () => {
+    const reactor = await createReactorPermissions();
+    try {
+      const OLD = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const NEW = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      expect(APP_OPERATIONS.length).toBeGreaterThan(1);
+      const [first, second] = APP_OPERATIONS;
+      await protectAppDocument(reactor.perm, "app", OLD);
+      await reactor.real.grantOperationPermission("app", first, OLD, OLD);
+      await reactor.real.grantOperationPermission("app", second, NEW, OLD);
+      await protectAppDocument(reactor.perm, "app", NEW);
+      expect(await reactor.real.getOperationUserPermissions("app", first)).toStrictEqual([]);
+      expect((await reactor.real.getOperationUserPermissions("app", second)).map((g) => g.userAddress)).toStrictEqual([NEW]);
+      expect(await reactor.real.getUserPermission("app", OLD)).toBeNull();
+    } finally {
+      await reactor.db.destroy();
+    }
   });
 });
 

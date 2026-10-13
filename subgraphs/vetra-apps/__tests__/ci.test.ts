@@ -505,8 +505,9 @@ describe("expired / missing App identity delegation", () => {
     expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
   });
 
-  it("an org App is matched on its identity alone (any operator's token, not the creator's)", async () => {
+  it("an org App is flipped by a token of any address that operates it (not only the creator's)", async () => {
     const OPERATOR = "0xdddddddddddddddddddddddddddddddddddddddd";
+    h.orgs.join("org-acme", OPERATOR, "PUBLISHER");
     const token = await tokenWithoutDelegation(OPERATOR);
     await h.db
       .updateTable("apps")
@@ -517,6 +518,27 @@ describe("expired / missing App identity delegation", () => {
     );
     expect(r.status).toBe(401);
     expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
+  });
+
+  it("m3: an org App is not flipped by a token of an address that does not operate it", async () => {
+    const OUTSIDER = "0xdddddddddddddddddddddddddddddddddddddddd";
+    const token = await tokenWithoutDelegation(OUTSIDER);
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: null, owner_org_id: "org-acme" })
+      .execute();
+    const r = await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
+    expect(r.status).toBe(401);
+    expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
+    // A plain member does not either; Renown down: nothing changes.
+    h.orgs.join("org-acme", OUTSIDER, "MEMBER");
+    await createCiRoutes(h.deps, verifier).deploy(post("apps/ci/deploy", `Bearer ${token}`, deployBody()));
+    h.orgs.join("org-acme", OUTSIDER, "PUBLISHER");
+    h.orgs.down = true;
+    await createCiRoutes(h.deps, verifier).deploy(post("apps/ci/deploy", `Bearer ${token}`, deployBody()));
+    expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
   });
 
   it("a personal App is not flipped by a token of another address", async () => {

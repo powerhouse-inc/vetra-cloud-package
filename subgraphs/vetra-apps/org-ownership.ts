@@ -201,13 +201,28 @@ export async function syncAppOrg(
   } catch {
     return app;
   }
-  if (!publisher) return app;
+  // No profile yet (a fresh org App is attached to its org at the first
+  // claim): an org App's envs still follow its row, so a hand-over the
+  // observability hook reverted (announcement expired) is made again (m2).
+  if (!publisher && !app.owner_org_id) return app;
   const answer = publisher;
   return withAppLock(app.id, async () => {
     const row = (await getApp(deps.db, app.id)) ?? app;
     if (row.status === "DELETED") return row;
-    const target = targetOf(row, answer);
-    if (!target) return row;
+    const target = answer
+      ? targetOf(row, answer)
+      : row.owner_org_id
+        ? { org: row.owner_org_id, owner: row.owner_address }
+        : null;
+    if (!target) {
+      if (answer && row.owner_org_id) {
+        // m10: Renown names a publisher Vetra cannot hand the App to.
+        deps.logger.warn(
+          `[vetra-apps] App ${row.slug}: Renown names a publisher that is neither an organisation nor an address; ownership left with organisation ${row.owner_org_id}`,
+        );
+      }
+      return row;
+    }
     const currentOrg = row.owner_org_id ?? null;
     const ownerChanges = target.owner !== row.owner_address;
     const rowChanges = ownerChanges || target.org !== currentOrg;

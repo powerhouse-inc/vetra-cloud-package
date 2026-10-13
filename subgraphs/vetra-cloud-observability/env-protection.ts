@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import { DocumentChangeType } from "@powerhousedao/reactor";
+import { documentModel as envDocumentModel } from "../../document-models/vetra-cloud-environment/v1/index.js";
 import type { ObservabilityDB } from "./db/schema.js";
 
 /**
@@ -66,6 +67,17 @@ export const SYSTEM_ONLY_OPERATIONS = [
   "SET_APP_LINK",
   "CLEAR_APP_LINK",
 ] as const;
+
+/**
+ * Every operation of the environment model. An operation grant on any of
+ * them lets its holder submit that operation (unsigned, i.e. as "system")
+ * past the document-level checks, so none may survive into an organisation.
+ */
+export const ENV_OPERATIONS: readonly string[] = [
+  ...new Set(
+    (envDocumentModel.specifications.at(-1)?.modules ?? []).flatMap((m) => m.operations.map((o) => o.name ?? "")),
+  ),
+].filter(Boolean);
 
 /** Grantee that marks an operation restricted; nobody can sign in as it. */
 export const RESTRICTION_GRANTEE = "0x0000000000000000000000000000000000000000";
@@ -411,7 +423,7 @@ export async function purgeUnmanagedAccess(
         .execute();
     }
   }
-  for (const op of SYSTEM_ONLY_OPERATIONS) {
+  for (const op of new Set([...SYSTEM_ONLY_OPERATIONS, ...ENV_OPERATIONS])) {
     for (const g of await perm.getOperationUserPermissions(documentId, op)) {
       const address = g.userAddress.toLowerCase();
       if (address === RESTRICTION_GRANTEE || address === keep) continue;
