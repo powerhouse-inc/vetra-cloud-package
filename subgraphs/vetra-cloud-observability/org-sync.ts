@@ -8,6 +8,7 @@ import {
   GRANTED_BY,
   lastComputedOperators,
   protectEnvironment,
+  purgeUnmanagedAccess,
   recordComputedOperators,
   RESTRICTION_GRANTEE,
   type EnvProtectionOptions,
@@ -131,6 +132,9 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   if (protection === "SKIPPED" || protection === "PERSONAL" || protection === "UNOWNED") {
     return { result: "SKIPPED", operators: current };
   }
+  // Nothing outside Vetra's own records keeps access (grants made under the
+  // creator's administration, or by hand since).
+  await purgeOrgEnv(deps, env.id);
   // The list the sync last computed: a document list that differs was set by
   // someone else (SYNC_ORG_OPERATORS from outside) and is not trusted as a
   // source of candidates; it is recomputed from Renown.
@@ -195,6 +199,12 @@ export function orgProtectionOptions(deps: OrgSyncDeps): EnvProtectionOptions {
   };
 }
 
+/** purgeUnmanagedAccess for an org env Vetra protects (no-op without a permission service). */
+async function purgeOrgEnv(deps: OrgSyncDeps, documentId: string): Promise<void> {
+  if (!deps.perm) return;
+  await purgeUnmanagedAccess(deps.perm, deps.db, documentId, deps.serviceOwner ?? RESTRICTION_GRANTEE);
+}
+
 /** Organisation env protection (service-owned, system operations restricted); null without a permission service. */
 async function protectOrgEnv(
   deps: OrgSyncDeps,
@@ -250,8 +260,8 @@ async function ownedGrant(
 }
 
 /**
- * Set a Vetra-owned grant. A permission Vetra did not create is never touched
- * (no upgrade, no downgrade, no record). The record is written first and
+ * Set a Vetra-owned grant. A permission Vetra did not create is not adopted
+ * here (no upgrade, no downgrade, no record); purgeUnmanagedAccess removes it. The record is written first and
  * removed again if the grant fails, so no grant exists without a record.
  */
 async function setOwnedGrant(
@@ -290,7 +300,7 @@ const withPerm = (deps: OrgSyncDeps): (OrgSyncDeps & { perm: DocumentGrants }) |
 /**
  * WRITE for every operator; a WRITE grant Vetra made for someone who no longer
  * operates is revoked, or lowered to READ when they are still a member.
- * Grants Vetra did not create are never touched. The creator is treated like
+ * Grants Vetra did not create were already removed by purgeUnmanagedAccess. The creator is treated like
  * any member: their protection ADMIN is gone once the env is org-owned.
  */
 async function reconcileWriteGrants(
@@ -340,6 +350,7 @@ export async function grantViewer(deps: OrgSyncDeps, env: OrgEnvRow, address: st
   if (!d || !orgId) return;
   await withEnvLock(env.id, async () => {
     if ((await protectOrgEnv(deps, { id: env.id, owner: env.owner, ownerOrgId: orgId })) !== "ORG") return;
+    await purgeOrgEnv(deps, env.id);
     const { recorded, foreign } = await ownedGrant(d, env.id, addr);
     // An existing Vetra grant (READ or WRITE) already covers viewing.
     if (foreign || recorded) return;

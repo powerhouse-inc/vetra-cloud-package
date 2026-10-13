@@ -286,7 +286,7 @@ describe("operator sync", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("never touches a READ/WRITE grant Vetra did not create", async () => {
+  it("revokes every READ/WRITE grant Vetra did not create; Vetra's own grants stay", async () => {
     members.set(`o1|${BOB}`, publisher);
     members.set(`o1|${CAROL}`, plain);
     await seed({ id: "e1", ownerOrgId: "o1" });
@@ -294,26 +294,74 @@ describe("operator sync", () => {
     await setPerm("e1", CAROL, "WRITE"); // granted by hand
     await syncEnvironmentOrgOnce(deps, await row("e1"), [BOB]);
     await grantViewer(deps, await row("e1"), CAROL);
-    expect(perm.grantPermission).not.toHaveBeenCalled();
-    expect(await grants()).toStrictEqual([]);
-    members.delete(`o1|${BOB}`);
-    members.delete(`o1|${CAROL}`);
+    expect(await getPerm("e1", BOB)).toBe("WRITE");
+    expect(await getPerm("e1", CAROL)).toBe("READ");
+    expect(await grants()).toStrictEqual([
+      { documentId: "e1", address: BOB, level: "WRITE" },
+      { documentId: "e1", address: CAROL, level: "READ" },
+    ]);
+    perm.revokePermission.mockClear();
     await runOrgSyncOnce(deps);
     expect(perm.revokePermission).not.toHaveBeenCalled();
-    expect(await getPerm("e1", BOB)).toBe("READ");
-    expect(await getPerm("e1", CAROL)).toBe("WRITE");
   });
 
-  it("forgets a Vetra grant someone else changed, and never revokes it", async () => {
+  it("a Vetra grant someone else changed is revoked and forgotten", async () => {
     members.set(`o1|${CAROL}`, plain);
     await seed({ id: "e1", ownerOrgId: "o1" });
     await grantViewer(deps, await row("e1"), CAROL);
     await setPerm("e1", CAROL, "ADMIN");
     members.delete(`o1|${CAROL}`);
     await runOrgSyncOnce(deps);
-    expect(perm.revokePermission).not.toHaveBeenCalled();
-    expect(await getPerm("e1", CAROL)).toBe("ADMIN");
+    expect(await getPerm("e1", CAROL)).toBeNull();
     expect(await grants()).toStrictEqual([]);
+  });
+
+  it("I1: grants made under the creator's administration do not survive the hand-over", async () => {
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    const DAVE = "0xdddddddddddddddddddddddddddddddddddddddd";
+    const doc = { owner: BOB, ownerOrgId: null as string | null, orgOperators: [] as string[] };
+    dispatch.mockImplementation(async (_id: string, _type: string, input: { operators: string[] }) => {
+      doc.orgOperators = input.operators;
+    });
+    const d = { ...deps, serviceOwner: SERVICE, readOrgState: async () => ({ ...doc }) };
+    await seed({ id: "e1", owner: BOB });
+    await protectEnvironment(perm, { id: "e1", owner: BOB, ownerOrgId: null }, { serviceOwner: SERVICE, db });
+    // While he administers it, BOB plants access for himself and an alt address.
+    await reactor.real.grantPermission("e1", BOB, "WRITE", BOB);
+    await reactor.real.grantPermission("e1", CAROL, "WRITE", BOB);
+    await reactor.real.grantOperationPermission("e1", "SET_OWNER", BOB, BOB);
+    await reactor.real.grantOperationPermission("e1", "SET_APP_LINK", CAROL, BOB);
+    expect(await reactor.auth.canMutate("e1", "SET_OWNER", BOB)).toBe(true);
+
+    members.set(`o1|${BOB}`, publisher);
+    members.set(`o1|${DAVE}`, publisher);
+    await expectOrgHandover(db, "e1", "o1");
+    doc.ownerOrgId = "o1";
+    doc.orgOperators = [BOB];
+    await syncEnvironmentOrgOnce(d, await row("e1"), [DAVE]);
+    // The alt address and every operation grant are gone; operators hold Vetra's WRITE only.
+    expect(await getPerm("e1", CAROL)).toBeNull();
+    for (const op of SYSTEM_ONLY_OPERATIONS) expect(await restrictedBy("e1", op)).toStrictEqual([RESTRICTION_GRANTEE]);
+    expect(await grants()).toStrictEqual([
+      { documentId: "e1", address: BOB, level: "WRITE" },
+      { documentId: "e1", address: DAVE, level: "WRITE" },
+    ]);
+    for (const who of [BOB, CAROL]) {
+      for (const op of ["SET_OWNER", "SET_APP_LINK", "SET_OWNER_ORG"]) expect(await reactor.auth.canMutate("e1", op, who)).toBe(false);
+    }
+    expect(await reactor.auth.canMutate("e1", "SET_LABEL", CAROL)).toBe(false);
+
+    // Grants added by hand later are removed by the next sync; DAVE's Vetra grant stays.
+    await reactor.real.grantPermission("e1", CAROL, "READ", "someone");
+    await reactor.real.grantOperationPermission("e1", "SET_OWNER", CAROL, "someone");
+    members.delete(`o1|${BOB}`);
+    await envDb.updateTable("environments").set({ ownerOrgId: "o1" }).where("id", "=", "e1").execute();
+    await runOrgSyncOnce(d);
+    expect(await getPerm("e1", CAROL)).toBeNull();
+    expect(await restrictedBy("e1", "SET_OWNER")).toStrictEqual([RESTRICTION_GRANTEE]);
+    expect(await getPerm("e1", BOB)).toBeNull();
+    expect(await getPerm("e1", DAVE)).toBe("WRITE");
+    expect(await reactor.auth.canRead("e1", BOB)).toBe(false);
   });
 
   it("leaves no record when the grant itself fails", async () => {

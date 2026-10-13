@@ -57,17 +57,20 @@ describe("protectEnvironment", () => {
     expect(await reactor.auth.canMutate("p1", "SET_LABEL", BOB)).toBe(true);
   });
 
-  it("organisation envs (announced): service-owned, every ADMIN grant removed, recorded once", async () => {
+  it("organisation envs (announced): service-owned, every unmanaged grant removed, recorded once", async () => {
     await protectEnvironment(reactor.perm, { id: "o-env", owner: OWNER, ownerOrgId: null }, opts());
     await reactor.real.grantPermission("o-env", BOB, "ADMIN", OWNER); // e.g. a previous owner
     await reactor.real.grantPermission("o-env", CAROL, "READ", OWNER);
+    await reactor.real.grantOperationPermission("o-env", "SET_OWNER", CAROL, OWNER);
     await expectOrgHandover(db, "o-env", "o1");
     expect(await protectEnvironment(reactor.perm, { id: "o-env", owner: OWNER, ownerOrgId: "o1" }, opts())).toBe("ORG");
     expect(await reactor.real.getDocumentProtection("o-env")).toMatchObject({ protected: true, ownerAddress: SERVICE });
     expect(await reactor.real.getUserPermission("o-env", OWNER)).toBeNull();
     expect(await reactor.real.getUserPermission("o-env", BOB)).toBeNull();
-    expect(await reactor.real.getUserPermission("o-env", CAROL)).toBe("READ");
-    for (const who of [OWNER, BOB]) {
+    expect(await reactor.real.getUserPermission("o-env", CAROL)).toBeNull();
+    expect((await reactor.real.getOperationUserPermissions("o-env", "SET_OWNER")).map((g) => g.userAddress))
+      .toStrictEqual([RESTRICTION_GRANTEE]);
+    for (const who of [OWNER, BOB, CAROL]) {
       expect(await reactor.auth.canRead("o-env", who)).toBe(false);
       expect(await reactor.auth.canMutate("o-env", "SET_OWNER_ORG", who)).toBe(false);
     }

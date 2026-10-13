@@ -53,6 +53,8 @@ export async function createReactorPermissions(admins: string[] = []) {
     grantOperationPermission: vi.fn((d: string, op: string, a: string, by: string) =>
       real.grantOperationPermission(d, op, a, by),
     ),
+    getOperationUserPermissions: vi.fn((d: string, op: string) => real.getOperationUserPermissions(d, op)),
+    revokeOperationPermission: vi.fn((d: string, op: string, a: string) => real.revokeOperationPermission(d, op, a)),
   };
 
   const isAdmin = (u?: string) => !!u && admins.includes(u.toLowerCase());

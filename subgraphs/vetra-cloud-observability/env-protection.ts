@@ -12,8 +12,10 @@ import type { ObservabilityDB } from "./db/schema.js";
  *    (operation-level grants), leaving them to document admins;
  *  - a personal env is protected for its owner (ADMIN), as before;
  *  - an organisation env is protected for the Vetra service identity: its
- *    protection ownership moves away from the creator and every ADMIN grant is
- *    removed, so nobody but platform admins administers it from outside.
+ *    protection ownership moves away from the creator and every grant Vetra
+ *    did not record (any level, and operation grants on the system-only
+ *    operations) is removed, so nobody but platform admins administers it
+ *    from outside.
  *    Members reach it only through the WRITE/READ grants the operator sync
  *    manages.
  */
@@ -46,6 +48,8 @@ export interface EnvProtectionService extends OperationRestrictions {
     grantedBy: string,
   ): Promise<unknown>;
   revokePermission(documentId: string, userAddress: string): Promise<void>;
+  getOperationUserPermissions(documentId: string, operationType: string): Promise<Array<{ userAddress: string }>>;
+  revokeOperationPermission(documentId: string, operationType: string, userAddress: string): Promise<void>;
 }
 
 /** Operations added by the organisation work whose only gate is "system". */
@@ -357,9 +361,7 @@ async function protectForService(
   // ADMIN grant, being the protection owner is enough.
   if (!ownerIsService) await perm.setDocumentOwner(env.id, service);
   if (!current.protected) await perm.setDocumentProtection(env.id, true);
-  for (const g of await perm.getDocumentPermissions(env.id)) {
-    if (g.permission === "ADMIN") await perm.revokePermission(env.id, g.userAddress);
-  }
+  await purgeUnmanagedAccess(perm, opts.db, env.id, service);
   const now = new Date().toISOString();
   const previousOwner = ownerIsService ? null : (current.ownerAddress?.toLowerCase() ?? null);
   await opts.db
@@ -367,6 +369,55 @@ async function protectForService(
     .values({ documentId: env.id, orgId: env.ownerOrgId, previousOwner, transferredAt: now })
     .onConflict((oc) => oc.column("documentId").doUpdateSet({ orgId: env.ownerOrgId, transferredAt: now }))
     .execute();
+}
+
+/**
+ * Organisation env: every access path to the document that Vetra does not
+ * manage is removed — any document grant (READ/WRITE/ADMIN) that
+ * org_document_grants does not record at that level (the creator's, ones the
+ * creator shared while administering it, ones added later by hand), and every
+ * operation grant on the system-only operations except the restriction
+ * marker. Only the protection owner (the service identity) is kept. Run at
+ * the hand-over and on every operator sync, so nothing granted under the
+ * creator's administration survives into the organisation.
+ */
+export async function purgeUnmanagedAccess(
+  perm: EnvProtectionService,
+  db: Kysely<ObservabilityDB>,
+  documentId: string,
+  service: string,
+): Promise<void> {
+  const keep = service.toLowerCase();
+  const recorded = new Map(
+    (
+      await db
+        .selectFrom("org_document_grants")
+        .select(["address", "level"])
+        .where("documentId", "=", documentId)
+        .execute()
+    ).map((r) => [r.address.toLowerCase(), r.level]),
+  );
+  for (const g of await perm.getDocumentPermissions(documentId)) {
+    const address = g.userAddress.toLowerCase();
+    if (address === keep) continue;
+    const level = recorded.get(address);
+    if (level === g.permission) continue;
+    await perm.revokePermission(documentId, g.userAddress);
+    if (level !== undefined) {
+      await db
+        .deleteFrom("org_document_grants")
+        .where("documentId", "=", documentId)
+        .where("address", "=", address)
+        .execute();
+    }
+  }
+  for (const op of SYSTEM_ONLY_OPERATIONS) {
+    for (const g of await perm.getOperationUserPermissions(documentId, op)) {
+      const address = g.userAddress.toLowerCase();
+      if (address === RESTRICTION_GRANTEE || address === keep) continue;
+      await perm.revokeOperationPermission(documentId, op, g.userAddress);
+    }
+  }
 }
 
 /** id / owner / ownerOrgId from an environment document's global state. */
