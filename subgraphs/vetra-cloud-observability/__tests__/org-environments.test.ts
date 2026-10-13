@@ -323,6 +323,16 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
     expect(dispatch).toHaveBeenCalledWith("mine", "SET_OWNER_ORG", { ownerOrgId: "o1", operators: [BOB] });
   });
 
+  it("withdraws the announcement when the hand-over dispatch fails", async () => {
+    await seedEnv({ id: "mine", owner: BOB });
+    dispatch.mockRejectedValueOnce(new Error("reactor down"));
+    await expect(
+      resolversWithSync().Mutation.setEnvironmentOrg(null, { environmentId: "mine", orgId: "o1" }, ctx(BOB)),
+    ).rejects.toThrow("reactor down");
+    const left = await db.selectFrom("org_expected_handovers").selectAll().where("documentId", "=", "mine").execute();
+    expect(left).toStrictEqual([]);
+  });
+
   it("refuses strangers, plain members, app envs and envs already in an org", async () => {
     await seedEnv({ id: "carols", owner: CAROL });
     await seedEnv({ id: "app-env", owner: BOB, appId: "app-1" });

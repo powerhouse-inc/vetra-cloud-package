@@ -22,7 +22,7 @@ import {
   type OrgEnvRow,
   type OrgSyncDeps,
 } from "./org-sync.js";
-import { expectOrgHandover, protectEnvironment } from "./env-protection.js";
+import { expectOrgHandover, protectEnvironment, withdrawOrgHandover } from "./env-protection.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -675,7 +675,17 @@ export function createResolvers(
             await protectEnvironment(perm, { id: env.id, owner: env.owner, ownerOrgId: null }, opts);
           }
           if (sync) await expectOrgHandover(sync.db, env.id, org);
-          await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
+          try {
+            await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
+          } catch (err) {
+            // A failed dispatch leaves no announcement behind (parked M1).
+            if (sync) {
+              await withdrawOrgHandover(sync.db, env.id, org).catch((e: unknown) =>
+                console.warn(`[org-sync] withdrawing the hand-over of ${env.id} failed:`, e),
+              );
+            }
+            throw err;
+          }
           // …then move the document to the service identity, so the former
           // owner keeps no ADMIN (the hook and reconciler retry on failure).
           if (perm && opts) {

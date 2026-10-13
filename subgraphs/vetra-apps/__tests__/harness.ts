@@ -283,15 +283,18 @@ export function fakeHarbor(): HarborApi & {
   projects: string[];
   existing: Set<string>;
   deletedRobots: number[];
+  deletedProjects: string[];
 } {
   const projects: string[] = [];
   const existing = new Set<string>();
   const deletedRobots: number[] = [];
+  const deletedProjects: string[] = [];
   let robotSeq = 0;
   return {
     projects,
     existing,
     deletedRobots,
+    deletedProjects,
     async createProject(p) {
       if (existing.has(p)) return false;
       existing.add(p);
@@ -307,6 +310,10 @@ export function fakeHarbor(): HarborApi & {
     },
     async deleteRobot(id) {
       deletedRobots.push(id);
+    },
+    async deleteProject(p) {
+      existing.delete(p);
+      deletedProjects.push(p);
     },
   };
 }
@@ -353,8 +360,12 @@ export function fakeRenown(): RenownApi & {
         }
         return { did: existing.did, ownerOrgId: existing.ownerOrgId };
       }
+      // One DID per repository (the seeded App's repository gets APP_DID).
       const created: FakeIdentity = {
-        did: APP_DID,
+        did:
+          input.repositoryId === REPO_ID
+            ? APP_DID
+            : `did:key:zDnaeRepo${input.repositoryId}`,
         ownerOrgId: input.ownerOrgId ?? null,
         ownerAddress: input.ownerAddress,
       };

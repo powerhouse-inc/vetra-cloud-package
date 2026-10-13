@@ -2481,6 +2481,8 @@ git commit -m "feat(orgs): organisation access for the publisher surface; relay 
 Run: `npm run tsc 2>&1 | tail -5`, `npm run lint:fix 2>&1 | tail -5`, `npx vitest run 2>&1 | grep -E "Test Files|Tests |FAIL"`, `npm run test:coverage 2>&1 | grep -E "All files|ERROR"`, `npx dpdm -T ./index.ts 2>&1 | grep -ci "circular"` (expect `0` new cycles compared with `origin/main`).
 Expected: all green, reducer coverage ≥ 95 in every column.
 
+**Precondition (Task 7):** every tier's Renown must run renown-package **≥ 1.12** (`RegisterWorkloadIdentityInput.ownerOrgId` and `WorkloadIdentity.ownerOrgId`) before this package reaches that tier's tenant. The register mutation selects `{ did ownerOrgId }`, so an older Renown fails GraphQL validation and breaks **every** `createApp`, personal ones included. Check staging Renown before Step 3 and prod Renown before Step 4.
+
 - [ ] **Step 2: Push and release on `dev`**
 
 ```bash

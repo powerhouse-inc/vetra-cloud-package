@@ -142,6 +142,20 @@ export async function expectOrgHandover(
     .execute();
 }
 
+/**
+ * Withdraw an announcement whose dispatch failed, so it cannot cover a later
+ * unannounced move. Only the announcement for `orgId` is removed.
+ */
+export async function withdrawOrgHandover(
+  db: Kysely<ObservabilityDB>,
+  documentId: string,
+  orgId: string | null,
+): Promise<void> {
+  let q = db.deleteFrom("org_expected_handovers").where("documentId", "=", documentId);
+  q = orgId === null ? q.where("orgId", "is", null) : q.where("orgId", "=", orgId);
+  await q.execute();
+}
+
 /** Consumes a matching, unexpired announcement; false when there is none. */
 async function takeExpectedHandover(
   db: Kysely<ObservabilityDB>,

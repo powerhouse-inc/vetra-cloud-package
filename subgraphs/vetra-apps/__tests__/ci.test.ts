@@ -15,6 +15,7 @@ import {
   APP_DID,
   OWNER,
   REPO_ID,
+  STRANGER,
   USER_KEY,
   makeHarness,
   seedActiveApp,
@@ -445,14 +446,14 @@ describe("CI token verification with @renown/sdk (real did:key tokens)", () => {
 });
 
 describe("expired / missing App identity delegation", () => {
-  async function tokenWithoutDelegation() {
+  async function tokenWithoutDelegation(address: string = OWNER) {
     const crypto = await new RenownCryptoBuilder()
       .withKeyPairStorage(new MemoryKeyStorage())
       .build();
     const token = await createAuthBearerToken(
       1,
       "eip155",
-      OWNER,
+      address,
       crypto.issuer,
       {
         aud: AUDIENCE,
@@ -500,6 +501,29 @@ describe("expired / missing App identity delegation", () => {
     expect(r.status).toBe(401);
     expect(((await r.json()) as { error: string }).error).toBe(
       "IDENTITY_EXPIRED",
+    );
+    expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
+  });
+
+  it("an org App is matched on its identity alone (any operator's token, not the creator's)", async () => {
+    const OPERATOR = "0xdddddddddddddddddddddddddddddddddddddddd";
+    const token = await tokenWithoutDelegation(OPERATOR);
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: null, owner_org_id: "org-acme" })
+      .execute();
+    const r = await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
+    expect(r.status).toBe(401);
+    expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
+  });
+
+  it("a personal App is not flipped by a token of another address", async () => {
+    const token = await tokenWithoutDelegation(STRANGER);
+    await h.db.updateTable("apps").set({ identity_expires_at: null }).execute();
+    await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
     );
     expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
   });

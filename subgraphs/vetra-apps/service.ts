@@ -36,7 +36,10 @@ import {
   isOrgMember,
 } from "../../shared/org-access.js";
 import { withEnvLock } from "../../shared/key-lock.js";
-import { expectOrgHandover } from "../vetra-cloud-observability/env-protection.js";
+import {
+  expectOrgHandover,
+  withdrawOrgHandover,
+} from "../vetra-cloud-observability/env-protection.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import {
   adoptOrgApps,
@@ -593,7 +596,7 @@ export async function createApp(
       "Creating Apps in this organisation needs the publisher role with access to all its apps",
     );
   }
-  const github = requireGithub(deps);
+  requireGithub(deps);
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   if (!deps.renown) throw notConfigured("Renown workload identities");
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
@@ -659,112 +662,111 @@ export async function createApp(
     }
   }
 
-  // The workload identity first (R2): Renown is idempotent per repository and
-  // returns an existing identity unchanged, whoever it belongs to. An identity
-  // of another owner (personal vs organisation, or another organisation) would
-  // make the App's profile unclaimable, and another address gets CONFLICT
-  // (M11). Both are refused before any Harbor resource exists.
-  let registered: { did: string; ownerOrgId: string | null };
-  try {
-    registered = await deps.renown.registerWorkloadIdentity({
-      repositoryId: repo.id,
-      repository: repo.fullName,
-      productionBranch,
-      ownerAddress: caller.address,
-      chainId: caller.chainId,
-      ...(orgId ? { ownerOrgId: orgId } : {}),
-    });
-  } catch (err) {
-    if (isRenownConflict(err))
-      throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
-    throw err;
-  }
-  if ((registered.ownerOrgId ?? null) !== orgId)
-    throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
-  const did = registered.did;
-
-  // Harbor 409 = someone else's project: never reuse it, take the next suffix.
-  let slug: string | null = null;
-  const conflicts = new Set<string>();
-  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-    const candidate = await uniqueSlug(deps, name, conflicts);
-    if (await deps.harbor.createProject(`app-${candidate}`)) {
-      slug = candidate;
-      break;
-    }
-    conflicts.add(candidate);
-  }
-  if (!slug) {
-    throw appsError(
-      "BAD_USER_INPUT",
-      "Could not reserve a Harbor project for this name; pick another name",
-    );
-  }
-  const harborProject = `app-${slug}`;
-  const robot = await deps.harbor.createPushRobot(harborProject);
-
-  const appId = deps.newId();
-  const link = setAppLink({
-    appId,
-    role: "PRODUCTION",
-    prNumber: null,
-    gitRef: `refs/heads/${productionBranch}`,
-    imageProject: harborProject,
+  // The workload identity first (R2), so a refusal leaves nothing behind.
+  const did = await registerAppIdentity(deps, deps.renown, {
+    repositoryId: repo.id,
+    repository: repo.fullName,
+    productionBranch,
+    ownerAddress: caller.address,
+    chainId: caller.chainId,
+    orgId,
   });
-  // The apps row goes in before the env actions: the gitops render resolves
-  // the App's Harbor project from it (see app-image-project.ts).
-  const attach = Boolean(input.productionEnvironmentId && attachEnvState);
-  const envId = attach
-    ? input.productionEnvironmentId!
-    : await deps.envs.create();
-  const nowIso = deps.now().toISOString();
-  await deps.db
-    .insertInto("apps")
-    .values({
-      id: appId,
-      slug,
-      name,
-      owner_address: caller.address,
-      owner_chain_id: caller.chainId,
-      status: "PENDING_IDENTITY",
-      installation_id: input.installationId,
-      repository_id: repo.id,
-      repository_full_name: repo.fullName,
-      production_branch: productionBranch,
-      production_environment_id: envId,
-      previews_enabled: true,
-      preview_limit: DEFAULT_PREVIEW_LIMIT,
-      preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
-      harbor_project: harborProject,
-      harbor_robot_name: robot.name,
-      harbor_robot_id: robot.id,
-      identity_expires_at: null,
-      // Set from the start: the app document is protected for the Vetra
-      // service identity the moment it exists (appDocumentRowOwner).
-      owner_org_id: orgId,
-      harbor_robot_secret_enc: encryptSecret(
-        deps.cfg.encryptionKey,
-        robot.secret,
-      ),
-      identity_did: did,
-      created_at: nowIso,
-      updated_at: nowIso,
-    })
-    .execute();
-  // An org App's env is handed to the org (the creator its first operator;
-  // the operator sync refills the list). The move is announced first, inside
-  // the env lock, so the observability protection keeps it.
-  const handOver =
-    orgId && !(attach && attachEnvState!.ownerOrgId)
-      ? [setOwnerOrg({ ownerOrgId: orgId, operators: [caller.address] })]
-      : [];
-  const dispatch = (actions: Action[]) =>
-    withEnvLock(envId, async () => {
-      if (handOver.length > 0)
-        await expectOrgHandover(deps.orgHandoverDb!, envId, orgId);
-      await deps.envs.execute(envId, actions);
-    });
+
+  // Everything made from here on is undone when a later step fails, so a
+  // retry (in another organisation, or personally) is not blocked.
+  const harbor = deps.harbor;
+  const encryptionKey = deps.cfg.encryptionKey;
+  const made: CreateMade = {
+    project: null,
+    robotId: null,
+    appId: null,
+    announced: null,
+  };
+  let appId: string;
+  let slug: string | null = null;
+  let envId: string;
   try {
+    // Harbor 409 = someone else's project: never reuse it, take the next suffix.
+    const conflicts = new Set<string>();
+    for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
+      const candidate = await uniqueSlug(deps, name, conflicts);
+      if (await harbor.createProject(`app-${candidate}`)) {
+        slug = candidate;
+        made.project = `app-${candidate}`;
+        break;
+      }
+      conflicts.add(candidate);
+    }
+    if (!slug) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Could not reserve a Harbor project for this name; pick another name",
+      );
+    }
+    const harborProject = `app-${slug}`;
+    const robot = await harbor.createPushRobot(harborProject);
+    made.robotId = robot.id;
+
+    appId = deps.newId();
+    const link = setAppLink({
+      appId,
+      role: "PRODUCTION",
+      prNumber: null,
+      gitRef: `refs/heads/${productionBranch}`,
+      imageProject: harborProject,
+    });
+    // The apps row goes in before the env actions: the gitops render resolves
+    // the App's Harbor project from it (see app-image-project.ts).
+    const attach = Boolean(input.productionEnvironmentId && attachEnvState);
+    envId = attach ? input.productionEnvironmentId! : await deps.envs.create();
+    const nowIso = deps.now().toISOString();
+    made.appId = appId;
+    await deps.db
+      .insertInto("apps")
+      .values({
+        id: appId,
+        slug,
+        name,
+        owner_address: caller.address,
+        owner_chain_id: caller.chainId,
+        status: "PENDING_IDENTITY",
+        installation_id: input.installationId,
+        repository_id: repo.id,
+        repository_full_name: repo.fullName,
+        production_branch: productionBranch,
+        production_environment_id: envId,
+        previews_enabled: true,
+        preview_limit: DEFAULT_PREVIEW_LIMIT,
+        preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
+        harbor_project: harborProject,
+        harbor_robot_name: robot.name,
+        harbor_robot_id: robot.id,
+        identity_expires_at: null,
+        // Set from the start: the app document is protected for the Vetra
+        // service identity the moment it exists (appDocumentRowOwner).
+        owner_org_id: orgId,
+        harbor_robot_secret_enc: encryptSecret(encryptionKey, robot.secret),
+        identity_did: did,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .execute();
+    // An org App's env is handed to the org (the creator its first operator;
+    // the operator sync refills the list). The move is announced first,
+    // inside the env lock, so the observability protection keeps it.
+    const handOver =
+      orgId && !(attach && attachEnvState!.ownerOrgId)
+        ? [setOwnerOrg({ ownerOrgId: orgId, operators: [caller.address] })]
+        : [];
+    const targetEnv = envId;
+    const dispatch = (actions: Action[]) =>
+      withEnvLock(targetEnv, async () => {
+        if (handOver.length > 0) {
+          await expectOrgHandover(deps.orgHandoverDb!, targetEnv, orgId);
+          made.announced = { envId: targetEnv, orgId };
+        }
+        await deps.envs.execute(targetEnv, actions);
+      });
     if (attach) {
       const wasReady = attachEnvState!.status === "READY";
       // The link widens the FUSION allowlist, so it re-renders; re-approve only
@@ -788,7 +790,7 @@ export async function createApp(
       await deps.envs.execute(envId, [approveChanges({})]);
     }
   } catch (err) {
-    await deps.db.deleteFrom("apps").where("id", "=", appId).execute();
+    await undoFailedCreate(deps, harbor, deps.renown, did, made);
     throw err;
   }
   deps.logger.info(
@@ -800,12 +802,133 @@ export async function createApp(
 }
 
 /**
- * Re-check the delegation of the App identity: the owner's for a personal
- * App, the caller's for an org App (any operator may authorise it, Ruling
- * 12). The newest valid
- * credential → ACTIVE with its expiry; none (never signed, expired or
- * revoked) → PENDING_IDENTITY. A DISCONNECTED App keeps its status (only the
- * expiry is refreshed).
+ * Register the repository's workload identity for `orgId` (null: personally).
+ * Renown is idempotent per repository and returns an existing identity
+ * unchanged, whoever it belongs to; another address gets CONFLICT (M11). An
+ * identity of another owner (person vs organisation, or another organisation)
+ * would make the App's profile unclaimable. When no live App uses it, it is
+ * an orphan of this same address (a failed or deleted App): it is deleted and
+ * registered once more. Otherwise, or when Renown hands it back unchanged,
+ * the create is refused.
+ */
+async function registerAppIdentity(
+  deps: AppsDeps,
+  renown: RenownApi,
+  input: {
+    repositoryId: string;
+    repository: string;
+    productionBranch: string;
+    ownerAddress: string;
+    chainId: number;
+    orgId: string | null;
+  },
+): Promise<string> {
+  const { orgId, ...rest } = input;
+  const register = async () => {
+    try {
+      return await renown.registerWorkloadIdentity({
+        ...rest,
+        ...(orgId ? { ownerOrgId: orgId } : {}),
+      });
+    } catch (err) {
+      if (isRenownConflict(err))
+        throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+      throw err;
+    }
+  };
+  const matches = (r: { ownerOrgId: string | null }) =>
+    (r.ownerOrgId ?? null) === orgId;
+  const first = await register();
+  if (matches(first)) return first.did;
+  if (await identityInUse(deps, first.did)) {
+    throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+  }
+  deps.logger.warn(
+    `[vetra-apps] re-registering the orphaned identity ${first.did} of ${input.repository} for ${orgId ?? input.ownerAddress}`,
+  );
+  await renown.deleteWorkloadIdentity(first.did);
+  const second = await register();
+  if (!matches(second))
+    throw appsError("BAD_USER_INPUT", IDENTITY_OWNED_ELSEWHERE);
+  return second.did;
+}
+
+/** Whether a live (not DELETED) App uses the identity. */
+async function identityInUse(deps: AppsDeps, did: string): Promise<boolean> {
+  const row = await deps.db
+    .selectFrom("apps")
+    .select("id")
+    .where("identity_did", "=", did)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  return !!row;
+}
+
+interface CreateMade {
+  project: string | null;
+  robotId: number | null;
+  appId: string | null;
+  /** The announced organisation move (withdrawn on failure). */
+  announced: { envId: string; orgId: string | null } | null;
+}
+
+/**
+ * Undo a createApp that failed after the identity was registered: the apps
+ * row, the announcement, the robot, the project, and the identity when no
+ * live App uses it. Best effort: every failure is logged, none is thrown.
+ */
+async function undoFailedCreate(
+  deps: AppsDeps,
+  harbor: HarborApi,
+  renown: RenownApi,
+  did: string,
+  made: CreateMade,
+): Promise<void> {
+  const step = async (what: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] cleaning up a failed createApp: ${what} failed: ${String(err)}`,
+      );
+    }
+  };
+  const { appId, announced, robotId, project } = made;
+  if (appId)
+    await step("deleting the row", () =>
+      deps.db.deleteFrom("apps").where("id", "=", appId).execute(),
+    );
+  if (announced && deps.orgHandoverDb) {
+    const db = deps.orgHandoverDb;
+    await step("withdrawing the hand-over", () =>
+      withdrawOrgHandover(db, announced.envId, announced.orgId),
+    );
+  }
+  if (robotId !== null)
+    await step("deleting the robot", () => harbor.deleteRobot(robotId));
+  if (project)
+    await step("deleting the Harbor project", () =>
+      harbor.deleteProject(project),
+    );
+  await step("deleting the identity", async () => {
+    if (!(await identityInUse(deps, did)))
+      await renown.deleteWorkloadIdentity(did);
+  });
+}
+
+/**
+ * Re-check the delegation of the App identity.
+ *
+ * Personal App: the owner's. The newest valid credential → ACTIVE with its
+ * expiry; none (never signed, expired or revoked) → PENDING_IDENTITY.
+ *
+ * Org App: the caller's (any operator may authorise it, Ruling 12). One
+ * operator's lookup never speaks for the others, so it only upgrades
+ * (PENDING_IDENTITY → ACTIVE) or extends the expiry; a caller without a
+ * delegation, or with a shorter one, changes nothing. Expiry is left to the
+ * identity-expiry sweep.
+ *
+ * A DISCONNECTED App keeps its status either way.
  */
 export async function confirmAppIdentity(
   deps: AppsDeps,
@@ -819,17 +942,25 @@ export async function confirmAppIdentity(
     chainId: app.owner_org_id ? caller.chainId : app.owner_chain_id,
     did: app.identity_did,
   });
-  const status =
+  let status: AppRow["status"] =
     app.status === "DISCONNECTED"
       ? app.status
       : delegation
         ? "ACTIVE"
         : "PENDING_IDENTITY";
+  let expiresAt = delegation?.expiresAt ?? null;
+  if (app.owner_org_id) {
+    if (!delegation) return app;
+    if (app.status === "ACTIVE" || app.status === "DISCONNECTED") {
+      status = app.status;
+      expiresAt = laterExpiry(app.identity_expires_at, expiresAt);
+    }
+  }
   await deps.db
     .updateTable("apps")
     .set({
       status,
-      identity_expires_at: delegation?.expiresAt ?? null,
+      identity_expires_at: expiresAt,
       updated_at: deps.now().toISOString(),
     })
     .where("id", "=", app.id)
@@ -837,6 +968,12 @@ export async function confirmAppIdentity(
   const confirmed = (await getApp(deps.db, app.id))!;
   await mirrorAppRow(deps, confirmed);
   return confirmed;
+}
+
+/** The later of two expiries; null (no expiry) is the latest. */
+function laterExpiry(a: string | null, b: string | null): string | null {
+  if (a === null || b === null) return null;
+  return Date.parse(b) > Date.parse(a) ? b : a;
 }
 
 export interface UpdateAppInput {
@@ -1556,6 +1693,11 @@ async function ensurePreview(
   createActions: Action[];
   fusionEnvTemplate: FusionEnvInput[];
 }> {
+  // An org App's preview belongs to the org from its first action; the move
+  // is announced before it is dispatched (performDeploy, minutes at most).
+  // Checked first, so a misconfiguration evicts no preview.
+  if (app.owner_org_id && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
   const existing = await getPreview(deps.db, app.id, prNumber);
   if (existing) {
     if (await deps.envs.getState(existing.environment_id)) {
@@ -1583,10 +1725,6 @@ async function ensurePreview(
       await deletePreview(deps, app, p, `preview limit (${app.preview_limit})`);
   }
 
-  // An org App's preview belongs to the org from its first action; the move
-  // is announced before it is dispatched (performDeploy, minutes at most).
-  if (app.owner_org_id && !deps.orgHandoverDb)
-    throw notConfigured("The organisation hand-over store");
   const envId = await deps.envs.create();
   if (app.owner_org_id)
     await expectOrgHandover(deps.orgHandoverDb!, envId, app.owner_org_id);
@@ -1808,6 +1946,16 @@ async function performDeploy(
       deps.now().toISOString(),
     );
   } catch (err) {
+    // A new org preview whose hand-over never landed leaves no announcement.
+    const orgId = app.owner_org_id;
+    if (createActions.length > 0 && orgId && deps.orgHandoverDb) {
+      await withdrawOrgHandover(deps.orgHandoverDb, envId, orgId).catch(
+        (e: unknown) =>
+          deps.logger.warn(
+            `[vetra-apps] withdrawing the hand-over of preview env ${envId} failed: ${String(e)}`,
+          ),
+      );
+    }
     await updateDeployment(
       deps.db,
       id,

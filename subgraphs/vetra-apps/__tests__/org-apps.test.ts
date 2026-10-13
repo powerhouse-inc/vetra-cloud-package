@@ -524,25 +524,17 @@ describe("createApp in an organisation", () => {
     });
   });
 
-  it("refuses a repository whose Renown identity belongs to another owner, before any Harbor project (R2)", async () => {
+  it("refuses a repository whose Renown identity is used by a live App of another owner, before any Harbor project (R2)", async () => {
     h.orgs.join(ORG, OWNER, "ADMIN");
     const harborBefore = [...h.harbor.projects];
-    // Registered personally before: Renown returns it unchanged.
+    // A legacy identity shared with the live personal App: never deleted.
     h.renown.identities.set("4343", {
-      did: "did:key:zOld",
+      did: APP_DID,
       ownerOrgId: null,
       ownerAddress: OWNER,
     });
     expect(await code(createApp(h.deps, owner, input))).toBe("BAD_USER_INPUT");
-    // Registered for an org: a personal App is refused too.
-    h.renown.identities.set("4343", {
-      did: "did:key:zOld",
-      ownerOrgId: ORG,
-      ownerAddress: OWNER,
-    });
-    expect(
-      await code(createApp(h.deps, owner, { ...input, orgId: null })),
-    ).toBe("BAD_USER_INPUT");
+    expect(h.renown.deleted).toStrictEqual([]);
     // Registered by someone else: Renown answers CONFLICT.
     h.renown.identities.set("4343", {
       did: "did:key:zOld",
@@ -554,7 +546,77 @@ describe("createApp in an organisation", () => {
     );
     expect(err).toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
     expect((err as Error).message).toMatch(/another owner/);
+    expect(h.renown.deleted).toStrictEqual([]);
     expect(h.harbor.projects).toStrictEqual(harborBefore);
+  });
+
+  it("re-registers an orphaned identity of the caller registered for another owner (R2 self-heal)", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    // Left behind personally (e.g. by older code after a failed create).
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: null,
+      ownerAddress: OWNER,
+    });
+    const created = await createApp(h.deps, owner, input);
+    expect(h.renown.deleted).toStrictEqual(["did:key:zOld"]);
+    expect(created.identity_did).not.toBe("did:key:zOld");
+    expect(h.renown.identities.get("4343")).toMatchObject({ ownerOrgId: ORG });
+    // And the other way round: an orphaned org identity for a personal App.
+    await h.db.updateTable("apps").set({ status: "DELETED" }).where("id", "=", created.id).execute();
+    const personal = await createApp(h.deps, owner, { ...input, orgId: null });
+    expect(personal.owner_org_id).toBeNull();
+    expect(h.renown.identities.get("4343")).toMatchObject({ ownerOrgId: null });
+  });
+
+  it("refuses when the re-registration still belongs to another owner", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: null,
+      ownerAddress: OWNER,
+    });
+    h.renown.deleteWorkloadIdentity = async () => undefined; // Renown kept it
+    expect(await code(createApp(h.deps, owner, input))).toBe("BAD_USER_INPUT");
+    expect(h.harbor.projects).toStrictEqual(["app-shop"]);
+  });
+
+  it("cleans up the Harbor project, robot and fresh identity when a later step fails, so a retry works", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const createPushRobot = h.harbor.createPushRobot;
+    h.harbor.createPushRobot = async () => {
+      throw new Error("harbor: create robot → 500");
+    };
+    expect(await code(createApp(h.deps, owner, input))).toMatch(/create robot/);
+    expect(h.harbor.deletedProjects).toStrictEqual(["app-org-shop"]);
+    expect(h.renown.identities.has("4343")).toBe(false);
+    h.harbor.createPushRobot = createPushRobot;
+    // The retry, personally, is not blocked by a leftover org identity.
+    const personal = await createApp(h.deps, owner, { ...input, orgId: null });
+    expect(personal.harbor_project).toBe("app-org-shop");
+  });
+
+  it("cleans up everything and withdraws the announcement when the env dispatch fails", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const execute = h.envs.execute.bind(h.envs);
+    h.envs.execute = async (id, actions) => {
+      if (actions.some((a) => a.type === "SET_OWNER_ORG"))
+        throw new Error("reactor down");
+      return execute(id, actions);
+    };
+    expect(await code(createApp(h.deps, owner, input))).toMatch(/reactor down/);
+    const rows = await h.db
+      .selectFrom("apps")
+      .select("id")
+      .where("repository_id", "=", "4343")
+      .execute();
+    expect(rows).toStrictEqual([]);
+    expect(h.harbor.deletedProjects).toStrictEqual(["app-org-shop"]);
+    expect(h.harbor.deletedRobots).toHaveLength(1);
+    expect(h.renown.identities.has("4343")).toBe(false);
+    expect(
+      await h.obsDb.selectFrom("org_expected_handovers").selectAll().execute(),
+    ).toStrictEqual([]);
   });
 });
 
@@ -617,16 +679,63 @@ describe("CI and identity for org apps", () => {
     ).toBe("FORBIDDEN");
   });
 
-  it("confirmAppIdentity on an org app looks up the caller's delegation", async () => {
+  it("confirmAppIdentity on an org app uses the caller's delegation and only upgrades or extends", async () => {
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     h.orgs.join(ORG, MEMBER, "PUBLISHER");
-    const lookups: unknown[] = [];
-    h.renown.getDelegation = async (input) => {
-      lookups.push(input);
-      return { expiresAt: "2027-01-01T00:00:00.000Z" };
+    h.orgs.join(ORG, STRANGER, "PUBLISHER");
+    h.orgs.join(ORG, OWNER, "PUBLISHER");
+    const delegations: Record<string, string | null> = {
+      [MEMBER]: "2028-01-01T00:00:00.000Z",
+      [OWNER]: "2027-03-01T00:00:00.000Z",
     };
-    await confirmAppIdentity(h.deps, member, app.id);
+    const lookups: { address: string; did: string }[] = [];
+    h.renown.getDelegation = async (i) => {
+      lookups.push(i);
+      const exp = delegations[i.address];
+      return exp ? { expiresAt: exp } : null;
+    };
+    await h.db
+      .updateTable("apps")
+      .set({ status: "PENDING_IDENTITY", identity_expires_at: null })
+      .where("id", "=", app.id)
+      .execute();
+    // No delegation of the caller: nothing changes.
+    let row = await confirmAppIdentity(h.deps, stranger, app.id);
+    expect(lookups.at(-1)).toMatchObject({ address: STRANGER, did: APP_DID });
+    expect(row).toMatchObject({ status: "PENDING_IDENTITY", identity_expires_at: null });
+    // A publisher who authorised it: upgraded.
+    row = await confirmAppIdentity(h.deps, member, app.id);
     expect(lookups.at(-1)).toMatchObject({ address: MEMBER, did: APP_DID });
+    expect(row).toMatchObject({
+      status: "ACTIVE",
+      identity_expires_at: "2028-01-01T00:00:00.000Z",
+    });
+    // Without a delegation, or with a shorter one: never downgraded or shortened.
+    row = await confirmAppIdentity(h.deps, stranger, app.id);
+    expect(row).toMatchObject({
+      status: "ACTIVE",
+      identity_expires_at: "2028-01-01T00:00:00.000Z",
+    });
+    row = await confirmAppIdentity(h.deps, owner, app.id);
+    expect(row).toMatchObject({
+      status: "ACTIVE",
+      identity_expires_at: "2028-01-01T00:00:00.000Z",
+    });
+    // A longer one extends.
+    delegations[STRANGER] = "2029-01-01T00:00:00.000Z";
+    row = await confirmAppIdentity(h.deps, stranger, app.id);
+    expect(row.identity_expires_at).toBe("2029-01-01T00:00:00.000Z");
+  });
+
+  it("confirmAppIdentity on a personal app still checks the owner's delegation when an admin confirms", async () => {
+    const lookups: { address: string }[] = [];
+    h.renown.getDelegation = async (i) => {
+      lookups.push(i);
+      return null;
+    };
+    const row = await confirmAppIdentity(h.deps, admin, app.id);
+    expect(lookups.at(-1)).toMatchObject({ address: OWNER });
+    expect(row.status).toBe("PENDING_IDENTITY");
   });
 });
 
@@ -664,5 +773,50 @@ describe("previews of org apps", () => {
       .where("documentId", "=", envId)
       .executeTakeFirst();
     expect(announced?.orgId).toBe(ORG);
+  });
+
+  it("a failed preview dispatch withdraws its announcement; no store evicts nothing", async () => {
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    await appForOwner(h.deps, admin, app.id);
+    h.orgs.join(ORG, OWNER, "PUBLISHER");
+    h.envs.setStatus(app.production_environment_id, "READY");
+    const execute = h.envs.execute.bind(h.envs);
+    h.envs.execute = async (id, actions) => {
+      if (actions.some((a) => a.type === "SET_OWNER_ORG"))
+        throw new Error("reactor down");
+      return execute(id, actions);
+    };
+    const pr = (n: number) => ({
+      appId: app.id,
+      kind: "PREVIEW" as const,
+      prNumber: n,
+      gitRef: `refs/pull/${n}/merge`,
+      sha: "a".repeat(40),
+      packages: [{ name: "@acme/shop", version: `1.0.0-pr.${n}` }],
+    });
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/7/merge", { prNumber: 7 }),
+      pr(7),
+    );
+    expect(d.status).toBe("FAILED");
+    expect(
+      await h.obsDb
+        .selectFrom("org_expected_handovers")
+        .selectAll()
+        .where("documentId", "=", d.environment_id!)
+        .execute(),
+    ).toStrictEqual([]);
+    // Without a hand-over store: refused before any preview is evicted.
+    h.envs.execute = execute;
+    await h.db.updateTable("apps").set({ preview_limit: 1 }).execute();
+    h.deps.orgHandoverDb = null;
+    expect(
+      await code(
+        deployAsCi(h.deps, claim("refs/pull/8/merge", { prNumber: 8 }), pr(8)),
+      ),
+    ).toBe("SERVICE_NOT_CONFIGURED");
+    const previews = await h.db.selectFrom("app_previews").selectAll().execute();
+    expect(previews.map((p) => p.pr_number)).toStrictEqual([7]);
   });
 });

@@ -110,7 +110,15 @@ async function markIdentityExpired(
     .updateTable("apps")
     .set({ status: "PENDING_IDENTITY", updated_at: nowIso })
     .where("identity_did", "=", appDid)
-    .where("owner_address", "=", address)
+    // Personal App: the owner's token. Org App: the identity alone — any
+    // operator may have authorised it (Ruling 12), so the stored expiry
+    // below is what guards against a single address's missing delegation.
+    .where((eb) =>
+      eb.or([
+        eb("owner_address", "=", address),
+        eb("owner_org_id", "is not", null),
+      ]),
+    )
     .where("status", "=", "ACTIVE")
     .where((eb) =>
       eb.or([
