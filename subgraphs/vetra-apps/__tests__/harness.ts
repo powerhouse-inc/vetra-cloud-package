@@ -311,29 +311,70 @@ export function fakeHarbor(): HarborApi & {
   };
 }
 
+/** A workload identity as the fake Renown stores it, per repository id. */
+export interface FakeIdentity {
+  did: string;
+  ownerOrgId: string | null;
+  ownerAddress: string;
+}
+
 export function fakeRenown(): RenownApi & {
   /** The owner's newest valid delegation for the App DID, or null. */
   delegation: { expiresAt: string | null } | null;
   registered: unknown[];
+  /** Registered identities by repository id (Renown is idempotent per repo). */
+  identities: Map<string, FakeIdentity>;
   deleted: string[];
   updated: unknown[];
 } {
   const self = {
     delegation: null as { expiresAt: string | null } | null,
     registered: [] as unknown[],
+    identities: new Map<string, FakeIdentity>(),
     deleted: [] as string[],
     updated: [] as unknown[],
-    async registerWorkloadIdentity(input: unknown) {
+    // As the served API (A5/M11): the same address gets the existing identity
+    // back unchanged (whatever its organisation); another address, CONFLICT.
+    async registerWorkloadIdentity(input: {
+      repositoryId: string;
+      ownerAddress: string;
+      ownerOrgId?: string;
+    }) {
       self.registered.push(input);
-      return { did: APP_DID };
+      const existing = self.identities.get(input.repositoryId);
+      if (existing) {
+        if (
+          existing.ownerAddress.toLowerCase() !==
+          input.ownerAddress.toLowerCase()
+        ) {
+          throw new Error(
+            "renown: CONFLICT repository is registered by another address",
+          );
+        }
+        return { did: existing.did, ownerOrgId: existing.ownerOrgId };
+      }
+      const created: FakeIdentity = {
+        did: APP_DID,
+        ownerOrgId: input.ownerOrgId ?? null,
+        ownerAddress: input.ownerAddress,
+      };
+      self.identities.set(input.repositoryId, created);
+      return { did: created.did, ownerOrgId: created.ownerOrgId };
     },
     async updateWorkloadIdentity(did: string, patch: unknown) {
       self.updated.push({ did, patch });
     },
     async deleteWorkloadIdentity(did: string) {
       self.deleted.push(did);
+      for (const [repo, id] of self.identities) {
+        if (id.did === did) self.identities.delete(repo);
+      }
     },
-    async getDelegation() {
+    async getDelegation(_input: {
+      address: string;
+      chainId: number;
+      did: string;
+    }): Promise<{ expiresAt: string | null } | null> {
       return self.delegation;
     },
   };

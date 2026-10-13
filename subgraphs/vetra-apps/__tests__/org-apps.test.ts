@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   appDeploymentsFor,
   appForOwner,
+  ciDeployApp,
+  confirmAppIdentity,
+  createApp,
   myApps,
   updateApp,
 } from "../service.js";
@@ -17,14 +20,21 @@ import {
   type EnvProtectionTarget,
 } from "../../vetra-cloud-observability/env-protection.js";
 import { createReactorPermissions } from "../../vetra-cloud-observability/__tests__/reactor-permissions.js";
-import { setOwnerOrg } from "../../../document-models/vetra-cloud-environment/v1/index.js";
+import {
+  setOwnerOrg,
+  syncOrgOperators,
+} from "../../../document-models/vetra-cloud-environment/v1/index.js";
 import {
   APP_DID,
+  INSTALLATION,
   MEMBER,
   ORG,
   OWNER,
   STRANGER,
   admin,
+  ciIdentity,
+  claim,
+  deployAsCi,
   makeHarness,
   member,
   owner,
@@ -382,5 +392,277 @@ describe("org-owned apps", () => {
       expect(await protection()).toMatchObject({ ownerAddress: STRANGER });
       expect(await grant(OWNER)).toBeNull();
     });
+  });
+});
+
+describe("createApp in an organisation", () => {
+  const input = {
+    name: "Org Shop",
+    installationId: INSTALLATION,
+    repositoryId: "4343",
+    orgId: ORG,
+  };
+
+  it("registers the workload for the org and hands the production env to it", async () => {
+    h.orgs.join(ORG, OWNER, "PUBLISHER");
+    const created = await createApp(h.deps, owner, input);
+    expect(created.owner_org_id).toBe(ORG);
+    expect(h.renown.registered.at(-1)).toMatchObject({
+      ownerAddress: OWNER,
+      ownerOrgId: ORG,
+    });
+    expect(
+      await h.envs.getState(created.production_environment_id),
+    ).toMatchObject({
+      owner: OWNER,
+      ownerOrgId: ORG,
+      orgOperators: [OWNER],
+    });
+  });
+
+  it("announces the hand-over of a new env, so the observability protection keeps it", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const created = await createApp(h.deps, owner, input);
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    const reactor = await createReactorPermissions([SERVICE]);
+    try {
+      const envId = created.production_environment_id;
+      const s = await h.envs.getState(envId);
+      const reverted: unknown[] = [];
+      const result = await protectEnvironment(
+        reactor.perm,
+        { id: envId, owner: s?.owner ?? null, ownerOrgId: s?.ownerOrgId ?? null },
+        {
+          serviceOwner: SERVICE,
+          db: h.obsDb,
+          readTarget: async (id: string) => {
+            const st = await h.envs.getState(id);
+            return {
+              id,
+              owner: st?.owner ?? null,
+              ownerOrgId: st?.ownerOrgId ?? null,
+            };
+          },
+          dispatch: async (id: string, type: string, i: unknown) => {
+            reverted.push({ id, type, i });
+          },
+        },
+      );
+      expect(result).toBe("ORG");
+      expect(reverted).toStrictEqual([]);
+    } finally {
+      await reactor.db.destroy();
+    }
+  });
+
+  it("refuses members, scoped publishers, admins outside the org, and a Renown outage", async () => {
+    h.orgs.join(ORG, OWNER, "MEMBER");
+    expect(await code(createApp(h.deps, owner, input))).toBe("FORBIDDEN");
+    h.orgs.join(ORG, OWNER, "PUBLISHER", [APP_DID]);
+    expect(await code(createApp(h.deps, owner, input))).toBe("FORBIDDEN");
+    expect(await code(createApp(h.deps, admin, input))).toBe("FORBIDDEN");
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    h.orgs.down = true;
+    expect(await code(createApp(h.deps, owner, input))).toBe("FORBIDDEN");
+    // A personal App is unaffected by the outage.
+    expect(
+      await code(createApp(h.deps, owner, { ...input, orgId: null })),
+    ).toBe("OK");
+  });
+
+  it("attaches a personal env (handing it over) but refuses an env of another org", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const personal = await h.envs.seedStandalone(OWNER);
+    const created = await createApp(h.deps, owner, {
+      ...input,
+      productionEnvironmentId: personal,
+    });
+    expect(await h.envs.getState(personal)).toMatchObject({
+      ownerOrgId: ORG,
+      orgOperators: [OWNER],
+    });
+    expect(created.production_environment_id).toBe(personal);
+  });
+
+  it("refuses to attach an org env to a personal app or to another org's app", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    h.orgs.join("org-other", OWNER, "ADMIN");
+    const orgEnv = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(orgEnv, [
+      setOwnerOrg({ ownerOrgId: "org-other", operators: [OWNER] }),
+    ]);
+    expect(
+      await code(
+        createApp(h.deps, owner, { ...input, productionEnvironmentId: orgEnv }),
+      ),
+    ).toBe("BAD_USER_INPUT");
+    expect(
+      await code(
+        createApp(h.deps, owner, {
+          ...input,
+          orgId: null,
+          productionEnvironmentId: orgEnv,
+        }),
+      ),
+    ).toBe("BAD_USER_INPUT");
+  });
+
+  it("attaches an env of the same org only for a publisher of it, without a second hand-over", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const orgEnv = await h.envs.seedStandalone(STRANGER);
+    await h.envs.execute(orgEnv, [
+      setOwnerOrg({ ownerOrgId: ORG, operators: [STRANGER] }),
+    ]);
+    const created = await createApp(h.deps, owner, {
+      ...input,
+      productionEnvironmentId: orgEnv,
+    });
+    expect(created.production_environment_id).toBe(orgEnv);
+    expect(await h.envs.getState(orgEnv)).toMatchObject({
+      ownerOrgId: ORG,
+      orgOperators: [STRANGER],
+    });
+  });
+
+  it("refuses a repository whose Renown identity belongs to another owner, before any Harbor project (R2)", async () => {
+    h.orgs.join(ORG, OWNER, "ADMIN");
+    const harborBefore = [...h.harbor.projects];
+    // Registered personally before: Renown returns it unchanged.
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: null,
+      ownerAddress: OWNER,
+    });
+    expect(await code(createApp(h.deps, owner, input))).toBe("BAD_USER_INPUT");
+    // Registered for an org: a personal App is refused too.
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: ORG,
+      ownerAddress: OWNER,
+    });
+    expect(
+      await code(createApp(h.deps, owner, { ...input, orgId: null })),
+    ).toBe("BAD_USER_INPUT");
+    // Registered by someone else: Renown answers CONFLICT.
+    h.renown.identities.set("4343", {
+      did: "did:key:zOld",
+      ownerOrgId: ORG,
+      ownerAddress: STRANGER,
+    });
+    const err = await createApp(h.deps, owner, input).catch(
+      (e: { message: string; extensions?: { code?: string } }) => e,
+    );
+    expect(err).toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+    expect((err as Error).message).toMatch(/another owner/);
+    expect(h.harbor.projects).toStrictEqual(harborBefore);
+  });
+});
+
+describe("CI and identity for org apps", () => {
+  it("accepts a CI token from a publisher of the app and refuses one from a removed member or the creator who left", async () => {
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    await appForOwner(h.deps, admin, app.id);
+    h.envs.setStatus(app.production_environment_id, "READY");
+    h.orgs.join(ORG, MEMBER, "PUBLISHER");
+    const memberCi = (c: ReturnType<typeof claim>) => ({
+      ...ciIdentity(c),
+      address: MEMBER,
+    });
+    const prod = {
+      appId: app.id,
+      kind: "PRODUCTION" as const,
+      gitRef: "refs/heads/main",
+      sha: "a".repeat(40),
+      packages: [{ name: "@acme/shop", version: "1.0.0" }],
+    };
+    expect(
+      await code(ciDeployApp(h.deps, memberCi(claim("refs/heads/main")), prod)),
+    ).toBe("OK");
+    h.orgs.members.clear();
+    expect(
+      await code(ciDeployApp(h.deps, memberCi(claim("refs/heads/main")), prod)),
+    ).toBe("FORBIDDEN");
+    expect(
+      await code(ciDeployApp(h.deps, ciIdentity(claim("refs/heads/main")), prod)),
+    ).toBe("FORBIDDEN");
+  });
+
+  it("CI sees a transfer at Renown on its own (lazy sync) and fails closed for org apps only", async () => {
+    const prod = {
+      appId: app.id,
+      kind: "PRODUCTION" as const,
+      gitRef: "refs/heads/main",
+      sha: "a".repeat(40),
+      packages: [{ name: "@acme/shop", version: "1.0.0" }],
+    };
+    h.envs.setStatus(app.production_environment_id, "READY");
+    // Personal app: Renown down changes nothing.
+    h.orgs.down = true;
+    expect(
+      await code(deployAsCi(h.deps, claim("refs/heads/main"), prod)),
+    ).toBe("OK");
+    h.orgs.down = false;
+    // Moved into the org at Renown: the creator is no longer enough.
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    expect(
+      await code(deployAsCi(h.deps, claim("refs/heads/main"), prod)),
+    ).toBe("FORBIDDEN");
+    h.orgs.join(ORG, OWNER, "PUBLISHER", [APP_DID]);
+    expect(
+      await code(deployAsCi(h.deps, claim("refs/heads/main"), prod)),
+    ).toBe("OK");
+    h.orgs.down = true;
+    expect(
+      await code(deployAsCi(h.deps, claim("refs/heads/main"), prod)),
+    ).toBe("FORBIDDEN");
+  });
+
+  it("confirmAppIdentity on an org app looks up the caller's delegation", async () => {
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    h.orgs.join(ORG, MEMBER, "PUBLISHER");
+    const lookups: unknown[] = [];
+    h.renown.getDelegation = async (input) => {
+      lookups.push(input);
+      return { expiresAt: "2027-01-01T00:00:00.000Z" };
+    };
+    await confirmAppIdentity(h.deps, member, app.id);
+    expect(lookups.at(-1)).toMatchObject({ address: MEMBER, did: APP_DID });
+  });
+});
+
+describe("previews of org apps", () => {
+  it("copy the production env's organisation and operators", async () => {
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    await appForOwner(h.deps, admin, app.id);
+    await h.envs.execute(app.production_environment_id, [
+      syncOrgOperators({ operators: [MEMBER] }),
+    ]);
+    h.orgs.join(ORG, OWNER, "PUBLISHER"); // the CI token below is the creator's; org apps need capability
+    h.envs.setStatus(app.production_environment_id, "READY");
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/7/merge", { prNumber: 7 }),
+      {
+        appId: app.id,
+        kind: "PREVIEW",
+        prNumber: 7,
+        gitRef: "refs/pull/7/merge",
+        sha: "a".repeat(40),
+        packages: [{ name: "@acme/shop", version: "1.0.0-pr.7" }],
+      },
+    );
+    expect(d.status).toBe("DEPLOYING");
+    const envId = d.environment_id!;
+    expect(await h.envs.getState(envId)).toMatchObject({
+      ownerOrgId: ORG,
+      orgOperators: [MEMBER],
+    });
+    // The hand-over was announced (and is still pending for the hook).
+    const announced = await h.obsDb
+      .selectFrom("org_expected_handovers")
+      .selectAll()
+      .where("documentId", "=", envId)
+      .executeTakeFirst();
+    expect(announced?.orgId).toBe(ORG);
   });
 });

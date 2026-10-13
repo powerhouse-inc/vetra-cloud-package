@@ -130,6 +130,8 @@ export const schema: DocumentNode = gql`
     repositoryId: String!
     productionBranch: String
     productionEnvironmentId: String
+    "Create the App for this Renown organisation (OWNER/ADMIN, or PUBLISHER with access to all apps)."
+    orgId: String
   }
 
   input UpdateAppInput {

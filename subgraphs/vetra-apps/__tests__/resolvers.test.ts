@@ -474,7 +474,7 @@ describe("HTTP clients", () => {
         ownerAddress: OWNER,
         chainId: 1,
       }),
-    ).toStrictEqual({ did: APP_DID });
+    ).toStrictEqual({ did: APP_DID, ownerOrgId: null });
     expect(seen[0].url).toBe(
       "https://switchboard.renown.vetra.io/graphql/renown-workload",
     );
