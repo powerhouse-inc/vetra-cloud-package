@@ -216,23 +216,62 @@ export function createRenownOrgs(cfg: RenownOrgsConfig): RenownOrgs {
  * Renown as background reconciliation (ownership sync, adoption) uses it:
  * every lookup is cut off after `timeoutMs` (well under a request budget, so
  * a slow Renown never holds a personal App's read), and after a failure or a
- * timeout every lookup fails at once for `cooldownMs` without a network call.
- * The underlying request keeps running and fills the cache. Request-time
- * access checks do not use this.
+ * timeout a lookup that has to go to the network fails at once for
+ * `cooldownMs`. The underlying request keeps running: a lookup of the same
+ * `key` joins it outside the cool-down, and during the cool-down gets its
+ * answer (for `answerTtlMs`) once it has arrived instead of being skipped, so a slow-but-up
+ * Renown still converges. Use one guard per query. Request-time access checks
+ * do not use this.
  */
 export class RenownSyncGuard {
   private openUntil = 0;
+  private readonly entries = new Map<
+    string,
+    { promise: Promise<unknown>; settled: boolean; value?: unknown; validUntil: number }
+  >();
   readonly timeoutMs: number;
   readonly cooldownMs: number;
+  readonly answerTtlMs: number;
 
-  constructor(opts: { timeoutMs?: number; cooldownMs?: number } = {}) {
+  constructor(opts: { timeoutMs?: number; cooldownMs?: number; answerTtlMs?: number } = {}) {
     this.timeoutMs = opts.timeoutMs ?? 1_500;
-    this.cooldownMs = opts.cooldownMs ?? 30_000;
+    this.cooldownMs = opts.cooldownMs ?? 10_000;
+    this.answerTtlMs = opts.answerTtlMs ?? 30_000;
   }
 
-  async run<T>(load: () => Promise<T>, now: number, timeoutMs = this.timeoutMs): Promise<T> {
-    if (now < this.openUntil) {
-      throw new RenownOrgsUnavailableError("Renown was unavailable moments ago; lookup skipped");
+  async run<T>(load: () => Promise<T>, now: number, timeoutMs = this.timeoutMs, key = ""): Promise<T> {
+    let entry = this.entries.get(key);
+    if (entry?.settled) {
+      if (now < this.openUntil && now < entry.validUntil) return entry.value as T;
+      this.entries.delete(key);
+      entry = undefined;
+    }
+    // In the cool-down only an answer is served; a request still running is
+    // not waited for again (a hung Renown must not cost every read a timeout).
+    if (!entry || now < this.openUntil) {
+      if (now < this.openUntil) {
+        throw new RenownOrgsUnavailableError("Renown was unavailable moments ago; lookup skipped");
+      }
+      const created = {
+        promise: Promise.resolve() as Promise<unknown>,
+        settled: false,
+        value: undefined as unknown,
+        validUntil: now + this.answerTtlMs,
+      };
+      created.promise = load().then(
+        (value) => {
+          created.settled = true;
+          created.value = value;
+          return value;
+        },
+        (err: unknown) => {
+          if (this.entries.get(key) === created) this.entries.delete(key);
+          throw err;
+        },
+      );
+      created.promise.catch(() => {});
+      this.entries.set(key, created);
+      entry = created;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -242,7 +281,7 @@ export class RenownSyncGuard {
       );
     });
     try {
-      return await Promise.race([load(), timeout]);
+      return (await Promise.race([entry.promise, timeout])) as T;
     } catch (err) {
       this.openUntil = now + this.cooldownMs;
       throw err;

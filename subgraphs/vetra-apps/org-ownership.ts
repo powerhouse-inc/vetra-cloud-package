@@ -27,11 +27,19 @@ export const callerAccess = (c: Caller): AccessCaller => ({
   isAdmin: c.isAdmin,
 });
 
+/** Rows whose org Renown contradicts (m10): org members may not operate them. */
+const disputed = new WeakSet<object>();
+
 export const appResource = (app: AppRow): OwnedResource => ({
   owner: app.owner_address,
   ownerOrgId: app.owner_org_id ?? null,
   appDid: app.identity_did,
+  orgDisputed: disputed.has(app),
 });
+
+/** Per database: Apps whose disagreement with Renown was logged recently. */
+const disputeLogged = new WeakMap<object, TtlLru<true>>();
+export const DISPUTE_LOG_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
  * Who an App's vetra-app document is protected for: the Vetra service
@@ -113,28 +121,33 @@ async function moveEnvironment(
 }
 
 /**
- * One Renown guard per Renown client: ownership sync and adoption never wait
- * longer than its timeout, and skip Renown for a short while after a failure.
+ * One Renown guard per Renown client and per query: ownership sync and
+ * adoption never wait longer than its timeout, and skip Renown for a short
+ * while after a failure. A steadily failing query (an older Renown without
+ * appProfilesByPublisher) must not suppress the others.
  */
-const syncGuards = new WeakMap<object, RenownSyncGuard>();
+const syncGuards = new WeakMap<object, Map<string, RenownSyncGuard>>();
 
 /** A Renown lookup on the reconciliation path (never blocks a request for long). */
 function renownForSync<T>(
   deps: AppsDeps,
+  query: string,
+  key: string,
   load: (orgs: NonNullable<AppsDeps["orgs"]>) => Promise<T>,
 ): Promise<T> {
   const orgs = deps.orgs;
   if (!orgs) return Promise.reject(new Error("no Renown client"));
-  let guard = syncGuards.get(orgs);
+  let guards = syncGuards.get(orgs);
+  if (!guards) {
+    guards = new Map();
+    syncGuards.set(orgs, guards);
+  }
+  let guard = guards.get(query);
   if (!guard) {
     guard = new RenownSyncGuard();
-    syncGuards.set(orgs, guard);
+    guards.set(query, guard);
   }
-  return guard.run(
-    () => load(orgs),
-    deps.now().getTime(),
-    deps.renownSyncTimeoutMs,
-  );
+  return guard.run(() => load(orgs), deps.now().getTime(), deps.renownSyncTimeoutMs, key);
 }
 
 /** How often an App whose row did not change has its envs reconciled. */
@@ -192,10 +205,38 @@ export async function syncAppOrg(
   deps: AppsDeps,
   app: AppRow,
 ): Promise<AppRow> {
+  const seen: { publisher: AppPublisher | null } = { publisher: null };
+  const row = await reconcileAppOrg(deps, app, seen);
+  // m10: Renown names another publisher than the org the row says. Fail
+  // closed for org capability until the sync reconciles them.
+  const orgId = row.owner_org_id ?? null;
+  if (orgId && seen.publisher && (seen.publisher.orgId ?? null) !== orgId) {
+    disputed.add(row);
+    const now = deps.now().getTime();
+    let memo = disputeLogged.get(deps.db);
+    if (!memo) {
+      memo = new TtlLru<true>(5_000);
+      disputeLogged.set(deps.db, memo);
+    }
+    if (!memo.get(row.id, now)) {
+      memo.set(row.id, true, DISPUTE_LOG_INTERVAL_MS, now);
+      deps.logger.warn(
+        `[vetra-apps] App ${row.slug}: Renown names a publisher that is disagrees with the organisation that owns it; org operation is refused until reconciled; ownership left with organisation ${orgId}`,
+      );
+    }
+  }
+  return row;
+}
+
+async function reconcileAppOrg(
+  deps: AppsDeps,
+  app: AppRow,
+  seen: { publisher: AppPublisher | null },
+): Promise<AppRow> {
   if (!deps.orgs || app.status === "DELETED") return app;
   let publisher: AppPublisher | null;
   try {
-    publisher = await renownForSync(deps, (orgs) =>
+    publisher = await renownForSync(deps, "appPublisher", app.identity_did, (orgs) =>
       orgs.appPublisher(app.identity_did),
     );
   } catch {
@@ -205,6 +246,7 @@ export async function syncAppOrg(
   // claim): an org App's envs still follow its row, so a hand-over the
   // observability hook reverted (announcement expired) is made again (m2).
   if (!publisher && !app.owner_org_id) return app;
+  seen.publisher = publisher;
   const answer = publisher;
   return withAppLock(app.id, async () => {
     const row = (await getApp(deps.db, app.id)) ?? app;
@@ -214,15 +256,7 @@ export async function syncAppOrg(
       : row.owner_org_id
         ? { org: row.owner_org_id, owner: row.owner_address }
         : null;
-    if (!target) {
-      if (answer && row.owner_org_id) {
-        // m10: Renown names a publisher Vetra cannot hand the App to.
-        deps.logger.warn(
-          `[vetra-apps] App ${row.slug}: Renown names a publisher that is neither an organisation nor an address; ownership left with organisation ${row.owner_org_id}`,
-        );
-      }
-      return row;
-    }
+    if (!target) return row;
     const currentOrg = row.owner_org_id ?? null;
     const ownerChanges = target.owner !== row.owner_address;
     const rowChanges = ownerChanges || target.org !== currentOrg;
@@ -338,7 +372,7 @@ export async function adoptOrgApps(
   if (!deps.orgs) return;
   let dids: string[] | null;
   try {
-    dids = await renownForSync(deps, (orgs) => orgs.orgApps(orgId));
+    dids = await renownForSync(deps, "orgApps", orgId, (orgs) => orgs.orgApps(orgId));
   } catch {
     return;
   }
@@ -370,7 +404,7 @@ export async function adoptPersonApps(
   const addr = address.toLowerCase();
   let dids: string[];
   try {
-    dids = await renownForSync(deps, (orgs) => orgs.personApps(addr));
+    dids = await renownForSync(deps, "personApps", addr, (orgs) => orgs.personApps(addr));
   } catch {
     return;
   }

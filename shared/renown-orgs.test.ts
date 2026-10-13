@@ -198,15 +198,33 @@ describe("RenownSyncGuard", () => {
     const guard = new RenownSyncGuard({ timeoutMs: 20, cooldownMs: 1_000 });
     expect(guard.timeoutMs).toBe(20);
     expect(await guard.run(async () => 1, 0)).toBe(1);
-    await expect(guard.run(() => new Promise<never>(() => {}), 10)).rejects.toBeInstanceOf(RenownOrgsUnavailableError);
+    await expect(guard.run(() => new Promise<never>(() => {}), 10, undefined, "hung")).rejects.toBeInstanceOf(RenownOrgsUnavailableError);
     const load = vi.fn(async () => 2);
-    await expect(guard.run(load, 500)).rejects.toThrow("lookup skipped");
+    await expect(guard.run(load, 500, undefined, "x")).rejects.toThrow("lookup skipped");
     expect(load).not.toHaveBeenCalled();
     expect(await guard.run(load, 1_011)).toBe(2);
     // A failing lookup opens it too; a per-call timeout overrides the default.
     await expect(guard.run(async () => Promise.reject(new Error("x")), 2_000)).rejects.toThrow("x");
     await expect(guard.run(load, 2_500)).rejects.toThrow("lookup skipped");
     await expect(guard.run(() => new Promise<never>(() => {}), 5_000, 5)).rejects.toThrow("within 5 ms");
-    expect(new RenownSyncGuard().cooldownMs).toBe(30_000);
+    expect(new RenownSyncGuard().cooldownMs).toBe(10_000);
+  });
+
+  it("a slow-but-up Renown still converges: a lookup in the cool-down gets the late answer", async () => {
+    const guard = new RenownSyncGuard({ timeoutMs: 20, cooldownMs: 1_000 });
+    const slow = () => new Promise<number>((r) => setTimeout(() => r(7), 50));
+    const never = vi.fn(async () => 8);
+    await expect(guard.run(slow, 0, undefined, "k")).rejects.toThrow("no answer");
+    // Still in flight inside the cool-down: skipped, not waited for again.
+    await expect(guard.run(never, 10, 100, "k")).rejects.toThrow("skipped");
+    expect(never).not.toHaveBeenCalled();
+    // Answered earlier: served from the guard during the cool-down.
+    await expect(guard.run(slow, 100, undefined, "j")).rejects.toThrow("skipped");
+    await new Promise((r) => setTimeout(r, 70));
+    expect(await guard.run(never, 200, undefined, "k")).toBe(7);
+    // A different key has no answer, so the cool-down still skips it.
+    await expect(guard.run(never, 300, undefined, "other")).rejects.toThrow("skipped");
+    // Past the cool-down it asks again.
+    expect(await guard.run(never, 1_100, undefined, "k")).toBe(8);
   });
 });

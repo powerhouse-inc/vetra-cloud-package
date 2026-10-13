@@ -447,7 +447,7 @@ describe("createApp in an organisation", () => {
     h.orgs.publishers.set(created.identity_did, { orgId: null, address: null });
     expect((await appForOwner(h.deps, admin, created.id)).owner_org_id).toBe(ORG);
     expect(h.deps.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("neither an organisation nor an address"),
+      expect.stringContaining("disagrees with the organisation that owns it"),
     );
   });
 
@@ -917,7 +917,8 @@ describe("personal apps never wait on Renown (I3)", () => {
     expect((await myApps(h.deps, owner)).map((a) => a.id)).toStrictEqual([app.id]);
     expect(Date.now() - started).toBeLessThan(1_000);
     const askedFirst = asked.n;
-    expect(askedFirst).toBe(1);
+    // One guard per query: each of the two asked once.
+    expect(askedFirst).toBe(2);
     // Within the cool-down nothing waits on Renown and nothing asks it.
     expect((await appForOwner(h.deps, owner, app.id)).id).toBe(app.id);
     h.envs.setStatus(app.production_environment_id, "READY");
@@ -949,5 +950,56 @@ describe("personal apps never wait on Renown (I3)", () => {
     h.clock.now = new Date(h.clock.now.getTime() + ENV_RECONCILE_INTERVAL_MS + 1);
     await appForOwner(h.deps, owner, app.id);
     expect(reads.mock.calls.length).toBeGreaterThan(first);
+  });
+});
+
+describe("Renown sync guards (pre-prod)", () => {
+  it("one failing query does not suppress the others", async () => {
+    h.orgs.personApps = async () => {
+      throw new Error("older Renown: no appProfilesByPublisher");
+    };
+    await myApps(h.deps, owner).catch(() => undefined);
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    expect((await appForOwner(h.deps, admin, app.id)).owner_org_id).toBe(ORG);
+  });
+
+  it("an ownership change is picked up with a slow Renown within a bounded number of reads", async () => {
+    const real = h.orgs.appPublisher.bind(h.orgs);
+    h.orgs.appPublisher = (did: string) =>
+      new Promise((r) => setTimeout(() => r(real(did)), 60));
+    (h.deps as { renownSyncTimeoutMs?: number }).renownSyncTimeoutMs = 20;
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    let org: string | null | undefined;
+    for (let i = 0; i < 4 && org !== ORG; i++) {
+      org = (await appForOwner(h.deps, admin, app.id)).owner_org_id;
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    expect(org).toBe(ORG);
+  });
+});
+
+describe("m10: Renown disagrees with the row", () => {
+  const MIN10 = 10 * 60 * 1000;
+  it("org members cannot operate the app until Renown and the row agree; the warning is rate-limited", async () => {
+    await moveToOrg();
+    h.orgs.join(ORG, MEMBER, "OWNER");
+    expect(await code(updateApp(h.deps, member, app.id, { name: "Fine" }))).toBe("OK");
+    h.orgs.publishers.set(APP_DID, { orgId: null, address: null });
+    h.clock.now = new Date(h.clock.now.getTime() + 31_000);
+    const warns = () =>
+      vi
+        .mocked(h.deps.logger.warn)
+        .mock.calls.filter((c) => String(c[0]).includes("disagrees with the organisation")).length;
+    expect(await code(updateApp(h.deps, member, app.id, { name: "Nope" }))).toBe("FORBIDDEN");
+    expect(await code(updateApp(h.deps, member, app.id, { name: "Nope" }))).toBe("FORBIDDEN");
+    expect(await code(appForOwner(h.deps, admin, app.id))).toBe("OK");
+    expect(warns()).toBe(1);
+    h.clock.now = new Date(h.clock.now.getTime() + MIN10 + 1);
+    await appForOwner(h.deps, admin, app.id);
+    expect(warns()).toBe(2);
+    // Renown agrees again: operable again.
+    h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
+    h.clock.now = new Date(h.clock.now.getTime() + 31_000);
+    expect(await code(updateApp(h.deps, member, app.id, { name: "Back" }))).toBe("OK");
   });
 });
