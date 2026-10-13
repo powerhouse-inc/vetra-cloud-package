@@ -323,6 +323,26 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
     expect(dispatch).toHaveBeenCalledWith("mine", "SET_OWNER_ORG", { ownerOrgId: "o1", operators: [BOB] });
   });
 
+  it("m1: decides again on the document under the lock (read model lagging behind a hand-over)", async () => {
+    await seedEnv({ id: "mine", owner: BOB });
+    const doc = { owner: BOB as string | null, ownerOrgId: "o1" as string | null, orgOperators: [BOB] };
+    const r = resolversWithSync({ orgSync: { readOrgState: async () => ({ ...doc }) } }).Mutation;
+    await expect(r.setEnvironmentOrg(null, { environmentId: "mine", orgId: "o1" }, ctx(BOB))).rejects.toThrow("ALREADY_ORG_OWNED");
+    doc.ownerOrgId = null;
+    doc.owner = CAROL;
+    await expect(r.setEnvironmentOrg(null, { environmentId: "mine", orgId: "o1" }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    const gone = resolversWithSync({ orgSync: { readOrgState: async () => null } }).Mutation;
+    await expect(gone.setEnvironmentOrg(null, { environmentId: "mine", orgId: "o1" }, ctx(BOB))).rejects.toThrow("ENV_NOT_FOUND");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(await db.selectFrom("org_expected_handovers").selectAll().execute()).toStrictEqual([]);
+  });
+
+  it("m7: an unowned env answers canOperate for any signed-in caller (the first signed action claims it)", async () => {
+    await seedEnv({ id: "fresh", owner: null });
+    expect(await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "fresh" }, ctx(CAROL)))
+      .toStrictEqual({ environmentId: "fresh", ownerOrgId: null, canOperate: true, canView: true });
+  });
+
   it("withdraws the announcement when the hand-over dispatch fails", async () => {
     await seedEnv({ id: "mine", owner: BOB });
     dispatch.mockRejectedValueOnce(new Error("reactor down"));

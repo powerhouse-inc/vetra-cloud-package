@@ -34,6 +34,7 @@ import {
   orgProtectionOptions,
   resyncIfTampered,
   runOrgSyncOnce,
+  skipWhileRunning,
   withEnvLock,
   type OrgSyncDeps,
 } from "./org-sync.js";
@@ -706,7 +707,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * leaves documents and grants untouched (see org-sync.ts).
    */
   private startOrgOperatorSync(orgSync: OrgSyncDeps) {
-    const syncOrgs = async () => {
+    const syncOrgs = skipWhileRunning(async () => {
       try {
         const n = await runOrgSyncOnce(orgSync);
         if (n > 0) console.info(`[org-sync] checked ${n} organisation environment(s)`);
@@ -714,7 +715,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         if (String(err).includes("does not exist")) return;
         console.warn("[org-sync] error:", err);
       }
-    };
+    });
     this.orgOperatorSync = setInterval(() => void syncOrgs(), 5 * 60 * 1000);
     void syncOrgs();
   }

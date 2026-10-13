@@ -11,6 +11,7 @@ import {
   resyncIfTampered,
   RESTRICTION_GRANTEE,
   runOrgSyncOnce,
+  skipWhileRunning,
   SYSTEM_ONLY_OPERATIONS,
   syncEnvironmentOrgOnce,
   type OrgSyncDeps,
@@ -480,5 +481,29 @@ describe("operator sync", () => {
     expect(await resyncIfTampered(d, { id: "e1", ownerOrgId: "o1", orgOperators: [BOB, CAROL] })).toBe(true);
     expect(doc.orgOperators).toStrictEqual([BOB]);
     expect(await getPerm("e1", CAROL)).toBeNull();
+  });
+});
+
+describe("skipWhileRunning (m12)", () => {
+  it("skips a tick while the previous run is in flight, runs again once it finished or failed", async () => {
+    let release: () => void = () => {};
+    let runs = 0;
+    let fail = false;
+    const tick = skipWhileRunning(async () => {
+      runs++;
+      if (fail) throw new Error("boom");
+      await new Promise<void>((r) => (release = r));
+    });
+    const first = tick();
+    expect(await tick()).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    fail = true;
+    await expect(tick()).rejects.toThrow("boom");
+    fail = false;
+    const third = tick();
+    release();
+    expect(await third).toBe(true);
+    expect(runs).toBe(3);
   });
 });

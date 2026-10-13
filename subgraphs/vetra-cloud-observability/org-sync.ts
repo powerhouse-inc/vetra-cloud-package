@@ -400,3 +400,21 @@ export async function runOrgSyncOnce(deps: OrgSyncDeps): Promise<number> {
   }
   return envs.length;
 }
+
+/**
+ * A job tick that is skipped while the previous run is still going (m12): a
+ * slow Renown must not stack runs that hold env locks.
+ */
+export function skipWhileRunning(run: () => Promise<void>): () => Promise<boolean> {
+  let running = false;
+  return async () => {
+    if (running) return false;
+    running = true;
+    try {
+      await run();
+      return true;
+    } finally {
+      running = false;
+    }
+  };
+}

@@ -614,6 +614,8 @@ export function createResolvers(
         if (!env) throw new Error("ENV_NOT_FOUND");
         const who = { address: caller, isAdmin };
         if (!env.ownerOrgId) {
+          // An unowned env is claimed by the first signed action (reducer auto-claim).
+          if (!env.owner) return { environmentId, ownerOrgId: null, canOperate: true, canView: true };
           const own = await access.canOperate(who, env);
           return { environmentId, ownerOrgId: null, canOperate: own, canView: own };
         }
@@ -669,6 +671,13 @@ export function createResolvers(
         const perm = sync?.perm ?? null;
         const opts = sync ? orgProtectionOptions(sync) : null;
         await withEnvLock(env.id, async () => {
+          // The read model lags behind dispatches: decide again on the
+          // document (or the re-read row) under the lock, so a second call
+          // right after a hand-over cannot move the env on to another org.
+          const fresh = sync?.readOrgState ? await sync.readOrgState(env.id) : await loadOrgEnv(environmentId);
+          if (!fresh) throw new Error("ENV_NOT_FOUND");
+          if (fresh.ownerOrgId) throw new Error("ALREADY_ORG_OWNED");
+          if (fresh.owner?.toLowerCase() !== caller) throw new Error("FORBIDDEN");
           // Restrict the system-only operations before the hand-over and
           // announce it, so the change is recognised as Vetra's own…
           if (perm && opts) {
