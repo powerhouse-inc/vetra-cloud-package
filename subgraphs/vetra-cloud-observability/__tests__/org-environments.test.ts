@@ -15,9 +15,11 @@ const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CAROL = "0xcccccccccccccccccccccccccccccccccccccccc";
 const ADMIN = "0xdddddddddddddddddddddddddddddddddddddddd";
+const DAVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const members: Record<string, { role: "OWNER" | "ADMIN" | "PUBLISHER" | "MEMBER"; effectiveScope: { all: boolean; appDids: string[] } }> = {
   [`o1|${BOB}`]: { role: "PUBLISHER", effectiveScope: { all: true, appDids: [] } },
   [`o1|${CAROL}`]: { role: "MEMBER", effectiveScope: { all: false, appDids: [] } },
+  [`o1|${DAVE}`]: { role: "ADMIN", effectiveScope: { all: true, appDids: [] } },
 };
 const access = createEnvAccess({
   orgs: { membership: async (orgId, address) => members[`${orgId}|${address}`] ?? null },
@@ -209,7 +211,7 @@ describe("owner checks on org environments", () => {
     await expect(registry(null, { tenantId: "t-org-env", registryUrl: url }, ctx(BOB))).resolves.toMatchObject({ tenantId: "t-org-env" });
   });
 
-  it("dumps: org publishers only, no admin bypass, fail closed on outage", async () => {
+  it("dumps: org OWNER/ADMIN only (full-scope publishers refused), no platform-admin bypass, fail closed on outage", async () => {
     const deps = {
       repo: new DumpsRepo(db),
       envDb,
@@ -222,13 +224,20 @@ describe("owner checks on org environments", () => {
       s3AccessKey: "a",
       s3SecretKey: "s",
     };
-    const list = createDumpResolvers({ ...deps, access }).Query.environmentDumps;
-    await expect(list(null, { tenantId: "t-org-env" }, ctx(BOB))).resolves.toStrictEqual([]);
-    for (const who of [OWNER, CAROL, ADMIN]) {
+    const dumps = createDumpResolvers({ ...deps, access });
+    const list = dumps.Query.environmentDumps;
+    await expect(list(null, { tenantId: "t-org-env" }, ctx(DAVE))).resolves.toStrictEqual([]);
+    for (const who of [BOB, OWNER, CAROL, ADMIN]) {
       await expect(list(null, { tenantId: "t-org-env" }, ctx(who))).rejects.toThrow("FORBIDDEN");
+      await expect(dumps.Mutation.requestEnvironmentDump(null, { tenantId: "t-org-env" }, ctx(who))).rejects.toThrow("FORBIDDEN");
     }
+    const dump = await dumps.Mutation.requestEnvironmentDump(null, { tenantId: "t-org-env" }, ctx(DAVE));
+    expect(dump.status).toBe("PENDING");
+    await expect(dumps.Mutation.cancelEnvironmentDump(null, { dumpId: dump.id }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    await expect(dumps.Mutation.cancelEnvironmentDump(null, { dumpId: dump.id }, ctx(DAVE))).resolves.toMatchObject({ status: "FAILED" });
+
     const outage = createDumpResolvers({ ...deps, access: renownDown }).Query.environmentDumps;
-    await expect(outage(null, { tenantId: "t-org-env" }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    await expect(outage(null, { tenantId: "t-org-env" }, ctx(DAVE))).rejects.toThrow("FORBIDDEN");
     await expect(outage(null, { tenantId: "t-personal" }, ctx(OWNER))).resolves.toStrictEqual([]);
     await expect(outage(null, { tenantId: "t-personal" }, ctx(ADMIN))).rejects.toThrow("FORBIDDEN");
   });

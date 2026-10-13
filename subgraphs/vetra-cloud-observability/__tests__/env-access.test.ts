@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
-import { appDidLookup, createEnvAccess, OWNER_ONLY_ACCESS, parseOperators } from "../env-access.js";
+import { appDidLookup, createEnvAccess, OWNER_ONLY_ACCESS, parseOperators, unresolvedAppDid } from "../env-access.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const CAROL = "0xcccccccccccccccccccccccccccccccccccccccc";
+const DAVE = "0xdddddddddddddddddddddddddddddddddddddddd";
 const bob = { address: BOB, isAdmin: false };
 
 describe("env access", () => {
@@ -45,6 +47,42 @@ describe("env access", () => {
     expect(await access.canOperate(bob, { owner: OWNER, appId: "app-shop" })).toBe(false);
     expect(membership).not.toHaveBeenCalled();
     expect(appDidOf).not.toHaveBeenCalled();
+  });
+
+  it("denies scoped publishers when a linked app cannot be resolved; admins of the org keep access", async () => {
+    const roles: Record<string, { role: "OWNER" | "ADMIN" | "PUBLISHER"; effectiveScope: { all: boolean; appDids: string[] } }> = {
+      [BOB]: { role: "PUBLISHER", effectiveScope: { all: false, appDids: ["did:key:shop"] } },
+      [CAROL]: { role: "PUBLISHER", effectiveScope: { all: true, appDids: [] } },
+      [DAVE]: { role: "ADMIN", effectiveScope: { all: true, appDids: [] } },
+    };
+    const access = createEnvAccess({
+      orgs: { membership: async (_o, address) => roles[address] ?? null },
+      appDidOf: async () => null,
+    });
+    const env = { owner: OWNER, ownerOrgId: "o1", appId: "app-gone" };
+    expect(await access.canOperate(bob, env)).toBe(false);
+    expect(await access.canOperate({ address: CAROL, isAdmin: false }, env)).toBe(true);
+    expect(await access.canOperate({ address: DAVE, isAdmin: false }, env)).toBe(true);
+    expect(unresolvedAppDid("app-gone")).toBe("unresolved-app:app-gone");
+  });
+
+  it("isOrgAdmin: OWNER/ADMIN of the org or platform admin; publishers, outages and no-Renown are false", async () => {
+    const roles: Record<string, "OWNER" | "ADMIN" | "PUBLISHER"> = { [OWNER]: "OWNER", [DAVE]: "ADMIN", [BOB]: "PUBLISHER" };
+    const access = createEnvAccess({
+      orgs: { membership: async (_o, address) => (roles[address] ? { role: roles[address], effectiveScope: { all: true, appDids: [] } } : null) },
+      appDidOf: async () => null,
+    });
+    expect(await access.isOrgAdmin({ address: OWNER, isAdmin: false }, "o1")).toBe(true);
+    expect(await access.isOrgAdmin({ address: DAVE, isAdmin: false }, "o1")).toBe(true);
+    expect(await access.isOrgAdmin(bob, "o1")).toBe(false);
+    expect(await access.isOrgAdmin({ address: CAROL, isAdmin: false }, "o1")).toBe(false);
+    expect(await access.isOrgAdmin({ address: CAROL, isAdmin: true }, "o1")).toBe(true);
+    const down = createEnvAccess({
+      orgs: { membership: async () => { throw new Error("down"); } },
+      appDidOf: async () => null,
+    });
+    expect(await down.isOrgAdmin({ address: OWNER, isAdmin: false }, "o1")).toBe(false);
+    expect(await OWNER_ONLY_ACCESS.isOrgAdmin({ address: OWNER, isAdmin: false }, "o1")).toBe(false);
   });
 
   it("reads an app's identity DID from the vetra-apps namespace", async () => {

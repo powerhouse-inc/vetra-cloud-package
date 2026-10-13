@@ -39,16 +39,20 @@ describe("authorizeDump", () => {
     expect(seenAdmin).toBe(false);
   });
 
-  it("org env without an owner: covering publisher passes, others refused", async () => {
+  it("org env: OWNER/ADMIN of the org pass; publishers (full scope too) and platform admins are refused", async () => {
+    const roles: Record<string, "OWNER" | "ADMIN" | "PUBLISHER"> = { "0xabc": "ADMIN", "0xfff": "OWNER", "0xdef": "PUBLISHER" };
     const access = createEnvAccess({
       orgs: {
         membership: async (_org, address) =>
-          address === "0xabc" ? { role: "PUBLISHER", effectiveScope: { all: true, appDids: [] } } : null,
+          roles[address] ? { role: roles[address], effectiveScope: { all: true, appDids: [] } } : null,
       },
       appDidOf: async () => null,
     });
-    const env = { owner: null, ownerOrgId: "o1", appId: null };
+    const env = { owner: "0xdef", ownerOrgId: "o1", appId: null };
     await expect(authorizeDump(access, { caller: "0xABC", env })).resolves.toBeUndefined();
+    await expect(authorizeDump(access, { caller: "0xfff", env })).resolves.toBeUndefined();
     await expect(authorizeDump(access, { caller: "0xdef", env })).rejects.toThrow("FORBIDDEN");
+    await expect(authorizeDump(access, { caller: "0x123", env })).rejects.toThrow("FORBIDDEN");
+    await expect(authorizeDump(access, { caller: "0xabc", env: { ...env, owner: null } })).resolves.toBeUndefined();
   });
 });

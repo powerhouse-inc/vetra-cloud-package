@@ -18,6 +18,8 @@ export interface EnvAccess {
   canOperate(caller: AccessCaller, env: EnvAccessRow): Promise<boolean>;
   canView(caller: AccessCaller, env: EnvAccessRow): Promise<boolean>;
   isMember(caller: AccessCaller, orgId: string): Promise<boolean>;
+  /** Platform admin, or an OWNER/ADMIN of the organisation; Renown failure is false. */
+  isOrgAdmin(caller: AccessCaller, orgId: string): Promise<boolean>;
 }
 
 /** Marker: an org env's app DID could not be read; access is then refused (admins aside). */
@@ -33,7 +35,10 @@ export function createEnvAccess(deps: {
     // lookup must not widen scope to "no app", so it refuses instead.
     if (env.ownerOrgId && env.appId) {
       try {
-        appDid = await deps.appDidOf(env.appId);
+        // A linked app whose row/DID is gone gets a DID no scope list
+        // contains: OWNER/ADMIN and all-scope publishers keep access,
+        // scoped publishers are refused (never widened to "no app").
+        appDid = (await deps.appDidOf(env.appId)) ?? unresolvedAppDid(env.appId);
       } catch {
         return APP_DID_UNKNOWN;
       }
@@ -52,7 +57,22 @@ export function createEnvAccess(deps: {
       return canView(deps.orgs, caller, r);
     },
     isMember: (caller, orgId) => isOrgMember(deps.orgs, caller, orgId),
+    isOrgAdmin: async (caller, orgId) => {
+      if (caller.isAdmin) return true;
+      if (!deps.orgs) return false;
+      try {
+        const m = await deps.orgs.membership(orgId, caller.address);
+        return m?.role === "OWNER" || m?.role === "ADMIN";
+      } catch {
+        return false;
+      }
+    },
   };
+}
+
+/** Placeholder DID for an app link that cannot be resolved; matches no scope. */
+export function unresolvedAppDid(appId: string): string {
+  return `unresolved-app:${appId}`;
 }
 
 /** Default for hosts and tests without Renown: org environments are admin-only. */

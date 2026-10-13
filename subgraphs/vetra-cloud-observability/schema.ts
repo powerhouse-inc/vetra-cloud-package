@@ -80,7 +80,9 @@ export const schema: DocumentNode = gql`
 
     """
     On-demand pg_dump exports of the env's Postgres, newest first
-    (capped at 20). Owner-only (org envs: covering publishers; no admin bypass). Each entry has a 24h-TTL file on S3;
+    (capped at 20). Personal envs: owner only. Organisation envs: an
+    OWNER or ADMIN of the owning organisation. No platform-admin bypass.
+    Each entry has a 24h-TTL file on S3;
     \`downloadUrl\` is a 15-min presigned URL minted on every read,
     only present when status=READY and the file hasn't expired.
     """
@@ -172,7 +174,9 @@ export const schema: DocumentNode = gql`
     rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
 
     """
-    Owner-gated. Creates a new on-demand pg_dump export. Returns the
+    Personal envs: owner only. Organisation envs: an OWNER or ADMIN of
+    the owning organisation (publishers are refused). No platform-admin
+    bypass. Creates a new on-demand pg_dump export. Returns the
     new dump in PENDING. Caller polls environmentDumps to observe
     state transitions. Raises DUMP_IN_PROGRESS if a previous dump is
     still PENDING or RUNNING.
@@ -180,17 +184,18 @@ export const schema: DocumentNode = gql`
     requestEnvironmentDump(tenantId: String!): DatabaseDump!
 
     """
-    Owner-gated. Cancels an in-flight (PENDING or RUNNING) dump:
+    Personal envs: owner only. Organisation envs: an OWNER or ADMIN of
+    the owning organisation. No platform-admin bypass. Cancels an in-flight (PENDING or RUNNING) dump:
     deletes its k8s Job (best-effort) and marks the row FAILED with
     'Cancelled by user'. No-op for terminal rows (READY/FAILED) —
     returns them unchanged. Raises ENV_NOT_FOUND if the dump's tenant
-    has no env, FORBIDDEN for non-owners, DUMP_NOT_FOUND if the id
+    has no env, FORBIDDEN for anyone else, DUMP_NOT_FOUND if the id
     doesn't exist.
     """
     cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
 
     """
-    Owner-gated. Trigger a rolling restart of one of an environment's
+    Owner, covering org publisher, or admin. Trigger a rolling restart of one of an environment's
     Deployments by stamping the standard rollout-restart annotation on its
     pod template. 'service' selects CONNECT/SWITCHBOARD; for CLINT pass the
     agent's 'agentPrefix' to disambiguate (each agent is its own
