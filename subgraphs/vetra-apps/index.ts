@@ -13,6 +13,8 @@ import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
 import {
@@ -119,6 +121,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       }
     });
 
+    // Organisation moves of envs are announced in the observability namespace
+    // (its tables are created by that subgraph; until it has booted a move
+    // fails and is retried on the next read).
+    const orgHandoverDb = (await this.relationalDb.createNamespace(
+      "vetra-cloud-observability",
+    )) as unknown as Kysely<ObservabilityDB>;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -130,6 +139,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       now: () => new Date(),
       newId: () => randomUUID(),
       logger: console,
+      orgs: defaultRenownOrgs(),
+      orgHandoverDb,
       docs: createReactorAppDocStore(
         this.reactorClient as never,
         appDocProtect,

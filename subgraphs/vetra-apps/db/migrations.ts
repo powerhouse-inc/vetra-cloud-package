@@ -29,6 +29,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   for (const [column, type] of [
     ["harbor_robot_id", "integer"],
     ["identity_expires_at", "varchar(64)"],
+    ["owner_org_id", "varchar(255)"],
   ] as const) {
     try {
       await db.schema.alterTable("apps").addColumn(column, type).execute();
@@ -36,6 +37,12 @@ export async function up(db: Kysely<any>): Promise<void> {
       // Column already exists
     }
   }
+  await db.schema
+    .createIndex("apps_owner_org_idx")
+    .on("apps")
+    .column("owner_org_id")
+    .ifNotExists()
+    .execute();
   await db.schema
     .createIndex("apps_owner_idx")
     .on("apps")

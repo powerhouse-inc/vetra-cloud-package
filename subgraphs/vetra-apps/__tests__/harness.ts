@@ -15,6 +15,13 @@ import {
 } from "../../../document-models/vetra-cloud-environment/v1/index.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { up } from "../db/migrations.js";
+import { up as upObservability } from "../../vetra-cloud-observability/db/migrations.js";
+import type { ObservabilityDB } from "../../vetra-cloud-observability/db/schema.js";
+import {
+  RenownOrgsUnavailableError,
+  type AppPublisher,
+  type OrgMembership,
+} from "../../../shared/renown-orgs.js";
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
@@ -56,6 +63,51 @@ export const admin: Caller = {
   appKey: null,
   isAdmin: true,
 };
+export const ORG = "org-acme";
+export const MEMBER = "0xdddddddddddddddddddddddddddddddddddddddd";
+export const member: Caller = {
+  address: MEMBER,
+  chainId: 1,
+  appKey: null,
+  isAdmin: false,
+};
+
+export function fakeOrgs() {
+  const self = {
+    members: new Map<string, OrgMembership>(),
+    apps: new Map<string, string[]>(),
+    publishers: new Map<string, AppPublisher>(),
+    down: false,
+    join(
+      orgId: string,
+      address: string,
+      role: OrgMembership["role"],
+      scope: string[] | "ALL" = "ALL",
+    ) {
+      self.members.set(`${orgId}|${address.toLowerCase()}`, {
+        role,
+        effectiveScope:
+          scope === "ALL"
+            ? { all: true, appDids: [] }
+            : { all: false, appDids: scope },
+      });
+    },
+    async membership(orgId: string, address: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.members.get(`${orgId}|${address.toLowerCase()}`) ?? null;
+    },
+    async orgApps(orgId: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.apps.get(orgId) ?? null;
+    },
+    async appPublisher(appDid: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.publishers.get(appDid) ?? null;
+    },
+  };
+  return self;
+}
+
 export const appIdentity: Caller = {
   address: OWNER,
   chainId: 1,
@@ -328,6 +380,9 @@ export interface Harness {
   github: ReturnType<typeof fakeGithub>;
   harbor: ReturnType<typeof fakeHarbor>;
   renown: ReturnType<typeof fakeRenown>;
+  orgs: ReturnType<typeof fakeOrgs>;
+  /** The observability tables (expected organisation hand-overs), same database. */
+  obsDb: Kysely<ObservabilityDB>;
   clock: { now: Date };
   close(): Promise<void>;
 }
@@ -339,6 +394,11 @@ export async function makeHarness(
     dialect: new PGliteDialect(new PGlite()),
   });
   await up(db as Kysely<any>);
+  // Observability's tables live in their own namespace in production; one
+  // database is enough here (no table names overlap).
+  await upObservability(db as Kysely<any>);
+  const obsDb = db as unknown as Kysely<ObservabilityDB>;
+  const orgs = fakeOrgs();
   const envs = new FakeEnvs();
   const github = fakeGithub();
   const harbor = fakeHarbor();
@@ -352,6 +412,8 @@ export async function makeHarness(
     github,
     harbor,
     renown,
+    orgs,
+    orgHandoverDb: obsDb,
     generateSubdomain: (id) => `sub-${id}`,
     now: () => {
       // strictly increasing timestamps keep created_at ordering deterministic
@@ -368,6 +430,8 @@ export async function makeHarness(
     github,
     harbor,
     renown,
+    orgs,
+    obsDb,
     clock,
     close: () => db.destroy(),
   };

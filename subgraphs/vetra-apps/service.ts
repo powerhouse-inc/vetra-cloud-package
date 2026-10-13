@@ -27,6 +27,15 @@ import {
 } from "./github.js";
 import type { HarborApi } from "./harbor.js";
 import type { RenownApi } from "./renown.js";
+import type { RenownOrgs } from "../../shared/renown-orgs.js";
+import { canOperate, canView, isOrgMember } from "../../shared/org-access.js";
+import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
+import {
+  adoptOrgApps,
+  appResource,
+  callerAccess,
+  syncAppOrg,
+} from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
 import { appsError, notConfigured } from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
@@ -76,6 +85,14 @@ export interface AppsDeps {
   now: () => Date;
   newId: () => string;
   logger: AppsLogger;
+  /** Renown organisations; null/absent: org-owned Apps are admin-only. */
+  orgs?: RenownOrgs | null;
+  /**
+   * The observability namespace, where every organisation move of an env
+   * Vetra dispatches is announced first (expectOrgHandover); unannounced
+   * moves are reverted by the observability protection hook.
+   */
+  orgHandoverDb?: Kysely<ObservabilityDB> | null;
   /**
    * The reactor surface the app documents live on. Absent = no mirroring; reads
    * are served from the table either way in this step.
@@ -134,17 +151,25 @@ function assertBranch(branch: string): void {
 // Authorization
 // ---------------------------------------------------------------------------
 
+export interface AppAccessOptions {
+  includeDeleted?: boolean;
+  /** "view": any member of the owning org; "operate" (default): publishers. */
+  need?: "view" | "operate";
+}
+
 /**
- * Owner-level access: the owner signed in as themselves, or an admin. A token
- * of any App identity (CI) is refused here — CI may only deploy, fetch its
- * registry credentials and read its deployments. That keeps a PR-branch token
- * from e.g. rolling back production or editing the App.
+ * Owner-level access: the personal owner signed in as themselves, a member
+ * with publisher capability for an org-owned App (any member to view), or an
+ * admin. The App's ownership is first reconciled with Renown (syncAppOrg). A
+ * token of any App identity (CI) is refused here — CI may only deploy, fetch
+ * its registry credentials and read its deployments. That keeps a PR-branch
+ * token from e.g. rolling back production or editing the App.
  */
 async function loadAppForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
-  opts: { includeDeleted?: boolean } = {},
+  opts: AppAccessOptions = {},
 ): Promise<AppRow> {
   await assertNotWorkload(deps, caller);
   const app = await getApp(deps.db, appId);
@@ -153,10 +178,14 @@ async function loadAppForOwner(
   if (app.status === "DELETED" && !(opts.includeDeleted && caller.isAdmin)) {
     throw appsError("NOT_FOUND", "App not found");
   }
-  if (app.owner_address !== caller.address && !caller.isAdmin) {
-    throw appsError("FORBIDDEN", "Not the owner of this App");
+  const synced = await syncAppOrg(deps, app);
+  const check = opts.need === "view" ? canView : canOperate;
+  if (
+    !(await check(deps.orgs ?? null, callerAccess(caller), appResource(synced)))
+  ) {
+    throw appsError("FORBIDDEN", "Not allowed to manage this App");
   }
-  return app;
+  return synced;
 }
 
 async function assertNotWorkload(
@@ -411,26 +440,52 @@ export async function githubDeployRepositories(
 // Apps
 // ---------------------------------------------------------------------------
 
+/**
+ * Personal Apps (owner_org_id IS NULL), or with `orgId` the organisation's
+ * Apps (members and admins only; Apps Renown lists for it are adopted first).
+ */
 export async function myApps(
   deps: AppsDeps,
   caller: Caller,
+  orgId?: string | null,
 ): Promise<AppRow[]> {
   await assertNotWorkload(deps, caller);
+  const org = orgId?.trim() || null;
+  if (org) {
+    if (!(await isOrgMember(deps.orgs ?? null, callerAccess(caller), org))) {
+      throw appsError("FORBIDDEN", "Not a member of this organisation");
+    }
+    await adoptOrgApps(deps, org);
+    const rows = await deps.db
+      .selectFrom("apps")
+      .selectAll()
+      .where("owner_org_id", "=", org)
+      .where("status", "!=", "DELETED")
+      .orderBy("created_at", "desc")
+      .execute();
+    return rows.map(normalizeApp);
+  }
   const rows = await deps.db
     .selectFrom("apps")
     .selectAll()
     .where("owner_address", "=", caller.address)
+    .where("owner_org_id", "is", null)
     .where("status", "!=", "DELETED")
     .orderBy("created_at", "desc")
     .execute();
-  return rows.map(normalizeApp);
+  const synced = await Promise.all(
+    rows.map((r) => syncAppOrg(deps, normalizeApp(r))),
+  );
+  return synced.filter(
+    (a) => a.owner_org_id === null && a.owner_address === caller.address,
+  );
 }
 
 export async function appForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
-  opts: { includeDeleted?: boolean } = {},
+  opts: AppAccessOptions = {},
 ) {
   return loadAppForOwner(deps, caller, appId, opts);
 }
@@ -600,6 +655,7 @@ export async function createApp(
       harbor_robot_name: robot.name,
       harbor_robot_id: robot.id,
       identity_expires_at: null,
+      owner_org_id: null,
       harbor_robot_secret_enc: encryptSecret(
         deps.cfg.encryptionKey,
         robot.secret,
@@ -984,7 +1040,7 @@ export async function appDeploymentsFor(
   appId: string,
   limit: number | null | undefined,
 ): Promise<DeploymentRow[]> {
-  const app = await loadAppForOwner(deps, caller, appId);
+  const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
   return deps.db
     .selectFrom("app_deployments")
     .selectAll()
@@ -1003,7 +1059,7 @@ export async function appDeploymentFor(
   await assertNotWorkload(deps, caller);
   const d = await getDeployment(deps.db, deploymentId);
   if (!d) return null;
-  await loadAppForOwner(deps, caller, d.app_id);
+  await loadAppForOwner(deps, caller, d.app_id, { need: "view" });
   return d;
 }
 

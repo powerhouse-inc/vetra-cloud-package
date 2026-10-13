@@ -75,6 +75,8 @@ export const schema: DocumentNode = gql`
     slug: String!
     name: String!
     ownerAddress: String!
+    "Renown organisation owning the App; null for personal Apps."
+    ownerOrgId: String
     status: AppStatus!
     repository: AppRepository!
     productionBranch: String!
@@ -156,7 +158,8 @@ export const schema: DocumentNode = gql`
   }
 
   type Query {
-    myApps: [App!]!
+    "Personal Apps, or with orgId the organisation's Apps (members only)"
+    myApps(orgId: String): [App!]!
     app(id: ID!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appDeployment(id: ID!): AppDeployment
