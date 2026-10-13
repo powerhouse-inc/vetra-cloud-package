@@ -4,10 +4,11 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
-import { protectEnvironment } from "../env-protection.js";
+import { expectOrgHandover, protectEnvironment } from "../env-protection.js";
 import {
   grantViewer,
   restrictSystemOperations,
+  resyncIfTampered,
   RESTRICTION_GRANTEE,
   runOrgSyncOnce,
   SYSTEM_ONLY_OPERATIONS,
@@ -38,7 +39,9 @@ let dispatch: ReturnType<typeof vi.fn>;
 const publisher: OrgMembership = { role: "PUBLISHER", effectiveScope: { all: true, appDids: [] } };
 const plain: OrgMembership = { role: "MEMBER", effectiveScope: { all: false, appDids: [] } };
 
+/** Seeds an env row; an organisation env is announced as Vetra's own hand-over. */
 async function seed(env: Partial<OrgEnvRow> & { id: string }) {
+  if (env.ownerOrgId) await expectOrgHandover(db, env.id, env.ownerOrgId);
   await envDb.insertInto("environments").values({
     id: env.id,
     owner: env.owner ?? OWNER,
@@ -354,6 +357,7 @@ describe("operator sync", () => {
 
     // BOB hands it to o1 where he publishes; the next sync takes the document over.
     members.set(`o1|${BOB}`, publisher);
+    await expectOrgHandover(db, "e1", "o1"); // as setEnvironmentOrg does before dispatching
     doc.ownerOrgId = "o1";
     doc.orgOperators = [BOB];
     await syncEnvironmentOrgOnce(d, await row("e1"));
@@ -382,5 +386,51 @@ describe("operator sync", () => {
     perm.setDocumentOwner.mockClear();
     await syncEnvironmentOrgOnce(d, await row("e1"));
     expect(perm.setDocumentOwner).not.toHaveBeenCalled();
+  });
+
+  it("a personal owner's unsigned SET_OWNER_ORG: the sync reverts it, no protection transfer, no grants", async () => {
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    members.set(`evil|${BOB}`, publisher);
+    members.set(`evil|${CAROL}`, publisher);
+    await envDb.insertInto("environments").values({ id: "p", owner: BOB, ownerOrgId: null, orgOperators: "[]", appId: null }).execute();
+    await protectEnvironment(perm, { id: "p", owner: BOB, ownerOrgId: null }, { serviceOwner: SERVICE, db });
+    perm.grantPermission.mockClear();
+    // BOB pushed SET_OWNER_ORG {evil, [BOB, CAROL]} unsigned; document and read model show it.
+    const doc = { owner: BOB, ownerOrgId: "evil" as string | null, orgOperators: [BOB, CAROL] };
+    await envDb.updateTable("environments").set({ ownerOrgId: "evil", orgOperators: JSON.stringify([BOB, CAROL]) }).where("id", "=", "p").execute();
+    dispatch.mockImplementation(async (_id: string, type: string, input: { ownerOrgId?: string; operators: string[] }) => {
+      if (type === "SET_OWNER_ORG") doc.ownerOrgId = input.ownerOrgId || null;
+      doc.orgOperators = input.operators;
+    });
+    const d = { ...deps, serviceOwner: SERVICE, readOrgState: async () => ({ ...doc }) };
+    expect(await runOrgSyncOnce(d)).toBe(1);
+    expect(dispatch.mock.calls).toStrictEqual([["p", "SET_OWNER_ORG", { ownerOrgId: "", operators: [] }]]);
+    expect(doc).toStrictEqual({ owner: BOB, ownerOrgId: null, orgOperators: [] });
+    expect(await reactor.real.getDocumentOwner("p")).toBe(BOB);
+    expect(perm.grantPermission).not.toHaveBeenCalled();
+    expect(await grants()).toStrictEqual([]);
+    expect(deps.logger?.warn).toHaveBeenCalled();
+    // On demand, an "evil" member gets no operator answer either.
+    doc.ownerOrgId = "evil";
+    expect(await syncEnvironmentOrgOnce(d, await row("p"), [CAROL])).toStrictEqual({ result: "SKIPPED", operators: [] });
+  });
+
+  it("SYNC_ORG_OPERATORS from outside the sync is detected and recomputed from Renown", async () => {
+    members.set(`o1|${BOB}`, publisher);
+    await seed({ id: "e1", ownerOrgId: "o1" });
+    const doc = { owner: OWNER, ownerOrgId: "o1" as string | null, orgOperators: [] as string[] };
+    dispatch.mockImplementation(async (_id: string, _type: string, input: { operators: string[] }) => {
+      doc.orgOperators = input.operators;
+    });
+    const d = { ...deps, readOrgState: async () => ({ ...doc }) };
+    await syncEnvironmentOrgOnce(d, await row("e1"), [BOB]);
+    expect(doc.orgOperators).toStrictEqual([BOB]);
+    // Our own change event is not a tamper.
+    expect(await resyncIfTampered(d, { id: "e1", ownerOrgId: "o1", orgOperators: [BOB] })).toBe(false);
+    // An outsider (CAROL, not a member) was written in from elsewhere.
+    doc.orgOperators = [BOB, CAROL];
+    expect(await resyncIfTampered(d, { id: "e1", ownerOrgId: "o1", orgOperators: [BOB, CAROL] })).toBe(true);
+    expect(doc.orgOperators).toStrictEqual([BOB]);
+    expect(await getPerm("e1", CAROL)).toBeNull();
   });
 });

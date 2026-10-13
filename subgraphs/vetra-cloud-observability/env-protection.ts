@@ -80,122 +80,265 @@ export async function restrictSystemOperations(
 
 /**
  * The address organisation envs are protected for: VETRA_SERVICE_ADDRESS,
- * else the platform publisher (VETRA_STUDIO_PUBLISHER_ADDRESS, else the first
- * ADMINS entry, the identity Vetra already protects its own documents for),
- * else an address nobody can sign in as. Lowercased.
+ * else an address nobody can sign in as (no human key owns org envs;
+ * in-process dispatches never pass reactor-api checks, platform admins pass
+ * them without ownership). Lowercased.
  */
 export function vetraServiceAddress(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.VETRA_SERVICE_ADDRESS?.trim() || env.VETRA_STUDIO_PUBLISHER_ADDRESS?.trim();
-  if (explicit) return explicit.toLowerCase();
-  const firstAdmin = (env.ADMINS ?? "")
-    .split(",")
-    .map((a) => a.trim())
-    .find(Boolean);
-  return (firstAdmin ?? RESTRICTION_GRANTEE).toLowerCase();
+  return (env.VETRA_SERVICE_ADDRESS?.trim() || RESTRICTION_GRANTEE).toLowerCase();
 }
 
 export interface EnvProtectionTarget {
   id: string;
   owner: string | null;
   ownerOrgId: string | null;
+  /** The document's operators, when known (change events, document reads). */
+  orgOperators?: string[];
 }
 
 export interface EnvProtectionOptions {
   serviceOwner: string;
-  /** Records protection hand-overs (org_document_protection); optional. */
-  db?: Kysely<ObservabilityDB>;
+  /** Hand-over records, expected moves and last computed operators. */
+  db: Kysely<ObservabilityDB>;
   /** Per-process memo of restrictions already applied (`${id}|org` / `${id}|all`). */
   restricted?: Set<string>;
+  /**
+   * Reads the environment document's current state. Used whenever the given
+   * target may be stale (an organisation move, a recorded hand-over, a
+   * service-owned document); a failed or missing read skips the env — a
+   * snapshot is never acted on there.
+   */
+  readTarget?(documentId: string): Promise<EnvProtectionTarget | null>;
+  /** Dispatches a system action (used to revert an unauthorised organisation move). */
+  dispatch?(documentId: string, type: string, input: Record<string, unknown>): Promise<void>;
+  logger?: Pick<Console, "warn">;
+  /** Clock for expected hand-overs (tests). */
+  now?(): Date;
 }
 
-export type EnvProtectionResult = "UNOWNED" | "PERSONAL" | "ORG";
+export type EnvProtectionResult = "UNOWNED" | "PERSONAL" | "ORG" | "REVERTED" | "SKIPPED";
+
+/** How long a hand-over announced by Vetra stays valid. */
+export const EXPECTED_HANDOVER_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Announce an organisation move Vetra itself is about to dispatch
+ * (SET_OWNER_ORG): `orgId` is the target organisation, null for a move back
+ * to a person. Any other move is reverted by protectEnvironment. Must be
+ * written before the dispatch.
+ */
+export async function expectOrgHandover(
+  db: Kysely<ObservabilityDB>,
+  documentId: string,
+  orgId: string | null,
+  now: Date = new Date(),
+): Promise<void> {
+  const expiresAt = new Date(now.getTime() + EXPECTED_HANDOVER_TTL_MS).toISOString();
+  await db.deleteFrom("org_expected_handovers").where("expiresAt", "<", now.toISOString()).execute();
+  await db
+    .insertInto("org_expected_handovers")
+    .values({ documentId, orgId, expiresAt })
+    .onConflict((oc) => oc.column("documentId").doUpdateSet({ orgId, expiresAt }))
+    .execute();
+}
+
+/** Consumes a matching, unexpired announcement; false when there is none. */
+async function takeExpectedHandover(
+  db: Kysely<ObservabilityDB>,
+  documentId: string,
+  orgId: string | null,
+  now: Date,
+): Promise<boolean> {
+  const row = await db
+    .selectFrom("org_expected_handovers")
+    .select(["orgId", "expiresAt"])
+    .where("documentId", "=", documentId)
+    .executeTakeFirst();
+  if (!row || (row.orgId ?? null) !== orgId || row.expiresAt < now.toISOString()) return false;
+  await db.deleteFrom("org_expected_handovers").where("documentId", "=", documentId).execute();
+  return true;
+}
+
+/** The operator list the sync last computed for an org env, or null. */
+export async function lastComputedOperators(db: Kysely<ObservabilityDB>, documentId: string): Promise<string[] | null> {
+  const row = await db
+    .selectFrom("org_env_operators")
+    .select("operators")
+    .where("documentId", "=", documentId)
+    .executeTakeFirst();
+  if (!row) return null;
+  try {
+    const value: unknown = JSON.parse(row.operators);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remember the list the sync computed (written before it is dispatched). */
+export async function recordComputedOperators(
+  db: Kysely<ObservabilityDB>,
+  documentId: string,
+  operators: string[],
+): Promise<void> {
+  const value = JSON.stringify(operators);
+  const computedAt = new Date().toISOString();
+  await db
+    .insertInto("org_env_operators")
+    .values({ documentId, operators: value, computedAt })
+    .onConflict((oc) => oc.column("documentId").doUpdateSet({ operators: value, computedAt }))
+    .execute();
+}
 
 /**
  * Bring one environment document's reactor-api protection in line with its
- * owner / organisation. Idempotent; safe to run on every change.
+ * owner / organisation. Idempotent; safe to run on every change. Callers
+ * hold the env lock.
+ *
+ * Organisation moves are only honoured when Vetra announced them
+ * (expectOrgHandover); any other move — e.g. an unsigned SET_OWNER_ORG a
+ * personal owner pushed through reactor-api — is reverted with a system
+ * SET_OWNER_ORG to the previous state, and protection is not transferred.
  */
 export async function protectEnvironment(
   perm: EnvProtectionService,
-  env: EnvProtectionTarget,
+  target: EnvProtectionTarget,
   opts: EnvProtectionOptions,
 ): Promise<EnvProtectionResult> {
-  const owned = !!env.owner || !!env.ownerOrgId;
-  const ops = owned ? SYSTEM_ONLY_OPERATIONS : ORG_SYSTEM_OPERATIONS;
-  const memo = `${env.id}|${owned ? "all" : "org"}`;
-  if (!opts.restricted?.has(memo)) {
-    await restrictSystemOperations(perm, env.id, ops);
-    opts.restricted?.add(memo);
+  await restrictFor(perm, target, opts);
+  const db = opts.db;
+  const now = opts.now?.() ?? new Date();
+  const service = opts.serviceOwner.toLowerCase();
+  const rec = await db
+    .selectFrom("org_document_protection")
+    .select(["orgId"])
+    .where("documentId", "=", target.id)
+    .executeTakeFirst();
+  const current = await perm.getDocumentProtection(target.id);
+  const ownerIsService = current.ownerAddress?.toLowerCase() === service;
+
+  // A recorded org env still in the same org, or a personal env never handed
+  // over, can be trusted as given; anything else is decided from the document.
+  const stable = target.ownerOrgId
+    ? rec?.orgId === target.ownerOrgId
+    : !rec && !ownerIsService;
+  let env = target;
+  if (!stable) {
+    if (opts.readTarget) {
+      let fresh: EnvProtectionTarget | null = null;
+      try {
+        fresh = await opts.readTarget(target.id);
+      } catch {
+        fresh = null;
+      }
+      if (!fresh) return "SKIPPED";
+      env = fresh;
+      await restrictFor(perm, env, opts);
+    } else if (rec || ownerIsService) {
+      return "SKIPPED";
+    }
   }
-  if (!owned) return "UNOWNED";
 
   if (env.ownerOrgId) {
-    await protectForService(perm, env, opts);
+    if (rec?.orgId !== env.ownerOrgId && !(await takeExpectedHandover(db, env.id, env.ownerOrgId, now))) {
+      return revert(env, rec ? { ownerOrgId: rec.orgId, operators: (await lastComputedOperators(db, env.id)) ?? [] } : null, opts);
+    }
+    await protectForService(perm, env, service, current, rec ? rec.orgId === env.ownerOrgId : false, opts);
     return "ORG";
   }
 
-  const owner = (env.owner as string).toLowerCase();
-  const current = await perm.getDocumentProtection(env.id);
-  const ownerMatches = current.ownerAddress?.toLowerCase() === owner;
-  if (!current.protected || !ownerMatches) {
+  if (rec) {
+    // Org → person (or unowned): only when Vetra announced it.
+    if (!(await takeExpectedHandover(db, env.id, null, now))) {
+      return revert(env, { ownerOrgId: rec.orgId, operators: (await lastComputedOperators(db, env.id)) ?? [] }, opts);
+    }
+  }
+  if (!env.owner) {
+    if (rec) await forgetOrg(perm, env.id, null, opts);
+    return "UNOWNED";
+  }
+  const owner = env.owner.toLowerCase();
+  const fresh = await perm.getDocumentProtection(env.id);
+  const ownerMatches = fresh.ownerAddress?.toLowerCase() === owner;
+  if (!fresh.protected || !ownerMatches) {
     // initializeDocumentProtection seeds `protected` only on first insert; the
     // reactor often pre-creates the row unprotected, so set it explicitly.
     await perm.initializeDocumentProtection(env.id, owner, true);
-    if (!current.protected) await perm.setDocumentProtection(env.id, true);
+    if (!fresh.protected) await perm.setDocumentProtection(env.id, true);
     if (!ownerMatches) {
       await perm.setDocumentOwner(env.id, owner);
       await perm.grantPermission(env.id, owner, "ADMIN", owner);
     }
   }
-  if (opts.db) {
-    // Back to a person (e.g. an org app transferred out): forget the hand-over
-    // and withdraw the organisation grants Vetra made (only those still at the
-    // level Vetra set; anything changed since belongs to someone else).
-    const forgotten = await opts.db
-      .deleteFrom("org_document_protection")
-      .where("documentId", "=", env.id)
-      .executeTakeFirst();
-    if (Number(forgotten.numDeletedRows) === 0) return "PERSONAL";
-    const grants = await opts.db
-      .selectFrom("org_document_grants")
-      .select(["address", "level"])
-      .where("documentId", "=", env.id)
-      .execute();
-    for (const g of grants) {
-      if (g.address !== owner && (await perm.getUserPermission(env.id, g.address)) === g.level) {
-        await perm.revokePermission(env.id, g.address);
-      }
-      await opts.db
-        .deleteFrom("org_document_grants")
-        .where("documentId", "=", env.id)
-        .where("address", "=", g.address)
-        .execute();
-    }
-  }
+  if (rec) await forgetOrg(perm, env.id, owner, opts);
   return "PERSONAL";
+}
+
+async function restrictFor(perm: EnvProtectionService, env: EnvProtectionTarget, opts: EnvProtectionOptions) {
+  const owned = !!env.owner || !!env.ownerOrgId;
+  const memo = `${env.id}|${owned ? "all" : "org"}`;
+  if (opts.restricted?.has(memo)) return;
+  await restrictSystemOperations(perm, env.id, owned ? SYSTEM_ONLY_OPERATIONS : ORG_SYSTEM_OPERATIONS);
+  opts.restricted?.add(memo);
+}
+
+/** Undo an unannounced organisation move: back to `previous` (null: personal). */
+async function revert(
+  env: EnvProtectionTarget,
+  previous: { ownerOrgId: string | null; operators: string[] } | null,
+  opts: EnvProtectionOptions,
+): Promise<"REVERTED"> {
+  const to = previous ?? { ownerOrgId: null, operators: [] };
+  opts.logger?.warn(
+    `[env-protection] ${env.id}: unauthorised organisation move to ${env.ownerOrgId ?? "a person"}; reverting to ${to.ownerOrgId ?? "personal"}`,
+  );
+  if (opts.dispatch) {
+    await opts.dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: to.ownerOrgId ?? "", operators: to.operators });
+  }
+  return "REVERTED";
+}
+
+/**
+ * Leaving the organisation: forget the hand-over and the computed operators,
+ * and withdraw the organisation grants Vetra made (only those still at the
+ * level Vetra set; anything changed since belongs to someone else).
+ */
+async function forgetOrg(perm: EnvProtectionService, documentId: string, owner: string | null, opts: EnvProtectionOptions) {
+  const db = opts.db;
+  await db.deleteFrom("org_document_protection").where("documentId", "=", documentId).execute();
+  await db.deleteFrom("org_env_operators").where("documentId", "=", documentId).execute();
+  const grants = await db
+    .selectFrom("org_document_grants")
+    .select(["address", "level"])
+    .where("documentId", "=", documentId)
+    .execute();
+  for (const g of grants) {
+    if (g.address !== owner && (await perm.getUserPermission(documentId, g.address)) === g.level) {
+      await perm.revokePermission(documentId, g.address);
+    }
+    await db
+      .deleteFrom("org_document_grants")
+      .where("documentId", "=", documentId)
+      .where("address", "=", g.address)
+      .execute();
+  }
 }
 
 /**
  * Organisation env: protected, owned by the Vetra service identity, no ADMIN
  * grants left (the creator's and any previous owner's). Done once per
- * hand-over: a recorded hand-over whose owner is still the service is skipped.
+ * hand-over; `recorded` skips a hand-over already done for this org.
  */
 async function protectForService(
   perm: EnvProtectionService,
   env: EnvProtectionTarget,
+  service: string,
+  current: { protected: boolean; ownerAddress: string | null },
+  recorded: boolean,
   opts: EnvProtectionOptions,
 ): Promise<void> {
-  const service = opts.serviceOwner.toLowerCase();
-  const current = await perm.getDocumentProtection(env.id);
   const ownerIsService = current.ownerAddress?.toLowerCase() === service;
-  const recorded = opts.db
-    ? await opts.db
-        .selectFrom("org_document_protection")
-        .select("documentId")
-        .where("documentId", "=", env.id)
-        .executeTakeFirst()
-    : undefined;
   if (current.protected && ownerIsService && recorded) return;
-
   // setDocumentOwner, not initializeDocumentProtection: the service needs no
   // ADMIN grant, being the protection owner is enough.
   if (!ownerIsService) await perm.setDocumentOwner(env.id, service);
@@ -203,15 +346,13 @@ async function protectForService(
   for (const g of await perm.getDocumentPermissions(env.id)) {
     if (g.permission === "ADMIN") await perm.revokePermission(env.id, g.userAddress);
   }
-  if (opts.db) {
-    const now = new Date().toISOString();
-    const previousOwner = ownerIsService ? null : (current.ownerAddress?.toLowerCase() ?? null);
-    await opts.db
-      .insertInto("org_document_protection")
-      .values({ documentId: env.id, previousOwner, transferredAt: now })
-      .onConflict((oc) => oc.column("documentId").doUpdateSet({ transferredAt: now }))
-      .execute();
-  }
+  const now = new Date().toISOString();
+  const previousOwner = ownerIsService ? null : (current.ownerAddress?.toLowerCase() ?? null);
+  await opts.db
+    .insertInto("org_document_protection")
+    .values({ documentId: env.id, orgId: env.ownerOrgId, previousOwner, transferredAt: now })
+    .onConflict((oc) => oc.column("documentId").doUpdateSet({ orgId: env.ownerOrgId, transferredAt: now }))
+    .execute();
 }
 
 /** id / owner / ownerOrgId from an environment document's global state. */
@@ -220,10 +361,12 @@ export function envProtectionTargetOf(doc: unknown): EnvProtectionTarget | null 
   const id = d.header?.id;
   if (typeof id !== "string") return null;
   const state = d.state?.global ?? {};
+  const operators = state.orgOperators;
   return {
     id,
     owner: typeof state.owner === "string" ? state.owner : null,
     ownerOrgId: typeof state.ownerOrgId === "string" ? state.ownerOrgId : null,
+    orgOperators: Array.isArray(operators) ? operators.filter((o): o is string => typeof o === "string") : [],
   };
 }
 

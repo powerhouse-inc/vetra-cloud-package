@@ -30,10 +30,15 @@ import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
 import { appDidLookup, createEnvAccess } from "./env-access.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
-import { runOrgSyncOnce, withEnvLock, type OrgSyncDeps } from "./org-sync.js";
+import {
+  orgProtectionOptions,
+  resyncIfTampered,
+  runOrgSyncOnce,
+  withEnvLock,
+  type OrgSyncDeps,
+} from "./org-sync.js";
 import {
   envChangeProtector,
-  envProtectionTargetOf,
   protectEnvironment,
   vetraServiceAddress,
   type EnvProtectionTarget,
@@ -240,11 +245,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // marked "protected" at the reactor-api layer and the owner has an ADMIN
     // permission grant. This is what locks down direct getDocument(id) reads
     // for non-owner, non-admin users.
-    this.startProtectionReconciler(db);
+    this.startProtectionReconciler(orgSync);
 
     // …and immediately on every change of an environment document, so a
     // newly owned or organisation-owned env has no unprotected window.
-    this.startEnvProtectionHook(db);
+    this.startEnvProtectionHook(orgSync);
 
     // Start stuck-challenge reconciler: rescues cert-manager Certificates
     // whose latest HTTP-01 Challenge went invalid due to NXDOMAIN (the
@@ -783,7 +788,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    *     a user can claim it).
    * Every 60 s and on startup, as a safety net for startEnvProtectionHook.
    */
-  private startProtectionReconciler(db: Kysely<ObservabilityDB>) {
+  private startProtectionReconciler(orgSync: OrgSyncDeps) {
     const reconcile = async () => {
       const perm = this.documentPermissionService;
       if (!perm) return;
@@ -793,22 +798,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           "vetra-cloud-environments",
         )) as unknown as Kysely<any>;
 
+        // Read-model rows may be stale; protectEnvironment re-reads the
+        // document whenever a stale row could undo or fake a hand-over.
         const envs = (await envDb
           .selectFrom("environments")
           .select(["id", "owner", "ownerOrgId"])
           .execute()) as EnvProtectionTarget[];
-        const handedOver = new Set(
-          (await db.selectFrom("org_document_protection").select("documentId").execute()).map((r) => r.documentId),
-        );
 
         let failed = 0;
         for (const row of envs) {
           try {
-            // The read model lags the document: a recorded hand-over whose row
-            // still looks personal is decided from the document itself.
-            const env =
-              !row.ownerOrgId && handedOver.has(row.id) ? ((await this.readEnvProtectionTarget(row.id)) ?? row) : row;
-            await this.protectEnv(db, env);
+            await this.protectEnv(orgSync, row);
           } catch (err) {
             failed++;
             console.warn(`[protection-reconciler] ${row.id}: ${String(err)}`);
@@ -830,31 +830,23 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   }
 
   /** Protects an environment document as soon as it is created or changes. */
-  private startEnvProtectionHook(db: Kysely<ObservabilityDB>) {
+  private startEnvProtectionHook(orgSync: OrgSyncDeps) {
     this.unsubscribeEnvProtection = this.reactorClient.subscribe(
       { type: "powerhouse/vetra-cloud-environment" },
-      envChangeProtector((env) => this.protectEnv(db, env), console),
+      envChangeProtector(async (env) => {
+        const result = await this.protectEnv(orgSync, env);
+        // SYNC_ORG_OPERATORS from anywhere but the sync → recompute from Renown.
+        if (result === "ORG" && (await resyncIfTampered(orgSync, env))) {
+          console.warn(`[env-protection] ${env.id}: operators changed outside the sync; resynced`);
+        }
+      }, console),
     );
   }
 
-  private async protectEnv(db: Kysely<ObservabilityDB>, env: EnvProtectionTarget) {
-    const perm = this.documentPermissionService;
-    if (!perm) return;
-    await withEnvLock(env.id, () =>
-      protectEnvironment(perm, env, {
-        serviceOwner: vetraServiceAddress(),
-        db,
-        restricted: this.restrictedEnvOps,
-      }),
-    );
-  }
-
-  private async readEnvProtectionTarget(id: string): Promise<EnvProtectionTarget | null> {
-    try {
-      return envProtectionTargetOf(await this.reactorClient.get(id));
-    } catch {
-      return null;
-    }
+  private async protectEnv(orgSync: OrgSyncDeps, env: EnvProtectionTarget) {
+    const perm = orgSync.perm;
+    if (!perm) return null;
+    return withEnvLock(env.id, () => protectEnvironment(perm, env, orgProtectionOptions(orgSync)));
   }
 
   private async dispatchAction(

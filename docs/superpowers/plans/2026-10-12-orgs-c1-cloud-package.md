@@ -41,6 +41,8 @@
 - Relative imports carry `.js`; no `@/` alias.
 - QA after every task (per `CLAUDE.md`): `npm run tsc 2>&1 | tail -5`, `npm run lint:fix 2>&1 | tail -5`, the task's tests with `npx vitest run <files> 2>&1 | grep -E "Test Files|Tests |FAIL"`; after Task 2 also `npm run test:coverage 2>&1 | grep -E "All files|ERROR"`. Before Task 9: `npx vitest run 2>&1 | grep -E "Test Files|Tests |FAIL"`.
 - New env vars default safely: `RENOWN_ORGS_ENDPOINT` (default `<RENOWN_SWITCHBOARD_URL or https://switchboard.renown.vetra.io>/graphql/renown-orgs`), `RENOWN_STATS_URL` (existing; default for lookups `<same origin>/graphql/renown-stats`).
+- `VETRA_SERVICE_ADDRESS` (optional, observability): the reactor-api protection owner of organisation environments. Unset, it is `0x0000000000000000000000000000000000000000`, an address nobody can sign as (recommended; in-process dispatches and platform `ADMINS` need no ownership). Never set it to a person's key.
+- Organisation moves of an environment (`SET_OWNER_ORG`, including back to a person) are honoured only when announced first with `expectOrgHandover(db, envId, orgId | null)` from `subgraphs/vetra-cloud-observability/env-protection.ts` (observability namespace, 10-minute expiry); any other move is reverted by the observability protection hook / sync / reconciler (Task 5 fix round 3). Every in-process `SET_OWNER_ORG` added by later tasks (vetra-apps `createApp`, previews, lazy app-ownership sync) must announce its move.
 - Error strings in observability stay plain `Error` messages as today (`UNAUTHENTICATED`, `FORBIDDEN`, `ENV_NOT_FOUND`, plus new `ORG_ID_REQUIRED`, `ALREADY_ORG_OWNED`, `APP_ENVIRONMENT`); vetra-apps uses `appsError` codes; licensing keeps its contract codes.
 
 ## Review Focus
@@ -2506,4 +2508,4 @@ git merge --no-ff origin/dev -m "chore: release Renown organisations support"
 git push origin main
 ```
 
-Then bump the `vetra` (prod) tenant to the stable version with prod `RENOWN_SWITCHBOARD_URL` (default) and repeat the read-only smoke.
+Leave `VETRA_SERVICE_ADDRESS` unset on staging and prod (org envs are then protected for the unsignable zero address); check after the first hand-over that `documentProtection(<env>)` shows that owner and no ADMIN grants. Then bump the `vetra` (prod) tenant to the stable version with prod `RENOWN_SWITCHBOARD_URL` (default) and repeat the read-only smoke.

@@ -5,8 +5,12 @@ import type { OrgMembership } from "../../shared/renown-orgs.js";
 import { parseOperators, unresolvedAppDid } from "./env-access.js";
 import {
   GRANTED_BY,
+  lastComputedOperators,
   protectEnvironment,
+  recordComputedOperators,
   RESTRICTION_GRANTEE,
+  type EnvProtectionOptions,
+  type EnvProtectionResult,
   type EnvProtectionService,
 } from "./env-protection.js";
 
@@ -129,8 +133,19 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   const orgId = state.ownerOrgId;
   if (!orgId) return { result: "SKIPPED", operators: current };
   // Before any grant: the document belongs to the service identity, not the
-  // creator (no ADMIN left that could submit unsigned "system" actions).
-  await protectOrgEnv(deps, { id: env.id, owner: state.owner, ownerOrgId: orgId });
+  // creator (no ADMIN left that could submit unsigned "system" actions), and
+  // the organisation move was one Vetra made (else it was just reverted).
+  const protection = await protectOrgEnv(deps, { id: env.id, owner: state.owner, ownerOrgId: orgId });
+  if (protection === "REVERTED") return { result: "SKIPPED", operators: [] };
+  if (protection === "SKIPPED" || protection === "PERSONAL" || protection === "UNOWNED") {
+    return { result: "SKIPPED", operators: current };
+  }
+  // The list the sync last computed: a document list that differs was set by
+  // someone else (SYNC_ORG_OPERATORS from outside) and is not trusted as a
+  // source of candidates; it is recomputed from Renown.
+  const last = await lastComputedOperators(deps.db, env.id);
+  const base = last && !sameSet(current, last) ? lower(last) : current;
+  if (base !== current) deps.logger?.warn(`[org-sync] ${env.id}: operators changed outside the sync; recomputing`);
   let appDid: string | null = null;
   if (env.appId) {
     try {
@@ -153,7 +168,7 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
           .execute()
       ).map((r) => r.address)
     : [];
-  const pool = [...new Set([...(owner ? [owner] : []), ...current, ...writeHolders, ...lower(candidates)])];
+  const pool = [...new Set([...(owner ? [owner] : []), ...base, ...writeHolders, ...lower(candidates)])];
   const memberships = new Map<string, OrgMembership | null>();
   for (const address of pool) {
     try {
@@ -164,19 +179,58 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   }
   const next = pool.filter((a) => hasPublisherCapability(memberships.get(a) ?? null, appDid));
   const changed = !sameSet(current, next);
+  // Recorded before the dispatch, so its change event is recognised as ours.
+  await recordComputedOperators(deps.db, env.id, next);
   if (changed) await deps.dispatch(env.id, "SYNC_ORG_OPERATORS", { operators: next });
   await reconcileWriteGrants(deps, env.id, next, (a) => memberships.get(a) ?? null);
   return { result: changed ? "UPDATED" : "UNCHANGED", operators: next };
 }
 
-/** Organisation env protection (service-owned, system operations restricted). */
-async function protectOrgEnv(deps: OrgSyncDeps, env: { id: string; owner: string | null; ownerOrgId: string }) {
-  if (!deps.perm) return;
-  await protectEnvironment(deps.perm, env, {
+/** The protection options the sync uses (document reads, revert dispatch). */
+export function orgProtectionOptions(deps: OrgSyncDeps): EnvProtectionOptions {
+  const hasReader = !!deps.readOrgState;
+  return {
     serviceOwner: deps.serviceOwner ?? RESTRICTION_GRANTEE,
     db: deps.db,
     restricted: deps.restricted,
-  });
+    readTarget: hasReader
+      ? async (id) => {
+          const s = await deps.readOrgState?.(id);
+          return s ? { id, owner: s.owner, ownerOrgId: s.ownerOrgId, orgOperators: s.orgOperators } : null;
+        }
+      : undefined,
+    dispatch: (documentId, type, input) => deps.dispatch(documentId, type, input),
+    logger: deps.logger,
+  };
+}
+
+/** Organisation env protection (service-owned, system operations restricted); null without a permission service. */
+async function protectOrgEnv(
+  deps: OrgSyncDeps,
+  env: { id: string; owner: string | null; ownerOrgId: string },
+): Promise<EnvProtectionResult | null> {
+  if (!deps.perm) return null;
+  return protectEnvironment(deps.perm, env, orgProtectionOptions(deps));
+}
+
+/**
+ * Change-event check: an org env whose document operators differ from the
+ * list the sync last computed was changed from outside; resync it from Renown.
+ */
+export async function resyncIfTampered(
+  deps: OrgSyncDeps,
+  target: { id: string; ownerOrgId: string | null; orgOperators?: string[] },
+): Promise<boolean> {
+  if (!target.ownerOrgId || !target.orgOperators) return false;
+  const last = await lastComputedOperators(deps.db, target.id);
+  if (!last || sameSet(last, target.orgOperators)) return false;
+  const row = (await deps.envDb
+    .selectFrom("environments")
+    .select(["id", "owner", "ownerOrgId", "orgOperators", "appId"])
+    .where("id", "=", target.id)
+    .executeTakeFirst()) as OrgEnvRow | undefined;
+  await syncEnvironmentOrgOnce(deps, row ?? { id: target.id, owner: null, ownerOrgId: target.ownerOrgId, orgOperators: null, appId: null });
+  return true;
 }
 
 /**
@@ -294,7 +348,7 @@ export async function grantViewer(deps: OrgSyncDeps, env: OrgEnvRow, address: st
   const orgId = env.ownerOrgId;
   if (!d || !orgId) return;
   await withEnvLock(env.id, async () => {
-    await protectOrgEnv(deps, { id: env.id, owner: env.owner, ownerOrgId: orgId });
+    if ((await protectOrgEnv(deps, { id: env.id, owner: env.owner, ownerOrgId: orgId })) !== "ORG") return;
     const { recorded, foreign } = await ownedGrant(d, env.id, addr);
     // An existing Vetra grant (READ or WRITE) already covers viewing.
     if (foreign || recorded) return;
