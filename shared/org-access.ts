@@ -12,6 +12,8 @@ export interface OwnedResource {
   ownerOrgId?: string | null;
   /** Required on purpose: the app's Renown DID (publisher scope), or null when not linked to an app. */
   appDid: string | null;
+  /** Renown names another publisher than ownerOrgId: org members cannot operate it until reconciled. */
+  orgDisputed?: boolean;
 }
 
 export type MembershipReader = Pick<RenownOrgs, "membership">;
@@ -45,6 +47,7 @@ export async function canOperate(
 ): Promise<boolean> {
   if (caller.isAdmin) return true;
   if (!r.ownerOrgId) return !!r.owner && r.owner.toLowerCase() === caller.address.toLowerCase();
+  if (r.orgDisputed) return false;
   return hasPublisherCapability(await membershipOf(orgs, r.ownerOrgId, caller.address), r.appDid);
 }
 

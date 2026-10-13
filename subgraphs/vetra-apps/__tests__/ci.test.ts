@@ -520,6 +520,21 @@ describe("expired / missing App identity delegation", () => {
     expect((await getApp(h.db, app.id))?.status).toBe("PENDING_IDENTITY");
   });
 
+  it("an org App whose Renown publisher disagrees (persisted dispute) is not flipped by an org operator's token", async () => {
+    const OPERATOR = "0xdddddddddddddddddddddddddddddddddddddddd";
+    h.orgs.join("org-acme", OPERATOR, "OWNER");
+    const token = await tokenWithoutDelegation(OPERATOR);
+    await h.db
+      .updateTable("apps")
+      .set({ identity_expires_at: null, owner_org_id: "org-acme", org_disputed: true })
+      .execute();
+    const r = await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
+    expect(r.status).toBe(401);
+    expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
+  });
+
   it("m3: an org App is not flipped by a token of an address that does not operate it", async () => {
     const OUTSIDER = "0xdddddddddddddddddddddddddddddddddddddddd";
     const token = await tokenWithoutDelegation(OUTSIDER);

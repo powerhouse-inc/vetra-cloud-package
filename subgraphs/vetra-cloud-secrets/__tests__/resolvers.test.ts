@@ -6,6 +6,9 @@ import { up } from "../db/migrations.js";
 import type { SecretsDB } from "../db/schema.js";
 import { createResolvers } from "../resolvers.js";
 import type { OpenBaoTransitClient } from "../openbao-transit.js";
+import { createEnvAccess } from "../../vetra-cloud-observability/env-access.js";
+import type { MembershipReader } from "../../../shared/org-access.js";
+import type { OrgMembership } from "../../../shared/renown-orgs.js";
 
 let db: Kysely<SecretsDB>;
 
@@ -35,6 +38,9 @@ const ADMIN = "0x00000000000000000000000000000000000000cc";
 /** tenantId -> owners, as the environments projection would return them. */
 let tenantOwners: Record<string, (string | null)[]>;
 
+/** Personal environments with these owners. */
+const envsOf = (owners: (string | null)[]) => owners.map((owner) => ({ owner }));
+
 const ownerCtx = { user: { address: OWNER.toUpperCase().replace("0X", "0x") } };
 
 beforeEach(async () => {
@@ -51,7 +57,7 @@ beforeEach(async () => {
     get: () => [OWNER],
   });
   resolvers = createResolvers(db, mockTransit, {
-    tenantOwners: async (tenantId) => tenantOwners[tenantId] ?? [],
+    tenantEnvironments: async (tenantId) => envsOf(tenantOwners[tenantId] ?? []),
     tenantWait: { timeoutMs: 0, intervalMs: 1 },
   });
 });
@@ -400,7 +406,7 @@ describe("authorization", () => {
 
   it("fails closed when the projection is unreadable", async () => {
     const r = createResolvers(db, mockTransit, {
-      tenantOwners: async () => {
+      tenantEnvironments: async () => {
         throw Object.assign(new Error("relation does not exist"), { code: "42P01" });
       },
       tenantWait: { timeoutMs: 0, intervalMs: 1 },
@@ -411,7 +417,7 @@ describe("authorization", () => {
   it("waits for a just-created tenant to be projected", async () => {
     let calls = 0;
     const r = createResolvers(db, mockTransit, {
-      tenantOwners: async () => (++calls < 3 ? [] : [OWNER]),
+      tenantEnvironments: async () => envsOf(++calls < 3 ? [] : [OWNER]),
       tenantWait: { timeoutMs: 50, intervalMs: 5 },
     });
     await expect(
@@ -422,7 +428,7 @@ describe("authorization", () => {
 
   const mk = (owners: (t: string) => Promise<(string | null)[]>, extra = {}) =>
     createResolvers(db, mockTransit, {
-      tenantOwners: owners,
+      tenantEnvironments: async (t: string) => envsOf(await owners(t)),
       tenantWait: { timeoutMs: 50, intervalMs: 5 },
       ...extra,
     });
@@ -483,5 +489,152 @@ describe("authorization", () => {
         headers: { Authorization: fmt(vetraToken()) },
       }),
     );
+  });
+});
+
+describe("organisation environments", () => {
+  const ORG = "org-1";
+  const APP = "app-1";
+  const APP_DID = "did:key:app1";
+  const OP = "0x00000000000000000000000000000000000000d1"; // publisher scoped to APP_DID
+  const MEMBER = "0x00000000000000000000000000000000000000d2";
+  const OTHER_PUB = "0x00000000000000000000000000000000000000d3"; // scoped elsewhere
+  const OUTSIDER = "0x00000000000000000000000000000000000000d4";
+  const ADMIN = "0x00000000000000000000000000000000000000cc";
+  const PERSONAL = "0x00000000000000000000000000000000000000aa";
+  const DENIED = "Not allowed to manage this tenant's configuration";
+
+  const memberships: Record<string, OrgMembership> = {
+    [OP]: { role: "PUBLISHER", effectiveScope: { all: false, appDids: [APP_DID] } },
+    [MEMBER]: { role: "MEMBER", effectiveScope: { all: false, appDids: [] } },
+    [OTHER_PUB]: { role: "PUBLISHER", effectiveScope: { all: false, appDids: ["did:key:other"] } },
+  };
+  let renownDown: boolean;
+  let appDidFails: boolean;
+  const orgs: MembershipReader = {
+    membership: vi.fn(async (_org: string, address: string) => {
+      if (renownDown) throw new Error("renown unavailable");
+      return memberships[address.toLowerCase()] ?? null;
+    }),
+  };
+  const envs: Record<string, { owner: string | null; ownerOrgId?: string | null; appId?: string | null }[]> = {
+    org: [{ owner: null, ownerOrgId: ORG, appId: APP }],
+    personal: [{ owner: PERSONAL }],
+    mixed: [{ owner: null, ownerOrgId: ORG, appId: APP }, { owner: PERSONAL }],
+  };
+  let r: ReturnType<typeof createResolvers>;
+
+  beforeEach(() => {
+    renownDown = false;
+    appDidFails = false;
+    process.env.ADMINS = ADMIN;
+    r = createResolvers(db, mockTransit, {
+      tenantEnvironments: async (t) => envs[t] ?? [],
+      access: createEnvAccess({
+        orgs,
+        appDidOf: async (appId) => {
+          if (appDidFails) throw new Error("apps table unreadable");
+          return appId === APP ? APP_DID : null;
+        },
+      }),
+      tenantWait: { timeoutMs: 0, intervalMs: 1 },
+    });
+  });
+  afterEach(() => {
+    delete process.env.ADMINS;
+  });
+
+  const as = (address: string) => ({ user: { address } });
+  const read = (tenantId: string, who: string) =>
+    r.Query.envVars(undefined, { tenantId }, as(who));
+  const write = (tenantId: string, who: string) =>
+    r.Mutation.setSecret(undefined, { tenantId, key: "K", value: "v" }, as(who));
+  const expectDenied = async (p: Promise<unknown>) => {
+    const err = await p.then(
+      () => null,
+      (e: unknown) => e as { message: string; extensions?: { code?: string } },
+    );
+    expect(err?.message).toBe(DENIED);
+    expect(err?.extensions?.code).toBe("FORBIDDEN");
+  };
+
+  it("allows a publisher whose scope covers the env's app (reads and writes)", async () => {
+    await expect(write("org", OP)).resolves.toBeDefined();
+    await expect(read("org", OP)).resolves.toBeDefined();
+  });
+
+  it("refuses a plain org member for writes and reads", async () => {
+    await expectDenied(write("org", MEMBER));
+    await expectDenied(read("org", MEMBER));
+    await expectDenied(r.Query.secrets(undefined, { tenantId: "org" }, as(MEMBER)));
+  });
+
+  it("refuses a publisher scoped to another app, and non-members", async () => {
+    await expectDenied(write("org", OTHER_PUB));
+    await expectDenied(write("org", OUTSIDER));
+    await expectDenied(read("org", OUTSIDER));
+  });
+
+  it("refuses when the app link cannot be resolved (admins aside)", async () => {
+    appDidFails = true;
+    await expectDenied(write("org", OP));
+    await expect(write("org", ADMIN)).resolves.toBeDefined();
+  });
+
+  it("requires every environment on the tenant", async () => {
+    await expectDenied(write("mixed", OP));
+    await expectDenied(write("mixed", PERSONAL));
+    await expect(write("mixed", ADMIN)).resolves.toBeDefined();
+  });
+
+  it("fails closed when Renown is down; personal envs never call Renown", async () => {
+    renownDown = true;
+    vi.mocked(orgs.membership).mockClear();
+    await expectDenied(write("org", OP));
+    await expectDenied(read("org", OP));
+    expect(orgs.membership).toHaveBeenCalled();
+
+    vi.mocked(orgs.membership).mockClear();
+    await expect(write("personal", PERSONAL)).resolves.toBeDefined();
+    await expect(read("personal", PERSONAL)).resolves.toBeDefined();
+    await expectDenied(write("personal", OP));
+    expect(orgs.membership).not.toHaveBeenCalled();
+  });
+
+  it("platform admins skip Renown entirely", async () => {
+    renownDown = true;
+    vi.mocked(orgs.membership).mockClear();
+    await expect(write("org", ADMIN)).resolves.toBeDefined();
+    expect(orgs.membership).not.toHaveBeenCalled();
+  });
+
+  it("still refuses workload tokens from an org operator", async () => {
+    const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const token = `${b64({ alg: "ES256K" })}.${b64({ sub: "did:pkh:x", vetra: {} })}.sig`;
+    await expectDenied(
+      r.Mutation.setSecret(
+        undefined,
+        { tenantId: "org", key: "K", value: "v" },
+        { user: { address: OP }, headers: { authorization: `Bearer ${token}` } },
+      ),
+    );
+  });
+
+  it("without an access service, org environments are admin-only", async () => {
+    const plain = createResolvers(db, mockTransit, {
+      tenantEnvironments: async (t) => envs[t] ?? [],
+      tenantWait: { timeoutMs: 0, intervalMs: 1 },
+    });
+    await expectDenied(plain.Query.envVars(undefined, { tenantId: "org" }, as(OP)));
+    await expect(plain.Query.envVars(undefined, { tenantId: "org" }, as(ADMIN))).resolves.toBeDefined();
+  });
+
+  it("treats a throwing access check as a refusal", async () => {
+    const boom = createResolvers(db, mockTransit, {
+      tenantEnvironments: async (t) => envs[t] ?? [],
+      access: { canOperate: () => Promise.reject(new Error("x")) },
+      tenantWait: { timeoutMs: 0, intervalMs: 1 },
+    });
+    await expectDenied(boom.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL)));
   });
 });

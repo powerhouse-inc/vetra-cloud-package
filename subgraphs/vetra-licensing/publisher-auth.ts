@@ -27,6 +27,8 @@ export interface OwnerAppRecord {
   identity_did?: string | null;
   /** Renown organisation owning the app; absent/null: personal. */
   owner_org_id?: string | null;
+  /** Renown disagrees with owner_org_id: org members cannot issue until reconciled. */
+  org_disputed?: boolean | null;
 }
 
 export interface PublisherAuthDeps {
@@ -65,7 +67,7 @@ export async function resolveOwnerApp(
   const allowed = await canOperate(
     deps.orgs ?? null,
     { address: address.toLowerCase(), isAdmin: !personalOwner && callerIsAdmin(ctx, address) },
-    { owner: app.owner_address, ownerOrgId: app.owner_org_id ?? null, appDid: app.identity_did ?? null },
+    { owner: app.owner_address, ownerOrgId: app.owner_org_id ?? null, appDid: app.identity_did ?? null, orgDisputed: app.org_disputed === true },
   );
   if (!allowed) {
     throw new NotAppOwnerError("no such app");
