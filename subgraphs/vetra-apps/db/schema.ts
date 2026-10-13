@@ -42,6 +42,8 @@ export interface AppsTable {
   identity_expires_at: string | null;
   /** Renown organisation owning the App (null: personal). */
   owner_org_id: string | null;
+  /** Renown names another publisher than owner_org_id: org members cannot operate the App until the sync reconciles it (m10). */
+  org_disputed?: boolean | null;
   created_at: string;
   updated_at: string;
 }

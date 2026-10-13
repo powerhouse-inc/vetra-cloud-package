@@ -233,6 +233,10 @@ export class RenownSyncGuard {
   readonly cooldownMs: number;
   readonly answerTtlMs: number;
 
+  get size(): number {
+    return this.entries.size;
+  }
+
   constructor(opts: { timeoutMs?: number; cooldownMs?: number; answerTtlMs?: number } = {}) {
     this.timeoutMs = opts.timeoutMs ?? 1_500;
     this.cooldownMs = opts.cooldownMs ?? 10_000;
@@ -240,6 +244,9 @@ export class RenownSyncGuard {
   }
 
   async run<T>(load: () => Promise<T>, now: number, timeoutMs = this.timeoutMs, key = ""): Promise<T> {
+    if (this.entries.size > 64) {
+      for (const [k, e] of this.entries) if (e.settled && now >= e.validUntil) this.entries.delete(k);
+    }
     let entry = this.entries.get(key);
     if (entry?.settled) {
       if (now < this.openUntil && now < entry.validUntil) return entry.value as T;

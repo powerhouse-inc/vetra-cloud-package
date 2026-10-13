@@ -27,14 +27,11 @@ export const callerAccess = (c: Caller): AccessCaller => ({
   isAdmin: c.isAdmin,
 });
 
-/** Rows whose org Renown contradicts (m10): org members may not operate them. */
-const disputed = new WeakSet<object>();
-
 export const appResource = (app: AppRow): OwnedResource => ({
   owner: app.owner_address,
   ownerOrgId: app.owner_org_id ?? null,
   appDid: app.identity_did,
-  orgDisputed: disputed.has(app),
+  orgDisputed: app.org_disputed === true,
 });
 
 /** Per database: Apps whose disagreement with Renown was logged recently. */
@@ -207,11 +204,24 @@ export async function syncAppOrg(
 ): Promise<AppRow> {
   const seen: { publisher: AppPublisher | null } = { publisher: null };
   const row = await reconcileAppOrg(deps, app, seen);
-  // m10: Renown names another publisher than the org the row says. Fail
-  // closed for org capability until the sync reconciles them.
+  // m10: Renown names another publisher than the org the row says. Persisted
+  // (org_disputed), so every path reading the row fails closed for org
+  // capability until the sync reconciles them. An unknown answer leaves the
+  // stored flag as it is.
   const orgId = row.owner_org_id ?? null;
-  if (orgId && seen.publisher && (seen.publisher.orgId ?? null) !== orgId) {
-    disputed.add(row);
+  const dispute = seen.publisher
+    ? !!orgId && (seen.publisher.orgId ?? null) !== orgId
+    : (row.org_disputed ?? false) && !!orgId;
+  let result = row;
+  if (seen.publisher && (row.org_disputed ?? false) !== dispute) {
+    await deps.db
+      .updateTable("apps")
+      .set({ org_disputed: dispute })
+      .where("id", "=", row.id)
+      .execute();
+    result = { ...row, org_disputed: dispute };
+  }
+  if (orgId && dispute) {
     const now = deps.now().getTime();
     let memo = disputeLogged.get(deps.db);
     if (!memo) {
@@ -221,11 +231,11 @@ export async function syncAppOrg(
     if (!memo.get(row.id, now)) {
       memo.set(row.id, true, DISPUTE_LOG_INTERVAL_MS, now);
       deps.logger.warn(
-        `[vetra-apps] App ${row.slug}: Renown names a publisher that is disagrees with the organisation that owns it; org operation is refused until reconciled; ownership left with organisation ${orgId}`,
+        `[vetra-apps] App ${row.slug}: Renown names a publisher that disagrees with the organisation that owns it; org operation is refused until reconciled; ownership left with organisation ${orgId}`,
       );
     }
   }
-  return row;
+  return result;
 }
 
 async function reconcileAppOrg(
@@ -313,6 +323,7 @@ async function reconcileAppOrg(
       .set({
         owner_org_id: target.org,
         owner_address: target.owner,
+        org_disputed: false,
         updated_at: deps.now().toISOString(),
       })
       .where("id", "=", row.id)

@@ -997,9 +997,12 @@ describe("m10: Renown disagrees with the row", () => {
     h.clock.now = new Date(h.clock.now.getTime() + MIN10 + 1);
     await appForOwner(h.deps, admin, app.id);
     expect(warns()).toBe(2);
+    // The dispute is persisted, so any path reading the row sees it.
+    expect((await getApp(h.db, app.id))?.org_disputed).toBe(true);
     // Renown agrees again: operable again.
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     h.clock.now = new Date(h.clock.now.getTime() + 31_000);
     expect(await code(updateApp(h.deps, member, app.id, { name: "Back" }))).toBe("OK");
+    expect((await getApp(h.db, app.id))?.org_disputed).toBeFalsy();
   });
 });

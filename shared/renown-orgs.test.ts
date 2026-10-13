@@ -227,4 +227,12 @@ describe("RenownSyncGuard", () => {
     // Past the cool-down it asks again.
     expect(await guard.run(never, 1_100, undefined, "k")).toBe(8);
   });
+
+  it("evicts settled answers once they expire, even for keys not read again", async () => {
+    const guard = new RenownSyncGuard({ answerTtlMs: 100 });
+    for (let i = 0; i < 100; i++) await guard.run(async () => i, 0, undefined, `k${i}`);
+    expect(guard.size).toBe(100);
+    await guard.run(async () => 0, 1_000, undefined, "fresh");
+    expect(guard.size).toBeLessThan(5);
+  });
 });

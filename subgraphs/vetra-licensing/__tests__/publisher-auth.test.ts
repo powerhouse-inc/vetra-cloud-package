@@ -10,7 +10,14 @@ import { UnauthenticatedError, AppIdentityInactiveError } from "../auth.js";
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const STRANGER = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-const deps = (app: Partial<{ status: string; owner_address: string }> = {}) =>
+const deps = (
+  app: Partial<{
+    status: string;
+    owner_address: string;
+    owner_org_id: string | null;
+    org_disputed: boolean | null;
+  }> = {},
+) =>
   ({
     findAppById: vi.fn(async () => ({
       id: "app-1",
@@ -146,5 +153,17 @@ describe("resolveOwnerApp for organisation apps", () => {
     const down = orgApp(null);
     down.orgs.membership.mockRejectedValue(new Error("down"));
     await expect(resolveOwnerApp(down, ctx(STRANGER), "app-1")).rejects.toThrow("no such app");
+  });
+});
+
+describe("resolveOwnerApp: org apps whose Renown publisher disagrees", () => {
+  const orgs = {
+    membership: vi.fn(async () => ({ role: "OWNER" as const, effectiveScope: { all: true, appDids: [] } })),
+  };
+  it("lets an org owner issue, but not while the app is disputed", async () => {
+    const ok = { ...deps({ owner_org_id: "org-1" }), orgs };
+    await expect(resolveOwnerApp(ok, ctx(STRANGER), "app-1")).resolves.toEqual({ appId: "app-1" });
+    const disputed = { ...deps({ owner_org_id: "org-1", org_disputed: true }), orgs };
+    await expect(resolveOwnerApp(disputed, ctx(STRANGER), "app-1")).rejects.toBeInstanceOf(NotAppOwnerError);
   });
 });
