@@ -1,6 +1,11 @@
 import { GraphQLError } from "graphql";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { decodeJwtPayload } from "../vetra-apps/auth.js";
+import {
+  OWNER_ONLY_ACCESS,
+  type EnvAccess,
+  type EnvAccessRow,
+} from "../vetra-cloud-observability/env-access.js";
 
 /** Subset of the reactor-api resolver context used here. */
 export interface SecretsContext {
@@ -12,11 +17,17 @@ export interface SecretsContext {
 
 export interface TenantAccessDeps {
   /**
-   * Owners (lowercased, null when unset) of the environments deployed as this
-   * tenant, from the vetra-cloud-environment projection. Empty when no
+   * The environments deployed as this tenant (owner, owning organisation and
+   * linked app), from the vetra-cloud-environment projection. Empty when no
    * environment is known by this tenant id (yet).
    */
-  tenantOwners(tenantId: string): Promise<(string | null)[]>;
+  tenantEnvironments(tenantId: string): Promise<EnvAccessRow[]>;
+  /**
+   * Environment access (shared/org-access.ts `canOperate`, app DID resolved
+   * as in the observability subgraph). Defaults to OWNER_ONLY_ACCESS: org
+   * environments are then admin-only.
+   */
+  access?: Pick<EnvAccess, "canOperate">;
   /**
    * How long to wait for an unknown tenant to be projected: vetra.io writes a
    * new environment's config right after pushing its document, before the
@@ -47,7 +58,7 @@ function carriesWorkloadToken(headers: SecretsContext["headers"]): boolean {
 
 /**
  * One message for every refusal (anonymous, CI token, unknown tenant, not
- * the owner) so a caller cannot tell whether a tenant exists.
+ * allowed to operate) so a caller cannot tell whether a tenant exists.
  */
 const DENIED = "Not allowed to manage this tenant's configuration";
 
@@ -58,40 +69,44 @@ function forbidden(): GraphQLError {
 /**
  * Builds the guard every envVars/secrets query and mutation runs first.
  *
- * Allowed: a Renown-authenticated platform admin, or the owner of every
- * environment deployed as the tenant (same owner rule as the observability
- * subgraph's owner-or-admin mutations: `owner` set and equal to the caller,
- * lowercased). CI/workload tokens (bearer carries a `vetra` claim) are
- * refused, as in vetra-apps.
+ * Allowed: a Renown-authenticated platform admin, or a caller who may
+ * operate EVERY environment deployed as the tenant, per shared/org-access.ts
+ * `canOperate`:
+ *  - personal environment (no ownerOrgId): `owner` set and equal to the
+ *    caller, lowercased; Renown is never consulted;
+ *  - organisation environment: the caller's membership has publisher
+ *    capability (OWNER/ADMIN, or PUBLISHER whose scope covers the env's app
+ *    DID). An unreadable app link or Renown failure denies (fail closed).
+ * Reads require the same as writes: env vars can hold configuration secrets,
+ * so a plain org MEMBER (canView) is refused. CI/workload tokens (bearer
+ * carries a `vetra` claim) are refused, as in vetra-apps.
  *
  * In-process callers (environment processor gitops, studio-pool claim,
  * licensing applyStudioKey) use SecretsService directly and never reach this.
- *
- * TODO(organisations): extend to org environments via
- * shared/org-access.ts `canOperate` once the organisations branch lands.
  */
 export function createTenantGuard(deps: TenantAccessDeps) {
   const maxWaiters = deps.maxWaiters ?? 16;
   // One in-flight wait per tenant, shared by every caller asking for it.
-  const inFlight = new Map<string, Promise<(string | null)[]>>();
+  const access = deps.access ?? OWNER_ONLY_ACCESS;
+  const inFlight = new Map<string, Promise<EnvAccessRow[]>>();
 
-  const poll = async (tenantId: string): Promise<(string | null)[]> => {
+  const poll = async (tenantId: string): Promise<EnvAccessRow[]> => {
     const { timeoutMs, intervalMs } = deps.tenantWait;
     const attempts = Math.floor(timeoutMs / intervalMs) + 1;
     for (let i = 0; i < attempts; i++) {
       if (i > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      const owners = await deps.tenantOwners(tenantId);
-      if (owners.length > 0) return owners;
+      const envs = await deps.tenantEnvironments(tenantId);
+      if (envs.length > 0) return envs;
     }
     return [];
   };
 
-  const knownOwners = async (
+  const knownEnvironments = async (
     tenantId: string,
     wait: boolean,
-  ): Promise<(string | null)[]> => {
-    const owners = await deps.tenantOwners(tenantId);
-    if (owners.length > 0 || !wait) return owners;
+  ): Promise<EnvAccessRow[]> => {
+    const envs = await deps.tenantEnvironments(tenantId);
+    if (envs.length > 0 || !wait) return envs;
     let pending = inFlight.get(tenantId);
     if (!pending) {
       if (inFlight.size >= maxWaiters) return []; // over the cap: refuse now
@@ -115,9 +130,9 @@ export function createTenantGuard(deps: TenantAccessDeps) {
     if (carriesWorkloadToken(ctx.headers)) throw forbidden();
     if (!tenantId) throw forbidden();
 
-    let owners: (string | null)[];
+    let envs: EnvAccessRow[];
     try {
-      owners = await knownOwners(tenantId, opts.wait === true);
+      envs = await knownEnvironments(tenantId, opts.wait === true);
     } catch (err) {
       // Projection unreadable (e.g. table missing): fail closed, but leave a
       // trace. Only the error code/message, never request values.
@@ -129,9 +144,13 @@ export function createTenantGuard(deps: TenantAccessDeps) {
       );
       throw forbidden();
     }
-    if (owners.length === 0) throw forbidden();
+    if (envs.length === 0) throw forbidden();
     if (callerIsAdmin(ctx, caller)) return;
-    const ownsAll = owners.every((o) => !!o && o.toLowerCase() === caller);
-    if (!ownsAll) throw forbidden();
+    const who = { address: caller, isAdmin: false };
+    for (const env of envs) {
+      // canOperate fails closed itself; a throw is a refusal too.
+      const ok = await access.canOperate(who, env).catch(() => false);
+      if (!ok) throw forbidden();
+    }
   };
 }

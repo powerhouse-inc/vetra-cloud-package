@@ -6,6 +6,12 @@ import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { SecretsDB } from "./db/schema.js";
 import { OpenBaoTransitClient } from "./openbao-transit.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import {
+  appDidLookup,
+  createEnvAccess,
+  type EnvAccessRow,
+} from "../vetra-cloud-observability/env-access.js";
 
 const DEFAULT_ROLE = "vetra-secrets";
 
@@ -52,20 +58,26 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
     });
 
-    // The environment processor's projection: maps tenantId -> owner(s).
+    // The environment processor's projection: maps tenantId -> environments.
     const envDb = (await this.relationalDb.createNamespace(
       "vetra-cloud-environments",
     )) as unknown as Kysely<any>;
+    // Organisation access: Renown memberships + app DIDs, as in observability.
+    const appsDb = (await this.relationalDb.createNamespace(
+      "vetra-apps",
+    )) as unknown as Kysely<any>;
 
     this.resolvers = createResolvers(db, transit, {
-      tenantOwners: async (tenantId) =>
-        (
-          (await envDb
-            .selectFrom("environments")
-            .select("owner")
-            .where("tenantId", "=", tenantId)
-            .execute()) as { owner: string | null }[]
-        ).map((r) => r.owner?.toLowerCase() ?? null),
+      tenantEnvironments: async (tenantId) =>
+        (await envDb
+          .selectFrom("environments")
+          .select(["owner", "ownerOrgId", "appId"])
+          .where("tenantId", "=", tenantId)
+          .execute()) as EnvAccessRow[],
+      access: createEnvAccess({
+        orgs: defaultRenownOrgs(),
+        appDidOf: appDidLookup(appsDb),
+      }),
       tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
     });
   }
