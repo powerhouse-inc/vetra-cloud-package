@@ -14,7 +14,8 @@ import {
 import { createPackageRegistryResolver } from "./package-registry.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
-import { grantViewer, syncEnvironmentOrgOnce, type OrgEnvRow, type OrgSyncDeps } from "./org-sync.js";
+import { grantViewer, syncEnvironmentOrgOnce, withEnvLock, type OrgEnvRow, type OrgSyncDeps } from "./org-sync.js";
+import { protectEnvironment, RESTRICTION_GRANTEE } from "./env-protection.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -657,7 +658,24 @@ export function createResolvers(
           isOwner &&
           (await access.canOperate({ address: caller, isAdmin: false }, { owner: null, ownerOrgId: org, appId: null }));
         if (!publishesInOrg) throw new Error("FORBIDDEN");
+        const sync = config.orgSync;
+        const protection = sync?.perm
+          ? { perm: sync.perm, opts: { serviceOwner: sync.serviceOwner ?? RESTRICTION_GRANTEE, db: sync.db, restricted: sync.restricted } }
+          : null;
+        // Restrict the system-only operations before the hand-over…
+        if (protection) await protectEnvironment(protection.perm, { id: env.id, owner: env.owner, ownerOrgId: null }, protection.opts);
         await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
+        // …and move the document to the service identity right after it, so
+        // the former owner keeps no ADMIN (the hook and reconciler retry).
+        if (protection) {
+          try {
+            await withEnvLock(env.id, () =>
+              protectEnvironment(protection.perm, { id: env.id, owner: env.owner, ownerOrgId: org }, protection.opts),
+            );
+          } catch (err) {
+            console.warn(`[org-sync] setEnvironmentOrg protection ${env.id}:`, err);
+          }
+        }
         if (config.orgSync) {
           // The hand-over is done; a failed first sync is caught up by the job.
           try {

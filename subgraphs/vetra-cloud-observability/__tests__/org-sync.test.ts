@@ -4,6 +4,7 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
+import { protectEnvironment } from "../env-protection.js";
 import {
   grantViewer,
   restrictSystemOperations,
@@ -14,6 +15,7 @@ import {
   type OrgSyncDeps,
   type OrgEnvRow,
 } from "../org-sync.js";
+import { createReactorPermissions } from "./reactor-permissions.js";
 import { RenownOrgsUnavailableError, type OrgMembership } from "../../../shared/renown-orgs.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -25,17 +27,12 @@ let envDb: Kysely<any>;
 let members: Map<string, OrgMembership>;
 let down: boolean;
 let deps: OrgSyncDeps;
-/** reactor-api DocumentPermission rows, keyed `${documentId}|${address}`. */
-let store: Map<string, string>;
-/** reactor-api OperationUserPermission rows: `${documentId}|${operationType}` → grantees. */
-let opGrants: Map<string, string[]>;
-let perm: {
-  isOperationRestricted: ReturnType<typeof vi.fn>;
-  grantOperationPermission: ReturnType<typeof vi.fn>;
-  getUserPermission: ReturnType<typeof vi.fn>;
-  grantPermission: ReturnType<typeof vi.fn>;
-  revokePermission: ReturnType<typeof vi.fn>;
-};
+let reactor: Awaited<ReturnType<typeof createReactorPermissions>>;
+let perm: Awaited<ReturnType<typeof createReactorPermissions>>["perm"];
+const setPerm = (d: string, a: string, level: "READ" | "WRITE" | "ADMIN") => reactor.real.grantPermission(d, a, level, "someone-else");
+const getPerm = (d: string, a: string) => reactor.real.getUserPermission(d, a);
+const restrictedBy = async (d: string, op: string) =>
+  (await reactor.real.getOperationUserPermissions(d, op)).map((r) => r.userAddress);
 let dispatch: ReturnType<typeof vi.fn>;
 
 const publisher: OrgMembership = { role: "PUBLISHER", effectiveScope: { all: true, appDids: [] } };
@@ -64,21 +61,8 @@ beforeEach(async () => {
     .addColumn("orgOperators", "text").addColumn("appId", "varchar(255)").execute();
   members = new Map();
   down = false;
-  store = new Map();
-  opGrants = new Map();
-  perm = {
-    isOperationRestricted: vi.fn(async (d: string, op: string) => (opGrants.get(`${d}|${op}`) ?? []).length > 0),
-    grantOperationPermission: vi.fn(async (d: string, op: string, a: string) => {
-      opGrants.set(`${d}|${op}`, [...(opGrants.get(`${d}|${op}`) ?? []), a]);
-    }),
-    getUserPermission: vi.fn(async (d: string, a: string) => store.get(`${d}|${a}`) ?? null),
-    grantPermission: vi.fn(async (d: string, a: string, level: string) => {
-      store.set(`${d}|${a}`, level);
-    }),
-    revokePermission: vi.fn(async (d: string, a: string) => {
-      store.delete(`${d}|${a}`);
-    }),
-  };
+  reactor = await createReactorPermissions();
+  perm = reactor.perm;
   dispatch = vi.fn(async (id: string, _type: string, input: { operators: string[] }) => {
     await envDb.updateTable("environments").set({ orgOperators: JSON.stringify(input.operators) }).where("id", "=", id).execute();
   });
@@ -98,21 +82,27 @@ beforeEach(async () => {
   };
 });
 afterEach(async () => {
+  await reactor.db.destroy();
   await db.destroy();
   await envDb.destroy();
 });
 
 describe("operator sync", () => {
-  it("adds a publisher candidate, grants WRITE, never touches the owner's grant", async () => {
+  it("adds a publisher candidate and grants WRITE; the creator is an ordinary member", async () => {
     members.set(`o1|${BOB}`, publisher);
     members.set(`o1|${OWNER}`, publisher);
     await seed({ id: "e1", ownerOrgId: "o1" });
     const out = await syncEnvironmentOrgOnce(deps, await row("e1"), [BOB.toUpperCase().replace("0X", "0x")]);
     expect(out).toStrictEqual({ result: "UPDATED", operators: [OWNER, BOB] });
     expect(dispatch).toHaveBeenCalledWith("e1", "SYNC_ORG_OPERATORS", { operators: [OWNER, BOB] });
-    expect(perm.grantPermission).toHaveBeenCalledTimes(1);
-    expect(perm.grantPermission).toHaveBeenCalledWith("e1", BOB, "WRITE", "vetra-org-sync");
-    expect(await grants()).toStrictEqual([{ documentId: "e1", address: BOB, level: "WRITE" }]);
+    expect(perm.grantPermission.mock.calls).toStrictEqual([
+      ["e1", OWNER, "WRITE", "vetra-org-sync"],
+      ["e1", BOB, "WRITE", "vetra-org-sync"],
+    ]);
+    expect(await grants()).toStrictEqual([
+      { documentId: "e1", address: OWNER, level: "WRITE" },
+      { documentId: "e1", address: BOB, level: "WRITE" },
+    ]);
   });
 
   it("drops a removed operator and revokes only grants it made", async () => {
@@ -232,7 +222,7 @@ describe("operator sync", () => {
     members.set(`o1|${BOB}`, publisher);
     await seed({ id: "e1", ownerOrgId: "o1" });
     await db.insertInto("org_document_grants").values({ documentId: "e1", address: BOB, level: "WRITE", grantedAt: "t" }).execute();
-    store.set(`e1|${BOB}`, "WRITE");
+    await setPerm("e1", BOB, "WRITE");
     expect(await syncEnvironmentOrgOnce(deps, await row("e1"))).toStrictEqual({ result: "UPDATED", operators: [BOB] });
     expect(perm.revokePermission).not.toHaveBeenCalled();
     expect(perm.grantPermission).not.toHaveBeenCalled();
@@ -293,12 +283,12 @@ describe("operator sync", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("never touches a grant Vetra did not create (pre-existing ADMIN, WRITE)", async () => {
+  it("never touches a READ/WRITE grant Vetra did not create", async () => {
     members.set(`o1|${BOB}`, publisher);
     members.set(`o1|${CAROL}`, plain);
     await seed({ id: "e1", ownerOrgId: "o1" });
-    store.set(`e1|${BOB}`, "ADMIN"); // e.g. a previous owner's protection grant
-    store.set(`e1|${CAROL}`, "WRITE"); // granted by hand
+    await setPerm("e1", BOB, "READ"); // granted by hand
+    await setPerm("e1", CAROL, "WRITE"); // granted by hand
     await syncEnvironmentOrgOnce(deps, await row("e1"), [BOB]);
     await grantViewer(deps, await row("e1"), CAROL);
     expect(perm.grantPermission).not.toHaveBeenCalled();
@@ -307,19 +297,19 @@ describe("operator sync", () => {
     members.delete(`o1|${CAROL}`);
     await runOrgSyncOnce(deps);
     expect(perm.revokePermission).not.toHaveBeenCalled();
-    expect(store.get(`e1|${BOB}`)).toBe("ADMIN");
-    expect(store.get(`e1|${CAROL}`)).toBe("WRITE");
+    expect(await getPerm("e1", BOB)).toBe("READ");
+    expect(await getPerm("e1", CAROL)).toBe("WRITE");
   });
 
   it("forgets a Vetra grant someone else changed, and never revokes it", async () => {
     members.set(`o1|${CAROL}`, plain);
     await seed({ id: "e1", ownerOrgId: "o1" });
     await grantViewer(deps, await row("e1"), CAROL);
-    store.set(`e1|${CAROL}`, "ADMIN");
+    await setPerm("e1", CAROL, "ADMIN");
     members.delete(`o1|${CAROL}`);
     await runOrgSyncOnce(deps);
     expect(perm.revokePermission).not.toHaveBeenCalled();
-    expect(store.get(`e1|${CAROL}`)).toBe("ADMIN");
+    expect(await getPerm("e1", CAROL)).toBe("ADMIN");
     expect(await grants()).toStrictEqual([]);
   });
 
@@ -337,15 +327,60 @@ describe("operator sync", () => {
     members.set(`o1|${BOB}`, publisher);
     await seed({ id: "e1", ownerOrgId: "o1" });
     await syncEnvironmentOrgOnce(deps, await row("e1"), [BOB]);
-    for (const op of SYSTEM_ONLY_OPERATIONS) expect(opGrants.get(`e1|${op}`)).toStrictEqual([RESTRICTION_GRANTEE]);
+    for (const op of SYSTEM_ONLY_OPERATIONS) expect(await restrictedBy("e1", op)).toStrictEqual([RESTRICTION_GRANTEE]);
     const lastRestrict = Math.max(...perm.grantOperationPermission.mock.invocationCallOrder);
     expect(lastRestrict).toBeLessThan(perm.grantPermission.mock.invocationCallOrder[0]);
     // Idempotent, and an operation someone else restricted is left as it is.
-    opGrants.set("e2|SET_OWNER", ["0xsomeone"]);
+    await reactor.real.grantOperationPermission("e2", "SET_OWNER", "0xsomeone", "someone-else");
     await restrictSystemOperations(perm, "e1");
     await restrictSystemOperations(perm, "e2");
-    expect(opGrants.get("e1|SET_OWNER")).toStrictEqual([RESTRICTION_GRANTEE]);
-    expect(opGrants.get("e2|SET_OWNER")).toStrictEqual(["0xsomeone"]);
-    expect(opGrants.get("e2|SYNC_ORG_OPERATORS")).toStrictEqual([RESTRICTION_GRANTEE]);
+    expect(await restrictedBy("e1", "SET_OWNER")).toStrictEqual([RESTRICTION_GRANTEE]);
+    expect(await restrictedBy("e2", "SET_OWNER")).toStrictEqual(["0xsomeone"]);
+    expect(await restrictedBy("e2", "SYNC_ORG_OPERATORS")).toStrictEqual([RESTRICTION_GRANTEE]);
+  });
+
+  it("hand-over: the document moves to the service identity; a creator who leaves keeps nothing", async () => {
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    const doc = { owner: BOB, ownerOrgId: null as string | null, orgOperators: [] as string[] };
+    dispatch.mockImplementation(async (_id: string, _type: string, input: { operators: string[] }) => {
+      doc.orgOperators = input.operators;
+    });
+    const d = { ...deps, serviceOwner: SERVICE, readOrgState: async () => ({ ...doc }) };
+    await seed({ id: "e1", owner: BOB });
+    // Personal and protected for BOB (as the protection reconciler leaves it).
+    await protectEnvironment(perm, { id: "e1", owner: BOB, ownerOrgId: null }, { serviceOwner: SERVICE, db });
+    expect(await reactor.auth.canMutate("e1", "SET_OWNER_ORG", BOB)).toBe(true);
+    expect(await reactor.auth.canMutate("e1", "SET_LABEL", CAROL)).toBe(false);
+
+    // BOB hands it to o1 where he publishes; the next sync takes the document over.
+    members.set(`o1|${BOB}`, publisher);
+    doc.ownerOrgId = "o1";
+    doc.orgOperators = [BOB];
+    await syncEnvironmentOrgOnce(d, await row("e1"));
+    expect(await reactor.real.getDocumentOwner("e1")).toBe(SERVICE);
+    expect(await getPerm("e1", BOB)).toBe("WRITE");
+    expect(await db.selectFrom("org_document_protection").select(["documentId", "previousOwner"]).execute())
+      .toStrictEqual([{ documentId: "e1", previousOwner: BOB }]);
+    // As an operator he writes, but cannot submit the system-only operations unsigned.
+    expect(await reactor.auth.canMutate("e1", "SET_LABEL", BOB)).toBe(true);
+    for (const op of ["SET_OWNER_ORG", "SYNC_ORG_OPERATORS", "SET_OWNER", "SET_APP_LINK"]) {
+      expect(await reactor.auth.canMutate("e1", op, BOB)).toBe(false);
+    }
+
+    // BOB leaves o1: no access at all, and nothing he could submit.
+    members.delete(`o1|${BOB}`);
+    await envDb.updateTable("environments").set({ ownerOrgId: "o1" }).where("id", "=", "e1").execute(); // read model caught up
+    await runOrgSyncOnce(d);
+    expect(doc.orgOperators).toStrictEqual([]);
+    expect(await getPerm("e1", BOB)).toBeNull();
+    expect(await reactor.auth.canRead("e1", BOB)).toBe(false);
+    for (const op of ["SET_OWNER_ORG", "SYNC_ORG_OPERATORS", "SET_LABEL"]) {
+      expect(await reactor.auth.canMutate("e1", op, BOB)).toBe(false);
+    }
+
+    // Idempotent: a recorded hand-over is not redone.
+    perm.setDocumentOwner.mockClear();
+    await syncEnvironmentOrgOnce(d, await row("e1"));
+    expect(perm.setDocumentOwner).not.toHaveBeenCalled();
   });
 });

@@ -30,7 +30,14 @@ import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
 import { appDidLookup, createEnvAccess } from "./env-access.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
-import { restrictSystemOperations, runOrgSyncOnce, type OrgSyncDeps } from "./org-sync.js";
+import { runOrgSyncOnce, withEnvLock, type OrgSyncDeps } from "./org-sync.js";
+import {
+  envChangeProtector,
+  envProtectionTargetOf,
+  protectEnvironment,
+  vetraServiceAddress,
+  type EnvProtectionTarget,
+} from "./env-protection.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -43,6 +50,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private ownerBackfill: ReturnType<typeof setInterval> | null = null;
   private orgOperatorSync: ReturnType<typeof setInterval> | null = null;
   private protectionReconciler: ReturnType<typeof setInterval> | null = null;
+  private unsubscribeEnvProtection: (() => void) | null = null;
+  /** Operation restrictions this process already applied (see env-protection.ts). */
+  private readonly restrictedEnvOps = new Set<string>();
   private challengeReconciler: ReturnType<typeof setInterval> | null = null;
   private releaseIndexBackfill: ReturnType<typeof setInterval> | null = null;
   private fusionAutoUpdate: ReturnType<typeof setInterval> | null = null;
@@ -99,6 +109,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       appDidOf: appDidLookup(appsDb),
       dispatch,
       perm: this.documentPermissionService ?? null,
+      serviceOwner: vetraServiceAddress(),
+      restricted: this.restrictedEnvOps,
       readOrgState: async (documentId) => {
         const doc = await this.reactorClient.get(documentId);
         const state = (doc as { state?: { global?: Record<string, unknown> } }).state?.global ?? {};
@@ -228,7 +240,11 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // marked "protected" at the reactor-api layer and the owner has an ADMIN
     // permission grant. This is what locks down direct getDocument(id) reads
     // for non-owner, non-admin users.
-    this.startProtectionReconciler();
+    this.startProtectionReconciler(db);
+
+    // …and immediately on every change of an environment document, so a
+    // newly owned or organisation-owned env has no unprotected window.
+    this.startEnvProtectionHook(db);
 
     // Start stuck-challenge reconciler: rescues cert-manager Certificates
     // whose latest HTTP-01 Challenge went invalid due to NXDOMAIN (the
@@ -285,6 +301,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       clearInterval(this.protectionReconciler);
       this.protectionReconciler = null;
     }
+    this.unsubscribeEnvProtection?.();
+    this.unsubscribeEnvProtection = null;
     if (this.challengeReconciler) {
       clearInterval(this.challengeReconciler);
       this.challengeReconciler = null;
@@ -755,29 +773,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   }
 
   /**
-   * Enforces document-level read protection at the reactor-api layer for every
-   * env that has an owner. Idempotent:
-   *   - Queries envs with owner set.
-   *   - For each, reads the document's protection record.
-   *   - If it isn't already { protected: true, ownerAddress: owner }, calls
-   *     initializeDocumentProtection(docId, owner, true) — which sets
-   *     protection + owner + grants the owner ADMIN in one shot.
-   *
-   * AuthorizationService behaviour after this:
-   *   - supreme admins (ADMINS env) → can read/write (unchanged)
-   *   - owner → can read/write (implicit ADMIN)
-   *   - anyone else → 403 on getDocument / findDocuments / mutations
-   *
-   * Unowned envs are left alone — they stay "public" per the reducer contract.
-   *
-   * Runs every 60 seconds: short enough that the window between a new env
-   * being claimed and being protected is acceptable, long enough to not
-   * hammer the DB. The alternative (hooking the reactor's operation stream)
-   * would be tighter but requires more plumbing.
+   * Enforces reactor-api protection for every environment document (see
+   * env-protection.ts):
+   *   - personal env: protected, owner = env owner (+ ADMIN grant);
+   *   - organisation env: protected, owner = the Vetra service identity, no
+   *     ADMIN grants (the creator reaches it only through operator grants);
+   *   - every env: the operations whose only gate is "system" are restricted
+   *     (on unowned envs only the organisation ones: SET_OWNER stays open so
+   *     a user can claim it).
+   * Every 60 s and on startup, as a safety net for startEnvProtectionHook.
    */
-  private startProtectionReconciler() {
-    // Envs whose system-only operations this process already restricted.
-    const restricted = new Set<string>();
+  private startProtectionReconciler(db: Kysely<ObservabilityDB>) {
     const reconcile = async () => {
       const perm = this.documentPermissionService;
       if (!perm) return;
@@ -787,64 +793,28 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           "vetra-cloud-environments",
         )) as unknown as Kysely<any>;
 
-        const owned = (await envDb
+        const envs = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "owner"])
-          .where("owner", "is not", null)
-          .execute()) as Array<{
-          id: string;
-          name: string | null;
-          owner: string;
-        }>;
+          .select(["id", "owner", "ownerOrgId"])
+          .execute()) as EnvProtectionTarget[];
+        const handedOver = new Set(
+          (await db.selectFrom("org_document_protection").select("documentId").execute()).map((r) => r.documentId),
+        );
 
-        if (owned.length === 0) return;
-
-        let initialized = 0;
-        for (const env of owned) {
+        let failed = 0;
+        for (const row of envs) {
           try {
-            // Unsigned SET_OWNER / SET_OWNER_ORG / … pass the reducers as
-            // "system": only document admins may submit them from outside.
-            if (!restricted.has(env.id)) {
-              await restrictSystemOperations(perm, env.id);
-              restricted.add(env.id);
-            }
-            const current = await perm.getDocumentProtection(env.id);
-            const ownerMatches =
-              current.ownerAddress?.toLowerCase() === env.owner.toLowerCase();
-            if (current.protected && ownerMatches) {
-              continue; // already in the correct state
-            }
-
-            // initializeDocumentProtection seeds `protected` only on first
-            // insert — subsequent calls leave the flag alone. Reactor itself
-            // often pre-creates a row with protected=false when the document
-            // is first persisted, so we have to flip it explicitly.
-            await perm.initializeDocumentProtection(env.id, env.owner, true);
-            if (!current.protected) {
-              await perm.setDocumentProtection(env.id, true);
-            }
-            if (!ownerMatches) {
-              await perm.setDocumentOwner(env.id, env.owner);
-              // grantPermission is idempotent per (documentId, userAddress)
-              await perm.grantPermission(env.id, env.owner, "ADMIN", env.owner);
-            }
-            initialized++;
-            const label = env.name ?? env.id;
-            console.info(
-              `[protection-reconciler] ${label}: protected + owner=${env.owner}`,
-            );
+            // The read model lags the document: a recorded hand-over whose row
+            // still looks personal is decided from the document itself.
+            const env =
+              !row.ownerOrgId && handedOver.has(row.id) ? ((await this.readEnvProtectionTarget(row.id)) ?? row) : row;
+            await this.protectEnv(db, env);
           } catch (err) {
-            console.warn(
-              `[protection-reconciler] ${env.id}: init failed: ${String(err)}`,
-            );
+            failed++;
+            console.warn(`[protection-reconciler] ${row.id}: ${String(err)}`);
           }
         }
-
-        if (initialized > 0) {
-          console.info(
-            `[protection-reconciler] initialized protection for ${initialized}/${owned.length} env(s)`,
-          );
-        }
+        if (failed > 0) console.warn(`[protection-reconciler] ${failed}/${envs.length} env(s) failed`);
       } catch (err) {
         if (String(err).includes("does not exist")) return;
         console.warn("[protection-reconciler] error:", err);
@@ -857,6 +827,34 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       60 * 1000,
     );
     void reconcile();
+  }
+
+  /** Protects an environment document as soon as it is created or changes. */
+  private startEnvProtectionHook(db: Kysely<ObservabilityDB>) {
+    this.unsubscribeEnvProtection = this.reactorClient.subscribe(
+      { type: "powerhouse/vetra-cloud-environment" },
+      envChangeProtector((env) => this.protectEnv(db, env), console),
+    );
+  }
+
+  private async protectEnv(db: Kysely<ObservabilityDB>, env: EnvProtectionTarget) {
+    const perm = this.documentPermissionService;
+    if (!perm) return;
+    await withEnvLock(env.id, () =>
+      protectEnvironment(perm, env, {
+        serviceOwner: vetraServiceAddress(),
+        db,
+        restricted: this.restrictedEnvOps,
+      }),
+    );
+  }
+
+  private async readEnvProtectionTarget(id: string): Promise<EnvProtectionTarget | null> {
+    try {
+      return envProtectionTargetOf(await this.reactorClient.get(id));
+    } catch {
+      return null;
+    }
   }
 
   private async dispatchAction(
@@ -1178,3 +1176,4 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   }
 
 }
+

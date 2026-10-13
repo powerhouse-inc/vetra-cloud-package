@@ -3,59 +3,24 @@ import type { ObservabilityDB } from "./db/schema.js";
 import { hasPublisherCapability, type MembershipReader } from "../../shared/org-access.js";
 import type { OrgMembership } from "../../shared/renown-orgs.js";
 import { parseOperators, unresolvedAppDid } from "./env-access.js";
+import {
+  GRANTED_BY,
+  protectEnvironment,
+  RESTRICTION_GRANTEE,
+  type EnvProtectionService,
+} from "./env-protection.js";
 
-const GRANTED_BY = "vetra-org-sync";
-
-/** reactor-api operation-level permissions (DocumentPermissionService). */
-export interface OperationRestrictions {
-  isOperationRestricted(documentId: string, operationType: string): Promise<boolean>;
-  grantOperationPermission(
-    documentId: string,
-    operationType: string,
-    userAddress: string,
-    grantedBy: string,
-  ): Promise<unknown>;
-}
-
-/**
- * Operations whose reducers trust any action without a user signer as
- * "system". reactor-api accepts unsigned (or user-less signed) actions from
- * any caller with WRITE, so on a document Vetra grants WRITE on these are
- * restricted at reactor-api: only platform admins and the document's
- * protection owner / ADMIN grantees may submit them from outside. In-process
- * dispatches (reactorClient) are not affected.
- */
-export const SYSTEM_ONLY_OPERATIONS = [
-  "SET_OWNER",
-  "SET_OWNER_ORG",
-  "SYNC_ORG_OPERATORS",
-  "SET_APP_LINK",
-  "CLEAR_APP_LINK",
-] as const;
-
-/** Grantee that marks an operation restricted; nobody can sign in as it. */
-export const RESTRICTION_GRANTEE = "0x0000000000000000000000000000000000000000";
-
-/** Restrict SYSTEM_ONLY_OPERATIONS on a document (idempotent). */
-export async function restrictSystemOperations(perm: OperationRestrictions, documentId: string): Promise<void> {
-  for (const op of SYSTEM_ONLY_OPERATIONS) {
-    if (await perm.isOperationRestricted(documentId, op)) continue;
-    await perm.grantOperationPermission(documentId, op, RESTRICTION_GRANTEE, GRANTED_BY);
-  }
-}
+export {
+  GRANTED_BY,
+  ORG_SYSTEM_OPERATIONS,
+  RESTRICTION_GRANTEE,
+  restrictSystemOperations,
+  SYSTEM_ONLY_OPERATIONS,
+  type OperationRestrictions,
+} from "./env-protection.js";
 
 /** The slice of reactor-api's DocumentPermissionService the sync uses. */
-export interface DocumentGrants extends OperationRestrictions {
-  /** The address's current permission on the document (any origin), or null. */
-  getUserPermission(documentId: string, userAddress: string): Promise<string | null>;
-  grantPermission(
-    documentId: string,
-    userAddress: string,
-    permission: "READ" | "WRITE" | "ADMIN",
-    grantedBy: string,
-  ): Promise<unknown>;
-  revokePermission(documentId: string, userAddress: string): Promise<void>;
-}
+export type DocumentGrants = EnvProtectionService;
 
 /** The organisation fields of the environment document itself (not the read model). */
 export interface OrgDocState {
@@ -78,6 +43,10 @@ export interface OrgSyncDeps {
    * read-model row is re-read inside the per-env lock.
    */
   readOrgState?(documentId: string): Promise<OrgDocState | null>;
+  /** Protection owner of organisation envs (the Vetra service identity); default: nobody. */
+  serviceOwner?: string;
+  /** Per-process memo of operation restrictions already applied. */
+  restricted?: Set<string>;
   logger?: Pick<Console, "info" | "warn">;
 }
 
@@ -104,7 +73,7 @@ const sameSet = (a: string[], b: string[]) => {
  * operator another sync just added.
  */
 const envLocks = new Map<string, Promise<unknown>>();
-async function withEnvLock<T>(envId: string, fn: () => Promise<T>): Promise<T> {
+export async function withEnvLock<T>(envId: string, fn: () => Promise<T>): Promise<T> {
   const prev = envLocks.get(envId) ?? Promise.resolve();
   const run = prev.then(fn, fn);
   const tail = run.catch(() => undefined);
@@ -159,6 +128,9 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   const current = lower(state.orgOperators);
   const orgId = state.ownerOrgId;
   if (!orgId) return { result: "SKIPPED", operators: current };
+  // Before any grant: the document belongs to the service identity, not the
+  // creator (no ADMIN left that could submit unsigned "system" actions).
+  await protectOrgEnv(deps, { id: env.id, owner: state.owner, ownerOrgId: orgId });
   let appDid: string | null = null;
   if (env.appId) {
     try {
@@ -193,8 +165,18 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   const next = pool.filter((a) => hasPublisherCapability(memberships.get(a) ?? null, appDid));
   const changed = !sameSet(current, next);
   if (changed) await deps.dispatch(env.id, "SYNC_ORG_OPERATORS", { operators: next });
-  await reconcileWriteGrants(deps, env.id, owner, next, (a) => memberships.get(a) ?? null);
+  await reconcileWriteGrants(deps, env.id, next, (a) => memberships.get(a) ?? null);
   return { result: changed ? "UPDATED" : "UNCHANGED", operators: next };
+}
+
+/** Organisation env protection (service-owned, system operations restricted). */
+async function protectOrgEnv(deps: OrgSyncDeps, env: { id: string; owner: string | null; ownerOrgId: string }) {
+  if (!deps.perm) return;
+  await protectEnvironment(deps.perm, env, {
+    serviceOwner: deps.serviceOwner ?? RESTRICTION_GRANTEE,
+    db: deps.db,
+    restricted: deps.restricted,
+  });
 }
 
 /**
@@ -263,25 +245,18 @@ const withPerm = (deps: OrgSyncDeps): (OrgSyncDeps & { perm: DocumentGrants }) |
 /**
  * WRITE for every operator; a WRITE grant Vetra made for someone who no longer
  * operates is revoked, or lowered to READ when they are still a member.
- * Grants Vetra did not create are never touched, nor is the owner's grant.
+ * Grants Vetra did not create are never touched. The creator is treated like
+ * any member: their protection ADMIN is gone once the env is org-owned.
  */
 async function reconcileWriteGrants(
   deps: OrgSyncDeps,
   envId: string,
-  owner: string | null,
   operators: string[],
   membershipOf: (address: string) => OrgMembership | null,
 ): Promise<void> {
   const d = withPerm(deps);
   if (!d) return;
-  // WRITE lets a caller submit actions directly; close the unsigned
-  // "system" path first.
-  if (operators.some((a) => a !== owner)) await restrictSystemOperations(d.perm, envId);
-  for (const address of operators) {
-    // The owner's protection grant is ADMIN; never touch it.
-    if (address === owner) continue;
-    await setOwnedGrant(d, envId, address, "WRITE");
-  }
+  for (const address of operators) await setOwnedGrant(d, envId, address, "WRITE");
   const rows = await d.db
     .selectFrom("org_document_grants")
     .select(["address", "level"])
@@ -290,13 +265,8 @@ async function reconcileWriteGrants(
     .execute();
   for (const r of rows) {
     if (operators.includes(r.address)) continue;
-    if (r.address === owner) {
-      await deleteGrant(d, envId, r.address);
-    } else if (membershipOf(r.address)) {
-      await setOwnedGrant(d, envId, r.address, "READ");
-    } else {
-      await dropOwnedGrant(d, envId, r.address);
-    }
+    if (membershipOf(r.address)) await setOwnedGrant(d, envId, r.address, "READ");
+    else await dropOwnedGrant(d, envId, r.address);
   }
 }
 
@@ -321,8 +291,10 @@ async function deleteGrant(deps: OrgSyncDeps, documentId: string, address: strin
 export async function grantViewer(deps: OrgSyncDeps, env: OrgEnvRow, address: string): Promise<void> {
   const d = withPerm(deps);
   const addr = address.toLowerCase();
-  if (!d || !env.ownerOrgId || addr === env.owner?.toLowerCase()) return;
+  const orgId = env.ownerOrgId;
+  if (!d || !orgId) return;
   await withEnvLock(env.id, async () => {
+    await protectOrgEnv(deps, { id: env.id, owner: env.owner, ownerOrgId: orgId });
     const { recorded, foreign } = await ownedGrant(d, env.id, addr);
     // An existing Vetra grant (READ or WRITE) already covers viewing.
     if (foreign || recorded) return;
@@ -348,8 +320,7 @@ async function revalidateViewers(deps: OrgSyncDeps, env: OrgEnvRow): Promise<voi
       continue;
     }
     if (member) continue;
-    if (address === env.owner?.toLowerCase()) await deleteGrant(d, env.id, address);
-    else await dropOwnedGrant(d, env.id, address);
+    await dropOwnedGrant(d, env.id, address);
   }
 }
 

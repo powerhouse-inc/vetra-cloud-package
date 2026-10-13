@@ -167,9 +167,19 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addPrimaryKeyConstraint("org_document_grants_pkey", ["documentId", "address"])
     .ifNotExists()
     .execute();
+
+  // Organisation envs whose protection ownership moved to the Vetra service identity.
+  await db.schema
+    .createTable("org_document_protection")
+    .addColumn("documentId", "varchar(255)", (c) => c.primaryKey())
+    .addColumn("previousOwner", "varchar(255)")
+    .addColumn("transferredAt", "varchar(64)", (c) => c.notNull())
+    .ifNotExists()
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("org_document_protection").ifExists().execute();
   await db.schema.dropTable("org_document_grants").ifExists().execute();
   await db.schema.dropTable("studio_brand").ifExists().execute();
   await db.schema.dropTable("database_dumps").ifExists().execute();

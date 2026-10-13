@@ -156,4 +156,11 @@ export interface ObservabilityDB {
     level: string;
     grantedAt: string;
   };
+  /** Organisation envs whose reactor-api protection Vetra moved to its service identity. */
+  org_document_protection: {
+    documentId: string;
+    /** Protection owner before the hand-over (the creator), if any. */
+    previousOwner: string | null;
+    transferredAt: string;
+  };
 }

@@ -11,6 +11,8 @@ import { createPackageRegistryResolver } from "../package-registry.js";
 import { createDumpResolvers } from "../dumps/resolvers.js";
 import { DumpsRepo } from "../dumps/repo.js";
 import type { OrgSyncDeps } from "../org-sync.js";
+import { SYSTEM_ONLY_OPERATIONS } from "../env-protection.js";
+import { createReactorPermissions } from "./reactor-permissions.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -383,5 +385,31 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
       ).rejects.toThrow("ENV_NOT_ACTIVE");
     }
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("hand-over protects at once: restricted before SET_OWNER_ORG, service-owned right after", async () => {
+    const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+    const reactor = await createReactorPermissions();
+    try {
+      await seedEnv({ id: "mine", owner: BOB });
+      await reactor.real.initializeDocumentProtection("mine", BOB, true); // as the reconciler leaves it
+      let restrictedAtDispatch: boolean[] = [];
+      dispatch.mockImplementation(async () => {
+        restrictedAtDispatch = await Promise.all(SYSTEM_ONLY_OPERATIONS.map((op) => reactor.real.isOperationRestricted("mine", op)));
+      });
+      await resolversWithSync({ orgSync: { perm: reactor.perm, serviceOwner: SERVICE } }).Mutation.setEnvironmentOrg(
+        null,
+        { environmentId: "mine", orgId: "o1" },
+        ctx(BOB),
+      );
+      expect(restrictedAtDispatch).toStrictEqual(SYSTEM_ONLY_OPERATIONS.map(() => true));
+      expect(await reactor.real.getDocumentOwner("mine")).toBe(SERVICE);
+      // BOB is a publisher in o1: WRITE through Vetra, no ADMIN, no unsigned system operations.
+      expect(await reactor.real.getUserPermission("mine", BOB)).toBe("WRITE");
+      expect(await reactor.auth.canMutate("mine", "SET_OWNER_ORG", BOB)).toBe(false);
+      expect(await reactor.auth.canMutate("mine", "SYNC_ORG_OPERATORS", BOB)).toBe(false);
+    } finally {
+      await reactor.db.destroy();
+    }
   });
 });
