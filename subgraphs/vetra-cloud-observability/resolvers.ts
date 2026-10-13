@@ -54,21 +54,27 @@ export interface ResolverConfig {
   orgSyncMinIntervalMs?: number;
 }
 
-/** Remembers when each key last ran; bounded so it cannot grow without limit. */
+/**
+ * Remembers when each key last completed; bounded so it cannot grow without
+ * limit. Only successful runs are marked, so a failure can be retried at once.
+ */
 function createKeyedRateLimiter(minIntervalMs: number, maxKeys = 10_000) {
   const last = new Map<string, number>();
-  return (key: string): boolean => {
-    if (minIntervalMs <= 0) return true;
-    const now = Date.now();
-    const prev = last.get(key);
-    if (prev !== undefined && now - prev < minIntervalMs) return false;
-    last.delete(key);
-    last.set(key, now);
-    if (last.size > maxKeys) {
-      const oldest = last.keys().next().value;
-      if (oldest !== undefined) last.delete(oldest);
-    }
-    return true;
+  return {
+    limited(key: string): boolean {
+      if (minIntervalMs <= 0) return false;
+      const prev = last.get(key);
+      return prev !== undefined && Date.now() - prev < minIntervalMs;
+    },
+    mark(key: string): void {
+      if (minIntervalMs <= 0) return;
+      last.delete(key);
+      last.set(key, Date.now());
+      if (last.size > maxKeys) {
+        const oldest = last.keys().next().value;
+        if (oldest !== undefined) last.delete(oldest);
+      }
+    },
   };
 }
 
@@ -113,13 +119,13 @@ export function createResolvers(
   const envDb = config.envDb;
   const dispatch = config.dispatch;
   const access = config.access ?? OWNER_ONLY_ACCESS;
-  const allowOrgSync = createKeyedRateLimiter(config.orgSyncMinIntervalMs ?? 10_000);
+  const orgSyncLimiter = createKeyedRateLimiter(config.orgSyncMinIntervalMs ?? 10_000);
   const loadOrgEnv = async (environmentId: string) =>
     (await envDb
       .selectFrom("environments")
-      .select(["id", "owner", "ownerOrgId", "orgOperators", "appId"])
+      .select(["id", "owner", "ownerOrgId", "orgOperators", "appId", "status"])
       .where("id", "=", environmentId)
-      .executeTakeFirst()) as OrgEnvRow | undefined;
+      .executeTakeFirst()) as (OrgEnvRow & { status: string | null }) | undefined;
   // Dump resolvers are always registered so the schema's non-nullable
   // `environmentDumps` field never resolves to undefined (which would
   // crash with "Cannot return null for non-nullable field"). When the
@@ -606,11 +612,26 @@ export function createResolvers(
         const operate = await access.canOperate(who, env);
         const view = operate || (await access.canView(who, env));
         // Admins operate through the admin bypass, not as org operators.
-        if (config.orgSync && !isAdmin && (operate || view) && allowOrgSync(`${caller}|${env.id}`)) {
-          if (operate) await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
-          else await grantViewer(config.orgSync, env, caller);
+        let canOperateNow = operate;
+        // The mode is part of the key: a viewer promoted to publisher syncs at once.
+        const key = `${caller}|${env.id}|${operate ? "operate" : "view"}`;
+        if (config.orgSync && !isAdmin && view && !orgSyncLimiter.limited(key)) {
+          try {
+            if (operate) {
+              const out = await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
+              // Not synced (outage): only an existing operator may sign now.
+              if (out.result === "SKIPPED") canOperateNow = out.operators.includes(caller);
+              else orgSyncLimiter.mark(key);
+            } else {
+              await grantViewer(config.orgSync, env, caller);
+              orgSyncLimiter.mark(key);
+            }
+          } catch (err) {
+            console.warn(`[org-sync] syncEnvironmentOrg ${env.id}:`, err);
+            if (operate) canOperateNow = parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
+          }
         }
-        return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: operate, canView: view };
+        return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: canOperateNow, canView: view };
       },
 
       setEnvironmentOrg: async (
@@ -627,6 +648,7 @@ export function createResolvers(
         // One-way: an org env never goes back (or elsewhere) through this call.
         if (env.ownerOrgId) throw new Error("ALREADY_ORG_OWNED");
         if (env.appId) throw new Error("APP_ENVIRONMENT");
+        if (env.status && RELEASED_STATUSES.has(env.status)) throw new Error("ENV_NOT_ACTIVE");
         // Only the env's own (personal) owner hands it over: no admin bypass,
         // so nobody can pull someone else's env into an organisation. In the
         // org they need publisher capability for a standalone env (PUBLISHER+).
@@ -637,7 +659,12 @@ export function createResolvers(
         if (!publishesInOrg) throw new Error("FORBIDDEN");
         await dispatch(env.id, "SET_OWNER_ORG", { ownerOrgId: org, operators: [caller] });
         if (config.orgSync) {
-          await syncEnvironmentOrgOnce(config.orgSync, { ...env, ownerOrgId: org, orgOperators: JSON.stringify([caller]) });
+          // The hand-over is done; a failed first sync is caught up by the job.
+          try {
+            await syncEnvironmentOrgOnce(config.orgSync, { ...env, ownerOrgId: org, orgOperators: JSON.stringify([caller]) });
+          } catch (err) {
+            console.warn(`[org-sync] setEnvironmentOrg ${env.id}:`, err);
+          }
         }
         return { environmentId, ownerOrgId: org, canOperate: true, canView: true };
       },

@@ -73,6 +73,7 @@ type EnvSeed = {
   appId?: string | null;
   ownerOrgId?: string | null;
   orgOperators?: string[];
+  status?: string;
 };
 
 async function seedEnv(env: EnvSeed): Promise<void> {
@@ -86,7 +87,7 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       customDomain: null,
       packages: null,
       services: null,
-      status: "DRAFT",
+      status: env.status ?? "DRAFT",
       owner: env.owner ?? null,
       createdBy: null,
       studioInstanceId: null,
@@ -343,6 +344,44 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
     await expect(r.setEnvironmentOrg(null, { environmentId: "nope", orgId: "o1" }, ctx(BOB))).rejects.toThrow("ENV_NOT_FOUND");
     const down = createResolvers(db, { prometheusUrl: "http://p", lokiUrl: "http://l", envDb, dispatch, access: renownDown });
     await expect(down.Mutation.setEnvironmentOrg(null, { environmentId: "bobs", orgId: "o1" }, ctx(BOB))).rejects.toThrow("FORBIDDEN");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("a sync that could not run answers canOperate only for existing operators, and frees the rate-limit slot", async () => {
+    await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1" });
+    const outage = resolversWithSync({
+      orgSync: {
+        orgs: {
+          membership: async () => {
+            throw new Error("renown down");
+          },
+        },
+      },
+    }).Mutation;
+    expect(await outage.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB)))
+      .toMatchObject({ canOperate: false, canView: true });
+
+    const r = resolversWithSync().Mutation;
+    dispatch.mockImplementationOnce(async () => {
+      throw new Error("reactor busy");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(await r.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB)))
+      .toMatchObject({ canOperate: false, canView: true });
+    warn.mockRestore();
+    // The failure did not consume the slot: the retry syncs straight away.
+    expect(await r.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(BOB)))
+      .toMatchObject({ canOperate: true, canView: true });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses to hand over a released environment", async () => {
+    for (const status of ["TERMINATING", "DESTROYED", "ARCHIVED"]) {
+      await seedEnv({ id: `gone-${status}`, owner: BOB, status });
+      await expect(
+        resolversWithSync().Mutation.setEnvironmentOrg(null, { environmentId: `gone-${status}`, orgId: "o1" }, ctx(BOB)),
+      ).rejects.toThrow("ENV_NOT_ACTIVE");
+    }
     expect(dispatch).not.toHaveBeenCalled();
   });
 });

@@ -30,7 +30,7 @@ import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
 import { appDidLookup, createEnvAccess } from "./env-access.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
-import { runOrgSyncOnce, type OrgSyncDeps } from "./org-sync.js";
+import { restrictSystemOperations, runOrgSyncOnce, type OrgSyncDeps } from "./org-sync.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -99,6 +99,16 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       appDidOf: appDidLookup(appsDb),
       dispatch,
       perm: this.documentPermissionService ?? null,
+      readOrgState: async (documentId) => {
+        const doc = await this.reactorClient.get(documentId);
+        const state = (doc as { state?: { global?: Record<string, unknown> } }).state?.global ?? {};
+        const operators = state.orgOperators;
+        return {
+          owner: typeof state.owner === "string" ? state.owner : null,
+          ownerOrgId: typeof state.ownerOrgId === "string" ? state.ownerOrgId : null,
+          orgOperators: Array.isArray(operators) ? operators.filter((o): o is string => typeof o === "string") : [],
+        };
+      },
       logger: console,
     };
 
@@ -668,19 +678,6 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   }
 
   /**
-   * Seeds state.owner on historical environments by dispatching a system-signed
-   * SET_OWNER action with the address from the processor's createdBy column.
-   *
-   * Why this works without forging signatures:
-   *   The SET_OWNER reducer allows system-signed actions (no user in the signer)
-   *   to set any address when state.owner is null. User-signed claims are still
-   *   restricted to the signer's own address.
-   *
-   * Idempotent — skips rows where owner is already set or createdBy is null.
-   * Runs on startup and every 5 minutes as a safety net in case a dispatch
-   * failed (e.g., document was locked).
-   */
-  /**
    * Every 5 minutes: recompute orgOperators of every organisation env from
    * Renown and reconcile the document grants Vetra made. A Renown outage
    * leaves documents and grants untouched (see org-sync.ts).
@@ -699,6 +696,19 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     void syncOrgs();
   }
 
+  /**
+   * Seeds state.owner on historical environments by dispatching a system-signed
+   * SET_OWNER action with the address from the processor's createdBy column.
+   *
+   * Why this works without forging signatures:
+   *   The SET_OWNER reducer allows system-signed actions (no user in the signer)
+   *   to set any address when state.owner is null. User-signed claims are still
+   *   restricted to the signer's own address.
+   *
+   * Idempotent — skips rows where owner is already set or createdBy is null.
+   * Runs on startup and every 5 minutes as a safety net in case a dispatch
+   * failed (e.g., document was locked).
+   */
   private startOwnerBackfill() {
     const backfill = async () => {
       try {
@@ -766,6 +776,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * would be tighter but requires more plumbing.
    */
   private startProtectionReconciler() {
+    // Envs whose system-only operations this process already restricted.
+    const restricted = new Set<string>();
     const reconcile = async () => {
       const perm = this.documentPermissionService;
       if (!perm) return;
@@ -790,6 +802,12 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         let initialized = 0;
         for (const env of owned) {
           try {
+            // Unsigned SET_OWNER / SET_OWNER_ORG / … pass the reducers as
+            // "system": only document admins may submit them from outside.
+            if (!restricted.has(env.id)) {
+              await restrictSystemOperations(perm, env.id);
+              restricted.add(env.id);
+            }
             const current = await perm.getDocumentProtection(env.id);
             const ownerMatches =
               current.ownerAddress?.toLowerCase() === env.owner.toLowerCase();

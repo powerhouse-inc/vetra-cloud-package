@@ -123,7 +123,9 @@ export const schema: DocumentNode = gql`
     Called by vetra.io before signed actions on an environment: refreshes
     the caller's operator entry (publishers) or read grant (members) from
     Renown and answers their access. The sync work is rate-limited per
-    caller and environment; the access answer is always fresh.
+    caller and environment (successful syncs only); the access answer is
+    always fresh, and canOperate is true only once the caller is an operator
+    of the document (a sync that could not run answers false for newcomers).
     """
     syncEnvironmentOrg(environmentId: String!): EnvironmentOrgAccess!
 
@@ -132,7 +134,8 @@ export const schema: DocumentNode = gql`
     the environment's personal owner (no admin bypass), who must be a
     PUBLISHER or above in the organisation. One-way: an organisation
     environment is refused (ALREADY_ORG_OWNED); app environments follow
-    their app (APP_ENVIRONMENT).
+    their app (APP_ENVIRONMENT); released environments (TERMINATING,
+    DESTROYED, ARCHIVED) are refused (ENV_NOT_ACTIVE).
     """
     setEnvironmentOrg(environmentId: String!, orgId: String!): EnvironmentOrgAccess!
 
