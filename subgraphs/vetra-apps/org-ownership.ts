@@ -4,7 +4,12 @@ import {
   setOwnerOrg,
 } from "../../document-models/vetra-cloud-environment/v1/index.js";
 import type { AccessCaller, OwnedResource } from "../../shared/org-access.js";
-import type { AppPublisher } from "../../shared/renown-orgs.js";
+import {
+  MAX_PERSON_APPS,
+  RenownSyncGuard,
+  TtlLru,
+  type AppPublisher,
+} from "../../shared/renown-orgs.js";
 import { withAppLock, withEnvLock } from "../../shared/key-lock.js";
 import {
   expectOrgHandover,
@@ -107,6 +112,50 @@ async function moveEnvironment(
   });
 }
 
+/**
+ * One Renown guard per Renown client: ownership sync and adoption never wait
+ * longer than its timeout, and skip Renown for a short while after a failure.
+ */
+const syncGuards = new WeakMap<object, RenownSyncGuard>();
+
+/** A Renown lookup on the reconciliation path (never blocks a request for long). */
+function renownForSync<T>(
+  deps: AppsDeps,
+  load: (orgs: NonNullable<AppsDeps["orgs"]>) => Promise<T>,
+): Promise<T> {
+  const orgs = deps.orgs;
+  if (!orgs) return Promise.reject(new Error("no Renown client"));
+  let guard = syncGuards.get(orgs);
+  if (!guard) {
+    guard = new RenownSyncGuard();
+    syncGuards.set(orgs, guard);
+  }
+  return guard.run(
+    () => load(orgs),
+    deps.now().getTime(),
+    deps.renownSyncTimeoutMs,
+  );
+}
+
+/** How often an App whose row did not change has its envs reconciled. */
+export const ENV_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Per database: Apps whose envs were reconciled recently (id → true). */
+const reconciled = new WeakMap<object, TtlLru<true>>();
+
+function reconciledRecently(deps: AppsDeps, appId: string): boolean {
+  return !!reconciled.get(deps.db)?.get(appId, deps.now().getTime());
+}
+
+function markReconciled(deps: AppsDeps, appId: string): void {
+  let memo = reconciled.get(deps.db);
+  if (!memo) {
+    memo = new TtlLru<true>(5_000);
+    reconciled.set(deps.db, memo);
+  }
+  memo.set(appId, true, ENV_RECONCILE_INTERVAL_MS, deps.now().getTime());
+}
+
 /** Where Renown says the App belongs, or null when that cannot be told. */
 function targetOf(
   row: AppRow,
@@ -129,10 +178,15 @@ function targetOf(
  * unchanged.
  *
  * Runs under the App's lock and re-reads the row there, so racing reads move
- * an App once. The envs are reconciled on every sync with a profile — a move
- * the observability hook reverted is announced and made again — then the app
+ * an App once. The envs are reconciled whenever the row changes, otherwise at
+ * most once per ENV_RECONCILE_INTERVAL_MS per App — a move the observability
+ * hook reverted is announced and made again on that cadence — then the app
  * document's protection follows, then the row. When an env or the document
  * cannot be moved the row is left as it is, so the next read retries.
+ *
+ * Renown is asked through a guard (renownForSync): a slow or failing Renown
+ * costs a read at most its short timeout, then nothing for a while; the row
+ * is used as it is.
  */
 export async function syncAppOrg(
   deps: AppsDeps,
@@ -141,7 +195,9 @@ export async function syncAppOrg(
   if (!deps.orgs || app.status === "DELETED") return app;
   let publisher: AppPublisher | null;
   try {
-    publisher = await deps.orgs.appPublisher(app.identity_did);
+    publisher = await renownForSync(deps, (orgs) =>
+      orgs.appPublisher(app.identity_did),
+    );
   } catch {
     return app;
   }
@@ -155,6 +211,7 @@ export async function syncAppOrg(
     const currentOrg = row.owner_org_id ?? null;
     const ownerChanges = target.owner !== row.owner_address;
     const rowChanges = ownerChanges || target.org !== currentOrg;
+    if (!rowChanges && reconciledRecently(deps, row.id)) return row;
 
     const envIds = [
       row.production_environment_id,
@@ -180,7 +237,10 @@ export async function syncAppOrg(
         return row;
       }
     }
-    if (!rowChanges) return row;
+    if (!rowChanges) {
+      markReconciled(deps, row.id);
+      return row;
+    }
 
     if (deps.protectAppDoc) {
       try {
@@ -263,7 +323,7 @@ export async function adoptOrgApps(
   if (!deps.orgs) return;
   let dids: string[] | null;
   try {
-    dids = await deps.orgs.orgApps(orgId);
+    dids = await renownForSync(deps, (orgs) => orgs.orgApps(orgId));
   } catch {
     return;
   }
@@ -278,4 +338,40 @@ export async function adoptOrgApps(
     deps,
     rows.filter((r) => r.owner_org_id !== orgId).map(normalizeApp),
   );
+}
+
+/**
+ * Apps Renown lists as this person's own (appProfilesByPublisher) whose rows
+ * do not say so yet — e.g. transferred out of an organisation to them. Each is
+ * reconciled with syncAppOrg, which only ever moves an org App to a person
+ * (never one person's App to another). Bounded (MAX_PERSON_APPS); a slow or
+ * failing Renown leaves every row as it is.
+ */
+export async function adoptPersonApps(
+  deps: AppsDeps,
+  address: string,
+): Promise<void> {
+  if (!deps.orgs) return;
+  const addr = address.toLowerCase();
+  let dids: string[];
+  try {
+    dids = await renownForSync(deps, (orgs) => orgs.personApps(addr));
+  } catch {
+    return;
+  }
+  if (!dids.length) return;
+  const rows = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("identity_did", "in", dids.slice(0, MAX_PERSON_APPS))
+    .where("status", "!=", "DELETED")
+    .where((eb) =>
+      eb.or([
+        eb("owner_org_id", "is not", null),
+        eb("owner_address", "!=", addr),
+      ]),
+    )
+    .limit(MAX_PERSON_APPS)
+    .execute();
+  await syncApps(deps, rows.map(normalizeApp));
 }

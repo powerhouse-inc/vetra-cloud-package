@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_PERSON_APPS,
+  RenownSyncGuard,
   TtlLru,
   createRenownOrgs,
   renownOrgsConfigFromEnv,
@@ -175,5 +177,36 @@ describe("renown orgs client", () => {
     await counted.membership("o2", ALICE);
     await counted.membership("o1", ALICE);
     expect(spy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("person apps", () => {
+  it("asks appProfilesByPublisher with the person's did:pkh, bounded and cached", async () => {
+    const many = Array.from({ length: MAX_PERSON_APPS + 5 }, (_, i) => ({ appDid: `did:key:${i}` }));
+    const { orgs, calls } = client([{ data: { appProfilesByPublisher: many } }, { data: { appProfilesByPublisher: null } }]);
+    const dids = await orgs.personApps(ALICE);
+    expect(dids).toHaveLength(MAX_PERSON_APPS);
+    expect(calls[0].url).toBe("https://renown.test/graphql/renown-stats");
+    expect(calls[0].body.variables).toStrictEqual({ publisherDid: `did:pkh:eip155:1:${ALICE.toLowerCase()}` });
+    expect(await orgs.personApps(ALICE.toLowerCase())).toBe(dids);
+    expect(await orgs.personApps("0xb")).toStrictEqual([]);
+  });
+});
+
+describe("RenownSyncGuard", () => {
+  it("cuts a lookup off after the timeout and then skips Renown for the cool-down", async () => {
+    const guard = new RenownSyncGuard({ timeoutMs: 20, cooldownMs: 1_000 });
+    expect(guard.timeoutMs).toBe(20);
+    expect(await guard.run(async () => 1, 0)).toBe(1);
+    await expect(guard.run(() => new Promise<never>(() => {}), 10)).rejects.toBeInstanceOf(RenownOrgsUnavailableError);
+    const load = vi.fn(async () => 2);
+    await expect(guard.run(load, 500)).rejects.toThrow("lookup skipped");
+    expect(load).not.toHaveBeenCalled();
+    expect(await guard.run(load, 1_011)).toBe(2);
+    // A failing lookup opens it too; a per-call timeout overrides the default.
+    await expect(guard.run(async () => Promise.reject(new Error("x")), 2_000)).rejects.toThrow("x");
+    await expect(guard.run(load, 2_500)).rejects.toThrow("lookup skipped");
+    await expect(guard.run(() => new Promise<never>(() => {}), 5_000, 5)).rejects.toThrow("within 5 ms");
+    expect(new RenownSyncGuard().cooldownMs).toBe(30_000);
   });
 });

@@ -104,6 +104,14 @@ export function fakeOrgs() {
       if (self.down) throw new RenownOrgsUnavailableError("down");
       return self.publishers.get(appDid) ?? null;
     },
+    /** Profiles whose publisher is this person (as appProfilesByPublisher). */
+    async personApps(address: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      const addr = address.toLowerCase();
+      return [...self.publishers]
+        .filter(([, p]) => !p.orgId && p.address?.toLowerCase() === addr)
+        .map(([did]) => did);
+    },
   };
   return self;
 }

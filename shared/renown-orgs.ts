@@ -31,6 +31,8 @@ export interface RenownOrgs {
   orgApps(orgId: string): Promise<string[] | null>;
   /** The app's publisher per its Renown profile; null when it has no profile. */
   appPublisher(appDid: string): Promise<AppPublisher | null>;
+  /** App DIDs whose Renown profile names this person as publisher (never org-owned apps). */
+  personApps(address: string): Promise<string[]>;
 }
 
 export interface RenownOrgsConfig {
@@ -79,6 +81,13 @@ const ORG_APPS = `query VetraOrgApps($id: String!) {
 const APP_PUBLISHER = `query VetraAppPublisher($appDid: String!) {
   appProfile(appDid: $appDid) { publisherDid publisherOrg { id } }
 }`;
+
+const PERSON_APPS = `query VetraPersonApps($publisherDid: String!) {
+  appProfilesByPublisher(publisherDid: $publisherDid) { appDid }
+}`;
+
+/** At most this many app DIDs are taken from one person's profile list. */
+export const MAX_PERSON_APPS = 100;
 
 function deepFreeze<T>(v: T): T {
   if (v && typeof v === "object" && !Object.isFrozen(v)) {
@@ -189,7 +198,58 @@ export function createRenownOrgs(cfg: RenownOrgsConfig): RenownOrgs {
         return { orgId: null, address: pkh ? pkh[1].toLowerCase() : null };
       });
     },
+    personApps(address) {
+      const addr = address.toLowerCase();
+      return cached(`pa|${addr}`, async () => {
+        const data = await post<{ appProfilesByPublisher: { appDid: string }[] | null }>(
+          cfg.statsEndpoint,
+          PERSON_APPS,
+          { publisherDid: `did:pkh:eip155:1:${addr}` },
+        );
+        return (data.appProfilesByPublisher ?? []).slice(0, MAX_PERSON_APPS).map((p) => p.appDid);
+      });
+    },
   };
+}
+
+/**
+ * Renown as background reconciliation (ownership sync, adoption) uses it:
+ * every lookup is cut off after `timeoutMs` (well under a request budget, so
+ * a slow Renown never holds a personal App's read), and after a failure or a
+ * timeout every lookup fails at once for `cooldownMs` without a network call.
+ * The underlying request keeps running and fills the cache. Request-time
+ * access checks do not use this.
+ */
+export class RenownSyncGuard {
+  private openUntil = 0;
+  readonly timeoutMs: number;
+  readonly cooldownMs: number;
+
+  constructor(opts: { timeoutMs?: number; cooldownMs?: number } = {}) {
+    this.timeoutMs = opts.timeoutMs ?? 1_500;
+    this.cooldownMs = opts.cooldownMs ?? 30_000;
+  }
+
+  async run<T>(load: () => Promise<T>, now: number, timeoutMs = this.timeoutMs): Promise<T> {
+    if (now < this.openUntil) {
+      throw new RenownOrgsUnavailableError("Renown was unavailable moments ago; lookup skipped");
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new RenownOrgsUnavailableError(`no answer within ${timeoutMs} ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      return await Promise.race([load(), timeout]);
+    } catch (err) {
+      this.openUntil = now + this.cooldownMs;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 let shared: RenownOrgs | null = null;

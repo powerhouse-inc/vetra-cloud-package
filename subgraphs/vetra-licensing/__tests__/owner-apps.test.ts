@@ -94,3 +94,26 @@ describe("organisation apps", () => {
     expect(await lookup.listAppsForOrg!("o2")).toStrictEqual([]);
   });
 });
+
+describe("apps transferred to a person (I2)", () => {
+  it("adopts the person's Renown apps before reading their rows", async () => {
+    const order: string[] = [];
+    const lookup = createOwnerAppLookup({
+      table: {
+        byId: async () => null,
+        byOwner: async (a) => {
+          order.push(`rows:${a}`);
+          return [];
+        },
+        byOrg: async () => [],
+      },
+      apps: { app: async () => null },
+      studioPublisher: null,
+      adoptPersonApps: async (a) => {
+        order.push(`adopt:${a}`);
+      },
+    });
+    await lookup.listAppsForOwner("0xb");
+    expect(order).toStrictEqual(["adopt:0xb", "rows:0xb"]);
+  });
+});

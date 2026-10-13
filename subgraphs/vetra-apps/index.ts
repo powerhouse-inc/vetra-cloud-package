@@ -13,8 +13,9 @@ import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import type { AppsDeps } from "./service.js";
-import { appDocumentRowOwner } from "./org-ownership.js";
+import { adoptPersonApps, appDocumentRowOwner } from "./org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import { setPersonAppAdopter } from "../../shared/person-app-adoption.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import { backfillAppDocuments } from "./app-document.js";
 import { createReactorAppDocStore } from "./app-doc-store.js";
@@ -152,6 +153,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       reportPreviewRemovedToGithub(deps, app, preview, reason);
 
     this.resolvers = createResolvers(deps);
+    // Licensing's personal app list adopts transferred Apps through us.
+    setPersonAppAdopter((address) => adoptPersonApps(deps, address));
 
     // GitHub App webhook: /api/@powerhousedao/vetra-cloud-package/github/webhook
     try {

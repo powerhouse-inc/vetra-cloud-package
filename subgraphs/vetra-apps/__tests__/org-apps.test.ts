@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appDeploymentsFor,
   appForOwner,
@@ -13,7 +13,10 @@ import {
   protectAppDocument,
   sweepAppDocumentProtection,
 } from "../app-doc-protection.js";
-import { appDocumentRowOwner } from "../org-ownership.js";
+import {
+  ENV_RECONCILE_INTERVAL_MS,
+  appDocumentRowOwner,
+} from "../org-ownership.js";
 import { getApp, type AppRow } from "../repo.js";
 import {
   protectEnvironment,
@@ -664,6 +667,8 @@ describe("CI and identity for org apps", () => {
       await code(deployAsCi(h.deps, claim("refs/heads/main"), prod)),
     ).toBe("OK");
     h.orgs.down = false;
+    // The sync path skips Renown for 30 s after a failure.
+    h.clock.now = new Date(h.clock.now.getTime() + 31_000);
     // Moved into the org at Renown: the creator is no longer enough.
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     expect(
@@ -818,5 +823,86 @@ describe("previews of org apps", () => {
     ).toBe("SERVICE_NOT_CONFIGURED");
     const previews = await h.db.selectFrom("app_previews").selectAll().execute();
     expect(previews.map((p) => p.pr_number)).toStrictEqual([7]);
+  });
+});
+
+describe("transfers to a person reach their lists (I2)", () => {
+  it("an org app transferred out to a person appears in the recipient's myApps", async () => {
+    await moveToOrg();
+    expect(await myApps(h.deps, stranger)).toStrictEqual([]);
+    // Renown: the org transferred the app to STRANGER; nobody read it by id since.
+    h.orgs.publishers.set(APP_DID, { orgId: null, address: STRANGER });
+    const listed = await myApps(h.deps, stranger);
+    expect(listed.map((a) => [a.id, a.owner_address, a.owner_org_id])).toStrictEqual([
+      [app.id, STRANGER, null],
+    ]);
+    expect(
+      await h.envs.getState(app.production_environment_id),
+    ).toMatchObject({ owner: STRANGER, ownerOrgId: null });
+    // The org's list no longer has it.
+    h.orgs.join(ORG, MEMBER, "MEMBER");
+    expect(await myApps(h.deps, member, ORG)).toStrictEqual([]);
+  });
+
+  it("never takes another person's app, and a Renown outage leaves the list as it is", async () => {
+    // Renown claims OWNER's personal app for STRANGER: not an org transfer, ignored.
+    h.orgs.publishers.set(APP_DID, { orgId: null, address: STRANGER });
+    expect(await myApps(h.deps, stranger)).toStrictEqual([]);
+    expect((await getApp(h.db, app.id))?.owner_address).toBe(OWNER);
+    h.orgs.down = true;
+    expect((await myApps(h.deps, owner)).map((a) => a.id)).toStrictEqual([app.id]);
+  });
+});
+
+describe("personal apps never wait on Renown (I3)", () => {
+  const hang = () => new Promise<never>(() => {});
+
+  it("a hanging Renown: personal myApps, app and CI answer promptly, and Renown is skipped afterwards", async () => {
+    h.deps.renownSyncTimeoutMs = 100;
+    const asked = { n: 0 };
+    h.orgs.appPublisher = () => {
+      asked.n++;
+      return hang();
+    };
+    h.orgs.personApps = () => {
+      asked.n++;
+      return hang();
+    };
+    const started = Date.now();
+    expect((await myApps(h.deps, owner)).map((a) => a.id)).toStrictEqual([app.id]);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const askedFirst = asked.n;
+    expect(askedFirst).toBe(1);
+    // Within the cool-down nothing waits on Renown and nothing asks it.
+    expect((await appForOwner(h.deps, owner, app.id)).id).toBe(app.id);
+    h.envs.setStatus(app.production_environment_id, "READY");
+    expect(
+      await code(
+        deployAsCi(h.deps, claim("refs/heads/main"), {
+          appId: app.id,
+          kind: "PRODUCTION",
+          gitRef: "refs/heads/main",
+          sha: "a".repeat(40),
+          packages: [{ name: "@acme/shop", version: "1.0.0" }],
+        }),
+      ),
+    ).toBe("OK");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(asked.n).toBe(askedFirst);
+  });
+
+  it("an unchanged app has its envs reconciled at most once per interval", async () => {
+    // A personal app with its own Renown profile (publisher = its owner).
+    h.orgs.publishers.set(APP_DID, { orgId: null, address: OWNER });
+    const reads = vi.spyOn(h.envs, "getState");
+    await appForOwner(h.deps, owner, app.id);
+    const first = reads.mock.calls.length;
+    expect(first).toBeGreaterThan(0);
+    await appForOwner(h.deps, owner, app.id);
+    await myApps(h.deps, owner);
+    expect(reads.mock.calls.length).toBe(first);
+    h.clock.now = new Date(h.clock.now.getTime() + ENV_RECONCILE_INTERVAL_MS + 1);
+    await appForOwner(h.deps, owner, app.id);
+    expect(reads.mock.calls.length).toBeGreaterThan(first);
   });
 });

@@ -43,6 +43,7 @@ import {
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import {
   adoptOrgApps,
+  adoptPersonApps,
   appResource,
   callerAccess,
   syncAppOrg,
@@ -99,6 +100,11 @@ export interface AppsDeps {
   logger: AppsLogger;
   /** Renown organisations; null/absent: org-owned Apps are admin-only. */
   orgs?: RenownOrgs | null;
+  /**
+   * Cut-off for Renown lookups on the ownership-sync path (default 1.5 s);
+   * after a failure Renown is skipped there for 30 s.
+   */
+  renownSyncTimeoutMs?: number;
   /**
    * The observability namespace, where every organisation move of an env
    * Vetra dispatches is announced first (expectOrgHandover); unannounced
@@ -501,6 +507,8 @@ export async function myApps(
     const synced = await syncApps(deps, rows.map(normalizeApp));
     return synced.filter((a) => a.owner_org_id === org);
   }
+  // Apps transferred to the caller at Renown join the list.
+  await adoptPersonApps(deps, caller.address);
   const rows = await deps.db
     .selectFrom("apps")
     .selectAll()

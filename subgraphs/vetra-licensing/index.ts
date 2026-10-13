@@ -66,6 +66,7 @@ import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js"
 import { loadAppsConfig } from "../vetra-apps/config.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
+import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
   createReportingTokenIssuer,
@@ -189,6 +190,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       },
       apps: appReads,
       studioPublisher,
+      // Apps transferred to the caller at Renown (through vetra-apps).
+      adoptPersonApps: adoptPersonAppsViaVetraApps,
     });
     // Template and term writes go through the ledger writer only, so the
     // app's recorded licensing-state hash stays valid.
