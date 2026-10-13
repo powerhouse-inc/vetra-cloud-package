@@ -42,7 +42,7 @@ export function createResolvers(
         { tenantId, key, value }: { tenantId: string; key: string; value: string },
         ctx?: SecretsContext,
       ) => {
-        await guard(ctx, tenantId);
+        await guard(ctx, tenantId, { wait: true });
         return service.setEnvVar(tenantId, key, value);
       },
 
@@ -51,7 +51,7 @@ export function createResolvers(
         { tenantId, key }: { tenantId: string; key: string },
         ctx?: SecretsContext,
       ) => {
-        await guard(ctx, tenantId);
+        await guard(ctx, tenantId, { wait: true });
         return service.deleteEnvVar(tenantId, key);
       },
 
@@ -60,7 +60,7 @@ export function createResolvers(
         { tenantId, key, value }: { tenantId: string; key: string; value: string },
         ctx?: SecretsContext,
       ) => {
-        await guard(ctx, tenantId);
+        await guard(ctx, tenantId, { wait: true });
         return service.setSecret(tenantId, key, value);
       },
 
@@ -69,7 +69,7 @@ export function createResolvers(
         { tenantId, key }: { tenantId: string; key: string },
         ctx?: SecretsContext,
       ) => {
-        await guard(ctx, tenantId);
+        await guard(ctx, tenantId, { wait: true });
         return service.deleteSecret(tenantId, key);
       },
     },

@@ -419,4 +419,69 @@ describe("authorization", () => {
     ).resolves.toBeDefined();
     expect(calls).toBe(3);
   });
+
+  const mk = (owners: (t: string) => Promise<(string | null)[]>, extra = {}) =>
+    createResolvers(db, mockTransit, {
+      tenantOwners: owners,
+      tenantWait: { timeoutMs: 50, intervalMs: 5 },
+      ...extra,
+    });
+  const asOwner = { user: { address: OWNER } };
+  const setVar = (r: ReturnType<typeof createResolvers>, tenantId: string) =>
+    r.Mutation.setEnvVar(undefined, { tenantId, key: "K", value: "v" }, asOwner);
+
+  it("queries refuse an unknown tenant immediately, without waiting", async () => {
+    let calls = 0;
+    const r = mk(async () => (++calls, []));
+    await expectDenied(r.Query.envVars(undefined, { tenantId: "x" }, asOwner));
+    await expectDenied(r.Query.secrets(undefined, { tenantId: "x" }, asOwner));
+    expect(calls).toBe(2);
+  });
+
+  it("shares one in-flight wait per tenant", async () => {
+    let calls = 0;
+    const r = mk(async () => (++calls < 4 ? [] : [OWNER]));
+    const res = await Promise.all([setVar(r, "t1"), setVar(r, "t1"), setVar(r, "t1")]);
+    expect(res).toHaveLength(3);
+    // 3 initial checks + one shared poll (<= 4 more), not 3 independent polls
+    expect(calls).toBeLessThanOrEqual(8);
+  });
+
+  it("caps concurrent waiters and refuses immediately beyond the cap", async () => {
+    let calls = 0;
+    const r = mk(async () => (++calls, []), { maxWaiters: 2 });
+    const waiting = [setVar(r, "a"), setVar(r, "b")];
+    const t0 = Date.now();
+    await expectDenied(setVar(r, "c"));
+    expect(Date.now() - t0).toBeLessThan(40);
+    for (const p of waiting) await expectDenied(p);
+    // slots are released afterwards
+    const r2calls = calls;
+    await expectDenied(setVar(r, "d"));
+    expect(calls).toBeGreaterThan(r2calls);
+  });
+
+  it("logs projection errors (code only, no values) and still denies", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = mk(async () => {
+      throw Object.assign(new Error("relation does not exist"), { code: "42P01" });
+    });
+    await expectDenied(r.Query.envVars(undefined, { tenantId: "t1" }, asOwner));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0].join(" ")).toContain("42P01");
+    spy.mockRestore();
+  });
+
+  it.each([
+    ["lowercase scheme", (t: string) => `bearer ${t}`],
+    ["other scheme", (t: string) => `Token ${t}`],
+    ["trailing parts", (t: string) => `Bearer ${t} x`],
+  ])("refuses workload tokens sent with %s", async (_n, fmt) => {
+    await expectDenied(
+      call(ops[0], {
+        user: { address: OWNER },
+        headers: { Authorization: fmt(vetraToken()) },
+      }),
+    );
+  });
 });
