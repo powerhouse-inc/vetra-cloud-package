@@ -52,6 +52,21 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
     });
 
-    this.resolvers = createResolvers(db, transit);
+    // The environment processor's projection: maps tenantId -> owner(s).
+    const envDb = (await this.relationalDb.createNamespace(
+      "vetra-cloud-environments",
+    )) as unknown as Kysely<any>;
+
+    this.resolvers = createResolvers(db, transit, {
+      tenantOwners: async (tenantId) =>
+        (
+          (await envDb
+            .selectFrom("environments")
+            .select("owner")
+            .where("tenantId", "=", tenantId)
+            .execute()) as { owner: string | null }[]
+        ).map((r) => r.owner?.toLowerCase() ?? null),
+      tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
+    });
   }
 }
