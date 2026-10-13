@@ -2,41 +2,76 @@ import type { Kysely } from "kysely";
 import type { SecretsDB } from "./db/schema.js";
 import type { OpenBaoTransitClient } from "./openbao-transit.js";
 import { createSecretsService } from "./services/secrets-service.js";
+import {
+  createTenantGuard,
+  type SecretsContext,
+  type TenantAccessDeps,
+} from "./access.js";
 
 export function createResolvers(
   db: Kysely<SecretsDB>,
   transit: OpenBaoTransitClient,
+  access: TenantAccessDeps,
 ): Record<string, any> {
   const service = createSecretsService({ db, transit });
+  const guard = createTenantGuard(access);
   return {
     Query: {
-      envVars: (_p: unknown, { tenantId }: { tenantId: string }) =>
-        service.listEnvVars(tenantId),
+      envVars: async (
+        _p: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId);
+        return service.listEnvVars(tenantId);
+      },
 
-      secrets: (_p: unknown, { tenantId }: { tenantId: string }) =>
-        service.listSecretKeys(tenantId),
+      secrets: async (
+        _p: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId);
+        return service.listSecretKeys(tenantId);
+      },
     },
 
     Mutation: {
-      setEnvVar: (
+      setEnvVar: async (
         _p: unknown,
         { tenantId, key, value }: { tenantId: string; key: string; value: string },
-      ) => service.setEnvVar(tenantId, key, value),
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId, { wait: true });
+        return service.setEnvVar(tenantId, key, value);
+      },
 
-      deleteEnvVar: (
+      deleteEnvVar: async (
         _p: unknown,
         { tenantId, key }: { tenantId: string; key: string },
-      ) => service.deleteEnvVar(tenantId, key),
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId, { wait: true });
+        return service.deleteEnvVar(tenantId, key);
+      },
 
-      setSecret: (
+      setSecret: async (
         _p: unknown,
         { tenantId, key, value }: { tenantId: string; key: string; value: string },
-      ) => service.setSecret(tenantId, key, value),
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId, { wait: true });
+        return service.setSecret(tenantId, key, value);
+      },
 
-      deleteSecret: (
+      deleteSecret: async (
         _p: unknown,
         { tenantId, key }: { tenantId: string; key: string },
-      ) => service.deleteSecret(tenantId, key),
+        ctx?: SecretsContext,
+      ) => {
+        await guard(ctx, tenantId, { wait: true });
+        return service.deleteSecret(tenantId, key);
+      },
     },
   };
 }
