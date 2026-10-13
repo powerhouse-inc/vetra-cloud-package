@@ -126,4 +126,54 @@ describe("renown orgs client", () => {
       renownOrgsConfigFromEnv({ RENOWN_ORGS_ENDPOINT: " https://x/orgs ", RENOWN_STATS_URL: "https://x/stats" }),
     ).toMatchObject({ orgsEndpoint: "https://x/orgs", statsEndpoint: "https://x/stats" });
   });
+
+  it("returns frozen cached values so callers cannot corrupt the cache", async () => {
+    const { orgs } = client([member()]);
+    const m = await orgs.membership(ORG, ALICE);
+    expect(Object.isFrozen(m)).toBe(true);
+    expect(Object.isFrozen(m?.effectiveScope.appDids)).toBe(true);
+  });
+
+  it("treats a non-ACTIVE membership as none", async () => {
+    const { orgs } = client([
+      { data: { orgMembership: { role: "ADMIN", status: "INVITED", effectiveScope: { all: true, appDids: [] } } } },
+    ]);
+    expect(await orgs.membership(ORG, ALICE)).toBeNull();
+  });
+
+  it("fails closed when the request times out", async () => {
+    const fetchImpl = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_res, rej) => {
+          init.signal?.addEventListener("abort", () => rej(new Error("aborted")));
+        }),
+    );
+    const orgs = createRenownOrgs({
+      orgsEndpoint: "https://r/o",
+      statsEndpoint: "https://r/s",
+      fetch: fetchImpl as unknown as typeof fetch,
+      timeoutMs: 10,
+      logger: { warn: vi.fn() },
+    });
+    await expect(orgs.membership(ORG, ALICE)).rejects.toBeInstanceOf(RenownOrgsUnavailableError);
+  });
+
+  it("wires maxEntries into the cache", async () => {
+    const spy = vi.fn();
+    const counted = createRenownOrgs({
+      orgsEndpoint: "https://r/o",
+      statsEndpoint: "https://r/s",
+      maxEntries: 1,
+      now: () => 0,
+      logger: { warn: vi.fn() },
+      fetch: (async () => {
+        spy();
+        return new Response(JSON.stringify(member()), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    await counted.membership("o1", ALICE);
+    await counted.membership("o2", ALICE);
+    await counted.membership("o1", ALICE);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
 });

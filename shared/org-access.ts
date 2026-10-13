@@ -10,14 +10,14 @@ export interface AccessCaller {
 export interface OwnedResource {
   owner: string | null;
   ownerOrgId?: string | null;
-  /** For app-linked resources: the app's Renown DID (publisher scope). */
-  appDid?: string | null;
+  /** Required on purpose: the app's Renown DID (publisher scope), or null when not linked to an app. */
+  appDid: string | null;
 }
 
 export type MembershipReader = Pick<RenownOrgs, "membership">;
 
 /** OWNER/ADMIN always; PUBLISHER when the scope covers appDid (or there is no app). */
-export function hasPublisherCapability(m: OrgMembership | null, appDid?: string | null): boolean {
+export function hasPublisherCapability(m: OrgMembership | null, appDid: string | null): boolean {
   if (!m) return false;
   if (m.role === "OWNER" || m.role === "ADMIN") return true;
   if (m.role !== "PUBLISHER") return false;

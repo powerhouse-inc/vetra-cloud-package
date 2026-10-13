@@ -34,12 +34,17 @@ describe("hasPublisherCapability", () => {
 describe("canOperate / canView", () => {
   it("personal resources: owner (any case) and admins; nobody asks Renown", async () => {
     const orgs = orgsWith(m("OWNER"));
-    expect(await canOperate(orgs, user(OWNER), { owner: OWNER.toUpperCase().replace("0X", "0x"), ownerOrgId: null })).toBe(true);
-    expect(await canOperate(orgs, user(BOB), { owner: OWNER })).toBe(false);
-    expect(await canOperate(orgs, admin, { owner: OWNER })).toBe(true);
-    expect(await canOperate(orgs, user(OWNER), { owner: null })).toBe(false);
-    expect(await canView(orgs, user(OWNER), { owner: OWNER })).toBe(true);
+    expect(await canOperate(orgs, user(OWNER), { owner: OWNER.toUpperCase().replace("0X", "0x"), ownerOrgId: null, appDid: null })).toBe(true);
+    expect(await canOperate(orgs, user(BOB), { owner: OWNER, appDid: null })).toBe(false);
+    expect(await canOperate(orgs, admin, { owner: OWNER, appDid: null })).toBe(true);
+    expect(await canOperate(orgs, user(OWNER), { owner: null, appDid: null })).toBe(false);
+    expect(await canView(orgs, user(OWNER), { owner: OWNER, appDid: null })).toBe(true);
     expect(orgs.membership).not.toHaveBeenCalled();
+  });
+
+  it("an app-linked org resource is never operable by a publisher scoped to other apps", async () => {
+    const r = { owner: OWNER, ownerOrgId: "o1", appDid: APP };
+    expect(await canOperate(orgsWith(m("PUBLISHER", false, ["did:key:other"])), user(BOB), r)).toBe(false);
   });
 
   it("org resources: publisher capability operates, any member views, the creator gets nothing for being the owner", async () => {
@@ -53,7 +58,7 @@ describe("canOperate / canView", () => {
   });
 
   it("fails closed when Renown is unreachable or not configured", async () => {
-    const r = { owner: OWNER, ownerOrgId: "o1" };
+    const r = { owner: OWNER, ownerOrgId: "o1", appDid: null };
     const down = orgsWith(new RenownOrgsUnavailableError("down"));
     expect(await canOperate(down, user(BOB), r)).toBe(false);
     expect(await canView(down, user(BOB), r)).toBe(false);

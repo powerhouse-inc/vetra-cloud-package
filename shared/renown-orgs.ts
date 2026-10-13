@@ -80,6 +80,14 @@ const APP_PUBLISHER = `query VetraAppPublisher($appDid: String!) {
   appProfile(appDid: $appDid) { publisherDid publisherOrg { id } }
 }`;
 
+function deepFreeze<T>(v: T): T {
+  if (v && typeof v === "object" && !Object.isFrozen(v)) {
+    Object.freeze(v);
+    for (const child of Object.values(v)) deepFreeze(child);
+  }
+  return v;
+}
+
 const PKH = /^did:pkh:eip155:\d+:(0x[0-9a-fA-F]{40})$/;
 
 type Env = Record<string, string | undefined>;
@@ -134,8 +142,9 @@ export function createRenownOrgs(cfg: RenownOrgsConfig): RenownOrgs {
     if (pending) return pending as Promise<V>;
     const request = load()
       .then((value) => {
-        cache.set(key, value, value === null ? negativeTtl : positiveTtl, now());
-        return value;
+        const frozen = deepFreeze(value);
+        cache.set(key, frozen, frozen === null ? negativeTtl : positiveTtl, now());
+        return frozen;
       })
       .catch((err: unknown) => {
         logger.warn(`[renown-orgs] ${key} failed: ${err instanceof Error ? err.message : String(err)}`);
