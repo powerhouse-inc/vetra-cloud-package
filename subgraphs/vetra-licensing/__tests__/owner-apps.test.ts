@@ -25,6 +25,7 @@ const make = (over: { studioPublisher?: string | null; app?: (id: string) => Pro
     table: {
       byId: async (id) => (id === "row-app" ? ROW : null),
       byOwner: async (a) => (a === "0xa" ? [ROW] : []),
+      byOrg: async () => [],
     },
     apps: { app: over.app ?? (async (id) => DOCS[id] ?? null) },
     studioPublisher: over.studioPublisher === undefined ? "0xstudio" : over.studioPublisher,
@@ -71,12 +72,25 @@ describe("owner lookup", () => {
   it("keeps the publisher's table rows when the studio document read fails", async () => {
     const warn = vi.fn();
     const lookup = createOwnerAppLookup({
-      table: { byId: async () => null, byOwner: async () => [{ ...ROW, owner_address: "0xstudio" }] },
+      table: { byId: async () => null, byOwner: async () => [{ ...ROW, owner_address: "0xstudio" }], byOrg: async () => [] },
       apps: { app: async () => { throw new Error("reactor down"); } },
       studioPublisher: "0xstudio",
       logger: { warn },
     });
     expect((await lookup.listAppsForOwner("0xstudio")).map((a) => a.id)).toStrictEqual(["row-app"]);
     expect(warn).toHaveBeenCalledOnce();
+  });
+});
+
+describe("organisation apps", () => {
+  it("lists the table rows of byOrg and never the studio app", async () => {
+    const orgRow: OwnerAppRecord = { ...ROW, id: "org-app", owner_org_id: "o1" };
+    const lookup = createOwnerAppLookup({
+      table: { byId: async () => null, byOwner: async () => [], byOrg: async (o) => (o === "o1" ? [orgRow] : []) },
+      apps: { app: async (id) => DOCS[id] ?? null },
+      studioPublisher: "0xstudio",
+    });
+    expect(await lookup.listAppsForOrg!("o1")).toStrictEqual([orgRow]);
+    expect(await lookup.listAppsForOrg!("o2")).toStrictEqual([]);
   });
 });

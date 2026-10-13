@@ -3,11 +3,12 @@ import type { Action } from "document-model";
 import { GraphQLError } from "graphql";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
-import { UnauthenticatedError, type AuthContext } from "./auth.js";
+import { UnauthenticatedError, AppIdentityInactiveError, type AuthContext } from "./auth.js";
 import {
   resolveOwnerApp,
   NotAppOwnerError,
   UnknownAppError,
+  type OwnerAppRecord,
   type PublisherAuthDeps,
 } from "./publisher-auth.js";
 import type { AppDocView, AppReads } from "./app-reads.js";
@@ -21,6 +22,7 @@ import type { VetraLicensingDB } from "./db/schema.js";
 import { KeyStorageUnavailableError, type KeyVault } from "./key-vault.js";
 import type { LicensingConfig } from "./config.js";
 import { makeRequireEnabled } from "./resolvers.js";
+import type { RenownOrgs } from "../../shared/renown-orgs.js";
 import { normaliseUserDid } from "./did.js";
 import { RenownProfileError, type AppProfileWrite, type RenownProfileRelay } from "./renown-profile.js";
 import { authorisedLicences } from "./licence-view.js";
@@ -66,6 +68,8 @@ export interface PublisherDeps {
   cfg: Pick<LicensingConfig, "enabled">;
   /** App profiles on Renown. Null or absent: updateAppProfile answers PROFILE_UNAVAILABLE. */
   renownProfile?: RenownProfileRelay | null;
+  /** Renown's publisher lookup: publisherOrgId is sent only on the first claim of an org app. */
+  appPublisher?: Pick<RenownOrgs, "appPublisher"> | null;
   newId(): string;
   now(): string;
 }
@@ -244,8 +248,24 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
     Mutation: { vetraPublisher: () => ({}) },
 
     VetraPublisherQueries: {
-      myApps: withCodes(async (_a: unknown, ctx) => {
-        const apps = await deps.auth.listAppsForOwner(callerAddress(ctx).toLowerCase());
+      myApps: withCodes(async (a: { orgId?: string | null }, ctx) => {
+        const address = callerAddress(ctx).toLowerCase();
+        let apps: OwnerAppRecord[];
+        if (a.orgId) {
+          // Only the apps the caller may operate; an inactive org app is still listed.
+          const all = (await deps.auth.listAppsForOrg?.(a.orgId)) ?? [];
+          apps = [];
+          for (const app of all) {
+            try {
+              await resolveOwnerApp(deps.auth, ctx, app.id);
+            } catch (err) {
+              if (!(err instanceof AppIdentityInactiveError)) continue;
+            }
+            apps.push(app);
+          }
+        } else {
+          apps = await deps.auth.listAppsForOwner(address);
+        }
         return apps.map((a) => ({ id: a.id, name: a.name, status: a.status, identityDid: a.identity_did ?? null }));
       }),
 
@@ -339,14 +359,31 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           if (!deps.renownProfile) {
             throw new RenownProfileError("PROFILE_UNAVAILABLE", "App profiles are not configured on this deployment.");
           }
-          const appDid = (await deps.auth.findAppById(appId))?.identity_did ?? null;
+          const app = await deps.auth.findAppById(appId);
+          const appDid = app?.identity_did ?? null;
           if (!appDid) {
             throw new RenownProfileError(
               "NO_IDENTITY",
               "This app has no Renown identity yet. Authorize its deploy identity first.",
             );
           }
-          await deps.renownProfile.upsert(appDid, bearer, a.input);
+          // Renown refuses any publisherOrgId other than the recorded one once the
+          // app has a profile, and apps.owner_org_id can lag a transfer: send it
+          // only while Renown has no publisher for the app (the first claim).
+          let publisherOrgId: string | null = null;
+          if (app?.owner_org_id) {
+            let known: Awaited<ReturnType<RenownOrgs["appPublisher"]>>;
+            try {
+              known = (await deps.appPublisher?.appPublisher(appDid)) ?? null;
+            } catch {
+              throw new RenownProfileError("PROFILE_UNAVAILABLE", "Renown is not reachable right now. Try again in a minute.");
+            }
+            if (!known) publisherOrgId = app.owner_org_id;
+          }
+          await deps.renownProfile.upsert(appDid, bearer, {
+            ...a.input,
+            ...(publisherOrgId ? { publisherOrgId } : {}),
+          });
           return true;
         } catch (err) {
           if (err instanceof RenownProfileError) {

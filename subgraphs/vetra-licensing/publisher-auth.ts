@@ -1,4 +1,5 @@
 import { callerIsAdmin } from "../../shared/admins.js";
+import { canOperate, type MembershipReader } from "../../shared/org-access.js";
 import {
   UnauthenticatedError,
   AppIdentityInactiveError,
@@ -24,11 +25,17 @@ export interface OwnerAppRecord {
   owner_address: string;
   /** The app's Renown workload identity (did:key); absent/null before one exists. */
   identity_did?: string | null;
+  /** Renown organisation owning the app; absent/null: personal. */
+  owner_org_id?: string | null;
 }
 
 export interface PublisherAuthDeps {
   findAppById(id: string): Promise<OwnerAppRecord | null>;
   listAppsForOwner(address: string): Promise<OwnerAppRecord[]>;
+  /** Renown memberships; absent: org apps are admin-only. */
+  orgs?: MembershipReader | null;
+  /** Apps of an organisation (vetraPublisher.myApps(orgId)). */
+  listAppsForOrg?(orgId: string): Promise<OwnerAppRecord[]>;
 }
 
 /**
@@ -52,8 +59,15 @@ export async function resolveOwnerApp(
     throw new UnknownAppError("no such app");
   }
 
-  const isOwner = app.owner_address.toLowerCase() === address.toLowerCase();
-  if (!isOwner && !callerIsAdmin(ctx, address)) {
+  // The personal owner never needs the admin lookup (it may be a network call).
+  const personalOwner =
+    !app.owner_org_id && app.owner_address.toLowerCase() === address.toLowerCase();
+  const allowed = await canOperate(
+    deps.orgs ?? null,
+    { address: address.toLowerCase(), isAdmin: !personalOwner && callerIsAdmin(ctx, address) },
+    { owner: app.owner_address, ownerOrgId: app.owner_org_id ?? null, appDid: app.identity_did ?? null },
+  );
+  if (!allowed) {
     throw new NotAppOwnerError("no such app");
   }
 

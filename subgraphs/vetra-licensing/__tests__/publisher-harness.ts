@@ -71,6 +71,7 @@ export async function createPublisherHarness() {
     table: {
       byId: async (id) => rows.get(id) ?? null,
       byOwner: async (address) => [...rows.values()].filter((r) => r.owner_address === address),
+      byOrg: async (orgId) => [...rows.values()].filter((r) => r.owner_org_id === orgId),
     },
     apps,
     studioPublisher: null,

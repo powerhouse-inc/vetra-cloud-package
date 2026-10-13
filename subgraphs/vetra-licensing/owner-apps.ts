@@ -17,6 +17,7 @@ export function createOwnerAppLookup(deps: {
   table: {
     byId(id: string): Promise<OwnerAppRecord | null>;
     byOwner(address: string): Promise<OwnerAppRecord[]>;
+    byOrg(orgId: string): Promise<OwnerAppRecord[]>;
   };
   apps: Pick<AppReads, "app">;
   /** Lowercased; null when unconfigured, which leaves the studio app unknown. */
@@ -43,6 +44,7 @@ export function createOwnerAppLookup(deps: {
   }
 
   return {
+    listAppsForOrg: (orgId) => deps.table.byOrg(orgId),
     async findAppById(id) {
       const row = await deps.table.byId(id);
       if (row) return row;

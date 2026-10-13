@@ -65,6 +65,7 @@ import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
   createReportingTokenIssuer,
@@ -167,15 +168,23 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         byId: (id) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address", "identity_did"])
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
             .where("id", "=", id)
             .executeTakeFirst()
             .then((r) => r ?? null),
         byOwner: (address) =>
           appsDb
             .selectFrom("apps")
-            .select(["id", "name", "status", "owner_address", "identity_did"])
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
             .where("owner_address", "=", address)
+            .where("owner_org_id", "is", null)
+            .execute(),
+        byOrg: (orgId) =>
+          appsDb
+            .selectFrom("apps")
+            .select(["id", "name", "status", "owner_address", "owner_org_id", "identity_did"])
+            .where("owner_org_id", "=", orgId)
+            .where("status", "!=", "DELETED")
             .execute(),
       },
       apps: appReads,
@@ -230,7 +239,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           ...previews.map((p) => p.environment_id),
         ];
       },
-      auth: ownerLookup,
+      auth: { ...ownerLookup, orgs: defaultRenownOrgs() },
+      appPublisher: defaultRenownOrgs(),
       apps: appReads,
       appWriter,
       licences: reads,
