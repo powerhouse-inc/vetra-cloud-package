@@ -146,3 +146,16 @@ export async function down(db: Kysely<any>): Promise<void> {
     await db.schema.dropTable(t).ifExists().execute();
   }
 }
+
+/**
+ * The organisation column licensing reads from the apps table, added by
+ * licensing itself at setup so its first queries do not depend on vetra-apps
+ * having migrated first (m4). Idempotent; a missing table is left alone.
+ */
+export async function ensureAppsOrgColumn(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema.alterTable("apps").addColumn("owner_org_id", "varchar(255)").execute();
+  } catch {
+    // Column already exists, or no apps table yet
+  }
+}

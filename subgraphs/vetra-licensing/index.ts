@@ -67,6 +67,7 @@ import { loadAppsConfig } from "../vetra-apps/config.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
+import { ensureAppsOrgColumn } from "../vetra-apps/db/migrations.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
 import {
   createReportingTokenIssuer,
@@ -126,6 +127,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const appsDb = (await this.relationalDb.createNamespace(
       "vetra-apps",
     )) as unknown as Kysely<VetraAppsDB>;
+    // Licensing reads apps.owner_org_id; do not depend on setup order (m4).
+    await ensureAppsOrgColumn(appsDb as unknown as Kysely<any>);
 
     const envs = createReactorEnvGateway(this.reactorClient as never);
 
