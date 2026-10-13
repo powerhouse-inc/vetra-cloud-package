@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import { callerIsAdmin } from "../../shared/admins.js";
+import { OWNER_ONLY_ACCESS, type EnvAccess, type EnvAccessRow } from "./env-access.js";
 
 /**
  * The registries an environment may install packages from. Production uses
@@ -26,6 +27,8 @@ const DEPLOYED_STATUSES = new Set([
 export interface PackageRegistryResolverDeps {
   envDb: Kysely<any>;
   dispatch: (documentId: string, type: string, input: Record<string, unknown>) => Promise<void>;
+  /** Org-aware access checks; default: owner/admin only. */
+  access?: EnvAccess;
 }
 
 type Caller = {
@@ -34,7 +37,8 @@ type Caller = {
 };
 
 /**
- * `setDefaultPackageRegistry` resolver. Owner-or-admin gated.
+ * `setDefaultPackageRegistry` resolver. Gated by `canOperate` (owner,
+ * covering org publisher, or admin).
  *
  * Sets the environment's default package registry. For a deployed environment
  * it then re-sets the current label (SET_LABEL is the op that marks a deployed
@@ -64,16 +68,18 @@ export function createPackageRegistryResolver(deps: PackageRegistryResolverDeps)
 
         const env = (await deps.envDb
           .selectFrom("environments")
-          .select(["id", "name", "status", "owner"])
+          .select(["id", "name", "status", "owner", "ownerOrgId", "appId"])
           .where("tenantId", "=", tenantId)
           .executeTakeFirst()) as
-          | { id: string; name: string | null; status: string | null; owner: string | null }
+          | (EnvAccessRow & { id: string; name: string | null; status: string | null })
           | undefined;
         if (!env) throw new Error("ENV_NOT_FOUND");
 
-        const isOwner = !!env.owner && env.owner.toLowerCase() === caller;
         const isAdmin = callerIsAdmin(ctx, caller);
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        const access = deps.access ?? OWNER_ONLY_ACCESS;
+        if (!(await access.canOperate({ address: caller, isAdmin }, env))) {
+          throw new Error("FORBIDDEN");
+        }
 
         await deps.dispatch(env.id, "SET_DEFAULT_PACKAGE_REGISTRY", {
           defaultPackageRegistry: registry,

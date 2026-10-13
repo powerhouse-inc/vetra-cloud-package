@@ -28,6 +28,8 @@ import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
+import { appDidLookup, createEnvAccess } from "./env-access.js";
+import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -67,6 +69,15 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       "vetra-cloud-environments",
     )) as unknown as Kysely<any>;
 
+    // Organisation access: Renown memberships + app DIDs from the vetra-apps namespace.
+    const appsDb = (await this.relationalDb.createNamespace(
+      "vetra-apps",
+    )) as unknown as Kysely<any>;
+    const access = createEnvAccess({
+      orgs: defaultRenownOrgs(),
+      appDidOf: appDidLookup(appsDb),
+    });
+
     const dispatch = async (
       documentId: string,
       type: string,
@@ -83,7 +94,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     // RESTART_NOT_CONFIGURED rather than failing schema validation.
     let restartDeps: RestartResolverDeps | undefined;
     try {
-      restartDeps = { envDb, k8s: await createDefaultRestartK8sClient() };
+      restartDeps = { envDb, k8s: await createDefaultRestartK8sClient(), access };
     } catch (err) {
       console.warn(
         "[observability] restart: kubernetes client init failed — restart disabled:",
@@ -98,6 +109,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       dispatch,
       dumpDeps: dumpDeps ?? undefined,
       restartDeps,
+      access,
     });
 
     // FUSION auto-deploy: follow the newest matching Harbor tag per env.

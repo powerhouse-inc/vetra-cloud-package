@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import { callerIsAdmin } from "../../shared/admins.js";
+import { OWNER_ONLY_ACCESS, type EnvAccess, type EnvAccessRow } from "./env-access.js";
 
 /**
  * Minimal Kubernetes surface for service rollout-restarts. Defined as an
@@ -30,6 +31,8 @@ export type RestartResolverDeps = {
   /** Kysely handle for the processor's `vetra-cloud-environments` namespace. */
   envDb: Kysely<any>;
   k8s: RestartK8sClient;
+  /** Org-aware access checks; default: owner/admin only. */
+  access?: EnvAccess;
 };
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -54,7 +57,8 @@ export function deploymentSelector(
 }
 
 /**
- * `restartEnvironmentService` resolver. Owner-or-admin gated. Resolves the
+ * `restartEnvironmentService` resolver. Gated by `canOperate` (owner,
+ * covering org publisher, or admin). Resolves the
  * target Deployment by label (robust to the chart's 63-char name
  * truncation) and triggers a rolling restart. The env's k8s namespace is
  * its `tenantId` (the chart deploys each environment into a namespace named
@@ -84,13 +88,14 @@ export function createRestartResolver(deps?: RestartResolverDeps) {
 
         const envRow = (await deps.envDb
           .selectFrom("environments")
-          .select(["tenantId", "owner"])
+          .select(["tenantId", "owner", "ownerOrgId", "appId"])
           .where("tenantId", "=", tenantId)
-          .executeTakeFirst()) as { owner: string | null } | undefined;
+          .executeTakeFirst()) as EnvAccessRow | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
-        const isOwner =
-          !!envRow.owner && envRow.owner.toLowerCase() === caller;
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        const access = deps.access ?? OWNER_ONLY_ACCESS;
+        if (!(await access.canOperate({ address: caller, isAdmin }, envRow))) {
+          throw new Error("FORBIDDEN");
+        }
 
         // Throws AMBIGUOUS_SERVICE for CLINT without a prefix.
         const selector = deploymentSelector(service, agentPrefix);

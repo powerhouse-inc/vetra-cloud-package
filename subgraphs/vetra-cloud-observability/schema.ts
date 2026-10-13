@@ -34,10 +34,15 @@ export const schema: DocumentNode = gql`
     """
     Returns environments scoped to the calling user.
     - Without a verified Renown bearer token: returns an empty list.
-    - With scope=MINE (default): returns environments where owner matches the caller.
+    - With scope=MINE (default): personal environments (no organisation) owned by the caller, plus unclaimed ones.
     - With scope=ALL: requires admin status; returns all environments.
+    - With scope=ORG: environments of organisation \`orgId\`; active members (and admins) only.
     """
-    myEnvironments(scope: ListScope = MINE): [VetraCloudEnvironmentSummary!]!
+    myEnvironments(
+      scope: ListScope = MINE
+      "Required with scope ORG"
+      orgId: String
+    ): [VetraCloudEnvironmentSummary!]!
 
     """Studio products owned or just-claimed by the caller, fully resolved."""
     myStudioProducts: [StudioProduct!]!
@@ -75,7 +80,7 @@ export const schema: DocumentNode = gql`
 
     """
     On-demand pg_dump exports of the env's Postgres, newest first
-    (capped at 20). Owner-only. Each entry has a 24h-TTL file on S3;
+    (capped at 20). Owner-only (org envs: covering publishers; no admin bypass). Each entry has a 24h-TTL file on S3;
     \`downloadUrl\` is a 15-min presigned URL minted on every read,
     only present when status=READY and the file hasn't expired.
     """
@@ -118,7 +123,8 @@ export const schema: DocumentNode = gql`
     the apex of the custom domain (Connect served at admin.vetra.io rather
     than connect.admin.vetra.io).
 
-    Caller must be the environment's owner or an admin. Uniqueness is
+    Caller must be the environment's owner (personal), a covering
+    publisher of its organisation (org-owned) or an admin. Uniqueness is
     checked against environments whose status is not in
     {TERMINATING, DESTROYED, ARCHIVED}. Raises DOMAIN_TAKEN if another
     live environment already claims the same host.
@@ -150,7 +156,7 @@ export const schema: DocumentNode = gql`
 
     """
     Immediately bump one environment's enabled services to the latest
-    known tag on its subscribed channel. Owner-only. Raises
+    known tag on its subscribed channel. Owner, covering org publisher, or admin. Raises
     NO_CHANNEL if the env has no autoUpdateChannel set, and
     NO_RELEASE_KNOWN if the subgraph has never seen a release on that
     channel for any of the enabled services. Returns the same shape as
@@ -160,7 +166,7 @@ export const schema: DocumentNode = gql`
 
     """
     Revert an environment's enabled services to the previous tag
-    recorded in release_history. Owner-only. Raises NO_PRIOR_RELEASE if
+    recorded in release_history. Owner, covering org publisher, or admin. Raises NO_PRIOR_RELEASE if
     there's no history to roll back to for any enabled service.
     """
     rollbackEnvironmentRelease(documentId: String!): NotifyNewImageReleaseResult!
@@ -202,7 +208,7 @@ export const schema: DocumentNode = gql`
     ): RestartEnvironmentServiceResult!
 
     """
-    Owner-or-admin. Set the package registry an environment installs from:
+    Owner, covering org publisher, or admin. Set the package registry an environment installs from:
     https://registry.vetra.io (production) or https://registry.dev.vetra.io
     (testing). A deployed environment is redeployed so the change reaches the
     tenant; a slept one picks it up on wake, a DRAFT or CHANGES_PENDING one on
@@ -285,7 +291,7 @@ export const schema: DocumentNode = gql`
     description: String
   }
 
-  enum ListScope { MINE, ALL }
+  enum ListScope { MINE, ALL, ORG }
 
   type Viewer {
     """The caller's wallet address (lowercased), if authenticated; otherwise null."""
@@ -317,6 +323,10 @@ export const schema: DocumentNode = gql`
     appRole: String
     """PR number of an App preview environment."""
     prNumber: Int
+    """Renown organisation owning this environment; null for personal environments."""
+    ownerOrgId: String
+    """Addresses allowed to sign on an organisation environment (lowercased)."""
+    orgOperators: [String!]!
   }
 
   type VetraCloudEnvPackage {

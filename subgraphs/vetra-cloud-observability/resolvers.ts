@@ -13,6 +13,7 @@ import {
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
 import { callerIsAdmin } from "../../shared/admins.js";
+import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
 
 export interface ResolverConfig {
   prometheusUrl: string;
@@ -44,6 +45,8 @@ export interface ResolverConfig {
    * `restartEnvironmentService` then throws RESTART_NOT_CONFIGURED.
    */
   restartDeps?: RestartResolverDeps;
+  /** Org-aware access checks; default: owner/admin only. */
+  access?: EnvAccess;
 }
 
 /** Auth context shape injected by reactor-api into resolver `context`. */
@@ -86,13 +89,14 @@ export function createResolvers(
   const loki = new LokiClient(config.lokiUrl);
   const envDb = config.envDb;
   const dispatch = config.dispatch;
+  const access = config.access ?? OWNER_ONLY_ACCESS;
   // Dump resolvers are always registered so the schema's non-nullable
   // `environmentDumps` field never resolves to undefined (which would
   // crash with "Cannot return null for non-nullable field"). When the
   // host hasn't configured S3/k8s deps, the query returns an empty
   // list and the mutation throws DUMPS_NOT_CONFIGURED.
   const dumpResolvers = config.dumpDeps
-    ? createDumpResolvers(config.dumpDeps)
+    ? createDumpResolvers({ ...config.dumpDeps, access })
     : {
         Query: {
           environmentDumps: async () => [] as never[],
@@ -109,8 +113,10 @@ export function createResolvers(
 
   // Always registered; the resolver throws RESTART_NOT_CONFIGURED when the
   // host couldn't build the in-cluster k8s client (restartDeps omitted).
-  const restartResolvers = createRestartResolver(config.restartDeps);
-  const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch });
+  const restartResolvers = createRestartResolver(
+    config.restartDeps && { ...config.restartDeps, access },
+  );
+  const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch, access });
 
   return {
     Query: {
@@ -249,7 +255,7 @@ export function createResolvers(
 
       myEnvironments: async (
         _parent: unknown,
-        { scope }: { scope?: "MINE" | "ALL" | null },
+        { scope, orgId }: { scope?: "MINE" | "ALL" | "ORG" | null; orgId?: string | null },
         ctx: AuthAwareContext,
       ) => {
         const userAddress = ctx.user?.address?.toLowerCase();
@@ -282,18 +288,27 @@ export function createResolvers(
             "appId",
             "appRole",
             "prNumber",
+            "ownerOrgId",
+            "orgOperators",
           ]);
 
-        const rows = wantAll && isAdmin
-          ? await query.execute()
-          : await query
-              .where((eb) =>
-                eb.or([
-                  eb("owner", "=", userAddress),
-                  eb("owner", "is", null),
-                ]),
-              )
-              .execute();
+        let rows;
+        if (scope === "ORG") {
+          const org = orgId?.trim();
+          if (!org) throw new Error("ORG_ID_REQUIRED");
+          if (!(await access.isMember({ address: userAddress, isAdmin }, org))) {
+            throw new Error("FORBIDDEN");
+          }
+          rows = await query.where("ownerOrgId", "=", org).execute();
+        } else if (wantAll && isAdmin) {
+          rows = await query.execute();
+        } else {
+          // Personal envs only: org envs are listed under their organisation.
+          rows = await query
+            .where("ownerOrgId", "is", null)
+            .where((eb) => eb.or([eb("owner", "=", userAddress), eb("owner", "is", null)]))
+            .execute();
+        }
 
         // packages/services are stored as JSON text; parse them into the
         // arrays the summary type declares so env cards can render package
@@ -302,6 +317,7 @@ export function createResolvers(
           ...row,
           packages: parseEnvSummaryPackages(row.packages as string | null),
           services: parseEnvSummaryServices(row.services as string | null),
+          orgOperators: parseOperators(row.orgOperators as string | null),
         }));
       },
 
@@ -569,18 +585,27 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "tenantId",
+            "customDomain",
+            "status",
+            "owner",
+            "createdBy",
+            "ownerOrgId",
+            "orgOperators",
+            "appId",
+          ])
           .where("id", "=", args.documentId)
           .executeTakeFirst()) as EnvSummaryRow | undefined;
         if (!envRow) {
           throw new Error("ENV_NOT_FOUND");
         }
 
-        const isOwner = !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) {
-          // Unclaimed envs stay open for now — the protection reconciler
-          // only locks down envs that already have an owner. Allow admins
-          // through regardless.
+        // Owner (personal), covering publisher (org) or admin.
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
           throw new Error("FORBIDDEN");
         }
 
@@ -627,10 +652,23 @@ export function createResolvers(
 
         const refreshed = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "subdomain", "tenantId", "customDomain", "status", "owner", "createdBy"])
+          .select([
+            "id",
+            "name",
+            "subdomain",
+            "tenantId",
+            "customDomain",
+            "status",
+            "owner",
+            "createdBy",
+            "ownerOrgId",
+            "orgOperators",
+            "appId",
+          ])
           .where("id", "=", args.documentId)
           .executeTakeFirst()) as EnvSummaryRow | undefined;
-        return refreshed ?? envRow;
+        const out = refreshed ?? envRow;
+        return { ...out, orgOperators: parseOperators(out.orgOperators) };
       },
 
       notifyNewImageRelease: async (
@@ -737,16 +775,26 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services", "owner", "autoUpdateChannel"])
+          .select([
+            "id",
+            "name",
+            "tenantId",
+            "status",
+            "services",
+            "owner",
+            "autoUpdateChannel",
+            "ownerOrgId",
+            "appId",
+          ])
           .where("id", "=", documentId)
           .executeTakeFirst()) as
-          | (EnvForBump & { owner: string | null; autoUpdateChannel: string | null })
+          | (EnvForBump & EnvAccessFields & { autoUpdateChannel: string | null })
           | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
 
-        const isOwner =
-          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
+          throw new Error("FORBIDDEN");
+        }
 
         const channel = envRow.autoUpdateChannel;
         if (!channel) throw new Error("NO_CHANNEL");
@@ -808,15 +856,13 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services", "owner"])
+          .select(["id", "name", "tenantId", "status", "services", "owner", "ownerOrgId", "appId"])
           .where("id", "=", documentId)
-          .executeTakeFirst()) as
-          | (EnvForBump & { owner: string | null })
-          | undefined;
+          .executeTakeFirst()) as (EnvForBump & EnvAccessFields) | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
-        const isOwner =
-          !!envRow.owner && envRow.owner.toLowerCase() === callerAddress;
-        if (!isOwner && !isAdmin) throw new Error("FORBIDDEN");
+        if (!(await access.canOperate({ address: callerAddress, isAdmin }, envRow))) {
+          throw new Error("FORBIDDEN");
+        }
 
         const services = parseEnvServices(envRow.services);
         const enabledServices = services.filter((s) => s.enabled);
@@ -1126,13 +1172,21 @@ function resolveChannelDomain(channel: string): string | null {
   return null;
 }
 
-type EnvSummaryRow = {
+/** The environments-row columns the org-aware access check reads. */
+type EnvAccessFields = {
+  owner: string | null;
+  ownerOrgId: string | null;
+  appId: string | null;
+};
+
+type EnvSummaryRow = EnvAccessFields & {
   id: string;
   name: string | null;
   subdomain: string | null;
   tenantId: string | null;
   customDomain: string | null;
   status: string | null;
-  owner: string | null;
   createdBy: string | null;
+  /** JSON text in the read model; parsed before it is returned. */
+  orgOperators: string | null;
 };
