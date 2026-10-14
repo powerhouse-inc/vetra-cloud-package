@@ -66,6 +66,32 @@ describe("canOperate / canView", () => {
     expect(await isOrgMember(down, user(BOB), "o1")).toBe(false);
     expect(await isOrgMember(down, admin, "o1")).toBe(true);
   });
+
+  it("logs a Renown failure (org and error, never the caller) and still refuses", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const down = orgsWith(Object.assign(new RenownOrgsUnavailableError("down"), { code: "ETIMEDOUT" }));
+      expect(await canOperate(down, user(BOB), { owner: OWNER, ownerOrgId: "o1", appDid: null })).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = warn.mock.calls[0].join(" ");
+      expect(line).toContain("o1");
+      expect(line).toContain("RenownOrgsUnavailableError");
+      expect(line).not.toContain(BOB);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a disputed organisation grants nothing: no operate, no view; personal owners and admins unaffected", async () => {
+    const r = { owner: OWNER, ownerOrgId: "o1", appDid: APP, orgDisputed: true };
+    expect(await canOperate(orgsWith(m("OWNER")), user(BOB), r)).toBe(false);
+    expect(await canView(orgsWith(m("OWNER")), user(BOB), r)).toBe(false);
+    expect(await canView(orgsWith(m("MEMBER")), user(BOB), r)).toBe(false);
+    expect(await canView(orgsWith(m("OWNER")), admin, r)).toBe(true);
+    const personal = { owner: OWNER, ownerOrgId: null, appDid: APP, orgDisputed: true };
+    expect(await canOperate(orgsWith(null), user(OWNER), personal)).toBe(true);
+    expect(await canView(orgsWith(null), user(OWNER), personal)).toBe(true);
+  });
 });
 
 describe("canCreateOrgApp", () => {

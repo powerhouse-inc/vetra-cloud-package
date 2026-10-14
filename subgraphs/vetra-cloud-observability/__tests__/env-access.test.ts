@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
-import { appDidLookup, createEnvAccess, OWNER_ONLY_ACCESS, parseOperators, unresolvedAppDid } from "../env-access.js";
+import { appDidLookup, appDisputeLookup, createEnvAccess, OWNER_ONLY_ACCESS, parseOperators, unresolvedAppDid } from "../env-access.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -83,6 +83,44 @@ describe("env access", () => {
     });
     expect(await down.isOrgAdmin({ address: OWNER, isAdmin: false }, "o1")).toBe(false);
     expect(await OWNER_ONLY_ACCESS.isOrgAdmin({ address: OWNER, isAdmin: false }, "o1")).toBe(false);
+  });
+
+  it("refuses org-derived access when the linked app's organisation is disputed (fail closed)", async () => {
+    const membership = vi.fn(async () => ({ role: "OWNER" as const, effectiveScope: { all: true, appDids: [] } }));
+    const disputed = new Set(["app-x"]);
+    let lookupFails = false;
+    const access = createEnvAccess({
+      orgs: { membership },
+      appDidOf: async (id) => `did:key:${id}`,
+      appOrgDisputed: async (id) => {
+        if (lookupFails) throw new Error("apps table unreadable");
+        return disputed.has(id);
+      },
+    });
+    const orgEnv = { owner: OWNER, ownerOrgId: "o1", appId: "app-x" };
+    expect(await access.canOperate(bob, orgEnv)).toBe(false);
+    expect(await access.canView(bob, orgEnv)).toBe(false);
+    expect(await access.canOperate({ address: CAROL, isAdmin: true }, orgEnv)).toBe(true);
+    // Another app of the same organisation, not disputed.
+    expect(await access.canOperate(bob, { ...orgEnv, appId: "app-y" })).toBe(true);
+    // Personal envs linked to a disputed app: the owner keeps access, nobody asks.
+    expect(await access.canOperate({ address: OWNER, isAdmin: false }, { owner: OWNER, ownerOrgId: null, appId: "app-x" })).toBe(true);
+    // An unreadable dispute flag refuses (admins aside).
+    lookupFails = true;
+    expect(await access.canOperate(bob, { ...orgEnv, appId: "app-y" })).toBe(false);
+    expect(await access.canView(bob, { ...orgEnv, appId: "app-y" })).toBe(false);
+  });
+
+  it("reads an app's dispute flag from the vetra-apps namespace", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    await db.schema.createTable("apps").addColumn("id", "varchar(64)").addColumn("org_disputed", "boolean").execute();
+    await db.insertInto("apps").values([{ id: "a", org_disputed: true }, { id: "b", org_disputed: false }, { id: "c", org_disputed: null }]).execute();
+    const lookup = appDisputeLookup(db);
+    expect(await lookup("a")).toBe(true);
+    expect(await lookup("b")).toBe(false);
+    expect(await lookup("c")).toBe(false);
+    expect(await lookup("nope")).toBe(false);
+    await db.destroy();
   });
 
   it("reads an app's identity DID from the vetra-apps namespace", async () => {

@@ -12,7 +12,11 @@ export interface OwnedResource {
   ownerOrgId?: string | null;
   /** Required on purpose: the app's Renown DID (publisher scope), or null when not linked to an app. */
   appDid: string | null;
-  /** Renown names another publisher than ownerOrgId: org members cannot operate it until reconciled. */
+  /**
+   * Renown names another publisher than ownerOrgId (apps.org_disputed, for an
+   * environment its linked app's): org members can neither operate nor view
+   * it until reconciled. Personal owners and platform admins are unaffected.
+   */
   orgDisputed?: boolean;
 }
 
@@ -35,7 +39,14 @@ async function membershipOf(
   if (!orgs) return null;
   try {
     return await orgs.membership(orgId, address);
-  } catch {
+  } catch (err) {
+    // Fail closed, but leave a trace: the organisation and the error's
+    // name/code only (never the caller, never the message).
+    const e = (err ?? {}) as { name?: unknown; code?: unknown };
+    console.warn(
+      `[org-access] Renown membership lookup failed for organisation ${orgId}: ` +
+        `${typeof e.name === "string" ? e.name : "unknown error"}${typeof e.code === "string" ? ` (${e.code})` : ""}; refusing`,
+    );
     return null;
   }
 }
@@ -58,6 +69,8 @@ export async function canView(
 ): Promise<boolean> {
   if (caller.isAdmin) return true;
   if (!r.ownerOrgId) return !!r.owner && r.owner.toLowerCase() === caller.address.toLowerCase();
+  // A disputed organisation's claim is not trusted: its members see nothing.
+  if (r.orgDisputed) return false;
   return (await membershipOf(orgs, r.ownerOrgId, caller.address)) !== null;
 }
 

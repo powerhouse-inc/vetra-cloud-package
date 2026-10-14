@@ -28,9 +28,17 @@ const APP_DID_UNKNOWN = Symbol("APP_DID_UNKNOWN");
 export function createEnvAccess(deps: {
   orgs: MembershipReader | null;
   appDidOf(appId: string): Promise<string | null>;
+  /**
+   * apps.org_disputed of the env's linked app (appDisputeLookup). A disputed
+   * app's organisation grants nothing on its environments; an unreadable
+   * flag refuses (admins aside). Omitted: no app is treated as disputed
+   * (hosts without the vetra-apps tables).
+   */
+  appOrgDisputed?(appId: string): Promise<boolean>;
 }): EnvAccess {
   const resource = async (env: EnvAccessRow) => {
     let appDid: string | null = null;
+    let orgDisputed = false;
     // The app DID only matters for org envs (publisher scope). A failed
     // lookup must not widen scope to "no app", so it refuses instead.
     if (env.ownerOrgId && env.appId) {
@@ -39,11 +47,12 @@ export function createEnvAccess(deps: {
         // contains: OWNER/ADMIN and all-scope publishers keep access,
         // scoped publishers are refused (never widened to "no app").
         appDid = (await deps.appDidOf(env.appId)) ?? unresolvedAppDid(env.appId);
+        orgDisputed = deps.appOrgDisputed ? await deps.appOrgDisputed(env.appId) : false;
       } catch {
         return APP_DID_UNKNOWN;
       }
     }
-    return { owner: env.owner, ownerOrgId: env.ownerOrgId ?? null, appDid };
+    return { owner: env.owner, ownerOrgId: env.ownerOrgId ?? null, appDid, orgDisputed };
   };
   return {
     canOperate: async (caller, env) => {
@@ -90,6 +99,18 @@ export function appDidLookup(appsDb: Kysely<any>): (appId: string) => Promise<st
       .where("id", "=", appId)
       .executeTakeFirst()) as { identity_did: string | null } | undefined;
     return row?.identity_did ?? null;
+  };
+}
+
+/** apps.org_disputed by apps.id in the vetra-apps namespace; a missing row is not disputed. */
+export function appDisputeLookup(appsDb: Kysely<any>): (appId: string) => Promise<boolean> {
+  return async (appId) => {
+    const row = (await appsDb
+      .selectFrom("apps")
+      .select("org_disputed")
+      .where("id", "=", appId)
+      .executeTakeFirst()) as { org_disputed: boolean | null } | undefined;
+    return row?.org_disputed === true;
   };
 }
 

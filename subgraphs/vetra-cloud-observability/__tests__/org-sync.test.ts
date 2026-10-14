@@ -130,6 +130,39 @@ describe("operator sync", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it("a disputed app's organisation keeps no operator and no grant on its envs; a failed flag lookup changes nothing", async () => {
+    members.set(`o1|${BOB}`, publisher);
+    members.set(`o1|${CAROL}`, plain);
+    await seed({ id: "e1", ownerOrgId: "o1", appId: "app-1" });
+    let disputed = false;
+    let lookupFails = false;
+    const d: OrgSyncDeps = {
+      ...deps,
+      appOrgDisputed: async () => {
+        if (lookupFails) throw new Error("apps unreadable");
+        return disputed;
+      },
+    };
+    await syncEnvironmentOrgOnce(d, await row("e1"), [BOB]);
+    await grantViewer(d, await row("e1"), CAROL);
+    expect(await getPerm("e1", BOB)).toBe("WRITE");
+    expect(await getPerm("e1", CAROL)).toBe("READ");
+
+    lookupFails = true;
+    expect(await syncEnvironmentOrgOnce(d, await row("e1"))).toStrictEqual({ result: "SKIPPED", operators: [BOB] });
+    expect(await getPerm("e1", BOB)).toBe("WRITE");
+
+    lookupFails = false;
+    disputed = true;
+    expect(await syncEnvironmentOrgOnce(d, await row("e1"))).toStrictEqual({ result: "UPDATED", operators: [] });
+    expect(await getPerm("e1", BOB)).toBeNull();
+    expect(await getPerm("e1", CAROL)).toBeNull();
+    expect(await grants()).toStrictEqual([]);
+    // A viewer grant is not re-added while disputed.
+    await grantViewer(d, await row("e1"), CAROL);
+    expect(await getPerm("e1", CAROL)).toBeNull();
+  });
+
   it("leaves everything as it is when Renown is down", async () => {
     await seed({ id: "e1", ownerOrgId: "o1", orgOperators: JSON.stringify([BOB]) });
     down = true;

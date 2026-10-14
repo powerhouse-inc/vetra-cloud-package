@@ -28,7 +28,7 @@ import { reconcileJob } from "./dumps/watcher.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
-import { appDidLookup, createEnvAccess } from "./env-access.js";
+import { appDidLookup, appDisputeLookup, createEnvAccess } from "./env-access.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import {
   orgProtectionOptions,
@@ -94,6 +94,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     const access = createEnvAccess({
       orgs: defaultRenownOrgs(),
       appDidOf: appDidLookup(appsDb),
+      appOrgDisputed: appDisputeLookup(appsDb),
     });
 
     const dispatch = async (
@@ -113,6 +114,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       db,
       orgs: defaultRenownOrgs(),
       appDidOf: appDidLookup(appsDb),
+      appOrgDisputed: appDisputeLookup(appsDb),
       dispatch,
       perm: this.documentPermissionService ?? null,
       serviceOwner: vetraServiceAddress(),

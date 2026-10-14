@@ -11,6 +11,7 @@ import { OpenBaoTransitClient } from "./openbao-transit.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import {
   appDidLookup,
+  appDisputeLookup,
   createEnvAccess,
   type EnvAccessRow,
 } from "../vetra-cloud-observability/env-access.js";
@@ -79,6 +80,7 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       access: createEnvAccess({
         orgs: defaultRenownOrgs(),
         appDidOf: appDidLookup(appsDb),
+      appOrgDisputed: appDisputeLookup(appsDb),
       }),
       tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
     });
