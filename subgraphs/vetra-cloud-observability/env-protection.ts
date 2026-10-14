@@ -248,10 +248,13 @@ export async function protectEnvironment(
   const ownerIsService = current.ownerAddress?.toLowerCase() === service;
 
   // A recorded org env still in the same org, or a personal env never handed
-  // over, can be trusted as given; anything else is decided from the document.
+  // over whose protection already names the given owner, can be trusted as
+  // given; anything else (an ownership move included: a stale row must never
+  // hand the document back to a previous owner) is decided from the document.
+  const protectionOwner = current.ownerAddress?.toLowerCase() ?? null;
   const stable = target.ownerOrgId
     ? rec?.orgId === target.ownerOrgId
-    : !rec && !ownerIsService;
+    : !rec && !ownerIsService && (target.owner?.toLowerCase() ?? null) === protectionOwner;
   let env = target;
   if (!stable) {
     if (opts.readTarget) {
@@ -285,23 +288,93 @@ export async function protectEnvironment(
   }
   if (!env.owner) {
     if (rec) await forgetOrg(perm, env.id, null, opts);
+    await protectUnowned(perm, env.id, service);
     return "UNOWNED";
   }
   const owner = env.owner.toLowerCase();
   const fresh = await perm.getDocumentProtection(env.id);
   const ownerMatches = fresh.ownerAddress?.toLowerCase() === owner;
-  if (!fresh.protected || !ownerMatches) {
-    // initializeDocumentProtection seeds `protected` only on first insert; the
-    // reactor often pre-creates the row unprotected, so set it explicitly.
-    await perm.initializeDocumentProtection(env.id, owner, true);
-    if (!fresh.protected) await perm.setDocumentProtection(env.id, true);
-    if (!ownerMatches) {
-      await perm.setDocumentOwner(env.id, owner);
-      await perm.grantPermission(env.id, owner, "ADMIN", owner);
-    }
+  if (!ownerMatches) {
+    // Ownership moved (a claim, a transfer, org → person, a server-created
+    // env getting its owner): the new owner only. Grants Vetra recorded for
+    // an organisation are withdrawn by forgetOrg below.
+    await protectForOwner(perm, env.id, owner, rec ? opts.db : null);
+  } else if (!fresh.protected) {
+    await perm.setDocumentProtection(env.id, true);
   }
   if (rec) await forgetOrg(perm, env.id, owner, opts);
   return "PERSONAL";
+}
+
+/**
+ * An environment nobody owns yet must not be claimable by whoever reaches it
+ * first (the reducer auto-claims an unowned env on any user-signed action):
+ *  - created by a user (reactor-api recorded them as protection owner):
+ *    protected for that creator, who claims it with their first signed
+ *    action (vetra.io sets the owner in the creating batch anyway);
+ *  - created in-process (warm pool, no human creator) or already the
+ *    service's: protected for the Vetra service identity, every other grant
+ *    removed and every system-only operation restricted. Only in-process
+ *    system actions (the claim's SET_OWNER) reach it.
+ * Idempotent; writes only on a change.
+ */
+async function protectUnowned(perm: EnvProtectionService, documentId: string, service: string): Promise<void> {
+  const current = await perm.getDocumentProtection(documentId);
+  const owner = current.ownerAddress?.toLowerCase() ?? null;
+  if (owner && owner !== service) {
+    if (!current.protected) await perm.setDocumentProtection(documentId, true);
+    return;
+  }
+  if (owner === service && current.protected) return;
+  await protectUnownedForService(perm, documentId, service);
+}
+
+/**
+ * Protect a document for the Vetra service identity with no other access:
+ * used for warm-pool environments at creation, before anyone can learn
+ * their id.
+ */
+export async function protectUnownedForService(
+  perm: EnvProtectionService,
+  documentId: string,
+  service: string,
+): Promise<void> {
+  const keep = service.toLowerCase();
+  const current = await perm.getDocumentProtection(documentId);
+  if (current.ownerAddress?.toLowerCase() !== keep) {
+    await perm.initializeDocumentProtection(documentId, keep, true);
+    await perm.setDocumentOwner(documentId, keep);
+  }
+  if (!current.protected) await perm.setDocumentProtection(documentId, true);
+  await restrictSystemOperations(perm, documentId, SYSTEM_ONLY_OPERATIONS);
+  await purgeUnmanagedAccess(perm, null, documentId, keep);
+}
+
+/**
+ * Hand a personal document to `owner`: protected, owned by them with an
+ * ADMIN grant, every other document grant and every operation grant
+ * (except the restriction marker) removed, the system-only operations
+ * restricted. With `db`, grants Vetra recorded for an organisation are left
+ * for forgetOrg to withdraw.
+ */
+export async function protectForOwner(
+  perm: EnvProtectionService,
+  documentId: string,
+  ownerAddress: string,
+  db: Kysely<ObservabilityDB> | null = null,
+): Promise<void> {
+  const owner = ownerAddress.toLowerCase();
+  // initializeDocumentProtection seeds `protected` only on first insert; the
+  // reactor often pre-creates the row unprotected, so set it explicitly.
+  await perm.initializeDocumentProtection(documentId, owner, true);
+  const current = await perm.getDocumentProtection(documentId);
+  if (!current.protected) await perm.setDocumentProtection(documentId, true);
+  if (current.ownerAddress?.toLowerCase() !== owner) await perm.setDocumentOwner(documentId, owner);
+  await restrictSystemOperations(perm, documentId, SYSTEM_ONLY_OPERATIONS);
+  await purgeUnmanagedAccess(perm, db, documentId, owner);
+  if ((await perm.getUserPermission(documentId, owner)) !== "ADMIN") {
+    await perm.grantPermission(documentId, owner, "ADMIN", owner);
+  }
 }
 
 async function restrictFor(perm: EnvProtectionService, env: EnvProtectionTarget, opts: EnvProtectionOptions) {
@@ -395,19 +468,22 @@ async function protectForService(
  */
 export async function purgeUnmanagedAccess(
   perm: EnvProtectionService,
-  db: Kysely<ObservabilityDB>,
+  db: Kysely<ObservabilityDB> | null,
   documentId: string,
   service: string,
 ): Promise<void> {
   const keep = service.toLowerCase();
+  // Without a db nothing is recorded: every grant but `keep`'s goes.
   const recorded = new Map(
-    (
-      await db
-        .selectFrom("org_document_grants")
-        .select(["address", "level"])
-        .where("documentId", "=", documentId)
-        .execute()
-    ).map((r) => [r.address.toLowerCase(), r.level]),
+    db
+      ? (
+          await db
+            .selectFrom("org_document_grants")
+            .select(["address", "level"])
+            .where("documentId", "=", documentId)
+            .execute()
+        ).map((r) => [r.address.toLowerCase(), r.level])
+      : [],
   );
   for (const g of await perm.getDocumentPermissions(documentId)) {
     const address = g.userAddress.toLowerCase();
@@ -415,7 +491,7 @@ export async function purgeUnmanagedAccess(
     const level = recorded.get(address);
     if (level === g.permission) continue;
     await perm.revokePermission(documentId, g.userAddress);
-    if (level !== undefined) {
+    if (level !== undefined && db) {
       await db
         .deleteFrom("org_document_grants")
         .where("documentId", "=", documentId)

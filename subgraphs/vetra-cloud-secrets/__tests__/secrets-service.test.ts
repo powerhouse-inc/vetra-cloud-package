@@ -196,3 +196,80 @@ describe("ensureSecret (managed secrets)", () => {
     );
   });
 });
+
+describe("replaceTenantConfig", () => {
+  const ciphertextOf = async (tenantId: string, key: string) =>
+    (
+      await db
+        .selectFrom("tenant_secrets")
+        .select("ciphertext")
+        .where("tenantId", "=", tenantId)
+        .where("key", "=", key)
+        .executeTakeFirst()
+    )?.ciphertext;
+  const rows = async (tenantId: string) => ({
+    envVars: await db
+      .selectFrom("tenant_env_vars")
+      .select(["key", "value"])
+      .where("tenantId", "=", tenantId)
+      .orderBy("key")
+      .execute(),
+    secrets: (
+      await db
+        .selectFrom("tenant_secrets")
+        .select(["key", "ciphertext"])
+        .where("tenantId", "=", tenantId)
+        .orderBy("key")
+        .execute()
+    ).map((r) => r.key),
+  });
+
+  it("drops everything not given (planted env vars and secrets), keeps managed keys, writes the rest", async () => {
+    await service.setEnvVar("t", "ANTHROPIC_BASE_URL", "https://evil.example");
+    await service.setEnvVar("t", "VETRA_REQUIRE_API_KEY", "false"); // tampered value
+    await service.setSecret("t", "PLANTED", "x");
+    await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
+    await service.setEnvVar("other", "KEEP", "1");
+
+    await service.replaceTenantConfig("t", [
+      { key: "VETRA_REQUIRE_API_KEY", value: "true", secret: false },
+      { key: "ANTHROPIC_API_KEY", value: "sk-ant", secret: true },
+      { key: "EMPTY_SECRET", value: "", secret: true },
+    ]);
+
+    expect(await rows("t")).toStrictEqual({
+      envVars: [{ key: "VETRA_REQUIRE_API_KEY", value: "true" }],
+      secrets: ["ANTHROPIC_API_KEY", WORKFLOWS_MASTER_KEY],
+    });
+    expect(await ciphertextOf("t", WORKFLOWS_MASTER_KEY)).toBe("vault:v1:t:master");
+    expect(await rows("other")).toStrictEqual({ envVars: [{ key: "KEEP", value: "1" }], secrets: [] });
+  });
+
+  it("skips entries the user paths would refuse (invalid, reserved or managed keys)", async () => {
+    await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
+    await service.replaceTenantConfig("t", [
+      { key: "lower", value: "x", secret: false },
+      { key: "PH_CONNECT_CONFIG_JSON", value: "{}", secret: false },
+      { key: WORKFLOWS_MASTER_KEY, value: "mine", secret: true },
+      { key: "OK", value: "1", secret: false },
+    ]);
+    expect((await rows("t")).envVars).toStrictEqual([{ key: "OK", value: "1" }]);
+    expect(await ciphertextOf("t", WORKFLOWS_MASTER_KEY)).toBe("vault:v1:t:master");
+  });
+
+  it("is one write with one notify", async () => {
+    const pglite = new PGlite();
+    const notifyDb = new Kysely<SecretsDB>({ dialect: new PGliteDialect(pglite) });
+    await up(notifyDb);
+    const notified: string[] = [];
+    await pglite.listen(NOTIFY_CHANNEL, (payload) => notified.push(payload));
+    const s = createSecretsService({ db: notifyDb, transit: mockTransit });
+    await s.replaceTenantConfig("t", [
+      { key: "A", value: "1", secret: false },
+      { key: "B", value: "2", secret: true },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(notified).toEqual(["t"]);
+    await notifyDb.destroy();
+  });
+});

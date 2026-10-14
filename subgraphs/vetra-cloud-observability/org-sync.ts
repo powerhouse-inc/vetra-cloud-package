@@ -40,6 +40,12 @@ export interface OrgSyncDeps {
   db: Kysely<ObservabilityDB>;
   orgs: MembershipReader;
   appDidOf(appId: string): Promise<string | null>;
+  /**
+   * apps.org_disputed of an env's linked app (env-access appDisputeLookup).
+   * While disputed, the organisation keeps no operator and no grant on the
+   * app's environments; an unreadable flag is an outage (SKIPPED).
+   */
+  appOrgDisputed?(appId: string): Promise<boolean>;
   dispatch(documentId: string, type: string, input: Record<string, unknown>): Promise<void>;
   perm: DocumentGrants | null;
   /**
@@ -142,13 +148,26 @@ async function syncUnlocked(deps: OrgSyncDeps, env: OrgEnvRow, candidates: strin
   const base = last && !sameSet(current, last) ? lower(last) : current;
   if (base !== current) deps.logger?.warn(`[org-sync] ${env.id}: operators changed outside the sync; recomputing`);
   let appDid: string | null = null;
+  let disputed = false;
   if (env.appId) {
     try {
       // Same rule as env-access: a link that does not resolve matches no scope.
       appDid = (await deps.appDidOf(env.appId)) ?? unresolvedAppDid(env.appId);
+      disputed = deps.appOrgDisputed ? await deps.appOrgDisputed(env.appId) : false;
     } catch {
       return { result: "SKIPPED", operators: current };
     }
+  }
+  if (disputed) {
+    // Renown names another publisher for the app: the organisation's claim is
+    // not trusted, so nobody operates or views through it (fail closed).
+    const changed = current.length > 0;
+    await recordComputedOperators(deps.db, env.id, []);
+    if (changed) await deps.dispatch(env.id, "SYNC_ORG_OPERATORS", { operators: [] });
+    await reconcileWriteGrants(deps, env.id, [], () => null);
+    await dropViewers(deps, env.id);
+    deps.logger?.warn(`[org-sync] ${env.id}: app ${env.appId} is disputed; organisation access withdrawn`);
+    return { result: changed ? "UPDATED" : "UNCHANGED", operators: [] };
   }
   const owner = state.owner?.toLowerCase() ?? null;
   // Holders of a WRITE grant Vetra made are re-checked too, so a grant is
@@ -351,11 +370,29 @@ export async function grantViewer(deps: OrgSyncDeps, env: OrgEnvRow, address: st
   await withEnvLock(env.id, async () => {
     if ((await protectOrgEnv(deps, { id: env.id, owner: env.owner, ownerOrgId: orgId })) !== "ORG") return;
     await purgeOrgEnv(deps, env.id);
+    // No viewer grant through a disputed organisation (unreadable flag: none either).
+    if (env.appId && deps.appOrgDisputed) {
+      const disputed = await deps.appOrgDisputed(env.appId).catch(() => true);
+      if (disputed) return;
+    }
     const { recorded, foreign } = await ownedGrant(d, env.id, addr);
     // An existing Vetra grant (READ or WRITE) already covers viewing.
     if (foreign || recorded) return;
     await setOwnedGrant(d, env.id, addr, "READ");
   });
+}
+
+/** Revoke every READ grant Vetra made on an env (its organisation lost access). */
+async function dropViewers(deps: OrgSyncDeps, envId: string): Promise<void> {
+  const d = withPerm(deps);
+  if (!d) return;
+  const viewers = await d.db
+    .selectFrom("org_document_grants")
+    .select("address")
+    .where("documentId", "=", envId)
+    .where("level", "=", "READ")
+    .execute();
+  for (const { address } of viewers) await dropOwnedGrant(d, envId, address);
 }
 
 /** Revoke READ grants of members who left; a Renown failure keeps the grant. */

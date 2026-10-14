@@ -15,6 +15,13 @@ export interface ReactorLike {
   createDocument(): Promise<string>;
   /** Apply a batch of (system-signed) actions to a document on the "main" branch. */
   execute(documentId: string, branch: string, actions: unknown[]): Promise<void>;
+  /**
+   * Protect the new (owner-null) document for the Vetra service identity
+   * before anything else happens to it: the reducer auto-claims an unowned
+   * env on any user-signed action, so an unprotected warm env could be
+   * claimed by anyone who learns its id, ahead of the licence-gated claim.
+   */
+  protect?(documentId: string): Promise<void>;
 }
 
 export interface CreateEnvConfig {
@@ -46,6 +53,8 @@ export async function createStudioEnvironmentDoc(
   cfg: CreateEnvConfig,
 ): Promise<CreatedStudioEnv> {
   const documentId = await reactor.createDocument();
+  // Fail closed: an unprotected warm env is never initialised or pooled.
+  if (reactor.protect) await reactor.protect(documentId);
   const subdomain = generateSubdomain(documentId);
   const tenantId = getTenantId(subdomain, documentId);
 

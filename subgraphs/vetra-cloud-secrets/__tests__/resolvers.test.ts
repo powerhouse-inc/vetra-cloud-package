@@ -629,6 +629,22 @@ describe("organisation environments", () => {
     await expect(plain.Query.envVars(undefined, { tenantId: "org" }, as(ADMIN))).resolves.toBeDefined();
   });
 
+  it("refuses org-derived access while the linked app's organisation is disputed; personal owners unaffected", async () => {
+    const disputedAccess = createResolvers(db, mockTransit, {
+      tenantEnvironments: async (t) => envs[t] ?? [],
+      access: createEnvAccess({
+        orgs,
+        appDidOf: async (appId) => (appId === APP ? APP_DID : null),
+        appOrgDisputed: async (appId) => appId === APP,
+      }),
+      tenantWait: { timeoutMs: 0, intervalMs: 1 },
+    });
+    await expectDenied(disputedAccess.Mutation.setSecret(undefined, { tenantId: "org", key: "K", value: "v" }, as(OP)));
+    await expectDenied(disputedAccess.Query.envVars(undefined, { tenantId: "org" }, as(OP)));
+    await expect(disputedAccess.Query.envVars(undefined, { tenantId: "org" }, as(ADMIN))).resolves.toBeDefined();
+    await expect(disputedAccess.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL))).resolves.toBeDefined();
+  });
+
   it("treats a throwing access check as a refusal", async () => {
     const boom = createResolvers(db, mockTransit, {
       tenantEnvironments: async (t) => envs[t] ?? [],
@@ -636,5 +652,27 @@ describe("organisation environments", () => {
       tenantWait: { timeoutMs: 0, intervalMs: 1 },
     });
     await expectDenied(boom.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL)));
+  });
+
+  it("logs why a throwing access check refused (name/code only, never the tenant or caller)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const boom = createResolvers(db, mockTransit, {
+        tenantEnvironments: async (t) => envs[t] ?? [],
+        access: {
+          canOperate: () => Promise.reject(Object.assign(new TypeError("renown said no"), { code: "ECONNRESET" })),
+        },
+        tenantWait: { timeoutMs: 0, intervalMs: 1 },
+      });
+      await expectDenied(boom.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL)));
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = spy.mock.calls[0].join(" ");
+      expect(line).toContain("ECONNRESET");
+      expect(line).toContain("TypeError");
+      expect(line).not.toContain("personal");
+      expect(line).not.toContain(PERSONAL);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

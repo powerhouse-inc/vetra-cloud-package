@@ -17,6 +17,13 @@ import {
   gcOrphanTenantDirs,
 } from "../../processors/vetra-cloud-environment/gitops.js";
 import { setOwner } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import { tenantConfigEntries } from "../../processors/vetra-cloud-environment/gitops.js";
+import {
+  protectForOwner,
+  protectUnownedForService,
+  vetraServiceAddress,
+} from "../vetra-cloud-observability/env-protection.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import {
   createSecretsService,
@@ -90,6 +97,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     });
     const claimDb = makeClaimDb(envDb);
 
+    const perm = this.documentPermissionService;
     // In-process reactor adapter: create doc + apply system-signed actions.
     const reactor: ReactorLike = {
       createDocument: async () => {
@@ -100,7 +108,15 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         this.reactorClient
           .execute(documentId, branch, actions as never)
           .then(() => undefined),
+      // Warm envs are protected for the Vetra service identity at creation:
+      // nobody can sign on them (and auto-claim them) before the claim.
+      protect: perm
+        ? (documentId) => protectUnownedForService(perm, documentId, vetraServiceAddress())
+        : undefined,
     };
+    if (!perm) {
+      console.warn("[studio-pool] no document permission service: warm envs are not protected");
+    }
 
     // Hard-delete an env document. The delete subscription below tears down the
     // read-model row + gitops tenant dir; the namespace reaper releases the
@@ -117,8 +133,20 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           getKeyForDid: (d) => studioKeyForDid(studioAccess, d),
           setOwner: (documentId, address) =>
             reactor.execute(documentId, "main", [setOwner({ address })]),
-          setSecrets: (tenantId, entries) =>
-            secretsService.setSecrets(tenantId, entries),
+          readEnv: async (documentId) => {
+            const doc = await this.reactorClient.get(documentId);
+            const state = (doc as { state?: { global?: VetraCloudEnvironmentState } }).state?.global;
+            if (!state) return null;
+            return { owner: state.owner ?? null, ownerOrgId: state.ownerOrgId ?? null, state };
+          },
+          replaceTenantConfig: (tenantId, state, entries) =>
+            secretsService.replaceTenantConfig(tenantId, [
+              ...tenantConfigEntries(state),
+              ...entries.map((e) => ({ ...e, secret: true })),
+            ]),
+          handOver: async (documentId, address) => {
+            if (perm) await protectForOwner(perm, documentId, address);
+          },
           deleteEnv,
           cfg: { version: cfg.version },
           nowIso: () => new Date().toISOString(),
@@ -149,7 +177,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         if (event.type !== DocumentChangeType.Deleted) return;
         const id = event.context?.childId;
         if (!id) return;
-        void this.reconcileDeletedEnvironment(envDb, id);
+        void this.reconcileDeletedEnvironment(envDb, id, secretsService);
       },
     );
 
@@ -210,9 +238,13 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
   private async reconcileDeletedEnvironment(
     envDb: Kysely<DB>,
     id: string,
+    secretsService: Pick<SecretsService, "purgeTenant">,
   ): Promise<void> {
     try {
-      const removed = await removeEnvironmentRecord(envDb, id);
+      // The last environment on a tenant takes its env vars and secrets along.
+      const removed = await removeEnvironmentRecord(envDb, id, {
+        purgeTenant: (tenantId) => secretsService.purgeTenant(tenantId),
+      });
       if (removed?.subdomain) {
         try {
           await deleteEnvironmentFromGitops(getTenantId(removed.subdomain, id));

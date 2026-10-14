@@ -18,7 +18,10 @@ const licence: AuthorisedLicence = {
 type Field = (p: unknown, a: unknown, c: unknown) => Promise<unknown>;
 
 /** Only what applyStudioKey reaches is real; the rest throws if touched. */
-function build(tenantOwners: SubscriptionDeps["tenantOwners"], over: { hasKey?: boolean } = {}) {
+function build(
+  tenantOwners: SubscriptionDeps["tenantOwners"],
+  over: { hasKey?: boolean; maxWaiters?: number } = {},
+) {
   const setSecret = vi.fn(async (_t: string, key: string, _v: string) => ({ key }));
   const deps = {
     studio: {
@@ -31,7 +34,7 @@ function build(tenantOwners: SubscriptionDeps["tenantOwners"], over: { hasKey?: 
     },
     secrets: { setSecret },
     tenantOwners: vi.fn(tenantOwners),
-    tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
+    tenantWait: { timeoutMs: 10_000, intervalMs: 500, maxWaiters: over.maxWaiters },
     now: () => NOW,
   } as unknown as SubscriptionDeps;
   const r = createSubscriptionResolvers(deps) as { VetraSubscriptionsMutations: Record<string, Field> };
@@ -89,13 +92,67 @@ describe("applyStudioKey: the tenant must be projected and the caller's", () => 
     expect(setSecret).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the projection table does not exist", async () => {
+  it("fails closed when the projection table does not exist, and logs why", async () => {
     const { apply, setSecret, deps } = build(async () => {
       throw Object.assign(new Error('relation "environments" does not exist'), { code: "42P01" });
     });
-    expect(await settle(apply("t-1"), 10_500)).toBe("FORBIDDEN");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await settle(apply("t-1"), 10_500)).toBe("FORBIDDEN");
+      expect(error.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("42P01");
+    } finally {
+      error.mockRestore();
+    }
     expect(deps.tenantOwners).toHaveBeenCalledTimes(1);
     expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the table disappears mid-wait", async () => {
+    let calls = 0;
+    const { apply, setSecret } = build(async () => {
+      if (++calls < 3) return [];
+      throw Object.assign(new Error("gone"), { code: "42P01" });
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await settle(apply("t-1"), 2_000)).toBe("FORBIDDEN");
+    } finally {
+      error.mockRestore();
+    }
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  it("shares one in-flight wait per tenant", async () => {
+    let calls = 0;
+    const { apply, setSecret, deps } = build(async () => (++calls < 6 ? [] : [HOLDER]));
+    const outcomes = Promise.all([apply("t-1"), apply("t-1"), apply("t-1")].map((p) => settle(p, 0)));
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await outcomes).toStrictEqual(["OK", "OK", "OK"]);
+    // 3 first looks + one shared poll, not three independent polls
+    expect(vi.mocked(deps.tenantOwners).mock.calls.length).toBeLessThanOrEqual(3 + 3);
+    expect(setSecret).toHaveBeenCalled();
+  });
+
+  it("refuses immediately beyond the waiter cap (FORBIDDEN, nothing looked up again)", async () => {
+    const { apply, setSecret, deps } = build(async () => [], { maxWaiters: 2 });
+    const waiting = [apply("a"), apply("b")].map((p) => settle(p, 0));
+    expect(await settle(apply("c"), 0)).toBe("FORBIDDEN");
+    // c made exactly one (fast) look and never polled
+    expect(vi.mocked(deps.tenantOwners).mock.calls.filter(([t]) => t === "c")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(await Promise.all(waiting)).toStrictEqual(["NOT_FOUND", "NOT_FOUND"]);
+    // slots are released afterwards
+    const d = settle(apply("d"), 10_500);
+    expect(await d).toBe("NOT_FOUND");
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  it("defaults the waiter cap to 16", async () => {
+    const { apply } = build(async () => []);
+    const waiting = Array.from({ length: 16 }, (_, i) => settle(apply(`t${i}`), 0));
+    expect(await settle(apply("t16"), 0)).toBe("FORBIDDEN");
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(new Set(await Promise.all(waiting))).toStrictEqual(new Set(["NOT_FOUND"]));
   });
 
   it("masks any other projection failure as INTERNAL, writing nothing", async () => {

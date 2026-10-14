@@ -14,6 +14,7 @@ type ClaimedEnv = {
   poolState: string;
 };
 type SecretEntry = { key: string; value: string };
+const WARM_STATE = { owner: null, ownerOrgId: null, services: [] };
 
 function deps(over: Partial<any> = {}) {
   return {
@@ -31,9 +32,11 @@ function deps(over: Partial<any> = {}) {
       async () => "sk-ant-real",
     ),
     setOwner: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
-    setSecrets: vi.fn<(tenantId: string, entries: SecretEntry[]) => Promise<void>>(
-      async () => {},
-    ),
+    replaceTenantConfig: vi.fn<
+      (tenantId: string, state: unknown, entries: SecretEntry[]) => Promise<void>
+    >(async () => {}),
+    readEnv: vi.fn(async (_id: string) => ({ owner: null, ownerOrgId: null, state: WARM_STATE })),
+    handOver: vi.fn(async (_id: string, _addr: string) => {}),
     deleteEnv: vi.fn(async () => {}),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
@@ -80,8 +83,10 @@ describe("claimWarmEnvironment", () => {
     await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER");
     // Exactly one batched write — NOT one-per-key (which would bounce the pod
     // once per secret).
-    expect(d.setSecrets).toHaveBeenCalledTimes(1);
-    const [tenantId, entries] = d.setSecrets.mock.calls[0];
+    expect(d.replaceTenantConfig).toHaveBeenCalledTimes(1);
+    const [tenantId, state, entries] = d.replaceTenantConfig.mock.calls[0];
+    // The document's own config is re-derived from its state in the same write.
+    expect(state).toBe(WARM_STATE);
     expect(tenantId).toBe("warm-newt-aaaa1111-aaaa1111");
     // The three Anthropic key names all carry the resolved key value...
     for (const name of SECRET_NAMES) {
@@ -100,21 +105,57 @@ describe("claimWarmEnvironment", () => {
   it("injects the secrets BEFORE transferring ownership (setOwner)", async () => {
     const order: string[] = [];
     const d = deps({
-      setSecrets: vi.fn(async () => {
-        order.push("setSecrets");
+      replaceTenantConfig: vi.fn(async () => {
+        order.push("replaceTenantConfig");
       }),
       setOwner: vi.fn(async () => {
         order.push("setOwner");
       }),
     });
     await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
-    expect(order).toEqual(["setSecrets", "setOwner"]);
+    expect(order).toEqual(["replaceTenantConfig", "setOwner"]);
   });
 
-  it("retries a transient setSecrets failure and still succeeds", async () => {
+  it("re-checks the document first: an env someone already owns is deleted, never handed out", async () => {
+    for (const doc of [
+      { owner: "0xattacker", ownerOrgId: null, state: WARM_STATE },
+      { owner: null, ownerOrgId: "org-1", state: WARM_STATE },
+      null,
+    ]) {
+      const d = deps({ readEnv: vi.fn(async () => doc) });
+      expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+      expect(d.replaceTenantConfig).not.toHaveBeenCalled();
+      expect(d.setOwner).not.toHaveBeenCalled();
+      expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+      expect(d.logger.warn).toHaveBeenCalled();
+    }
+  });
+
+  it("hands the document's protection to the new owner after SET_OWNER", async () => {
+    const order: string[] = [];
+    const d = deps({
+      setOwner: vi.fn(async () => void order.push("setOwner")),
+      handOver: vi.fn(async (id: string, addr: string) => void order.push(`handOver:${id}:${addr}`)),
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER")).not.toBeNull();
+    expect(order).toEqual(["setOwner", "handOver:doc-1:0xcaller"]);
+  });
+
+  it("keeps the claim when the protection hand-over fails (the env protector retries it)", async () => {
+    const d = deps({
+      handOver: vi.fn(async () => {
+        throw new Error("perm down");
+      }),
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).not.toBeNull();
+    expect(d.deleteEnv).not.toHaveBeenCalled();
+    expect(d.logger.warn).toHaveBeenCalled();
+  });
+
+  it("retries a transient replaceTenantConfig failure and still succeeds", async () => {
     const d = deps();
     let calls = 0;
-    d.setSecrets = vi.fn(async () => {
+    d.replaceTenantConfig = vi.fn(async () => {
       calls++;
       if (calls === 1) throw new Error("transient");
     });
@@ -125,7 +166,7 @@ describe("claimWarmEnvironment", () => {
 
   it("TERMINATES the half-claimed env and returns null when injection keeps failing", async () => {
     const d = deps();
-    d.setSecrets = vi.fn(async () => {
+    d.replaceTenantConfig = vi.fn(async () => {
       throw new Error("inject boom");
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
@@ -140,6 +181,6 @@ describe("claimWarmEnvironment", () => {
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
     // Secrets are injected first now, so the batch DID run before the owner step.
-    expect(d.setSecrets).toHaveBeenCalled();
+    expect(d.replaceTenantConfig).toHaveBeenCalled();
   });
 });

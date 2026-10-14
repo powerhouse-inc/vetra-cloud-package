@@ -3,7 +3,7 @@ import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
 import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
-import { removeEnvironmentRecord } from "./cleanup.js";
+import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
 import type { AppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
@@ -128,6 +128,22 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         `packages=[${(packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}]`,
       );
 
+      // Fail closed on a tenantId collision: another environment document is
+      // already deployed as this tenant (same subdomain + same 8-character id
+      // prefix; document ids can be chosen client-side). Projecting this one
+      // would make it a co-owner of the tenant's env vars and secrets and
+      // point its gitops sync at the other environment's namespace.
+      if (tenantId) {
+        const holder = await tenantIdOwner(this.relationalDb, tenantId, documentId);
+        if (holder) {
+          logger.error(
+            `Refusing environment ${documentId}: tenantId "${tenantId}" is already deployed by environment ${holder}. ` +
+              `Not projected, no gitops sync.`,
+          );
+          continue;
+        }
+      }
+
       // owner mirrors state.owner, refreshed on every upsert (it can change via
       // a SET_OWNER transfer). Normalize to lowercase for consistent matching
       // against the auth context's user address.
@@ -232,7 +248,13 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     const deletedNodeId = input?.id;
     if (!deletedNodeId) return undefined;
 
-    const removed = await removeEnvironmentRecord(this.relationalDb, deletedNodeId);
+    // The last environment on a tenant takes the tenant's env vars and
+    // secrets with it (a later env landing on the same tenantId must start
+    // empty).
+    const secrets = this.secretsService;
+    const removed = await removeEnvironmentRecord(this.relationalDb, deletedNodeId, {
+      purgeTenant: secrets ? (tenantId) => secrets.purgeTenant(tenantId) : null,
+    });
 
     if (!removed) return deletedNodeId;
 

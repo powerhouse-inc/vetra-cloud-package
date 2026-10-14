@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { ClaimDb } from "./pool-db.js";
 
 const SECRET_NAMES = [
@@ -16,15 +17,32 @@ export interface ClaimDeps {
   /** System action: SET_OWNER on the (owner-null) claimed document. */
   setOwner: (documentId: string, address: string) => Promise<void>;
   /**
-   * Inject several secrets into the tenant secret store atomically — one write,
-   * one notify, one pod bounce. Carries the Anthropic key(s) AND `ADMINS` so the
-   * claimant becomes the embedded switchboard's admin without a gitops
-   * re-render (which was the slow ~30s second restart).
+   * The claimed document's current ownership and state (null when it cannot
+   * be read). The read-model row says AVAILABLE; the document is the truth.
    */
-  setSecrets: (
+  readEnv: (documentId: string) => Promise<{
+    owner: string | null;
+    ownerOrgId: string | null;
+    state: VetraCloudEnvironmentState;
+  } | null>;
+  /**
+   * Replace the tenant's env vars and secrets with what the document declares
+   * plus `entries`, atomically — one write, one notify, one pod bounce.
+   * Anything written before the claim (and not declared by the document) is
+   * gone. `entries` carry the Anthropic key(s), `ADMINS` (so the claimant is
+   * the embedded switchboard's admin without a gitops re-render) and the
+   * session-export secret.
+   */
+  replaceTenantConfig: (
     tenantId: string,
+    state: VetraCloudEnvironmentState,
     entries: Array<{ key: string; value: string }>,
   ) => Promise<void>;
+  /**
+   * Move the document's reactor-api protection to the new owner and revoke
+   * every other grant (env-protection.ts protectForOwner).
+   */
+  handOver: (documentId: string, address: string) => Promise<void>;
   /** Fully delete an env (deleteDocument) — used to clean up a half-claimed env
    *  on failure so it doesn't leak a pod/namespace/cert as a TERMINATING husk. */
   deleteEnv: (documentId: string) => Promise<void>;
@@ -92,6 +110,19 @@ export async function claimWarmEnvironment(
   }
 
   try {
+    // 2b. The document is the truth: a warm env is owner-null and personal.
+    //     One that someone owns already (signed on it before the claim) is
+    //     compromised: delete it, never hand it out (caller falls back cold).
+    const doc = await d.readEnv(env.id);
+    if (!doc || doc.owner || doc.ownerOrgId) {
+      d.logger.warn(
+        `[studio-pool] claim: ${env.id} is not an unowned warm env (owner=${doc?.owner ?? "?"}, org=${doc?.ownerOrgId ?? "-"}); deleting`,
+      );
+      await d.deleteEnv(env.id).catch((e) =>
+        d.logger.warn(`[studio-pool] cleanup delete failed for ${env.id}: ${String(e)}`),
+      );
+      return null;
+    }
     // 3. Inject the key (under all required names) AND ADMINS in ONE batched
     //    write — a single pg_notify → one secrets-controller reconcile → ONE
     //    Reloader bounce of the agent pod. Delivering ADMINS here (instead of
@@ -105,11 +136,25 @@ export async function claimWarmEnvironment(
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },
     ];
-    await withRetry(() => d.setSecrets(env.tenantId!, secretEntries), SECRET_RETRIES, sleep);
+    // Everything not declared by the document is dropped in the same write,
+    // so nothing planted before the claim survives into the user's studio.
+    await withRetry(
+      () => d.replaceTenantConfig(env.tenantId!, doc.state, secretEntries),
+      SECRET_RETRIES,
+      sleep,
+    );
     // 4. Transfer ownership LAST (system action — env was created owner-null).
     //    SET_OWNER updates ownership/read-model only; it no longer triggers a
     //    gitops rollout (ADMINS now arrives via the Secret above).
     await d.setOwner(env.id, addr);
+    // 5. Protection follows the owner; every other grant goes. The env
+    //    protector does the same on the change event, so a failure here only
+    //    delays it.
+    try {
+      await d.handOver(env.id, addr);
+    } catch (err) {
+      d.logger.warn(`[studio-pool] claim: protection hand-over for ${env.id} failed: ${String(err)}`);
+    }
     d.logger.info(`[studio-pool] claimed ${env.id} (${env.tenantId}) for ${addr}`);
     return {
       documentId: env.id,

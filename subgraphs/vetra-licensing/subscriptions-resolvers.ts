@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { createProjectionWait, type ProjectionWaitOptions } from "../../shared/projection-wait.js";
 import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import { envUrls } from "../vetra-apps/envs.js";
@@ -49,8 +50,12 @@ export interface SubscriptionDeps {
    * 42P01) when the projection table does not exist: applyStudioKey refuses.
    */
   tenantOwners(tenantId: string): Promise<(string | null)[]>;
-  /** How long applyStudioKey waits for an unknown tenant to be projected (prod: 10 s, every 500 ms). */
-  tenantWait: { timeoutMs: number; intervalMs: number };
+  /**
+   * How long applyStudioKey waits for an unknown tenant to be projected (prod:
+   * 10 s, every 500 ms), and how many distinct tenants may be waited on at
+   * once (default 16; beyond it: FORBIDDEN at once). shared/projection-wait.ts.
+   */
+  tenantWait: ProjectionWaitOptions;
   now(): string;
 }
 
@@ -169,26 +174,28 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
   /**
    * The owners of a tenant's environments, waiting for the projection: the
    * cold path calls applyStudioKey right after pushing the new environment
-   * document, before the processor may have projected it. Still unknown after
-   * the window: NOT_FOUND. A missing projection table fails closed.
+   * document, before the processor may have projected it. The wait is shared
+   * per tenant and capped across tenants (shared/projection-wait.ts): with
+   * every slot taken, FORBIDDEN at once. Still unknown after the window:
+   * NOT_FOUND. A missing projection table fails closed (logged).
    */
+  // Built on first use: the deps are only needed once applyStudioKey runs.
+  let findTenantOwners: ReturnType<typeof createProjectionWait<string | null>> | null = null;
   const knownTenantOwners = async (tenantId: string): Promise<(string | null)[]> => {
-    const { timeoutMs, intervalMs } = deps.tenantWait;
-    const attempts = Math.floor(timeoutMs / intervalMs) + 1;
-    for (let i = 0; i < attempts; i++) {
-      if (i > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      let owners: (string | null)[];
-      try {
-        owners = await deps.tenantOwners(tenantId);
-      } catch (err) {
-        if ((err as { code?: unknown }).code === UNDEFINED_TABLE) {
-          throw new ForbiddenError("tenant ownership cannot be verified in this deployment");
-        }
-        throw err;
+    findTenantOwners ??= createProjectionWait((t) => deps.tenantOwners(t), deps.tenantWait);
+    let owners: (string | null)[] | null;
+    try {
+      owners = await findTenantOwners(tenantId, { wait: true });
+    } catch (err) {
+      if ((err as { code?: unknown }).code === UNDEFINED_TABLE) {
+        console.error(`[licensing] applyStudioKey: tenant projection unreadable (${UNDEFINED_TABLE})`);
+        throw new ForbiddenError("tenant ownership cannot be verified in this deployment");
       }
-      if (owners.length > 0) return owners;
+      throw err;
     }
-    throw new UnknownTenantError();
+    if (owners === null) throw new ForbiddenError("too many tenants are being waited on; retry shortly");
+    if (owners.length === 0) throw new UnknownTenantError();
+    return owners;
   };
 
   /** One of the caller's licences, by its grant row; anyone else's fails like a missing one. */

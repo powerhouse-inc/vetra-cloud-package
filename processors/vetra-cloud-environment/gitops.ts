@@ -605,6 +605,29 @@ export function classifyEnv(e: { name: string; value?: string | null; isSecret?:
   return LEGACY_SECRET_NAME_PATTERN.test(e.name) ? "secret" : "plain";
 }
 
+/**
+ * The tenant env vars and secrets the document itself declares, as the
+ * gitops render routes them through the secrets service: every env entry of
+ * every enabled CLINT service that has a package (generateClintBlock), a
+ * secret only when it has a value. Used to rebuild a tenant's configuration
+ * from its document (warm-pool claim) without anything written outside it.
+ */
+export function tenantConfigEntries(
+  state: Pick<VetraCloudEnvironmentState, "services">,
+): Array<{ key: string; value: string; secret: boolean }> {
+  const out: Array<{ key: string; value: string; secret: boolean }> = [];
+  for (const svc of state.services ?? []) {
+    if (svc.type !== "CLINT" || !svc.enabled || !svc.config?.package) continue;
+    for (const e of svc.config.env ?? []) {
+      const secret = classifyEnv(e) === "secret";
+      const value = e.value ?? "";
+      if (secret && value === "") continue;
+      out.push({ key: e.name, value, secret });
+    }
+  }
+  return out;
+}
+
 // Switchboard auth env for a vetra-cli agent's embedded switchboard. Turns on
 // DOCUMENT_PERMISSIONS auth with the env owner as supreme admin.
 // owner null → auth on, no ADMINS yet (next deploy adds it once claimed).
