@@ -43,7 +43,7 @@ export const WORKFLOWS_MASTER_KEY = "PH_WORKFLOWS_SECRETS_MASTER_KEY";
  * Secrets written only by ensureSecret. Replacing or deleting one makes the
  * data encrypted under it unreadable, so the user-facing paths refuse them.
  */
-const MANAGED_SECRET_KEYS = new Set<string>([WORKFLOWS_MASTER_KEY]);
+export const MANAGED_SECRET_KEYS = new Set<string>([WORKFLOWS_MASTER_KEY]);
 
 export class ManagedSecretKeyError extends Error {
   constructor(key: string) {
@@ -130,7 +130,7 @@ export interface SecretsService {
 }
 
 /**
- * Delete every env var and secret of one tenant in one transaction, with one
+ * Delete every env var and secret (managed keys aside) of one tenant in one transaction, with one
  * notify when anything went. Idempotent. Namespace-safe: query builder only,
  * so the statements resolve through the schema-bound instance.
  */
@@ -143,9 +143,15 @@ export async function purgeTenantRows(
       .deleteFrom("tenant_env_vars")
       .where("tenantId", "=", tenantId)
       .executeTakeFirst();
+    // The workflows master key stays: workflow secrets encrypted under it
+    // live in the tenant's database, which (with its volumes and backups)
+    // can outlive the environment; deleting the key would make them
+    // unreadable for good. It is generated server-side and can never be set
+    // or replaced through a user path, so keeping it gives nobody anything.
     const secrets = await trx
       .deleteFrom("tenant_secrets")
       .where("tenantId", "=", tenantId)
+      .where("key", "not in", [...MANAGED_SECRET_KEYS])
       .executeTakeFirst();
     const out = {
       envVars: Number(envVars.numDeletedRows),
