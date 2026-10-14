@@ -1,5 +1,6 @@
 import { GraphQLError } from "graphql";
 import { callerIsAdmin } from "../../shared/admins.js";
+import { createProjectionWait } from "../../shared/projection-wait.js";
 import { decodeJwtPayload } from "../vetra-apps/auth.js";
 import {
   OWNER_ONLY_ACCESS,
@@ -85,36 +86,15 @@ function forbidden(): GraphQLError {
  * licensing applyStudioKey) use SecretsService directly and never reach this.
  */
 export function createTenantGuard(deps: TenantAccessDeps) {
-  const maxWaiters = deps.maxWaiters ?? 16;
-  // One in-flight wait per tenant, shared by every caller asking for it.
   const access = deps.access ?? OWNER_ONLY_ACCESS;
-  const inFlight = new Map<string, Promise<EnvAccessRow[]>>();
-
-  const poll = async (tenantId: string): Promise<EnvAccessRow[]> => {
-    const { timeoutMs, intervalMs } = deps.tenantWait;
-    const attempts = Math.floor(timeoutMs / intervalMs) + 1;
-    for (let i = 0; i < attempts; i++) {
-      if (i > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      const envs = await deps.tenantEnvironments(tenantId);
-      if (envs.length > 0) return envs;
-    }
-    return [];
-  };
-
-  const knownEnvironments = async (
-    tenantId: string,
-    wait: boolean,
-  ): Promise<EnvAccessRow[]> => {
-    const envs = await deps.tenantEnvironments(tenantId);
-    if (envs.length > 0 || !wait) return envs;
-    let pending = inFlight.get(tenantId);
-    if (!pending) {
-      if (inFlight.size >= maxWaiters) return []; // over the cap: refuse now
-      pending = poll(tenantId).finally(() => inFlight.delete(tenantId));
-      inFlight.set(tenantId, pending);
-    }
-    return pending;
-  };
+  // Bounded wait (shared/projection-wait.ts): one in-flight poll per tenant,
+  // at most `maxWaiters` tenants at once; over the cap (null) is a refusal.
+  const findEnvironments = createProjectionWait(
+    (tenantId) => deps.tenantEnvironments(tenantId),
+    { ...deps.tenantWait, maxWaiters: deps.maxWaiters },
+  );
+  const knownEnvironments = async (tenantId: string, wait: boolean): Promise<EnvAccessRow[]> =>
+    (await findEnvironments(tenantId, { wait })) ?? [];
 
   /**
    * `wait` is true only for mutations: a just-created environment may not be
