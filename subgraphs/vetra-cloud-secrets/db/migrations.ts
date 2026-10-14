@@ -20,6 +20,16 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists()
     .execute();
 
+  // Completed one-shot orphan sweeps (tenant-purge.ts): one row means the
+  // sweep never runs again.
+  await db.schema
+    .createTable("tenant_orphan_purges")
+    .addColumn("token", "varchar(64)", (c) => c.primaryKey())
+    .addColumn("tenants", "integer")
+    .addColumn("purgedAt", "varchar(255)")
+    .ifNotExists()
+    .execute();
+
   // Schema-aware idempotent ADD COLUMN: Kysely's alterTable honours the
   // Kysely instance's schema binding (withSchema()), which raw `ALTER TABLE`
   // SQL does not — so this works whether or not the subgraph's hashed schema
@@ -36,6 +46,7 @@ export async function up(db: Kysely<any>): Promise<void> {
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("tenant_orphan_purges").ifExists().execute();
   await db.schema.dropTable("tenant_secrets").execute();
   await db.schema.dropTable("tenant_env_vars").execute();
 }

@@ -80,33 +80,33 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       access: createEnvAccess({
         orgs: defaultRenownOrgs(),
         appDidOf: appDidLookup(appsDb),
-      appOrgDisputed: appDisputeLookup(appsDb),
+        appOrgDisputed: appDisputeLookup(appsDb),
       }),
       tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
     });
 
-    // One-off cleanup (idempotent, every boot): env vars and secrets whose
-    // environment was deleted before deletion purged them. Fail-safe, see
-    // tenant-purge.ts; never blocks startup. Dry run unless
-    // SECRETS_ORPHAN_PURGE=true.
+    // One-shot cleanup of env vars and secrets whose environment was deleted
+    // before deletion purged them (tenant-purge.ts). Dry run by default: it
+    // logs the orphans and a token; setting SECRETS_ORPHAN_PURGE to exactly
+    // that token purges that very set once, recorded so it never runs again.
+    // "false" skips it. Never blocks startup. Logged at warn: prod runs
+    // LOG_LEVEL=warn.
     const sweep = orphanPurgeMode(process.env.SECRETS_ORPHAN_PURGE);
-    if (sweep !== "off") {
+    if (sweep.mode !== "off") {
       void purgeOrphanTenantRows({
         secretsDb: db,
         envDb: envDb as unknown as Kysely<EnvProjection>,
-        dryRun: sweep === "dry-run",
+        confirm: sweep.mode === "confirm" ? sweep.token : undefined,
       })
-        .then(({ purged, skippedForSafety }) => {
-          if (purged.length > 0) {
-            // warn: prod runs LOG_LEVEL=warn and operators must see this.
-            console.warn(
-              `[secrets] ${sweep === "dry-run" ? "would purge (dry run; SECRETS_ORPHAN_PURGE=true to purge)" : "purged"} ` +
-                `env vars/secrets of ${purged.length} deleted tenant(s): ${purged.join(", ")}`,
-            );
-          }
-          if (skippedForSafety) {
-            console.warn("[secrets] orphan tenant sweep skipped: projection empty or too many tenants would go");
-          }
+        .then(({ outcome, orphans, token }) => {
+          if (outcome === "NONE" || outcome === "ALREADY_DONE") return;
+          console.warn(
+            `[secrets] orphan tenant sweep: ${outcome}; ${orphans.length} tenant(s)` +
+              `${orphans.length > 0 ? `: ${orphans.join(", ")}` : ""}; ` +
+              (outcome === "DRY_RUN" || outcome === "TOKEN_MISMATCH"
+                ? `to purge exactly these, set SECRETS_ORPHAN_PURGE=${token}`
+                : `token ${token}`),
+          );
         })
         .catch((err: unknown) => {
           const e = (err ?? {}) as { code?: unknown; message?: unknown };

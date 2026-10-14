@@ -128,12 +128,23 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         `packages=[${(packages?.map((p) => `${p.name}@${p.version}`).join(", ")) ?? ""}]`,
       );
 
-      // Fail closed on a tenantId collision: another environment document is
-      // already deployed as this tenant (same subdomain + same 8-character id
+      // Fail closed on a tenantId collision: another (older) environment
+      // document is already deployed as this tenant (same subdomain + same 8-character id
       // prefix; document ids can be chosen client-side). Projecting this one
       // would make it a co-owner of the tenant's env vars and secrets and
       // point its gitops sync at the other environment's namespace.
-      if (tenantId) {
+      // Only a document newly taking the tenantId (no row yet, or a row with
+      // another tenantId) is refused; re-projecting a document that already
+      // holds it never is, so legacy rows sharing a tenantId keep updating.
+      const alreadyHolds = tenantId
+        ? !!(await this.relationalDb
+            .selectFrom("environments")
+            .select("id")
+            .where("id", "=", documentId)
+            .where("tenantId", "=", tenantId)
+            .executeTakeFirst())
+        : false;
+      if (tenantId && !alreadyHolds) {
         const holder = await tenantIdOwner(this.relationalDb, tenantId, documentId);
         if (holder) {
           logger.error(
@@ -243,18 +254,18 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
    */
   private async handleDriveOperation(operation: OperationWithContext["operation"]): Promise<string | undefined> {
     if (operation.action.type !== "DELETE_NODE") return undefined;
+    // A refused DELETE_NODE removed nothing.
+    if (operation.error) return undefined;
 
     const input = operation.action.input as { id?: string } | undefined;
     const deletedNodeId = input?.id;
     if (!deletedNodeId) return undefined;
 
-    // The last environment on a tenant takes the tenant's env vars and
-    // secrets with it (a later env landing on the same tenantId must start
-    // empty).
-    const secrets = this.secretsService;
-    const removed = await removeEnvironmentRecord(this.relationalDb, deletedNodeId, {
-      purgeTenant: secrets ? (tenantId) => secrets.purgeTenant(tenantId) : null,
-    });
+    // A DELETE_NODE only proves a node left some drive: any drive's writer can
+    // name any document id. So only the reversible read-model/gitops cleanup
+    // happens here; the tenant's env vars and secrets are purged solely on a
+    // proven document deletion (studio-pool's reactor `Deleted` subscription).
+    const removed = await removeEnvironmentRecord(this.relationalDb, deletedNodeId);
 
     if (!removed) return deletedNodeId;
 

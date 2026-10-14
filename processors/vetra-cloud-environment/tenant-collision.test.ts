@@ -18,10 +18,11 @@ afterEach(async () => {
 
 const ENV_TYPE = "powerhouse/vetra-cloud-environment";
 
+const purgeTenant = vi.fn(async () => ({ envVars: 1, secrets: 1 }));
 function processor() {
   const dispatch = { execute: vi.fn() };
   const documentView = { get: vi.fn() };
-  return new VetraCloudEnvironmentProcessor(db, dispatch as never, documentView as never);
+  return new VetraCloudEnvironmentProcessor(db, dispatch as never, documentView as never, { purgeTenant } as never);
 }
 
 /** One environment operation whose resulting state is `global`. */
@@ -84,5 +85,45 @@ describe("processor: a tenantId already deployed by another environment is refus
       .where("id", "=", ATTACKER)
       .executeTakeFirstOrThrow();
     expect(attacker.tenantId).toBe("other-abcdef12");
+  });
+});
+
+describe("processor: tenantId collisions only refuse a newcomer", () => {
+  it("legacy rows already sharing a tenantId both keep updating (no freeze)", async () => {
+    await db.insertInto("environments").values([
+      { id: "abcdef12-0000-a", tenantId: "shop-abcdef12", subdomain: "shop", owner: "0xa" },
+      { id: "abcdef12-0000-b", tenantId: "shop-abcdef12", subdomain: "shop", owner: "0xb" },
+    ] as never).execute();
+    const p = processor();
+    await p.onOperations([envOp("abcdef12-0000-a", state("0xa", "A2"))]);
+    await p.onOperations([envOp("abcdef12-0000-b", state("0xb", "B2"))]);
+    const rows = await db.selectFrom("environments").select(["id", "name"]).orderBy("id").execute();
+    expect(rows).toStrictEqual([
+      { id: "abcdef12-0000-a", name: "A2" },
+      { id: "abcdef12-0000-b", name: "B2" },
+    ]);
+  });
+});
+
+describe("processor: a drive DELETE_NODE never destroys tenant configuration", () => {
+  const deleteNode = (id: string, error?: string) =>
+    ({
+      operation: { index: 0, action: { type: "DELETE_NODE", input: { id }, context: {} }, ...(error ? { error } : {}) },
+      context: { documentType: "powerhouse/document-drive", documentId: "someone-elses-drive" },
+    }) as never;
+
+  beforeEach(() => purgeTenant.mockClear());
+
+  it("a foreign drive's DELETE_NODE of a live env purges no env vars or secrets", async () => {
+    await db.insertInto("environments").values({ id: "victim", tenantId: "t-victim", owner: "0xv" } as never).execute();
+    await processor().onOperations([deleteNode("victim")]);
+    expect(purgeTenant).not.toHaveBeenCalled();
+  });
+
+  it("a failed DELETE_NODE (operation error) changes nothing", async () => {
+    await db.insertInto("environments").values({ id: "victim", tenantId: "t-victim", owner: "0xv" } as never).execute();
+    await processor().onOperations([deleteNode("victim", "node not found")]);
+    expect(await db.selectFrom("environments").select("id").execute()).toStrictEqual([{ id: "victim" }]);
+    expect(purgeTenant).not.toHaveBeenCalled();
   });
 });
