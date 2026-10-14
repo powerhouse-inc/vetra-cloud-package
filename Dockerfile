@@ -165,8 +165,9 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY secrets-controller ./secrets-controller
 COPY subgraphs/vetra-cloud-secrets ./subgraphs/vetra-cloud-secrets
 
-# Minimal tsconfig that scopes compilation to the controller + the shared
-# subgraph modules it depends on. Tests are excluded.
+# Minimal tsconfig that scopes compilation to the controller. tsc follows its
+# imports into subgraphs/vetra-cloud-secrets, so only the modules it actually
+# uses are compiled (the subgraph's resolvers import code not copied here).
 RUN cat > tsconfig.controller.json <<'EOF'
 {
   "extends": "./tsconfig.json",
@@ -181,8 +182,7 @@ RUN cat > tsconfig.controller.json <<'EOF'
     "noEmit": false
   },
   "include": [
-    "secrets-controller/**/*",
-    "subgraphs/vetra-cloud-secrets/**/*"
+    "secrets-controller/**/*"
   ],
   "exclude": [
     "**/__tests__/**",
