@@ -128,8 +128,17 @@ export function createTenantGuard(deps: TenantAccessDeps) {
     if (callerIsAdmin(ctx, caller)) return;
     const who = { address: caller, isAdmin: false };
     for (const env of envs) {
-      // canOperate fails closed itself; a throw is a refusal too.
-      const ok = await access.canOperate(who, env).catch(() => false);
+      // canOperate fails closed itself; a throw is a refusal too, logged by
+      // error name/code only (a message could carry the caller or tenant).
+      const ok = await access.canOperate(who, env).catch((err: unknown) => {
+        const e = (err ?? {}) as { name?: unknown; code?: unknown };
+        console.error(
+          "[secrets] access check failed:",
+          typeof e.name === "string" ? e.name : "",
+          typeof e.code === "string" ? e.code : "",
+        );
+        return false;
+      });
       if (!ok) throw forbidden();
     }
   };

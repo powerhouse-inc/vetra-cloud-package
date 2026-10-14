@@ -637,4 +637,26 @@ describe("organisation environments", () => {
     });
     await expectDenied(boom.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL)));
   });
+
+  it("logs why a throwing access check refused (name/code only, never the tenant or caller)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const boom = createResolvers(db, mockTransit, {
+        tenantEnvironments: async (t) => envs[t] ?? [],
+        access: {
+          canOperate: () => Promise.reject(Object.assign(new TypeError("renown said no"), { code: "ECONNRESET" })),
+        },
+        tenantWait: { timeoutMs: 0, intervalMs: 1 },
+      });
+      await expectDenied(boom.Query.envVars(undefined, { tenantId: "personal" }, as(PERSONAL)));
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = spy.mock.calls[0].join(" ");
+      expect(line).toContain("ECONNRESET");
+      expect(line).toContain("TypeError");
+      expect(line).not.toContain("personal");
+      expect(line).not.toContain(PERSONAL);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
