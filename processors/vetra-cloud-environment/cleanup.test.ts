@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import type { DB } from "./schema.js";
-import { removeEnvironmentRecord } from "./cleanup.js";
+import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 
 let db: Kysely<DB>;
 
@@ -29,14 +29,19 @@ async function createEnvTable(database: Kysely<DB>): Promise<void> {
     .execute();
 }
 
-async function seedEnv(id: string, subdomain: string | null, name: string | null): Promise<void> {
+async function seedEnv(
+  id: string,
+  subdomain: string | null,
+  name: string | null,
+  tenantId: string | null = null,
+): Promise<void> {
   await db
     .insertInto("environments")
     .values({
       id,
       name,
       subdomain,
-      tenantId: null,
+      tenantId,
       customDomain: null,
       packages: null,
       services: null,
@@ -102,5 +107,63 @@ describe("removeEnvironmentRecord", () => {
 
     expect(result).toEqual({ subdomain: null, name: null });
     expect(await countRows()).toBe(0);
+  });
+});
+
+describe("removeEnvironmentRecord: the tenant's env vars and secrets go with the last environment", () => {
+  it("purges the tenant (stored tenantId) when no other environment is deployed as it", async () => {
+    await seedEnv("env-1", "studio-a", "A", "studio-a-env1");
+    const purgeTenant = vi.fn(async () => undefined);
+    await removeEnvironmentRecord(db, "env-1", { purgeTenant });
+    expect(purgeTenant).toHaveBeenCalledExactlyOnceWith("studio-a-env1");
+  });
+
+  it("derives the tenantId from subdomain + document id for legacy rows", async () => {
+    await seedEnv("abcd1234-ffff", "legacy", "L", null);
+    const purgeTenant = vi.fn(async () => undefined);
+    await removeEnvironmentRecord(db, "abcd1234-ffff", { purgeTenant });
+    expect(purgeTenant).toHaveBeenCalledExactlyOnceWith("legacy-abcd1234");
+  });
+
+  it("keeps the tenant while another environment is still deployed as it", async () => {
+    await seedEnv("env-1", "s", "A", "shared-t");
+    await seedEnv("env-2", "s", "B", "shared-t");
+    const purgeTenant = vi.fn(async () => undefined);
+    await removeEnvironmentRecord(db, "env-1", { purgeTenant });
+    expect(purgeTenant).not.toHaveBeenCalled();
+  });
+
+  it("purges nothing for an unknown id, or a row with no tenant", async () => {
+    await seedEnv("env-null", null, null, null);
+    const purgeTenant = vi.fn(async () => undefined);
+    expect(await removeEnvironmentRecord(db, "missing", { purgeTenant })).toBeNull();
+    await removeEnvironmentRecord(db, "env-null", { purgeTenant });
+    expect(purgeTenant).not.toHaveBeenCalled();
+  });
+
+  it("still removes the row when the purge fails (the orphan sweep retries it)", async () => {
+    await seedEnv("env-1", "studio-a", "A", "t-1");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = await removeEnvironmentRecord(db, "env-1", {
+        purgeTenant: async () => {
+          throw new Error("secrets db down");
+        },
+      });
+      expect(out).toEqual({ subdomain: "studio-a", name: "A" });
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+    expect(await countRows()).toBe(0);
+  });
+});
+
+describe("tenantIdOwner", () => {
+  it("names another environment already deployed as the tenant, never the document itself", async () => {
+    await seedEnv("victim", "s", "V", "s-12345678");
+    expect(await tenantIdOwner(db, "s-12345678", "attacker")).toBe("victim");
+    expect(await tenantIdOwner(db, "s-12345678", "victim")).toBeNull();
+    expect(await tenantIdOwner(db, "s-other", "attacker")).toBeNull();
   });
 });

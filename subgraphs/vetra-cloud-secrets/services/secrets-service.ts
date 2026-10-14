@@ -109,6 +109,41 @@ export interface SecretsService {
     key: string,
     generate: () => string,
   ): Promise<boolean>;
+  /**
+   * Delete every env var and secret of a tenant (its last environment was
+   * deleted). Notifies the controller when rows went, so the tenant's
+   * ConfigMap/Secret are emptied if the namespace still exists.
+   */
+  purgeTenant(tenantId: string): Promise<{ envVars: number; secrets: number }>;
+}
+
+/**
+ * Delete every env var and secret of one tenant in one transaction, with one
+ * notify when anything went. Idempotent. Namespace-safe: query builder only,
+ * so the statements resolve through the schema-bound instance.
+ */
+export async function purgeTenantRows(
+  db: Kysely<SecretsDB>,
+  tenantId: string,
+): Promise<{ envVars: number; secrets: number }> {
+  return db.transaction().execute(async (trx) => {
+    const envVars = await trx
+      .deleteFrom("tenant_env_vars")
+      .where("tenantId", "=", tenantId)
+      .executeTakeFirst();
+    const secrets = await trx
+      .deleteFrom("tenant_secrets")
+      .where("tenantId", "=", tenantId)
+      .executeTakeFirst();
+    const out = {
+      envVars: Number(envVars.numDeletedRows),
+      secrets: Number(secrets.numDeletedRows),
+    };
+    if (out.envVars + out.secrets > 0) {
+      await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
+    }
+    return out;
+  });
 }
 
 export interface CreateSecretsServiceArgs {
@@ -269,6 +304,10 @@ export function createSecretsService({
         await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
         return true;
       });
+    },
+
+    async purgeTenant(tenantId) {
+      return purgeTenantRows(db, tenantId);
     },
   };
 }

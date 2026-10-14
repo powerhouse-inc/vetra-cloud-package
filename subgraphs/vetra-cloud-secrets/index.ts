@@ -3,6 +3,8 @@ import type { DocumentNode } from "graphql";
 import type { Kysely } from "kysely";
 import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
+import { orphanPurgeMode, purgeOrphanTenantRows } from "./tenant-purge.js";
+import type { DB as EnvProjection } from "../../processors/vetra-cloud-environment/schema.js";
 import { up } from "./db/migrations.js";
 import type { SecretsDB } from "./db/schema.js";
 import { OpenBaoTransitClient } from "./openbao-transit.js";
@@ -80,5 +82,38 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       }),
       tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
     });
+
+    // One-off cleanup (idempotent, every boot): env vars and secrets whose
+    // environment was deleted before deletion purged them. Fail-safe, see
+    // tenant-purge.ts; never blocks startup. Dry run unless
+    // SECRETS_ORPHAN_PURGE=true.
+    const sweep = orphanPurgeMode(process.env.SECRETS_ORPHAN_PURGE);
+    if (sweep !== "off") {
+      void purgeOrphanTenantRows({
+        secretsDb: db,
+        envDb: envDb as unknown as Kysely<EnvProjection>,
+        dryRun: sweep === "dry-run",
+      })
+        .then(({ purged, skippedForSafety }) => {
+          if (purged.length > 0) {
+            // warn: prod runs LOG_LEVEL=warn and operators must see this.
+            console.warn(
+              `[secrets] ${sweep === "dry-run" ? "would purge (dry run; SECRETS_ORPHAN_PURGE=true to purge)" : "purged"} ` +
+                `env vars/secrets of ${purged.length} deleted tenant(s): ${purged.join(", ")}`,
+            );
+          }
+          if (skippedForSafety) {
+            console.warn("[secrets] orphan tenant sweep skipped: projection empty or too many tenants would go");
+          }
+        })
+        .catch((err: unknown) => {
+          const e = (err ?? {}) as { code?: unknown; message?: unknown };
+          console.error(
+            "[secrets] orphan tenant sweep failed:",
+            typeof e.code === "string" ? e.code : "",
+            typeof e.message === "string" ? e.message : "",
+          );
+        });
+    }
   }
 }

@@ -149,7 +149,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         if (event.type !== DocumentChangeType.Deleted) return;
         const id = event.context?.childId;
         if (!id) return;
-        void this.reconcileDeletedEnvironment(envDb, id);
+        void this.reconcileDeletedEnvironment(envDb, id, secretsService);
       },
     );
 
@@ -210,9 +210,13 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
   private async reconcileDeletedEnvironment(
     envDb: Kysely<DB>,
     id: string,
+    secretsService: Pick<SecretsService, "purgeTenant">,
   ): Promise<void> {
     try {
-      const removed = await removeEnvironmentRecord(envDb, id);
+      // The last environment on a tenant takes its env vars and secrets along.
+      const removed = await removeEnvironmentRecord(envDb, id, {
+        purgeTenant: (tenantId) => secretsService.purgeTenant(tenantId),
+      });
       if (removed?.subdomain) {
         try {
           await deleteEnvironmentFromGitops(getTenantId(removed.subdomain, id));
