@@ -81,3 +81,35 @@ describe("createStudioEnvironmentDoc", () => {
     });
   });
 });
+
+describe("createStudioEnvironmentDoc: protected before anything else", () => {
+  const cfg = {
+    version: "0.0.1",
+    sizeName: "VETRA_AGENT_XXL",
+    registry: "https://registry.dev.vetra.io",
+    switchboardUrl: "https://switchboard.vetra.io",
+  };
+
+  it("protects the new document for the service before applying any action", async () => {
+    const order: string[] = [];
+    const reactor = {
+      createDocument: vi.fn(async () => (order.push("create"), "aaaabbbb-1111")),
+      protect: vi.fn(async (id: string) => void order.push(`protect:${id}`)),
+      execute: vi.fn(async () => void order.push("execute")),
+    };
+    await createStudioEnvironmentDoc(reactor, cfg);
+    expect(order).toStrictEqual(["create", "protect:aaaabbbb-1111", "execute"]);
+  });
+
+  it("applies nothing when the document cannot be protected", async () => {
+    const reactor = {
+      createDocument: vi.fn(async () => "aaaabbbb-1111"),
+      protect: vi.fn(async () => {
+        throw new Error("permissions db down");
+      }),
+      execute: vi.fn(async () => {}),
+    };
+    await expect(createStudioEnvironmentDoc(reactor, cfg)).rejects.toThrow("permissions db down");
+    expect(reactor.execute).not.toHaveBeenCalled();
+  });
+});

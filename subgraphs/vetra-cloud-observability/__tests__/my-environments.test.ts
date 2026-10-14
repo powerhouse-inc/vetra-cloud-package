@@ -39,6 +39,7 @@ type EnvSeed = {
   id: string;
   subdomain?: string | null;
   owner?: string | null;
+  createdBy?: string | null;
   studioInstanceId?: string | null;
   packages?: string | null;
   services?: string | null;
@@ -60,7 +61,7 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       services: env.services ?? null,
       status: "READY",
       owner: env.owner ?? null,
-      createdBy: null,
+      createdBy: env.createdBy ?? null,
       studioInstanceId: env.studioInstanceId ?? null,
       appId: env.appId ?? null,
       appRole: env.appRole ?? null,
@@ -108,6 +109,20 @@ describe("myEnvironments", () => {
     expect(byId.standalone).toMatchObject({ appId: null, appRole: null, prNumber: null });
     expect(byId.prod).toMatchObject({ appId: "app-1", appRole: "PRODUCTION", prNumber: null });
     expect(byId.pr).toMatchObject({ appId: "app-1", appRole: "PREVIEW", prNumber: 42 });
+  });
+
+  it("lists unowned envs only to their creator (warm-pool / others' unclaimed env ids stay hidden)", async () => {
+    const OTHER = "0x9999999999999999999999999999999999999999";
+    await seedEnv({ id: "mine", owner: ME });
+    await seedEnv({ id: "pending-mine", owner: null, createdBy: ME });
+    await seedEnv({ id: "warm-pool", owner: null, createdBy: null });
+    await seedEnv({ id: "pending-other", owner: null, createdBy: OTHER });
+    const out = (await makeResolvers().Query.myEnvironments(
+      null,
+      { scope: "MINE" },
+      { user: { address: ME } },
+    )) as Array<{ id: string }>;
+    expect(out.map((e) => e.id).sort()).toStrictEqual(["mine", "pending-mine"]);
   });
 
   it("returns [] when unauthenticated", async () => {

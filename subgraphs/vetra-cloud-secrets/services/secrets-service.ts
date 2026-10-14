@@ -115,6 +115,18 @@ export interface SecretsService {
    * ConfigMap/Secret are emptied if the namespace still exists.
    */
   purgeTenant(tenantId: string): Promise<{ envVars: number; secrets: number }>;
+  /**
+   * Replace a tenant's whole configuration: every env var and every secret
+   * not in `entries` is deleted (managed secrets such as the workflows master
+   * key are kept), the entries are written (secrets encrypted first), in one
+   * transaction with one notify. Entries the user paths would refuse
+   * (invalid, reserved or managed keys) and secrets with an empty value are
+   * skipped, as the gitops routing skips them. Used by the warm-pool claim.
+   */
+  replaceTenantConfig(
+    tenantId: string,
+    entries: Array<{ key: string; value: string; secret: boolean }>,
+  ): Promise<void>;
 }
 
 /**
@@ -303,6 +315,49 @@ export function createSecretsService({
         if (!inserted) return false;
         await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
         return true;
+      });
+    },
+
+    async replaceTenantConfig(tenantId, entries) {
+      const usable = new Map<string, { value: string; secret: boolean }>();
+      for (const e of entries) {
+        try {
+          validateKey(e.key);
+        } catch {
+          continue;
+        }
+        if (e.secret && e.value === "") continue;
+        usable.set(e.key, { value: e.value, secret: e.secret });
+      }
+      const now = new Date().toISOString();
+      const plain = [...usable].filter(([, v]) => !v.secret);
+      const secret = [...usable].filter(([, v]) => v.secret);
+      if (secret.length > 0) await transit.ensureTenantKey(tenantId);
+      const secretRows = await Promise.all(
+        secret.map(async ([key, v]) => ({
+          tenantId,
+          key,
+          updatedAt: now,
+          ciphertext: await transit.encrypt(tenantId, v.value),
+        })),
+      );
+      await db.transaction().execute(async (trx) => {
+        await trx.deleteFrom("tenant_env_vars").where("tenantId", "=", tenantId).execute();
+        await trx
+          .deleteFrom("tenant_secrets")
+          .where("tenantId", "=", tenantId)
+          .where("key", "not in", [...MANAGED_SECRET_KEYS])
+          .execute();
+        if (plain.length > 0) {
+          await trx
+            .insertInto("tenant_env_vars")
+            .values(plain.map(([key, v]) => ({ tenantId, key, value: v.value, updatedAt: now })))
+            .execute();
+        }
+        if (secretRows.length > 0) {
+          await trx.insertInto("tenant_secrets").values(secretRows).execute();
+        }
+        await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
       });
     },
 

@@ -348,9 +348,17 @@ export function createResolvers(
           rows = await query.execute();
         } else {
           // Personal envs only: org envs are listed under their organisation.
+          // An unowned env only to its creator (the window before their
+          // SET_OWNER lands): listing every unowned env handed out warm-pool
+          // document ids, which anyone could then try to claim.
           rows = await query
             .where("ownerOrgId", "is", null)
-            .where((eb) => eb.or([eb("owner", "=", userAddress), eb("owner", "is", null)]))
+            .where((eb) =>
+              eb.or([
+                eb("owner", "=", userAddress),
+                eb.and([eb("owner", "is", null), eb("createdBy", "=", userAddress)]),
+              ]),
+            )
             .execute();
         }
 

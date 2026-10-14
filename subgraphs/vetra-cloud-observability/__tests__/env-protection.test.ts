@@ -10,6 +10,8 @@ import {
   recordComputedOperators,
   ORG_SYSTEM_OPERATIONS,
   protectEnvironment,
+  protectForOwner,
+  protectUnownedForService,
   RESTRICTION_GRANTEE,
   SYSTEM_ONLY_OPERATIONS,
   vetraServiceAddress,
@@ -36,12 +38,100 @@ afterEach(async () => {
 });
 
 describe("protectEnvironment", () => {
-  it("unowned envs: only the organisation operations are restricted; claiming stays open", async () => {
+  it("unowned envs created server-side (warm pool): protected for the service, nobody can sign or claim", async () => {
+    // No protection row: created in-process, no human creator.
     expect(await protectEnvironment(reactor.perm, { id: "u1", owner: null, ownerOrgId: null }, opts())).toBe("UNOWNED");
-    for (const op of ORG_SYSTEM_OPERATIONS) expect(await reactor.auth.canMutate("u1", op, CAROL)).toBe(false);
-    expect(await reactor.auth.canMutate("u1", "SET_OWNER", CAROL)).toBe(true);
-    expect(await reactor.auth.canMutate("u1", "SET_LABEL", CAROL)).toBe(true);
-    expect(await reactor.real.getDocumentOwner("u1")).toBeNull();
+    expect(await reactor.real.getDocumentProtection("u1")).toMatchObject({ protected: true, ownerAddress: SERVICE });
+    for (const op of [...SYSTEM_ONLY_OPERATIONS, "SET_LABEL"]) {
+      expect(await reactor.auth.canMutate("u1", op, CAROL)).toBe(false);
+    }
+    expect(await reactor.auth.canRead("u1", CAROL)).toBe(false);
+    expect(await reactor.auth.canMutate("u1", "SET_OWNER", SERVICE)).toBe(true);
+  });
+
+  it("an unowned service document loses every grant it picked up (planted before the fix)", async () => {
+    await reactor.real.grantPermission("u1", CAROL, "WRITE", CAROL);
+    await reactor.real.grantOperationPermission("u1", "SET_LABEL", CAROL, CAROL);
+    await protectEnvironment(reactor.perm, { id: "u1", owner: null, ownerOrgId: null }, opts());
+    expect(await reactor.real.getUserPermission("u1", CAROL)).toBeNull();
+    expect(await reactor.real.getOperationUserPermissions("u1", "SET_LABEL")).toStrictEqual([]);
+    expect(await reactor.auth.canMutate("u1", "SET_LABEL", CAROL)).toBe(false);
+  });
+
+  it("unowned envs a user created: protected for that creator only (first signed action claims it)", async () => {
+    await reactor.real.initializeDocumentProtection("u2", CAROL, false);
+    expect(await protectEnvironment(reactor.perm, { id: "u2", owner: null, ownerOrgId: null }, opts())).toBe("UNOWNED");
+    expect(await reactor.real.getDocumentProtection("u2")).toMatchObject({ protected: true, ownerAddress: CAROL });
+    expect(await reactor.auth.canMutate("u2", "SET_OWNER", CAROL)).toBe(true);
+    expect(await reactor.auth.canMutate("u2", "SET_LABEL", CAROL)).toBe(true);
+    expect(await reactor.auth.canMutate("u2", "SET_LABEL", BOB)).toBe(false);
+    expect(await reactor.auth.canMutate("u2", "SET_OWNER", BOB)).toBe(false);
+  });
+
+  it("is idempotent on an already protected unowned document", async () => {
+    await protectEnvironment(reactor.perm, { id: "u1", owner: null, ownerOrgId: null }, opts());
+    reactor.perm.setDocumentOwner.mockClear();
+    reactor.perm.getDocumentPermissions.mockClear();
+    await protectEnvironment(reactor.perm, { id: "u1", owner: null, ownerOrgId: null }, opts());
+    expect(reactor.perm.setDocumentOwner).not.toHaveBeenCalled();
+    expect(reactor.perm.getDocumentPermissions).not.toHaveBeenCalled();
+  });
+
+  it("a claimed warm env moves to its owner with no other grant left", async () => {
+    await protectEnvironment(reactor.perm, { id: "w", owner: null, ownerOrgId: null }, opts());
+    await reactor.real.grantPermission("w", CAROL, "ADMIN", SERVICE);
+    await reactor.real.grantOperationPermission("w", "SET_LABEL", CAROL, SERVICE);
+    const doc = { id: "w", owner: OWNER, ownerOrgId: null };
+    expect(await protectEnvironment(reactor.perm, doc, { ...opts(), readTarget: async () => doc })).toBe("PERSONAL");
+    expect(await reactor.real.getDocumentProtection("w")).toMatchObject({ protected: true, ownerAddress: OWNER });
+    expect(await reactor.real.getUserPermission("w", OWNER)).toBe("ADMIN");
+    expect(await reactor.real.getUserPermission("w", CAROL)).toBeNull();
+    expect(await reactor.real.getOperationUserPermissions("w", "SET_LABEL")).toStrictEqual([]);
+    expect(await reactor.auth.canMutate("w", "SET_LABEL", OWNER)).toBe(true);
+    expect(await reactor.auth.canMutate("w", "SET_LABEL", CAROL)).toBe(false);
+  });
+
+  it("a personal ownership transfer revokes the previous owner's and everyone else's grants", async () => {
+    await protectEnvironment(reactor.perm, { id: "t", owner: BOB, ownerOrgId: null }, opts());
+    await reactor.real.grantPermission("t", CAROL, "READ", BOB);
+    const doc = { id: "t", owner: OWNER, ownerOrgId: null };
+    expect(await protectEnvironment(reactor.perm, doc, { ...opts(), readTarget: async () => doc })).toBe("PERSONAL");
+    expect(await reactor.real.getDocumentProtection("t")).toMatchObject({ protected: true, ownerAddress: OWNER });
+    expect(await reactor.real.getUserPermission("t", OWNER)).toBe("ADMIN");
+    expect(await reactor.real.getUserPermission("t", BOB)).toBeNull();
+    expect(await reactor.real.getUserPermission("t", CAROL)).toBeNull();
+  });
+
+  it("a stale row naming the previous owner never hands the document back", async () => {
+    await protectEnvironment(reactor.perm, { id: "st", owner: OWNER, ownerOrgId: null }, opts());
+    const fresh = { id: "st", owner: OWNER, ownerOrgId: null };
+    const out = await protectEnvironment(reactor.perm, { id: "st", owner: BOB, ownerOrgId: null }, {
+      ...opts(),
+      readTarget: async () => fresh,
+    });
+    expect(out).toBe("PERSONAL");
+    expect(await reactor.real.getDocumentProtection("st")).toMatchObject({ protected: true, ownerAddress: OWNER });
+    expect(await reactor.real.getUserPermission("st", OWNER)).toBe("ADMIN");
+    expect(await reactor.real.getUserPermission("st", BOB)).toBeNull();
+  });
+
+  it("an owner's own shares survive while ownership does not move", async () => {
+    await protectEnvironment(reactor.perm, { id: "s", owner: BOB, ownerOrgId: null }, opts());
+    await reactor.real.grantPermission("s", CAROL, "READ", BOB);
+    await protectEnvironment(reactor.perm, { id: "s", owner: BOB, ownerOrgId: null }, opts());
+    expect(await reactor.real.getUserPermission("s", CAROL)).toBe("READ");
+  });
+
+  it("protectForOwner: hands a document to one owner and removes every other grant", async () => {
+    await protectUnownedForService(reactor.perm, "h", SERVICE);
+    await reactor.real.grantPermission("h", CAROL, "WRITE", SERVICE);
+    await protectForOwner(reactor.perm, "h", OWNER.toUpperCase().replace("0X", "0x"));
+    expect(await reactor.real.getDocumentProtection("h")).toMatchObject({ protected: true, ownerAddress: OWNER });
+    expect(await reactor.real.getUserPermission("h", OWNER)).toBe("ADMIN");
+    expect(await reactor.real.getUserPermission("h", CAROL)).toBeNull();
+    for (const op of SYSTEM_ONLY_OPERATIONS) {
+      expect(await reactor.auth.canMutate("h", op, CAROL)).toBe(false);
+    }
   });
 
   it("personal envs: protected for the owner and restricted at once (no reconciler window)", async () => {
@@ -93,7 +183,7 @@ describe("protectEnvironment", () => {
     for (const op of SYSTEM_ONLY_OPERATIONS) expect(await reactor.auth.canMutate("o2", op, CAROL)).toBe(false);
   });
 
-  it("back to a person (announced): owner protection again, Vetra's org grants withdrawn, foreign ones kept", async () => {
+  it("back to a person (announced): owner protection again, every other grant withdrawn", async () => {
     await expectOrgHandover(db, "e", "o1");
     await protectEnvironment(reactor.perm, { id: "e", owner: OWNER, ownerOrgId: "o1" }, opts());
     await reactor.real.grantPermission("e", BOB, "WRITE", "vetra-org-sync");
@@ -108,7 +198,7 @@ describe("protectEnvironment", () => {
     expect(await protectEnvironment(reactor.perm, doc, withDoc)).toBe("PERSONAL");
     expect(await reactor.real.getDocumentProtection("e")).toMatchObject({ protected: true, ownerAddress: BOB });
     expect(await reactor.real.getUserPermission("e", BOB)).toBe("ADMIN");
-    expect(await reactor.real.getUserPermission("e", CAROL)).toBe("READ");
+    expect(await reactor.real.getUserPermission("e", CAROL)).toBeNull();
     expect(await db.selectFrom("org_document_grants").selectAll().execute()).toStrictEqual([]);
     expect(await db.selectFrom("org_document_protection").selectAll().execute()).toStrictEqual([]);
   });
