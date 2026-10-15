@@ -93,6 +93,8 @@ export interface InviteCodes {
   max_uses: number | null;
   /** OpenBao transit ciphertext of an attached Claude key; never returned. */
   anthropic_key_ciphertext: string | null;
+  /** Monthly LLM budget (USD) for Studios of licences redeemed from this code; null = deployment default. */
+  llm_budget_usd: number | null;
   created_at: string;
   /**
    * Moved from vetra-access-codes, which trimmed and lowercased every input:
