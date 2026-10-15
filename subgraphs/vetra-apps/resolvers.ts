@@ -30,6 +30,7 @@ import {
   confirmAppIdentity,
   connectGithubDeploy,
   createApp,
+  createStudioApp,
   deleteApp,
   deployApp,
   githubDeployAppInfo,
@@ -42,6 +43,7 @@ import {
   updateApp,
   type AppsDeps,
   type CreateAppInput,
+  type CreateStudioAppInput,
   type DeployAppInput,
   type UpdateAppInput,
 } from "./service.js";
@@ -113,6 +115,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     name: app.name,
     ownerAddress: app.owner_address,
     ownerOrgId: app.owner_org_id ?? null,
+    studioEnvironmentId: app.studio_environment_id ?? null,
     status: app.status,
     repository: {
       installationId: app.installation_id,
@@ -239,6 +242,14 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "createApp", async () =>
           mapApp(deps, await createApp(deps, requireCaller(ctx), input)),
+        ),
+      createStudioApp: (
+        _: unknown,
+        { input }: { input: CreateStudioAppInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "createStudioApp", async () =>
+          mapApp(deps, await createStudioApp(deps, requireCaller(ctx), input)),
         ),
       confirmAppIdentity: (
         _: unknown,

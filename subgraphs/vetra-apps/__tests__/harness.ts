@@ -25,7 +25,7 @@ import {
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
-import type { GithubDeployApi } from "../github.js";
+import { RepoNameTakenError, type GithubDeployApi } from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
 import {
@@ -209,6 +209,8 @@ export function fakeGithub(): GithubDeployApi & {
   prStates: Map<number, "open" | "closed" | "error">;
   /** Repo path → contents, for toolchain detection. Absent path reads as null. */
   files: Map<string, string>;
+  /** Repo names (within the managed org) that already exist; createOrgRepo throws RepoNameTakenError for these. */
+  takenRepoNames: Set<string>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -220,9 +222,29 @@ export function fakeGithub(): GithubDeployApi & {
       return result(...args);
     };
   let deploymentSeq = 0;
+  let repoSeq = 0;
+  const takenRepoNames = new Set<string>();
   return {
     calls,
     files,
+    takenRepoNames,
+    createOrgRepo: rec(
+      "createOrgRepo",
+      (_i: string, org: string, name: string) => {
+        if (takenRepoNames.has(name))
+          throw new RepoNameTakenError(`${org}/${name} exists`);
+        takenRepoNames.add(name);
+        return {
+          id: String(9000 + ++repoSeq),
+          fullName: `${org}/${name}`,
+          private: true,
+          defaultBranch: "main",
+        };
+      },
+    ),
+    deleteRepo: rec("deleteRepo", () => undefined),
+    setRepoVariable: rec("setRepoVariable", () => undefined),
+    commitFile: rec("commitFile", () => undefined),
     getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>
       files.has(path) ? files.get(path)! : null,
     ),
@@ -321,6 +343,8 @@ export function fakeHarbor(): HarborApi & {
     },
     async deleteProject(p) {
       existing.delete(p);
+      const i = projects.indexOf(p);
+      if (i >= 0) projects.splice(i, 1);
       deletedProjects.push(p);
     },
   };
@@ -341,6 +365,8 @@ export function fakeRenown(): RenownApi & {
   identities: Map<string, FakeIdentity>;
   deleted: string[];
   updated: unknown[];
+  /** One-shot: the next registerWorkloadIdentity throws (then resets). */
+  failNextRegistration: boolean;
 } {
   const self = {
     delegation: null as { expiresAt: string | null } | null,
@@ -348,6 +374,7 @@ export function fakeRenown(): RenownApi & {
     identities: new Map<string, FakeIdentity>(),
     deleted: [] as string[],
     updated: [] as unknown[],
+    failNextRegistration: false,
     // As the served API (A5/M11): the same address gets the existing identity
     // back unchanged (whatever its organisation); another address, CONFLICT.
     async registerWorkloadIdentity(input: {
@@ -355,6 +382,10 @@ export function fakeRenown(): RenownApi & {
       ownerAddress: string;
       ownerOrgId?: string;
     }) {
+      if (self.failNextRegistration) {
+        self.failNextRegistration = false;
+        throw new Error("renown: registration failed");
+      }
       self.registered.push(input);
       const existing = self.identities.get(input.repositoryId);
       if (existing) {
@@ -429,6 +460,7 @@ export function testConfig(
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: "vetra-studio",
+    managedGithub: { org: "vetra-apps", installationId: "88" },
     ...over,
   };
 }

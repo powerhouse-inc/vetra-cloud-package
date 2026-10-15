@@ -44,6 +44,8 @@ export interface VetraAppsConfig {
    * Reserved: no app row is ever given it, so no app document can carry it.
    */
   studioAppSlug: string;
+  /** Vetra-managed GitHub org where Studio Apps get their repos; null = Studio Apps disabled. */
+  managedGithub: { org: string; installationId: string } | null;
 }
 
 type Env = Record<string, string | undefined>;
@@ -101,6 +103,9 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
       );
   }
 
+  const managedOrg = trimmed(env.VETRA_APPS_MANAGED_GITHUB_ORG);
+  const managedInstallation = trimmed(env.VETRA_APPS_MANAGED_INSTALLATION_ID);
+
   return {
     github,
     webhookSecret: trimmed(env.GITHUB_DEPLOY_APP_WEBHOOK_SECRET),
@@ -120,6 +125,10 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
+    managedGithub:
+      managedOrg && managedInstallation
+        ? { org: managedOrg, installationId: managedInstallation }
+        : null,
   };
 }
 

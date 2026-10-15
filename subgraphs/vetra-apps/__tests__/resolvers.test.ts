@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildASTSchema, type GraphQLObjectType } from "graphql";
+import {
+  addPackage,
+  approveChanges,
+} from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { schema } from "../schema.js";
 import { createResolvers } from "../resolvers.js";
 import {
@@ -237,6 +241,37 @@ describe("resolvers", () => {
     const r = createResolvers(h.deps);
     await expect(r.Query.myApps(null, {}, {})).rejects.toMatchObject({
       extensions: { code: "UNAUTHENTICATED" },
+    });
+  });
+
+  it("createStudioApp creates the App for a Studio and exposes studioEnvironmentId", async () => {
+    const studio = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(studio, [
+      addPackage({
+        packageName: "vetra",
+        version: "0.0.1-dev.27",
+        registry: "https://registry.dev.vetra.io",
+      }),
+      approveChanges({}),
+    ]);
+    const r = createResolvers(h.deps);
+    const out = await r.Mutation.createStudioApp(
+      null,
+      { input: { name: "Studio Shop", studioEnvironmentId: studio } },
+      {
+        user: {
+          address: OWNER,
+          chainId: 1,
+          networkId: "eip155",
+          appKey: USER_KEY,
+        },
+        headers: {},
+      },
+    );
+    expect(out).toMatchObject({
+      slug: "studio-shop",
+      studioEnvironmentId: studio,
+      repository: { fullName: "vetra-apps/studio-shop" },
     });
   });
 });
