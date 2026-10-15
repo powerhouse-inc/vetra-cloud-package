@@ -135,6 +135,12 @@ describe("toLicensingGraphQLError", () => {
       expect(logger.error).toHaveBeenLastCalledWith("[licensing] internal error: [object Object]");
     });
 
+    it("redacts OpenRouter keys too", () => {
+      const logger = { error: vi.fn() };
+      toLicensingGraphQLError("sk-or-v1-abc123", logger);
+      expect(logger.error).toHaveBeenLastCalledWith("[licensing] internal error: [redacted]");
+    });
+
     it("still returns the masked error when the logger throws, and logs to console by default", () => {
       const out = toLicensingGraphQLError(new Error("x"), { error: () => { throw new Error("log down"); } });
       expect(out.extensions).toStrictEqual({ code: "INTERNAL" });
