@@ -25,7 +25,11 @@ import {
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
-import { RepoNameTakenError, type GithubDeployApi } from "../github.js";
+import {
+  GithubHttpError,
+  RepoNameTakenError,
+  type GithubDeployApi,
+} from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
 import {
@@ -209,40 +213,63 @@ export function fakeGithub(): GithubDeployApi & {
   prStates: Map<number, "open" | "closed" | "error">;
   /** Repo path → contents, for toolchain detection. Absent path reads as null. */
   files: Map<string, string>;
-  /** Repo names (within the managed org) that already exist; createOrgRepo throws RepoNameTakenError for these. */
+  /** Repo names (`login/name`) that already exist; createRepoAsUser throws RepoNameTakenError for these. */
   takenRepoNames: Set<string>;
+  /** Account logins where the user may not create repositories (GitHub 403). */
+  forbiddenAccounts: Set<string>;
+  /** Installation id → repository selection; absent reads as "all". */
+  repositorySelection: Map<string, "all" | "selected">;
+  /** Every recorded call name, in call order. */
+  order: string[];
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
   const calls: Record<string, unknown[][]> = {};
+  const order: string[] = [];
   const rec =
     <T>(name: string, result: (...args: any[]) => T) =>
     async (...args: any[]) => {
       (calls[name] ??= []).push(args);
+      order.push(name);
       return result(...args);
     };
   let deploymentSeq = 0;
   let repoSeq = 0;
   const takenRepoNames = new Set<string>();
+  const forbiddenAccounts = new Set<string>();
+  const repositorySelection = new Map<string, "all" | "selected">();
   return {
     calls,
+    order,
     files,
     takenRepoNames,
-    createOrgRepo: rec(
-      "createOrgRepo",
-      (_i: string, org: string, name: string) => {
-        if (takenRepoNames.has(name))
-          throw new RepoNameTakenError(`${org}/${name} exists`);
-        takenRepoNames.add(name);
+    forbiddenAccounts,
+    repositorySelection,
+    createRepoAsUser: rec(
+      "createRepoAsUser",
+      (_token: string, account: { login: string }, name: string) => {
+        const fullName = `${account.login}/${name}`;
+        if (forbiddenAccounts.has(account.login))
+          throw new GithubHttpError(403, "Must have admin rights");
+        if (takenRepoNames.has(fullName))
+          throw new RepoNameTakenError(`${fullName} exists`);
+        takenRepoNames.add(fullName);
         return {
           id: String(9000 + ++repoSeq),
-          fullName: `${org}/${name}`,
+          fullName,
           private: true,
           defaultBranch: "main",
         };
       },
     ),
+    addRepoToInstallation: rec("addRepoToInstallation", () => undefined),
+    getInstallationRepositorySelection: rec(
+      "getInstallationRepositorySelection",
+      (installationId: string) =>
+        repositorySelection.get(installationId) ?? "all",
+    ),
     deleteRepo: rec("deleteRepo", () => undefined),
+    deleteRepoAsUser: rec("deleteRepoAsUser", () => undefined),
     setRepoVariable: rec("setRepoVariable", () => undefined),
     commitFile: rec("commitFile", () => undefined),
     getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>
@@ -460,7 +487,6 @@ export function testConfig(
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: "vetra-studio",
-    managedGithub: { org: "vetra-apps", installationId: "88" },
     ...over,
   };
 }

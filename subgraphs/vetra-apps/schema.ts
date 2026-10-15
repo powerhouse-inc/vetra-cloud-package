@@ -128,6 +128,8 @@ export const schema: DocumentNode = gql`
   input CreateStudioAppInput {
     name: String!
     studioEnvironmentId: String!
+    "The caller's connected Vetra Deploy installation; the repository is created in its account."
+    installationId: String!
     orgId: String
   }
 
