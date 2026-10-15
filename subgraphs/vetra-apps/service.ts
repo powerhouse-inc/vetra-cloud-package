@@ -36,7 +36,7 @@ import {
   canView,
   isOrgMember,
 } from "../../shared/org-access.js";
-import { withEnvLock } from "../../shared/key-lock.js";
+import { withEnvLock, withKeyLock } from "../../shared/key-lock.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import {
   expectOrgHandover,
@@ -742,6 +742,22 @@ export interface CreateStudioAppInput {
 
 const STUDIO_WORKFLOW_PATH = ".github/workflows/vetra.yml";
 const STUDIO_PRODUCTION_BRANCH = "main";
+/** The partial unique index: one live App per Studio (db/migrations.ts). */
+const STUDIO_APP_INDEX = "apps_studio_env_live";
+
+const studioAlreadyAnApp = () =>
+  appsError("BAD_USER_INPUT", "This Studio is already an App");
+
+/** A Postgres unique violation (23505) on `constraint`. */
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown; message?: unknown };
+  if (e.code !== "23505") return false;
+  return (
+    e.constraint === constraint ||
+    (typeof e.message === "string" && e.message.includes(constraint))
+  );
+}
 
 /**
  * Turn a Vetra Studio into an App: a private repository in the Vetra-managed
@@ -763,26 +779,67 @@ export async function createStudioApp(
   const orgId = input.orgId?.trim() || null;
   const name = await assertCreatePreconditions(deps, caller, input.name, orgId);
 
-  const studio = await deps.envs.getState(input.studioEnvironmentId);
+  const studioId = input.studioEnvironmentId;
+  const studio = await deps.envs.getState(studioId);
   if (!studio || !studio.packages.some((p) => isStudioAgentPackage(p.name)))
     throw appsError("BAD_USER_INPUT", "Not a Vetra Studio");
+  // As createApp's attach: a Studio of an organisation makes only that
+  // organisation's App.
+  const studioOrg = studio.ownerOrgId ?? null;
+  if (studioOrg !== null && studioOrg !== orgId) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      orgId
+        ? "Environment belongs to another organisation"
+        : "This environment belongs to an organisation; create the App there",
+    );
+  }
   const mayUse = await canOperate(
     deps.orgs ?? null,
     { address: caller.address, isAdmin: false },
     {
       owner: studio.owner ?? null,
-      ownerOrgId: studio.ownerOrgId ?? null,
+      ownerOrgId: studioOrg,
       appDid: null,
     },
   );
   if (!mayUse) throw appsError("FORBIDDEN", "You do not own this Studio");
+  if (RELEASED_STATUSES.has(studio.status))
+    throw appsError("BAD_USER_INPUT", "Studio is terminated");
+
+  // One create per Studio at a time in this process (the check, the repo and
+  // the row); the partial unique index backs it up across replicas. Not the
+  // env lock: the org sync holds that one on the Studio.
+  return withKeyLock(`studio-app:${studioId}`, () =>
+    createStudioAppLocked(deps, caller, {
+      managed,
+      github,
+      orgId,
+      name,
+      studioId,
+    }),
+  );
+}
+
+async function createStudioAppLocked(
+  deps: AppsDeps,
+  caller: Caller,
+  ctx: {
+    managed: { org: string; installationId: string };
+    github: GithubDeployApi;
+    orgId: string | null;
+    name: string;
+    studioId: string;
+  },
+): Promise<AppRow> {
+  const { managed, github, orgId, name, studioId } = ctx;
   const taken = await deps.db
     .selectFrom("apps")
     .select("id")
-    .where("studio_environment_id", "=", input.studioEnvironmentId)
+    .where("studio_environment_id", "=", studioId)
     .where("status", "!=", "DELETED")
     .executeTakeFirst();
-  if (taken) throw appsError("BAD_USER_INPUT", "This Studio is already an App");
+  if (taken) throw studioAlreadyAnApp();
 
   // Both checked by assertCreatePreconditions.
   const harbor = deps.harbor!;
@@ -841,6 +898,23 @@ export async function createStudioApp(
     made.robotId = robot.id;
 
     appId = deps.newId();
+    // The repository is complete before the env exists: provisioning approves
+    // the env (it renders and runs), so it is the last step, as in createApp.
+    await github.setRepoVariable(
+      managed.installationId,
+      repo.fullName,
+      "VETRA_APP_ID",
+      appId,
+    );
+    await github.commitFile(managed.installationId, repo.fullName, {
+      path: STUDIO_WORKFLOW_PATH,
+      content: workflowTemplate(appId, productionBranch, {
+        packageManager: "pnpm",
+        declaresPackageManager: false,
+      }),
+      message: "chore: add the Vetra deploy workflow [skip ci]",
+    });
+
     // The row goes in before the env actions (see createApp).
     envId = await deps.envs.create();
     made.appId = appId;
@@ -857,7 +931,7 @@ export async function createStudioApp(
       productionBranch,
       harborProject,
       productionEnvironmentId: envId,
-      studioEnvironmentId: input.studioEnvironmentId,
+      studioEnvironmentId: studioId,
     });
     await provisionProductionEnv(
       deps,
@@ -873,27 +947,14 @@ export async function createStudioApp(
       },
       made,
     );
-
-    await github.setRepoVariable(
-      managed.installationId,
-      repo.fullName,
-      "VETRA_APP_ID",
-      appId,
-    );
-    await github.commitFile(managed.installationId, repo.fullName, {
-      path: STUDIO_WORKFLOW_PATH,
-      content: workflowTemplate(appId, productionBranch, {
-        packageManager: "pnpm",
-        declaresPackageManager: false,
-      }),
-      message: "chore: add the Vetra deploy workflow [skip ci]",
-    });
   } catch (err) {
     await undoFailedCreate(deps, harbor, renown, did, made);
+    // Another replica made this Studio's App meanwhile.
+    if (isUniqueViolation(err, STUDIO_APP_INDEX)) throw studioAlreadyAnApp();
     throw err;
   }
   deps.logger.info(
-    `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo}, studio ${input.studioEnvironmentId}, env ${envId}`,
+    `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo}, studio ${studioId}, env ${envId}`,
   );
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);

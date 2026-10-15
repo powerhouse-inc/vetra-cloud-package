@@ -3,8 +3,10 @@ import { createStudioApp } from "../service.js";
 import {
   addPackage,
   approveChanges,
+  setOwnerOrg,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import {
+  ORG,
   OWNER,
   makeHarness,
   owner,
@@ -173,5 +175,126 @@ describe("createStudioApp", () => {
     } finally {
       await h2.close();
     }
+  });
+
+  it("serialises two creates for one Studio: one App, one refusal, one repository", async () => {
+    const studio = await seedStudio();
+    const results = await Promise.all([
+      code(
+        createStudioApp(h.deps, owner, {
+          name: "A",
+          studioEnvironmentId: studio,
+        }),
+      ),
+      code(
+        createStudioApp(h.deps, owner, {
+          name: "B",
+          studioEnvironmentId: studio,
+        }),
+      ),
+    ]);
+    expect(results.sort()).toStrictEqual(["BAD_USER_INPUT", "OK"]);
+    expect(h.github.calls.createOrgRepo).toHaveLength(1);
+  });
+
+  it("maps another replica's App for the Studio (unique index) to BAD_USER_INPUT and cleans up", async () => {
+    const studio = await seedStudio();
+    const first = await createStudioApp(h.deps, owner, {
+      name: "A",
+      studioEnvironmentId: studio,
+    });
+    // Hidden from the pre-check, then "committed" by another replica while
+    // this create is under way.
+    await h.db
+      .updateTable("apps")
+      .set({ status: "DELETED" })
+      .where("id", "=", first.id)
+      .execute();
+    const createOrgRepo = h.github.createOrgRepo.bind(h.github);
+    h.github.createOrgRepo = async (...args) => {
+      await h.db
+        .updateTable("apps")
+        .set({ status: "ACTIVE" })
+        .where("id", "=", first.id)
+        .execute();
+      return createOrgRepo(...args);
+    };
+    expect(
+      await code(
+        createStudioApp(h.deps, owner, {
+          name: "B",
+          studioEnvironmentId: studio,
+        }),
+      ),
+    ).toBe("BAD_USER_INPUT");
+    expect(h.github.calls.deleteRepo).toStrictEqual([["88", "vetra-apps/b"]]);
+    expect(h.harbor.projects).toStrictEqual(["app-a"]);
+  });
+
+  it("creates no env when the workflow commit fails, and removes the repository", async () => {
+    const studio = await seedStudio();
+    const envsBefore = [...h.envs.docs.keys()];
+    const executedBefore = h.envs.executed.length;
+    h.github.commitFile = async () => {
+      throw new Error("GitHub down");
+    };
+    await expect(
+      createStudioApp(h.deps, owner, {
+        name: "Shop",
+        studioEnvironmentId: studio,
+      }),
+    ).rejects.toThrow("GitHub down");
+    expect([...h.envs.docs.keys()]).toStrictEqual(envsBefore);
+    expect(h.envs.executed).toHaveLength(executedBefore);
+    expect(h.github.calls.deleteRepo).toStrictEqual([
+      ["88", "vetra-apps/shop"],
+    ]);
+    expect(h.harbor.projects).toStrictEqual([]);
+    expect(await h.db.selectFrom("apps").select("id").execute()).toHaveLength(
+      0,
+    );
+  });
+
+  it("makes an organisation's Studio only that organisation's App", async () => {
+    const studio = await seedStudio();
+    await h.envs.execute(studio, [
+      setOwnerOrg({ ownerOrgId: ORG, operators: [OWNER] }),
+    ]);
+    h.orgs.join(ORG, OWNER, "OWNER");
+    h.orgs.join("org-other", OWNER, "OWNER");
+    await expect(
+      createStudioApp(h.deps, owner, {
+        name: "A",
+        studioEnvironmentId: studio,
+      }),
+    ).rejects.toThrow(
+      "This environment belongs to an organisation; create the App there",
+    );
+    await expect(
+      createStudioApp(h.deps, owner, {
+        name: "A",
+        studioEnvironmentId: studio,
+        orgId: "org-other",
+      }),
+    ).rejects.toThrow("Environment belongs to another organisation");
+    expect(h.github.calls.createOrgRepo ?? []).toHaveLength(0);
+    const app = await createStudioApp(h.deps, owner, {
+      name: "A",
+      studioEnvironmentId: studio,
+      orgId: ORG,
+    });
+    expect(app.owner_org_id).toBe(ORG);
+  });
+
+  it("refuses a terminated Studio", async () => {
+    const studio = await seedStudio();
+    h.envs.setStatus(studio, "TERMINATING");
+    await expect(
+      createStudioApp(h.deps, owner, {
+        name: "A",
+        studioEnvironmentId: studio,
+      }),
+    ).rejects.toThrow("Studio is terminated");
+    expect(h.github.calls.createOrgRepo ?? []).toHaveLength(0);
   });
 });
