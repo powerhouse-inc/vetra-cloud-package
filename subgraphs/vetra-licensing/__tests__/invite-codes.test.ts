@@ -23,6 +23,7 @@ import {
   releaseReservation,
   reserveRedemption,
   setInviteCodeActive,
+  setInviteCodeAnthropicKey,
 } from "../invite-codes.js";
 
 let db: Kysely<VetraLicensingDB> | undefined;
@@ -154,6 +155,18 @@ describe("invite codes", () => {
     expect(await setInviteCodeActive(d, "app-1", "CODE-CCC", false)).toBe(false);
     expect(await setInviteCodeActive(d, "app-1", " code-ccc ", false)).toBe(true);
     expect((await getCode(d, "code-ccc"))!.active).toBe(false);
+  });
+
+  it("sets and clears the key ciphertext only within the owning app", async () => {
+    const d = await open();
+    await createInviteCode(d, { ...base, code: "code-ccc" });
+    expect(await setInviteCodeAnthropicKey(d, "app-2", "code-ccc", "enc:k")).toBe(false);
+    expect(await setInviteCodeAnthropicKey(d, "app-1", "no-such", "enc:k")).toBe(false);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBeNull();
+    expect(await setInviteCodeAnthropicKey(d, "app-1", " code-ccc ", "enc:k")).toBe(true);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBe("enc:k");
+    expect(await setInviteCodeAnthropicKey(d, "app-1", "code-ccc", null)).toBe(true);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBeNull();
   });
 
   it("is usable only while active, unexpired and under its cap", async () => {

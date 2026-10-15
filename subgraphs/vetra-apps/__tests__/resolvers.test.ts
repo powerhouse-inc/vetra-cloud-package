@@ -6,6 +6,7 @@ import {
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { schema } from "../schema.js";
 import { createResolvers } from "../resolvers.js";
+import { connectGithubDeploy } from "../service.js";
 import {
   bearerHasVetraClaim,
   parseVetraClaim,
@@ -20,9 +21,11 @@ import { envUrls } from "../envs.js";
 import type { AppRow } from "../repo.js";
 import {
   APP_DID,
+  INSTALLATION,
   OWNER,
   USER_KEY,
   makeHarness,
+  owner,
   seedActiveApp,
   type Harness,
 } from "./harness.js";
@@ -50,6 +53,13 @@ describe("SDL", () => {
       ).sort();
       expect(Object.keys(impl).sort()).toStrictEqual(fields);
     }
+  });
+
+  it("CreateStudioAppInput requires the connected installationId", () => {
+    const input = buildASTSchema(schema).getType(
+      "CreateStudioAppInput",
+    ) as unknown as { getFields(): Record<string, { type: unknown }> };
+    expect(String(input.getFields().installationId?.type)).toBe("String!");
   });
 });
 
@@ -254,10 +264,17 @@ describe("resolvers", () => {
       }),
       approveChanges({}),
     ]);
+    await connectGithubDeploy(h.deps, owner, "code");
     const r = createResolvers(h.deps);
     const out = await r.Mutation.createStudioApp(
       null,
-      { input: { name: "Studio Shop", studioEnvironmentId: studio } },
+      {
+        input: {
+          name: "Studio Shop",
+          studioEnvironmentId: studio,
+          installationId: INSTALLATION,
+        },
+      },
       {
         user: {
           address: OWNER,
@@ -271,7 +288,10 @@ describe("resolvers", () => {
     expect(out).toMatchObject({
       slug: "studio-shop",
       studioEnvironmentId: studio,
-      repository: { fullName: "vetra-apps/studio-shop" },
+      repository: {
+        fullName: "acme/studio-shop",
+        installationId: INSTALLATION,
+      },
     });
   });
 });

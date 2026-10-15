@@ -30,7 +30,7 @@ const CONTRACT_MUTATIONS = [
   "addTemplate", "setTemplateDetails", "addTemplateService", "removeTemplateService",
   "addTemplatePackage", "removeTemplatePackage", "deleteTemplate", "addTerm", "setTermDetails",
   "publishTerm", "retireTerm", "issueGrant", "replaceGrant", "revokeLicense", "createInviteCode",
-  "setInviteCodeActive", "addToAllowList", "removeFromAllowList",
+  "setInviteCodeActive", "setInviteCodeAnthropicKey", "addToAllowList", "removeFromAllowList",
   "updateAppProfile",
 ];
 
@@ -115,6 +115,7 @@ const CASES: Case[] = [
   ["revokeLicense", "m", (x) => ({ input: { licenseId: x.licence, reason: "nope" } })],
   ["createInviteCode", "m", (x) => ({ input: { appId: x.app, kind: "pro" } })],
   ["setInviteCodeActive", "m", (x) => ({ appId: x.app, code: x.code, active: false })],
+  ["setInviteCodeAnthropicKey", "m", (x) => ({ appId: x.app, code: x.code, anthropicKey: "sk-ant-x" })],
   ["addToAllowList", "m", (x) => ({ appId: x.app, user: "0x3333333333333333333333333333333333333333" })],
   ["removeFromAllowList", "m", (x) => ({ appId: x.app, user: HOLDER })],
   ["updateAppProfile", "m", (x) => ({ input: { appId: x.app, name: "renamed" } })],
@@ -132,6 +133,7 @@ const CROSS: Case[] = [
   ["publishTerm", "m", (x, own) => ({ appId: own.app, termId: x.term })],
   ["retireTerm", "m", (x, own) => ({ appId: own.app, termId: x.term })],
   ["setInviteCodeActive", "m", (x, own) => ({ appId: own.app, code: x.code, active: false })],
+  ["setInviteCodeAnthropicKey", "m", (x, own) => ({ appId: own.app, code: x.code, anthropicKey: "sk-ant-x" })],
 ];
 
 const call = (owner: string, [field, kind, args]: Case, ids: Ids, own: Ids) =>

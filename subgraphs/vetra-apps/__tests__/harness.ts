@@ -25,7 +25,11 @@ import {
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
-import { RepoNameTakenError, type GithubDeployApi } from "../github.js";
+import {
+  GithubHttpError,
+  RepoNameTakenError,
+  type GithubDeployApi,
+} from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
 import {
@@ -209,40 +213,82 @@ export function fakeGithub(): GithubDeployApi & {
   prStates: Map<number, "open" | "closed" | "error">;
   /** Repo path → contents, for toolchain detection. Absent path reads as null. */
   files: Map<string, string>;
-  /** Repo names (within the managed org) that already exist; createOrgRepo throws RepoNameTakenError for these. */
+  /** Repo names (`login/name`) that already exist; createRepoAsUser throws RepoNameTakenError for these. */
   takenRepoNames: Set<string>;
+  /** Account login → the status GitHub refuses repo creation with (403, 404). */
+  forbiddenAccounts: Map<string, number>;
+  /** Installation id → repository selection ("missing": the lookup 404s); absent reads as "all". */
+  repositorySelection: Map<string, "all" | "selected" | "missing">;
+  /** Statuses addRepoToInstallation fails with, one per call, in order. */
+  addRepoFailures: number[];
+  /** The owner GitHub puts new repos under instead of the account (null: the account). */
+  repoOwnerOverride: { login: string | null };
+  /** The user-token delete answers 404 (the repo is not reachable with it). */
+  userDeleteMissing: { value: boolean };
+  /** Every recorded call name, in call order. */
+  order: string[];
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
   const calls: Record<string, unknown[][]> = {};
+  const order: string[] = [];
   const rec =
     <T>(name: string, result: (...args: any[]) => T) =>
     async (...args: any[]) => {
       (calls[name] ??= []).push(args);
+      order.push(name);
       return result(...args);
     };
   let deploymentSeq = 0;
   let repoSeq = 0;
   const takenRepoNames = new Set<string>();
+  const forbiddenAccounts = new Map<string, number>();
+  const repositorySelection = new Map<string, "all" | "selected" | "missing">();
+  const addRepoFailures: number[] = [];
+  const repoOwnerOverride = { login: null as string | null };
+  const userDeleteMissing = { value: false };
   return {
     calls,
+    order,
     files,
     takenRepoNames,
-    createOrgRepo: rec(
-      "createOrgRepo",
-      (_i: string, org: string, name: string) => {
-        if (takenRepoNames.has(name))
-          throw new RepoNameTakenError(`${org}/${name} exists`);
-        takenRepoNames.add(name);
+    forbiddenAccounts,
+    repositorySelection,
+    addRepoFailures,
+    repoOwnerOverride,
+    userDeleteMissing,
+    createRepoAsUser: rec(
+      "createRepoAsUser",
+      (_token: string, account: { login: string }, name: string) => {
+        const fullName = `${repoOwnerOverride.login ?? account.login}/${name}`;
+        const refused = forbiddenAccounts.get(account.login);
+        if (refused) throw new GithubHttpError(refused, "Not allowed");
+        if (takenRepoNames.has(fullName))
+          throw new RepoNameTakenError(`${fullName} exists`);
+        takenRepoNames.add(fullName);
         return {
           id: String(9000 + ++repoSeq),
-          fullName: `${org}/${name}`,
+          fullName,
           private: true,
           defaultBranch: "main",
         };
       },
     ),
-    deleteRepo: rec("deleteRepo", () => undefined),
+    addRepoToInstallation: rec("addRepoToInstallation", () => {
+      const status = addRepoFailures.shift();
+      if (status) throw new GithubHttpError(status, "add failed");
+    }),
+    getInstallationRepositorySelection: rec(
+      "getInstallationRepositorySelection",
+      (installationId: string) => {
+        const selection = repositorySelection.get(installationId) ?? "all";
+        if (selection === "missing")
+          throw new GithubHttpError(404, "Not Found");
+        return selection;
+      },
+    ),
+    deleteRepo: rec("deleteRepo", () => true),
+    deleteRepoAsUser: rec("deleteRepoAsUser", () => !userDeleteMissing.value),
     setRepoVariable: rec("setRepoVariable", () => undefined),
     commitFile: rec("commitFile", () => undefined),
     getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>
@@ -460,7 +506,6 @@ export function testConfig(
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: "vetra-studio",
-    managedGithub: { org: "vetra-apps", installationId: "88" },
     ...over,
   };
 }

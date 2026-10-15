@@ -737,6 +737,8 @@ export interface CreateStudioAppInput {
   name: string;
   /** The Vetra Studio env the App is built in; recorded, never app-linked. */
   studioEnvironmentId: string;
+  /** The caller's connected Vetra Deploy installation; the repo is created in its account. */
+  installationId: string;
   orgId?: string | null;
 }
 
@@ -760,8 +762,9 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
 }
 
 /**
- * Turn a Vetra Studio into an App: a private repository in the Vetra-managed
- * GitHub org (same word as the slug and the Harbor project), its Renown
+ * Turn a Vetra Studio into an App: a private repository in the account of the
+ * caller's connected GitHub installation, created with the caller's user token
+ * (same word as the slug and the Harbor project), its Renown
  * identity, Harbor robot, a new production env, the VETRA_APP_ID variable and
  * the deploy workflow (committed with [skip ci]). The Studio env is recorded
  * on the row and never app-linked: CI must never deploy into it. Everything
@@ -775,10 +778,7 @@ export async function createStudioApp(
   caller: Caller,
   input: CreateStudioAppInput,
 ): Promise<AppRow> {
-  const managed = deps.cfg.managedGithub;
-  if (!managed || !deps.github)
-    throw notConfigured("The Vetra-managed GitHub org (VETRA_APPS_MANAGED_*)");
-  const github = deps.github;
+  const github = requireGithub(deps);
   const orgId = input.orgId?.trim() || null;
   const name = await assertCreatePreconditions(deps, caller, input.name, orgId);
 
@@ -810,13 +810,41 @@ export async function createStudioApp(
   if (RELEASED_STATUSES.has(studio.status))
     throw appsError("BAD_USER_INPUT", "Studio is terminated");
 
+  // The installation must be one of the caller's own connections; its account
+  // is where the repository goes.
+  const installationId = input.installationId;
+  const connection = await deps.db
+    .selectFrom("github_deploy_connections")
+    .select(["account_login", "account_type"])
+    .where("owner_address", "=", caller.address)
+    .where("installation_id", "=", installationId)
+    .executeTakeFirst();
+  if (!connection) throw notConnected();
+  const userToken = await userTokenFor(deps, caller, installationId);
+  let repositorySelection: "all" | "selected";
+  try {
+    repositorySelection =
+      await github.getInstallationRepositorySelection(installationId);
+  } catch (err) {
+    // 404: the Vetra Deploy app is no longer installed there.
+    if (err instanceof GithubHttpError && err.status === 404)
+      throw notConnected();
+    throw err;
+  }
+
   // One create per Studio at a time in this process (the check, the repo and
   // the row); the partial unique index backs it up across replicas. Not the
   // env lock: the org sync holds that one on the Studio.
   return withKeyLock(`studio-app:${studioId}`, () =>
     createStudioAppLocked(deps, caller, {
-      managed,
       github,
+      installationId,
+      account: {
+        login: connection.account_login,
+        type: connection.account_type,
+      },
+      userToken,
+      repositorySelection,
       orgId,
       name,
       studioId,
@@ -828,14 +856,26 @@ async function createStudioAppLocked(
   deps: AppsDeps,
   caller: Caller,
   ctx: {
-    managed: { org: string; installationId: string };
     github: GithubDeployApi;
+    installationId: string;
+    account: { login: string; type: string };
+    userToken: string;
+    repositorySelection: "all" | "selected";
     orgId: string | null;
     name: string;
     studioId: string;
   },
 ): Promise<AppRow> {
-  const { managed, github, orgId, name, studioId } = ctx;
+  const {
+    github,
+    installationId,
+    account,
+    userToken,
+    repositorySelection,
+    orgId,
+    name,
+    studioId,
+  } = ctx;
   const taken = await deps.db
     .selectFrom("apps")
     .select("id")
@@ -867,22 +907,52 @@ async function createStudioAppLocked(
     for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS && !repo; attempt++) {
       slug = await reserveSlugAndProject(deps, harbor, name, made, conflicts);
       try {
-        repo = await github.createOrgRepo(
-          managed.installationId,
-          managed.org,
+        repo = await github.createRepoAsUser(
+          userToken,
+          account,
           slug,
           `${name.replace(CONTROL_CHARS, " ")} — built with Vetra Studio`.slice(
             0,
             350,
           ),
         );
-        made.repo = repo.fullName;
+        // An all-repositories installation covers the new repo at once; a
+        // selected one only once it is added below.
+        made.repo = {
+          id: repo.id,
+          fullName: repo.fullName,
+          installationId,
+          userToken,
+          inInstallation: repositorySelection === "all",
+        };
         if (repo.private !== true)
           throw new GithubHttpError(
             502,
             `${repo.fullName} was created as a public repository`,
           );
+        // /user/repos creates under the token's own user: it must be the
+        // connected personal account.
+        const repoOwner = repo.fullName.split("/")[0] ?? "";
+        if (
+          account.type === "User" &&
+          repoOwner.toLowerCase() !== account.login.toLowerCase()
+        )
+          throw appsError(
+            "FORBIDDEN",
+            `GitHub created the repository under ${repoOwner}, not ${account.login}; connect GitHub as ${account.login}`,
+          );
       } catch (err) {
+        // 404: GitHub hides an org the user cannot create repositories in.
+        if (
+          err instanceof GithubHttpError &&
+          (err.status === 403 || err.status === 404)
+        )
+          throw appsError(
+            "FORBIDDEN",
+            `You cannot create repositories in ${account.login} on GitHub`,
+          );
+        if (err instanceof GithubHttpError && err.status === 401)
+          throw notConnected();
         if (!(err instanceof RepoNameTakenError)) throw err;
         conflicts.add(slug);
         await harbor.deleteProject(made.project!);
@@ -896,6 +966,21 @@ async function createStudioAppLocked(
       );
     }
     const harborProject = made.project!;
+    // The installation token calls below (variable, workflow commit, later
+    // deploys) need the repo inside the installation.
+    if (repositorySelection === "selected") {
+      try {
+        await github.addRepoToInstallation(userToken, installationId, repo.id);
+      } catch (err) {
+        if (err instanceof GithubHttpError && err.status === 403)
+          throw appsError(
+            "FORBIDDEN",
+            `You cannot add repositories to the Vetra Deploy installation on ${account.login}`,
+          );
+        throw err;
+      }
+      made.repo!.inInstallation = true;
+    }
 
     did = await registerAppIdentity(deps, renown, {
       repositoryId: repo.id,
@@ -912,12 +997,12 @@ async function createStudioAppLocked(
     // The repository is complete before the env exists: provisioning approves
     // the env (it renders and runs), so it is the last step, as in createApp.
     await github.setRepoVariable(
-      managed.installationId,
+      installationId,
       repo.fullName,
       "VETRA_APP_ID",
       appId,
     );
-    await github.commitFile(managed.installationId, repo.fullName, {
+    await github.commitFile(installationId, repo.fullName, {
       path: STUDIO_WORKFLOW_PATH,
       content: workflowTemplate(appId, productionBranch, {
         packageManager: "pnpm",
@@ -937,7 +1022,7 @@ async function createStudioAppLocked(
       orgId,
       did,
       robot,
-      installationId: managed.installationId,
+      installationId,
       repo,
       productionBranch,
       harborProject,
@@ -965,7 +1050,7 @@ async function createStudioAppLocked(
     throw err;
   }
   deps.logger.info(
-    `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo}, studio ${studioId}, env ${envId}`,
+    `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo?.fullName}, studio ${studioId}, env ${envId}`,
   );
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);
@@ -1255,13 +1340,22 @@ interface CreateMade {
   appId: string | null;
   /** The announced organisation move (withdrawn on failure). */
   announced: { envId: string; orgId: string | null } | null;
-  /** The managed repository created for a Studio App (full name). */
-  repo: string | null;
+  /**
+   * The repository created for a Studio App. Deleted with the installation
+   * token once the installation covers it, else with the user's token.
+   */
+  repo: {
+    id: string;
+    fullName: string;
+    installationId: string;
+    userToken: string;
+    inInstallation: boolean;
+  } | null;
 }
 
 /**
  * Undo a createApp/createStudioApp that failed: the apps row, the
- * announcement, the robot, the project, the managed repository, and the
+ * announcement, the robot, the project, the Studio App repository, and the
  * identity (when registered, null: not yet) when no live App uses it. Best
  * effort: every failure is logged, none is thrown.
  */
@@ -1298,19 +1392,55 @@ async function undoFailedCreate(
     await step("deleting the Harbor project", () =>
       harbor.deleteProject(project),
     );
-  const managed = deps.cfg.managedGithub;
-  const repo = made.repo;
-  if (repo && deps.github && managed) {
-    const github = deps.github;
-    await step("deleting the repository", () =>
-      github.deleteRepo(managed.installationId, repo),
-    );
-  }
+  if (made.repo && deps.github)
+    await undoStudioRepo(deps, deps.github, made.repo);
   if (did === null) return;
   await step("deleting the identity", async () => {
     if (!(await identityInUse(deps, did)))
       await renown.deleteWorkloadIdentity(did);
   });
+}
+
+/**
+ * Delete a Studio App repository made by a failed create. A user token only
+ * reaches what both the user and the app can access, so a repo not yet in a
+ * selected installation is first added to it, then deleted with the
+ * installation token; the user-token delete is the last resort. A 404 is
+ * never taken as done here: we just created the repo, so it means we could
+ * not reach it, and it is logged for removal by hand. Never throws.
+ */
+async function undoStudioRepo(
+  deps: AppsDeps,
+  github: GithubDeployApi,
+  repo: NonNullable<CreateMade["repo"]>,
+): Promise<void> {
+  const warn = (what: string, err: unknown) =>
+    deps.logger.warn(
+      `[vetra-apps] cleaning up a failed createStudioApp: ${what} failed: ${String(err)}`,
+    );
+  let deleted = false;
+  try {
+    if (!repo.inInstallation)
+      await github.addRepoToInstallation(
+        repo.userToken,
+        repo.installationId,
+        repo.id,
+      );
+    deleted = await github.deleteRepo(repo.installationId, repo.fullName);
+  } catch (err) {
+    warn(`deleting ${repo.fullName} with the installation token`, err);
+  }
+  if (!deleted && !repo.inInstallation) {
+    try {
+      deleted = await github.deleteRepoAsUser(repo.userToken, repo.fullName);
+    } catch (err) {
+      warn(`deleting ${repo.fullName} with the user token`, err);
+    }
+  }
+  if (!deleted)
+    deps.logger.warn(
+      `[vetra-apps] could not delete the GitHub repository ${repo.fullName} after a failed createStudioApp; remove it by hand`,
+    );
 }
 
 /**
