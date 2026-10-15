@@ -161,6 +161,26 @@ export async function setInviteCodeActive(
   return Number(res.numUpdatedRows) > 0;
 }
 
+/**
+ * Sets (ciphertext) or clears (null) the Claude key on an existing code. False
+ * when the code does not exist or belongs to another app. Licences take their
+ * key from the code they were redeemed from, so this reaches existing holders.
+ */
+export async function setInviteCodeAnthropicKey(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+  code: string,
+  anthropicKeyCiphertext: string | null,
+): Promise<boolean> {
+  const res = await db
+    .updateTable("invite_codes")
+    .set({ anthropic_key_ciphertext: anthropicKeyCiphertext })
+    .where("code", "=", normalizeCode(code))
+    .where("app_id", "=", appId)
+    .executeTakeFirst();
+  return Number(res.numUpdatedRows) > 0;
+}
+
 /** An app's codes, newest first, with their redemption counts. Never the key. */
 export async function listInviteCodes(
   db: Kysely<VetraLicensingDB>,

@@ -292,6 +292,7 @@ export const publisherSchema: DocumentNode = gql`
     revokeLicense(input: RevokeLicenseInput!): Boolean!
     createInviteCode(input: CreateInviteCodeInput!): PublisherInviteCode!
     setInviteCodeActive(appId: String!, code: String!, active: Boolean!): Boolean!
+    setInviteCodeAnthropicKey(appId: String!, code: String!, anthropicKey: String): Boolean!
     addToAllowList(appId: String!, user: String!): Boolean!
     removeFromAllowList(appId: String!, user: String!): Boolean!
     """
