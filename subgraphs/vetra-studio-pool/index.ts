@@ -32,7 +32,11 @@ import {
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
-import { studioKeyForDid } from "../vetra-licensing/studio-access.js";
+import { studioKeyForDid, studioLlmBudgetForDid } from "../vetra-licensing/studio-access.js";
+import { up as ensureLlmTables } from "../vetra-llm/db/migrations.js";
+import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
+import { isNotConfigured } from "../vetra-llm/errors.js";
+import { createProcessBroker } from "../vetra-llm/factory.js";
 import { appsTrustedIds, createStudioAccessDeps } from "../vetra-licensing/studio-access-factory.js";
 
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
@@ -95,6 +99,17 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
       db: secretsDb,
       transit,
     });
+    // The vetra-llm key broker, in-process. Its tables are ensured here too
+    // because subgraph boot order is not fixed.
+    const llmDb = (await this.relationalDb.createNamespace("vetra-llm")) as unknown as Kysely<VetraLlmDB>;
+    await ensureLlmTables(llmDb as Kysely<any>);
+    const { broker } = createProcessBroker({
+      db: llmDb,
+      transit,
+      secrets: secretsService,
+      studio: studioAccess,
+      env: process.env,
+    });
     const claimDb = makeClaimDb(envDb);
 
     const perm = this.documentPermissionService;
@@ -130,7 +145,19 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
       claimWarmEnvironment(
         {
           claimDb,
-          getKeyForDid: (d) => studioKeyForDid(studioAccess, d),
+          hasStudioAccess: async (d) => (await studioLlmBudgetForDid(studioAccess, d)).allowed,
+          grantLlmKey: async (environmentId, d) => {
+            try {
+              return await broker.ensureVetraKey({ environmentId, ownerDid: d });
+            } catch (err) {
+              // A deployment without OPENROUTER_MANAGEMENT_KEY still hands out Studios.
+              if (isNotConfigured(err)) return null;
+              throw err;
+            }
+          },
+          releaseLlmKey: (environmentId) => broker.releaseVetraKey(environmentId),
+          legacyAnthropicKey: (d) =>
+            cfg.legacyAnthropicKey ? studioKeyForDid(studioAccess, d) : Promise.resolve(null),
           setOwner: (documentId, address) =>
             reactor.execute(documentId, "main", [setOwner({ address })]),
           readEnv: async (documentId) => {
@@ -142,7 +169,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           replaceTenantConfig: (tenantId, state, entries) =>
             secretsService.replaceTenantConfig(tenantId, [
               ...tenantConfigEntries(state),
-              ...entries.map((e) => ({ ...e, secret: true })),
+              ...entries.map((e) => ({ key: e.key, value: e.value, secret: e.secret ?? true })),
             ]),
           handOver: async (documentId, address) => {
             if (perm) await protectForOwner(perm, documentId, address);
@@ -178,6 +205,12 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         const id = event.context?.childId;
         if (!id) return;
         void this.reconcileDeletedEnvironment(envDb, id, secretsService);
+        // A deleted Studio's key goes at once; the vetra-llm sweeper is the backstop.
+        void broker
+          .releaseVetraKey(id)
+          .catch((e: unknown) =>
+            console.warn(`[studio-pool] key release for deleted env ${id} failed: ${e instanceof Error ? e.name : "error"}`),
+          );
       },
     );
 
