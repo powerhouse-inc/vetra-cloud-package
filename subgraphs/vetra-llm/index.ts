@@ -20,6 +20,7 @@ import {
 } from "../vetra-licensing/studio-access-factory.js";
 import { up } from "./db/migrations.js";
 import type { VetraLlmDB } from "./db/schema.js";
+import { createLlmKeyStore } from "./store.js";
 import { createProcessBroker, transitFromEnv } from "./factory.js";
 import { createLlmResolvers } from "./resolvers.js";
 import { schema } from "./schema.js";
@@ -115,6 +116,8 @@ export class VetraLlmSubgraph extends BaseSubgraph {
           .select(["owner", "ownerOrgId", "appId", "tenantId"])
           .where("id", "=", environmentId)
           .executeTakeFirst()) ?? null,
+      keyStatus: async (environmentId) =>
+        (await createLlmKeyStore(db).get(environmentId))?.status ?? null,
       envState: (environmentId) => envs.getState(environmentId),
       access: createEnvAccess({
         orgs: defaultRenownOrgs(),

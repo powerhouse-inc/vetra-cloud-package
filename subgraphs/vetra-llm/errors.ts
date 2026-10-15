@@ -32,7 +32,11 @@ export function toLlmGraphQLError(
   err: unknown,
   logger: Pick<Console, "error"> = console,
 ): GraphQLError {
-  if (err instanceof GraphQLError) return err;
+  if (err instanceof GraphQLError) {
+    const message = redactSecrets(err.message);
+    if (message === err.message) return err;
+    return new GraphQLError(message, { extensions: err.extensions });
+  }
   if (err instanceof OpenRouterError) {
     logger.error(`[vetra-llm] ${redactSecrets(err.message)}`);
     return llmError(

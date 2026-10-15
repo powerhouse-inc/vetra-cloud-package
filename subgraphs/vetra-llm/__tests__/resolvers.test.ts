@@ -51,8 +51,9 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
   destroy = h.destroy;
   const fake = createFakeOpenRouter();
   const secrets = createFakeSecrets();
+  const store = createLlmKeyStore(h.db);
   const broker = createLlmBroker({
-    store: createLlmKeyStore(h.db),
+    store,
     openrouter: fake.api,
     keyVault: fakeKeyVault,
     secrets,
@@ -73,6 +74,7 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
         ? { owner: OWNER, ownerOrgId: null, appId: null, tenantId: TENANT }
         : null,
     envState: async (id) => (id === ENV ? (STUDIO as never) : null),
+    keyStatus: async (id) => (await store.get(id))?.status ?? null,
     access: OWNER_ONLY_ACCESS,
     secrets,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -83,7 +85,7 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
       () => "OK",
       (e: { extensions?: { code?: unknown } }) => e.extensions?.code,
     );
-  return { r, fake, secrets, code };
+  return { r, fake, secrets, code, store };
 }
 
 describe("provisionStudioLlm", () => {
@@ -272,7 +274,6 @@ describe("composed schema", () => {
   });
 
   it("redacts an upstream error carrying a key in the client message", async () => {
-    const s = await setup();
     const leak = vi.fn(async () => {
       throw new Error("upstream said sk-or-v1-leak and vault:v1:abcdef");
     });
@@ -280,7 +281,6 @@ describe("composed schema", () => {
     const failing = await setup({
       logger,
       broker: {
-        ...s.r,
         provisionVetraKey: leak,
         studioLlmUsage: leak,
       } as never,
@@ -354,5 +354,90 @@ describe("without OPENROUTER_MANAGEMENT_KEY", () => {
         asUser(OWNER),
       ),
     ).toBeNull();
+  });
+});
+
+describe("fix round 1", () => {
+  it("writes the export secret even when the broker is not configured", async () => {
+    const h = await openLlmDb();
+    destroy = h.destroy;
+    const secrets = createFakeSecrets();
+    const { broker } = createProcessBroker({
+      db: h.db,
+      transit: null,
+      secrets,
+      studio: {} as never,
+      env: {},
+    });
+    const s = await setup({ broker, secrets });
+    expect(
+      await s.code(
+        s.r.VetraLlmMutations.provisionStudioLlm(
+          {},
+          { tenantId: TENANT },
+          asUser(OWNER),
+        ),
+      ),
+    ).toBe("SERVICE_NOT_CONFIGURED");
+    expect(secrets.secret(TENANT, "VETRA_SESSION_EXPORT_SECRET")).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("writes the export secret once under concurrent provisions", async () => {
+    const s = await setup();
+    const m = s.r.VetraLlmMutations.provisionStudioLlm;
+    await Promise.all([
+      m({}, { tenantId: TENANT }, asUser(OWNER)),
+      m({}, { tenantId: TENANT }, asUser(OWNER)),
+    ]);
+    const writes = s.secrets.setSecret.mock.calls.filter(
+      (c) => c[1] === "VETRA_SESSION_EXPORT_SECRET",
+    );
+    expect(writes).toHaveLength(1);
+  });
+
+  it("redacts a GraphQLError message too, keeping its code", async () => {
+    const { GraphQLError } = await import("graphql");
+    const s = await setup({
+      broker: {
+        studioLlmUsage: async () => {
+          throw new GraphQLError("bad sk-or-v1-leak vault:v1:abc", {
+            extensions: { code: "FORBIDDEN" },
+          });
+        },
+      } as never,
+    });
+    const err = await s.r.VetraLlmQueries.studioLlmUsage(
+      {},
+      { environmentId: ENV },
+      asUser(OWNER),
+    ).catch((e: InstanceType<typeof GraphQLError>) => e);
+    expect(err).toBeInstanceOf(GraphQLError);
+    const e = err as InstanceType<typeof GraphQLError>;
+    expect(e.message).not.toContain("sk-or-v1-leak");
+    expect(e.message).not.toContain("vault:");
+    expect(e.extensions.code).toBe("FORBIDDEN");
+  });
+
+  it("reports a DISABLED or DELETED key as not connected though the secret remains", async () => {
+    const s = await setup();
+    await s.r.VetraLlmMutations.provisionStudioLlm(
+      {},
+      { tenantId: TENANT },
+      asUser(OWNER),
+    );
+    const status = s.r.VetraLlmQueries.studioLlmStatus;
+    for (const st of ["DISABLED", "DELETED"] as const) {
+      await s.store.update(ENV, { status: st });
+      expect(s.secrets.secret(TENANT, "OPENROUTER_API_KEY")).toBeDefined();
+      expect(
+        await status({}, { environmentId: ENV }, asUser(OWNER)),
+      ).toStrictEqual({ environmentId: ENV, connected: false });
+    }
+    await s.store.update(ENV, { status: "ACTIVE" });
+    expect(
+      await status({}, { environmentId: ENV }, asUser(OWNER)),
+    ).toStrictEqual({ environmentId: ENV, connected: true });
   });
 });

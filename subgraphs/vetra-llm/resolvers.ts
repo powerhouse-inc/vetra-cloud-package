@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { withKeyLock } from "../../shared/key-lock.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { isStudioState } from "../../shared/studio-package.js";
 import type { TenantOwnersResult } from "../../shared/tenant-owners.js";
@@ -8,7 +9,7 @@ import type {
 } from "../vetra-cloud-observability/env-access.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import { didForAddress } from "../vetra-licensing/did.js";
-import { OPENROUTER_KEY_SECRET, type LlmBroker } from "./broker.js";
+import { OPENROUTER_KEY_SECRET, llmLockKey, type LlmBroker } from "./broker.js";
 import { llmError, notConfigured, toLlmGraphQLError } from "./errors.js";
 
 const SESSION_EXPORT_SECRET = "VETRA_SESSION_EXPORT_SECRET";
@@ -31,6 +32,8 @@ export interface LlmResolverDeps {
   envState(
     environmentId: string,
   ): Promise<{ packages: ReadonlyArray<{ name: string }> } | null>;
+  /** The env's studio_llm_keys status; null when it has no row (e.g. a user-set key). */
+  keyStatus(environmentId: string): Promise<string | null>;
   access: EnvAccess;
   secrets: Pick<SecretsService, "setSecret" | "listSecretKeys"> | null;
   logger: Pick<Console, "info" | "warn" | "error">;
@@ -88,6 +91,11 @@ export function createLlmResolvers(
         const { env } = await operable(a.environmentId, ctx);
         if (!deps.secrets || !env.tenantId)
           return { environmentId: a.environmentId, connected: false };
+        // A disabled or deleted Vetra key is not a connection even while the
+        // tenant still holds its secret (the sweeper removes the secret).
+        const status = await deps.keyStatus(a.environmentId);
+        if (status === "DISABLED" || status === "DELETED")
+          return { environmentId: a.environmentId, connected: false };
         const keys = await deps.secrets.listSecretKeys(env.tenantId);
         return {
           environmentId: a.environmentId,
@@ -133,22 +141,30 @@ export function createLlmResolvers(
         if (!environmentId)
           throw llmError("BAD_USER_INPUT", "not a Vetra Studio");
         if (!deps.secrets) throw notConfigured("tenant secrets (OPENBAO_ADDR)");
+        // Per-env random secret gating vetra-cli's session-export endpoints
+        // (applyStudioKey wrote it; the cold path no longer does). Only when
+        // absent: a repeat call must not rotate a secret the Studio already uses.
+        const secrets = deps.secrets;
+        // Its own lock key: the broker takes llmLockKey(env) itself, and the
+        // lock is not re-entrant. Serialises the check-then-write per env.
+        await withKeyLock(
+          `${llmLockKey(environmentId)}:export-secret`,
+          async () => {
+            const existing = await secrets.listSecretKeys(a.tenantId);
+            if (!existing.some((k) => k.key === SESSION_EXPORT_SECRET)) {
+              await secrets.setSecret(
+                a.tenantId,
+                SESSION_EXPORT_SECRET,
+                randomBytes(32).toString("hex"),
+              );
+            }
+          },
+        );
         const res = await deps.broker.provisionVetraKey({
           environmentId,
           tenantId: a.tenantId,
           ownerDid: caller.did,
         });
-        // Per-env random secret gating vetra-cli's session-export endpoints
-        // (applyStudioKey wrote it; the cold path no longer does). Only when
-        // absent: a repeat call must not rotate a secret the Studio already uses.
-        const existing = await deps.secrets.listSecretKeys(a.tenantId);
-        if (!existing.some((k) => k.key === SESSION_EXPORT_SECRET)) {
-          await deps.secrets.setSecret(
-            a.tenantId,
-            SESSION_EXPORT_SECRET,
-            randomBytes(32).toString("hex"),
-          );
-        }
         return { environmentId, ...res };
       }),
     },
