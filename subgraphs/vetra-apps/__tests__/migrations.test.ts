@@ -30,6 +30,33 @@ describe("ensureAppsOrgColumn (m4)", () => {
 });
 
 describe("ensureAppsStudioColumn", () => {
+  it("works in the subgraph's namespace schema, not only in public", async () => {
+    // The switchboard hands the subgraph db.withSchema("vetra-apps"): a raw
+    // `ON apps` would resolve against public and crash the boot.
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      await sql`CREATE TABLE "vetra-apps".apps (id varchar(64) PRIMARY KEY, status varchar(32) NOT NULL)`.execute(
+        root,
+      );
+      const db = root.withSchema("vetra-apps");
+      await ensureAppsStudioColumn(db);
+      await ensureAppsStudioColumn(db);
+      await db
+        .insertInto("apps")
+        .values({ id: "a", status: "ACTIVE", studio_environment_id: "s1" })
+        .execute();
+      await expect(
+        db
+          .insertInto("apps")
+          .values({ id: "b", status: "ACTIVE", studio_environment_id: "s1" })
+          .execute(),
+      ).rejects.toThrow();
+    } finally {
+      await root.destroy();
+    }
+  });
+
   it("adds studio_environment_id with one live App per Studio; idempotent", async () => {
     const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
     try {
