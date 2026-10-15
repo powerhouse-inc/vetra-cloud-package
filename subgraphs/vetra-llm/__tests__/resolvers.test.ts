@@ -78,6 +78,17 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
     access: OWNER_ONLY_ACCESS,
     secrets,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    migrate: vi.fn(
+      async (o: { dryRun: boolean; removeAnthropicSecrets: boolean }) => ({
+        dryRun: o.dryRun,
+        scanned: 0,
+        provisioned: [],
+        noBudget: [],
+        noLicence: [],
+        failed: [],
+        anthropicSecretsRemoved: 0,
+      }),
+    ),
     ...over,
   }) as unknown as R;
   const code = (p: Promise<unknown>) =>
@@ -439,5 +450,26 @@ describe("fix round 1", () => {
     expect(
       await status({}, { environmentId: ENV }, asUser(OWNER)),
     ).toStrictEqual({ environmentId: ENV, connected: true });
+  });
+});
+
+describe("migrateStudiosToOpenRouter", () => {
+  afterEach(() => {
+    delete process.env.ADMINS;
+  });
+
+  it("is for platform admins only and defaults to a dry run", async () => {
+    process.env.ADMINS = OWNER;
+    const s = await setup();
+    const m = s.r.VetraLlmMutations.migrateStudiosToOpenRouter;
+    expect(await s.code(m({}, {}, asUser(STRANGER)))).toBe("FORBIDDEN");
+    expect(await m({}, {}, asUser(OWNER))).toMatchObject({ dryRun: true });
+    expect(
+      await m(
+        {},
+        { dryRun: false, removeAnthropicSecrets: true },
+        asUser(OWNER),
+      ),
+    ).toMatchObject({ dryRun: false });
   });
 });

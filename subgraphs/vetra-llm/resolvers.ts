@@ -11,6 +11,7 @@ import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-ser
 import { didForAddress } from "../vetra-licensing/did.js";
 import { OPENROUTER_KEY_SECRET, llmLockKey, type LlmBroker } from "./broker.js";
 import { llmError, notConfigured, toLlmGraphQLError } from "./errors.js";
+import type { MigrationReport } from "./migrate.js";
 
 const SESSION_EXPORT_SECRET = "VETRA_SESSION_EXPORT_SECRET";
 
@@ -37,6 +38,11 @@ export interface LlmResolverDeps {
   access: EnvAccess;
   secrets: Pick<SecretsService, "setSecret" | "listSecretKeys"> | null;
   logger: Pick<Console, "info" | "warn" | "error">;
+  /** The admin-only cut-over migration job (migrate.ts). */
+  migrate(opts: {
+    dryRun: boolean;
+    removeAnthropicSecrets: boolean;
+  }): Promise<MigrationReport>;
 }
 
 interface Caller {
@@ -167,6 +173,23 @@ export function createLlmResolvers(
         });
         return { environmentId, ...res };
       }),
+      migrateStudiosToOpenRouter: wrap(
+        async (
+          a: {
+            dryRun?: boolean | null;
+            removeAnthropicSecrets?: boolean | null;
+          },
+          ctx,
+        ) => {
+          const caller = requireCaller(ctx);
+          if (!caller.isAdmin)
+            throw llmError("FORBIDDEN", "platform admins only");
+          return deps.migrate({
+            dryRun: a.dryRun ?? true,
+            removeAnthropicSecrets: a.removeAnthropicSecrets ?? false,
+          });
+        },
+      ),
     },
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isStudioState } from "./studio-package.js";
+import { isStudioPackagesJson, isStudioState } from "./studio-package.js";
 
 describe("isStudioState", () => {
   it("is true when a package is the studio agent (either name)", () => {
@@ -14,5 +14,18 @@ describe("isStudioState", () => {
     ).toBe(false);
     expect(isStudioState({ packages: [] })).toBe(false);
     expect(isStudioState(null)).toBe(false);
+  });
+});
+
+describe("isStudioPackagesJson", () => {
+  it("reads the projection's packages column", () => {
+    expect(
+      isStudioPackagesJson(
+        JSON.stringify([{ name: "vetra-cli", version: "1" }]),
+      ),
+    ).toBe(true);
+    expect(isStudioPackagesJson(JSON.stringify([{ name: "x" }]))).toBe(false);
+    expect(isStudioPackagesJson("not json")).toBe(false);
+    expect(isStudioPackagesJson(null)).toBe(false);
   });
 });

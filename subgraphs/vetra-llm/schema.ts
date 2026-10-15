@@ -28,6 +28,16 @@ export const schema: DocumentNode = gql`
     llmBudgetUsd: Float!
   }
 
+  type StudioLlmMigrationReport {
+    dryRun: Boolean!
+    scanned: Int!
+    provisioned: [String!]!
+    noBudget: [String!]!
+    noLicence: [String!]!
+    failed: [String!]!
+    anthropicSecretsRemoved: Int!
+  }
+
   type VetraLlmQueries {
     "Operators of the Studio only."
     studioLlmStatus(environmentId: String!): StudioLlmStatus!
@@ -38,6 +48,11 @@ export const schema: DocumentNode = gql`
   type VetraLlmMutations {
     "Cold Studio creation: provision the Studio's key from the caller's licence budget (replaces vetraSubscriptions.applyStudioKey). Every environment on the tenant must be the caller's."
     provisionStudioLlm(tenantId: String!): StudioLlmProvision!
+    "Platform admins only. Gives every live, claimed Studio with a usable licence its Vetra key; removeAnthropicSecrets also deletes the three Anthropic secrets (cut-over step 4)."
+    migrateStudiosToOpenRouter(
+      dryRun: Boolean = true
+      removeAnthropicSecrets: Boolean = false
+    ): StudioLlmMigrationReport!
   }
 
   extend type Query {

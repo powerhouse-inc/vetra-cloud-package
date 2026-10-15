@@ -24,6 +24,7 @@ import type { VetraLlmDB } from "./db/schema.js";
 import { createLlmKeyStore } from "./store.js";
 import { createProcessBroker, transitFromEnv } from "./factory.js";
 import { createLlmResolvers } from "./resolvers.js";
+import { claimedStudiosFrom, migrateStudiosToOpenRouter } from "./migrate.js";
 import { runLlmSweepOnce, SWEEP_INTERVAL_MS } from "./sweeper.js";
 import { schema } from "./schema.js";
 
@@ -128,6 +129,25 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       }),
       secrets,
       logger: console,
+      migrate: (opts) =>
+        migrateStudiosToOpenRouter(
+          {
+            listClaimedStudios: async () =>
+              claimedStudiosFrom(
+                await envDb
+                  .selectFrom("environments")
+                  .select(["id", "tenantId", "owner", "status", "packages"])
+                  .where("owner", "is not", null)
+                  .where("tenantId", "is not", null)
+                  .execute(),
+              ),
+            budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
+            provision: (input) => broker.provisionVetraKey(input),
+            secrets,
+            logger: console,
+          },
+          opts,
+        ),
     });
 
     if (openrouter && keyVault && secrets) {
