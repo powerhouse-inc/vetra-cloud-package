@@ -6,7 +6,7 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { loadPoolConfig } from "./config.js";
 import { makeClaimDb, makeKeeperDb } from "./pool-db.js";
-import { claimWarmEnvironment } from "./claim.js";
+import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 import { createStudioEnvironmentDoc, type ReactorLike } from "./create-env.js";
 import { PoolKeeper } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
@@ -157,7 +157,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           },
           releaseLlmKey: (environmentId) => broker.releaseVetraKey(environmentId),
           legacyAnthropicKey: (d) =>
-            cfg.legacyAnthropicKey ? studioKeyForDid(studioAccess, d) : Promise.resolve(null),
+            legacyKeyFor(cfg.legacyAnthropicKey, (x) => studioKeyForDid(studioAccess, x), d),
           setOwner: (documentId, address) =>
             reactor.execute(documentId, "main", [setOwner({ address })]),
           readEnv: async (documentId) => {

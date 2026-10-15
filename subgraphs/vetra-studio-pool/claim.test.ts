@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { claimWarmEnvironment } from "./claim.js";
+import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 
 const LEGACY_NAMES = ["ANTHROPIC_API_KEY", "VETRA_ANTHROPIC_API_KEY", "VETRA_CLI_ANTHROPIC_API_KEY"];
 
@@ -139,16 +139,53 @@ describe("claimWarmEnvironment", () => {
     expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
   });
 
-  it("deletes the env (and releases nothing) when the grant itself fails", async () => {
+  it("releases a key the broker minted before the grant threw (secret write failed)", async () => {
+    const live = new Set<string>();
     const d = deps({
-      grantLlmKey: vi.fn(async () => {
-        throw new Error("openrouter down");
+      grantLlmKey: vi.fn(async (env: string) => {
+        live.add(env);
+        throw new Error("secret write failed");
+      }),
+      releaseLlmKey: vi.fn(async (env: string) => {
+        live.delete(env);
       }),
     });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.replaceTenantConfig).not.toHaveBeenCalled();
-    expect(d.releaseLlmKey).not.toHaveBeenCalled();
+    expect(d.releaseLlmKey).toHaveBeenCalledWith("doc-1");
+    expect(live.size).toBe(0);
     expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("legacyKeyFor: flag on looks the key up, flag off never does", async () => {
+    const lookup = vi.fn(async () => "sk-ant-real" as string | null);
+    expect(await legacyKeyFor(true, lookup, "did:x")).toBe("sk-ant-real");
+    expect(lookup).toHaveBeenCalledWith("did:x");
+    lookup.mockClear();
+    expect(await legacyKeyFor(false, lookup, "did:x")).toBeNull();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("flag off: no Anthropic names are written", async () => {
+    const d = deps({ legacyAnthropicKey: (did: string) => legacyKeyFor(false, async () => "sk-ant-real", did) });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    const [, , entries] = d.replaceTenantConfig.mock.calls[0];
+    for (const n of LEGACY_NAMES) expect(entries.map((e) => e.key)).not.toContain(n);
+  });
+
+  it("logs only the error name when the key release fails", async () => {
+    const d = deps({
+      releaseLlmKey: vi.fn(async () => {
+        throw new Error("boom sk-or-v1-leak");
+      }),
+    });
+    d.replaceTenantConfig = vi.fn(async () => {
+      throw new Error("inject boom");
+    });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    const lines = d.logger.warn.mock.calls.flat().map(String);
+    expect(lines.some((l) => l.includes("key release failed"))).toBe(true);
+    for (const l of lines) expect(l).not.toContain("sk-or-");
   });
 
   it("never logs the model key", async () => {

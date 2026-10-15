@@ -73,6 +73,15 @@ export interface ClaimResult {
   tenantId: string;
 }
 
+/** The legacy Anthropic key for a claim: the licence's key when the flag is on, else null. */
+export function legacyKeyFor(
+  enabled: boolean,
+  lookup: (did: string) => Promise<string | null>,
+  did: string,
+): Promise<string | null> {
+  return enabled ? lookup(did) : Promise.resolve(null);
+}
+
 async function withRetry(
   fn: () => Promise<void>,
   retries: number,
@@ -189,11 +198,13 @@ export async function claimWarmEnvironment(
     d.logger.warn(
       `[studio-pool] claim post-assign failed for ${env.id}; deleting: ${err instanceof Error ? err.name : "error"}`,
     );
-    if (granted) {
-      await d.releaseLlmKey(env.id).catch(() =>
-        d.logger.warn(`[studio-pool] key release failed for ${env.id}; the vetra-llm sweeper deletes it`),
-      );
-    }
+    // Unconditional: grantLlmKey may have minted and then thrown (a secret or
+    // store write failed). The broker's release is a no-op when no row exists.
+    await d.releaseLlmKey(env.id).catch((e) =>
+      d.logger.warn(
+        `[studio-pool] key release failed for ${env.id}; the vetra-llm sweeper deletes it: ${e instanceof Error ? e.name : "error"}`,
+      ),
+    );
     await d.deleteEnv(env.id).catch((e) =>
       d.logger.warn(`[studio-pool] cleanup delete failed for ${env.id}: ${String(e)}`),
     );
