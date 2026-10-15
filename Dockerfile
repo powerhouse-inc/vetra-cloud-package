@@ -138,6 +138,65 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 
+# =============================================================================
+# Standalone service images: secrets-controller and housekeeping-service.
+#
+# Neither needs the package's full dependency tree (Connect, reactor, React,
+# ...): the compiled controller imports four packages and the housekeeping
+# activator only node: builtins. Installing the whole tree made both images
+# ~2 GB and cost a fresh ~50 s install (plus a ~1.4 GB cache export) on every
+# release, because the version bump in package.json invalidated the install
+# layers. Instead:
+#   - service-manifests derives trimmed, version-free package.json files
+#     (docker/service-deps.mjs), so the install layers below stay cached until
+#     a relevant dependency actually changes;
+#   - the trimmed installs resolve against the repo pnpm-lock.yaml and are
+#     verified to contain only packages it already locks (same integrity).
+# =============================================================================
+FROM node:24-alpine AS service-manifests
+
+WORKDIR /src
+COPY docker/service-deps.mjs package.json ./
+RUN node service-deps.mjs manifests package.json /out
+
+FROM node:24-alpine AS service-pnpm
+
+WORKDIR /app
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+# Pin pnpm to the version the lockfile was generated with — newer pnpm
+# is stricter about overrides hashing and rejects the lockfile.
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+RUN pnpm config set @jsr:registry https://npm.jsr.io
+
+COPY docker/service-deps.mjs pnpm-workspace.yaml ./
+COPY pnpm-lock.yaml ./pnpm-lock.full.yaml
+
+# -----------------------------------------------------------------------------
+# Build-time deps for both services: the compiler, the type packages the root
+# tsconfig.json references, and the controller's imports (for their types).
+# --ignore-scripts: nothing here needs a lifecycle script to type-check.
+# -----------------------------------------------------------------------------
+FROM service-pnpm AS service-build-deps
+
+COPY --from=service-manifests /out/build/package.json ./package.json
+RUN cp pnpm-lock.full.yaml pnpm-lock.yaml \
+    && pnpm install --no-frozen-lockfile --ignore-scripts \
+    && node service-deps.mjs verify pnpm-lock.full.yaml pnpm-lock.yaml
+
+COPY tsconfig.json ./
+
+# -----------------------------------------------------------------------------
+# Runtime deps of the secrets controller (prod only).
+# -----------------------------------------------------------------------------
+FROM service-pnpm AS secrets-controller-runtime-deps
+
+COPY --from=service-manifests /out/runtime/package.json ./package.json
+RUN cp pnpm-lock.full.yaml pnpm-lock.yaml \
+    && pnpm install --prod --no-frozen-lockfile --ignore-scripts \
+    && node service-deps.mjs verify pnpm-lock.full.yaml pnpm-lock.yaml
+
 # -----------------------------------------------------------------------------
 # Secrets controller build stage — compiles the controller sources and the
 # shared modules it imports from the vetra-cloud-secrets subgraph.
@@ -147,20 +206,7 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # to be small and audit-able since it has cluster-wide RBAC on Secrets and
 # ConfigMaps.
 # -----------------------------------------------------------------------------
-FROM node:24-alpine AS secrets-controller-builder
-
-WORKDIR /app
-
-RUN apk add --no-cache python3 make g++ git bash \
-    && ln -sf /usr/bin/python3 /usr/bin/python
-
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-RUN pnpm config set @jsr:registry https://npm.jsr.io
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
+FROM service-build-deps AS secrets-controller-builder
 
 COPY secrets-controller ./secrets-controller
 COPY subgraphs/vetra-cloud-secrets ./subgraphs/vetra-cloud-secrets
@@ -201,18 +247,12 @@ WORKDIR /app
 
 RUN apk add --no-cache curl
 
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-# Pin pnpm to the version the lockfile was generated with — newer pnpm
-# is stricter about overrides hashing and rejects --frozen-lockfile.
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-
-# Install only the runtime deps the controller actually uses (pg, kysely,
-# @kubernetes/client-node, @powerhousedao/shared, etc.). --ignore-scripts
-# avoids running the package's own postinstall hooks; --prod skips devDeps.
+# Only the packages the controller imports (pg, kysely,
+# @kubernetes/client-node, @powerhousedao/shared) and their dependencies.
+COPY --from=secrets-controller-runtime-deps /app/node_modules ./node_modules
+# The real manifest (for "type": "module" and the release version) goes in
+# after the deps so the version bump only touches these small layers.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
-
 COPY --from=secrets-controller-builder /app/dist-controller ./dist-controller
 
 ENV NODE_ENV=production
@@ -234,20 +274,7 @@ ENTRYPOINT ["node", "dist-controller/secrets-controller/main.js"]
 # no ph-cli. Compilation is scoped to the service + the two dependency-free
 # shared modules it uses (housekeeping policy + env read-model types).
 # =============================================================================
-FROM node:24-alpine AS housekeeping-service-builder
-
-WORKDIR /app
-
-RUN apk add --no-cache python3 make g++ git bash \
-    && ln -sf /usr/bin/python3 /usr/bin/python
-
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-RUN pnpm config set @jsr:registry https://npm.jsr.io
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
+FROM service-build-deps AS housekeeping-service-builder
 
 COPY housekeeping-service ./housekeeping-service
 COPY subgraphs/vetra-housekeeping/policy.ts ./subgraphs/vetra-housekeeping/policy.ts
@@ -282,6 +309,9 @@ RUN pnpm exec tsc -p tsconfig.housekeeping.json
 
 # -----------------------------------------------------------------------------
 # Housekeeping service final stage
+#
+# The compiled activator imports only node: builtins, so the image carries no
+# node_modules at all.
 # -----------------------------------------------------------------------------
 FROM node:24-alpine AS housekeeping-service
 
@@ -289,13 +319,7 @@ WORKDIR /app
 
 RUN apk add --no-cache curl
 
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
-
 COPY --from=housekeeping-service-builder /app/dist-controller ./dist-controller
 
 ENV NODE_ENV=production
