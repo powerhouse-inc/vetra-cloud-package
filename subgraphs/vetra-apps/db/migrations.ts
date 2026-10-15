@@ -181,9 +181,17 @@ export async function ensureAppsStudioColumn(db: Kysely<any>): Promise<void> {
     // Column already exists
   }
   try {
-    await sql`CREATE UNIQUE INDEX IF NOT EXISTS apps_studio_env_live ON apps (studio_environment_id) WHERE status <> 'DELETED' AND studio_environment_id IS NOT NULL`.execute(
-      db,
-    );
+    // Built with the schema builder, not raw SQL: the subgraph's db is
+    // withSchema("vetra-apps"), and only builder table refs get qualified.
+    await db.schema
+      .createIndex("apps_studio_env_live")
+      .ifNotExists()
+      .unique()
+      .on("apps")
+      .column("studio_environment_id")
+      .where(sql.ref("status"), "<>", "DELETED")
+      .where(sql.ref("studio_environment_id"), "is not", null)
+      .execute();
   } catch (err) {
     // Another replica booting at the same time won the race to create it.
     if (!isConcurrentIndexError(err)) throw err;
