@@ -333,19 +333,15 @@ describe("GitHub deploy client", () => {
       ]);
     });
 
-    it("createRepoAsUser rejects a public response and removes the repo with the user token", async () => {
+    it("createRepoAsUser returns a public response as such, for the caller's undo (no user-token delete)", async () => {
       const f = fakeFetch({
         "POST /orgs/acme/repos": created("acme/shop", false),
-        "DELETE /repos/acme/shop": () => new Response(null, { status: 204 }),
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
-      await expect(
-        gh.createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", ""),
-      ).rejects.toBeInstanceOf(GithubHttpError);
-      expect(f.calls.map((c) => `${c.method} ${c.auth}`)).toStrictEqual([
-        "POST token ghu_user",
-        "DELETE token ghu_user",
-      ]);
+      expect(
+        await gh.createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", ""),
+      ).toMatchObject({ id: "5", fullName: "acme/shop", private: false });
+      expect(f.calls.map((c) => c.method)).toStrictEqual(["POST"]);
     });
 
     it("createRepoAsUser maps a 422 name clash to RepoNameTakenError", async () => {
@@ -443,13 +439,13 @@ describe("GitHub deploy client", () => {
       });
     });
 
-    it("deleteRepoAsUser deletes with the user token and treats 404 as done", async () => {
+    it("deleteRepoAsUser deletes with the user token and reports a 404 as not deleted", async () => {
       const f = fakeFetch({
         "DELETE /repos/acme/shop": () => new Response(null, { status: 204 }),
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
-      await gh.deleteRepoAsUser("ghu_user", "acme/shop");
-      await gh.deleteRepoAsUser("ghu_user", "acme/gone");
+      expect(await gh.deleteRepoAsUser("ghu_user", "acme/shop")).toBe(true);
+      expect(await gh.deleteRepoAsUser("ghu_user", "acme/gone")).toBe(false);
       expect(
         f.calls.map((c) => `${c.method} ${c.url} ${c.auth}`),
       ).toStrictEqual([
@@ -466,8 +462,8 @@ describe("GitHub deploy client", () => {
           new Response("not found", { status: 404 }),
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
-      await gh.deleteRepo(INST, "vetra-apps/shop");
-      await gh.deleteRepo(INST, "vetra-apps/gone");
+      expect(await gh.deleteRepo(INST, "vetra-apps/shop")).toBe(true);
+      expect(await gh.deleteRepo(INST, "vetra-apps/gone")).toBe(false);
       expect(f.calls.map((c) => `${c.method} ${c.url}`)).toStrictEqual([
         "DELETE https://api.github.com/repos/vetra-apps/shop",
         "DELETE https://api.github.com/repos/vetra-apps/gone",

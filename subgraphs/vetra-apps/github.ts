@@ -115,6 +115,8 @@ export interface GithubDeployApi {
    * POST /orgs/{login}/repos for an Organization, POST /user/repos otherwise.
    * GitHub itself refuses (403, GithubHttpError) when the user may not create
    * repositories there. Throws RepoNameTakenError on 422 "already exists".
+   * A repo that comes back public is returned as such: the caller must undo
+   * it (a user-token delete may not reach a repo outside the installation).
    */
   createRepoAsUser(
     userToken: string,
@@ -135,10 +137,10 @@ export interface GithubDeployApi {
   getInstallationRepositorySelection(
     installationId: string,
   ): Promise<"all" | "selected">;
-  /** DELETE /repos/{full} with the installation token; 404 counts as done. */
-  deleteRepo(installationId: string, repoFullName: string): Promise<void>;
-  /** DELETE /repos/{full} with the user's token; 404 counts as done. */
-  deleteRepoAsUser(userToken: string, repoFullName: string): Promise<void>;
+  /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
+  deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
+  /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
+  deleteRepoAsUser(userToken: string, repoFullName: string): Promise<boolean>;
   /** Create or update an Actions variable (POST, then PATCH on 409). */
   setRepoVariable(
     installationId: string,
@@ -421,17 +423,6 @@ export function createGithubDeployApi(
           `GitHub POST ${path} → 422: ${text.slice(0, 300)}`,
         );
       }
-      if (r.data.private !== true) {
-        // A Studio App repo must never be public. Remove it so the name is
-        // not left taken, then fail; the caller's undo also deletes (404 is fine).
-        await this.deleteRepoAsUser(userToken, r.data.full_name).catch(
-          () => undefined,
-        );
-        throw new GithubHttpError(
-          502,
-          `GitHub created ${r.data.full_name} as a public repository`,
-        );
-      }
       return {
         id: String(r.data.id),
         fullName: r.data.full_name,
@@ -470,23 +461,25 @@ export function createGithubDeployApi(
     },
 
     async deleteRepoAsUser(userToken, fullName) {
-      await call(
+      const r = await call(
         userToken,
         "DELETE",
         `/repos/${repoPath(fullName)}`,
         undefined,
         [404],
       );
+      return r.status !== 404;
     },
 
     async deleteRepo(installationId, fullName) {
-      await inst(
+      const r = await inst(
         installationId,
         "DELETE",
         `/repos/${repoPath(fullName)}`,
         undefined,
         [404],
       );
+      return r.status !== 404;
     },
 
     async setRepoVariable(installationId, fullName, name, value) {

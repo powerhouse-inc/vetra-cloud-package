@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   connectGithubDeploy,
   createStudioApp,
@@ -168,7 +168,7 @@ describe("createStudioApp", () => {
   // Review Focus 2
   it("maps GitHub's 403 on repo creation to FORBIDDEN and leaves nothing behind", async () => {
     const studio = await seedStudio();
-    h.github.forbiddenAccounts.add("acme");
+    h.github.forbiddenAccounts.set("acme", 403);
     await expect(
       create({ name: "Shop", studioEnvironmentId: studio }),
     ).rejects.toMatchObject({
@@ -200,19 +200,133 @@ describe("createStudioApp", () => {
     expect(at("addRepoToInstallation")).toBeLessThan(at("commitFile"));
   });
 
-  it("deletes the repo with the user token when adding it to the installation fails", async () => {
+  it("undoes a repo not yet in a selected installation by adding it, then deleting with the installation token", async () => {
     h.github.repositorySelection.set(INSTALLATION, "selected");
-    h.github.addRepoToInstallation = async () => {
-      throw new Error("GitHub down");
-    };
+    h.github.addRepoFailures.push(502); // the create's add fails, the undo's works
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
-    ).rejects.toThrow("GitHub down");
+    ).rejects.toMatchObject({ status: 502 });
+    expect(h.github.calls.addRepoToInstallation).toStrictEqual([
+      ["user-token", INSTALLATION, "9001"],
+      ["user-token", INSTALLATION, "9001"],
+    ]);
+    expect(h.github.calls.deleteRepo).toStrictEqual([
+      [INSTALLATION, "acme/shop"],
+    ]);
+    expect(h.github.calls.deleteRepoAsUser ?? []).toHaveLength(0);
+    expect(h.harbor.projects).toStrictEqual([]);
+  });
+
+  it("undoes a public repo in a selected installation through the installation too", async () => {
+    h.github.repositorySelection.set(INSTALLATION, "selected");
+    const createRepoAsUser = h.github.createRepoAsUser.bind(h.github);
+    h.github.createRepoAsUser = async (...args) => ({
+      ...(await createRepoAsUser(...args)),
+      private: false,
+    });
+    await expect(
+      create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+    ).rejects.toThrow(/public repository/);
+    expect(h.github.order.slice(-2)).toStrictEqual([
+      "addRepoToInstallation",
+      "deleteRepo",
+    ]);
+    expect(h.github.calls.deleteRepo).toStrictEqual([
+      [INSTALLATION, "acme/shop"],
+    ]);
+  });
+
+  it("maps a 403 on adding to the installation to FORBIDDEN and falls back to the user-token delete", async () => {
+    h.github.repositorySelection.set(INSTALLATION, "selected");
+    h.github.addRepoFailures.push(403, 403);
+    await expect(
+      create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+    ).rejects.toMatchObject({
+      message:
+        "You cannot add repositories to the Vetra Deploy installation on acme",
+      extensions: { code: "FORBIDDEN" },
+    });
+    expect(h.github.calls.deleteRepo ?? []).toHaveLength(0);
     expect(h.github.calls.deleteRepoAsUser).toStrictEqual([
       ["user-token", "acme/shop"],
     ]);
-    expect(h.github.calls.deleteRepo ?? []).toHaveLength(0);
     expect(h.harbor.projects).toStrictEqual([]);
+    expect(h.renown.registered).toStrictEqual([]);
+    expect(await h.db.selectFrom("apps").select("id").execute()).toHaveLength(
+      0,
+    );
+  });
+
+  it("warns naming the repo when no delete could reach it (user-token 404 is not success)", async () => {
+    h.github.repositorySelection.set(INSTALLATION, "selected");
+    h.github.addRepoFailures.push(403, 403);
+    h.github.userDeleteMissing.value = true;
+    await expect(
+      create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+    expect(h.github.calls.deleteRepoAsUser).toStrictEqual([
+      ["user-token", "acme/shop"],
+    ]);
+    const warnings = vi
+      .mocked(h.deps.logger.warn)
+      .mock.calls.map((c) => String(c[0]));
+    expect(
+      warnings.some((w) => w.includes("acme/shop") && /by hand/.test(w)),
+    ).toBe(true);
+  });
+
+  it("maps a 404 on repo creation to FORBIDDEN", async () => {
+    h.github.forbiddenAccounts.set("acme", 404);
+    await expect(
+      create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+    ).rejects.toMatchObject({
+      message: "You cannot create repositories in acme on GitHub",
+      extensions: { code: "FORBIDDEN" },
+    });
+    expect(h.harbor.projects).toStrictEqual([]);
+  });
+
+  it("maps an uninstalled app (selection lookup 404) to GITHUB_NOT_CONNECTED", async () => {
+    h.github.repositorySelection.set(INSTALLATION, "missing");
+    expect(
+      await code(
+        create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+      ),
+    ).toBe("GITHUB_NOT_CONNECTED");
+    await expectNothingLeft();
+  });
+
+  it("undoes and refuses when a personal-account repo lands under another owner", async () => {
+    await h.db
+      .updateTable("github_deploy_connections")
+      .set({ account_login: "alice", account_type: "User" })
+      .where("owner_address", "=", OWNER)
+      .execute();
+    h.github.repoOwnerOverride.login = "bob";
+    await expect(
+      create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
+    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+    expect(h.github.calls.deleteRepo).toStrictEqual([
+      [INSTALLATION, "bob/shop"],
+    ]);
+    expect(h.harbor.projects).toStrictEqual([]);
+    expect(await h.db.selectFrom("apps").select("id").execute()).toHaveLength(
+      0,
+    );
+  });
+
+  it("accepts a personal-account owner that differs only in case", async () => {
+    await h.db
+      .updateTable("github_deploy_connections")
+      .set({ account_login: "Alice", account_type: "User" })
+      .where("owner_address", "=", OWNER)
+      .execute();
+    h.github.repoOwnerOverride.login = "alice";
+    const app = await create({
+      name: "Shop",
+      studioEnvironmentId: await seedStudio(),
+    });
+    expect(app.repository_full_name).toBe("alice/shop");
   });
 
   it("deletes the repo with the installation token once it was added to a selected installation", async () => {

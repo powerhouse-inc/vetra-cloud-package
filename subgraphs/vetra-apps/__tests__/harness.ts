@@ -215,10 +215,16 @@ export function fakeGithub(): GithubDeployApi & {
   files: Map<string, string>;
   /** Repo names (`login/name`) that already exist; createRepoAsUser throws RepoNameTakenError for these. */
   takenRepoNames: Set<string>;
-  /** Account logins where the user may not create repositories (GitHub 403). */
-  forbiddenAccounts: Set<string>;
-  /** Installation id → repository selection; absent reads as "all". */
-  repositorySelection: Map<string, "all" | "selected">;
+  /** Account login → the status GitHub refuses repo creation with (403, 404). */
+  forbiddenAccounts: Map<string, number>;
+  /** Installation id → repository selection ("missing": the lookup 404s); absent reads as "all". */
+  repositorySelection: Map<string, "all" | "selected" | "missing">;
+  /** Statuses addRepoToInstallation fails with, one per call, in order. */
+  addRepoFailures: number[];
+  /** The owner GitHub puts new repos under instead of the account (null: the account). */
+  repoOwnerOverride: { login: string | null };
+  /** The user-token delete answers 404 (the repo is not reachable with it). */
+  userDeleteMissing: { value: boolean };
   /** Every recorded call name, in call order. */
   order: string[];
 } {
@@ -236,8 +242,11 @@ export function fakeGithub(): GithubDeployApi & {
   let deploymentSeq = 0;
   let repoSeq = 0;
   const takenRepoNames = new Set<string>();
-  const forbiddenAccounts = new Set<string>();
-  const repositorySelection = new Map<string, "all" | "selected">();
+  const forbiddenAccounts = new Map<string, number>();
+  const repositorySelection = new Map<string, "all" | "selected" | "missing">();
+  const addRepoFailures: number[] = [];
+  const repoOwnerOverride = { login: null as string | null };
+  const userDeleteMissing = { value: false };
   return {
     calls,
     order,
@@ -245,12 +254,15 @@ export function fakeGithub(): GithubDeployApi & {
     takenRepoNames,
     forbiddenAccounts,
     repositorySelection,
+    addRepoFailures,
+    repoOwnerOverride,
+    userDeleteMissing,
     createRepoAsUser: rec(
       "createRepoAsUser",
       (_token: string, account: { login: string }, name: string) => {
-        const fullName = `${account.login}/${name}`;
-        if (forbiddenAccounts.has(account.login))
-          throw new GithubHttpError(403, "Must have admin rights");
+        const fullName = `${repoOwnerOverride.login ?? account.login}/${name}`;
+        const refused = forbiddenAccounts.get(account.login);
+        if (refused) throw new GithubHttpError(refused, "Not allowed");
         if (takenRepoNames.has(fullName))
           throw new RepoNameTakenError(`${fullName} exists`);
         takenRepoNames.add(fullName);
@@ -262,14 +274,21 @@ export function fakeGithub(): GithubDeployApi & {
         };
       },
     ),
-    addRepoToInstallation: rec("addRepoToInstallation", () => undefined),
+    addRepoToInstallation: rec("addRepoToInstallation", () => {
+      const status = addRepoFailures.shift();
+      if (status) throw new GithubHttpError(status, "add failed");
+    }),
     getInstallationRepositorySelection: rec(
       "getInstallationRepositorySelection",
-      (installationId: string) =>
-        repositorySelection.get(installationId) ?? "all",
+      (installationId: string) => {
+        const selection = repositorySelection.get(installationId) ?? "all";
+        if (selection === "missing")
+          throw new GithubHttpError(404, "Not Found");
+        return selection;
+      },
     ),
-    deleteRepo: rec("deleteRepo", () => undefined),
-    deleteRepoAsUser: rec("deleteRepoAsUser", () => undefined),
+    deleteRepo: rec("deleteRepo", () => true),
+    deleteRepoAsUser: rec("deleteRepoAsUser", () => !userDeleteMissing.value),
     setRepoVariable: rec("setRepoVariable", () => undefined),
     commitFile: rec("commitFile", () => undefined),
     getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>

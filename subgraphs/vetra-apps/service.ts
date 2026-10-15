@@ -821,8 +821,16 @@ export async function createStudioApp(
     .executeTakeFirst();
   if (!connection) throw notConnected();
   const userToken = await userTokenFor(deps, caller, installationId);
-  const repositorySelection =
-    await github.getInstallationRepositorySelection(installationId);
+  let repositorySelection: "all" | "selected";
+  try {
+    repositorySelection =
+      await github.getInstallationRepositorySelection(installationId);
+  } catch (err) {
+    // 404: the Vetra Deploy app is no longer installed there.
+    if (err instanceof GithubHttpError && err.status === 404)
+      throw notConnected();
+    throw err;
+  }
 
   // One create per Studio at a time in this process (the check, the repo and
   // the row); the partial unique index backs it up across replicas. Not the
@@ -911,6 +919,7 @@ async function createStudioAppLocked(
         // An all-repositories installation covers the new repo at once; a
         // selected one only once it is added below.
         made.repo = {
+          id: repo.id,
           fullName: repo.fullName,
           installationId,
           userToken,
@@ -921,8 +930,23 @@ async function createStudioAppLocked(
             502,
             `${repo.fullName} was created as a public repository`,
           );
+        // /user/repos creates under the token's own user: it must be the
+        // connected personal account.
+        const repoOwner = repo.fullName.split("/")[0] ?? "";
+        if (
+          account.type === "User" &&
+          repoOwner.toLowerCase() !== account.login.toLowerCase()
+        )
+          throw appsError(
+            "FORBIDDEN",
+            `GitHub created the repository under ${repoOwner}, not ${account.login}; connect GitHub as ${account.login}`,
+          );
       } catch (err) {
-        if (err instanceof GithubHttpError && err.status === 403)
+        // 404: GitHub hides an org the user cannot create repositories in.
+        if (
+          err instanceof GithubHttpError &&
+          (err.status === 403 || err.status === 404)
+        )
           throw appsError(
             "FORBIDDEN",
             `You cannot create repositories in ${account.login} on GitHub`,
@@ -945,7 +969,16 @@ async function createStudioAppLocked(
     // The installation token calls below (variable, workflow commit, later
     // deploys) need the repo inside the installation.
     if (repositorySelection === "selected") {
-      await github.addRepoToInstallation(userToken, installationId, repo.id);
+      try {
+        await github.addRepoToInstallation(userToken, installationId, repo.id);
+      } catch (err) {
+        if (err instanceof GithubHttpError && err.status === 403)
+          throw appsError(
+            "FORBIDDEN",
+            `You cannot add repositories to the Vetra Deploy installation on ${account.login}`,
+          );
+        throw err;
+      }
       made.repo!.inInstallation = true;
     }
 
@@ -1312,6 +1345,7 @@ interface CreateMade {
    * token once the installation covers it, else with the user's token.
    */
   repo: {
+    id: string;
     fullName: string;
     installationId: string;
     userToken: string;
@@ -1358,20 +1392,55 @@ async function undoFailedCreate(
     await step("deleting the Harbor project", () =>
       harbor.deleteProject(project),
     );
-  const repo = made.repo;
-  if (repo && deps.github) {
-    const github = deps.github;
-    await step("deleting the repository", () =>
-      repo.inInstallation
-        ? github.deleteRepo(repo.installationId, repo.fullName)
-        : github.deleteRepoAsUser(repo.userToken, repo.fullName),
-    );
-  }
+  if (made.repo && deps.github)
+    await undoStudioRepo(deps, deps.github, made.repo);
   if (did === null) return;
   await step("deleting the identity", async () => {
     if (!(await identityInUse(deps, did)))
       await renown.deleteWorkloadIdentity(did);
   });
+}
+
+/**
+ * Delete a Studio App repository made by a failed create. A user token only
+ * reaches what both the user and the app can access, so a repo not yet in a
+ * selected installation is first added to it, then deleted with the
+ * installation token; the user-token delete is the last resort. A 404 is
+ * never taken as done here: we just created the repo, so it means we could
+ * not reach it, and it is logged for removal by hand. Never throws.
+ */
+async function undoStudioRepo(
+  deps: AppsDeps,
+  github: GithubDeployApi,
+  repo: NonNullable<CreateMade["repo"]>,
+): Promise<void> {
+  const warn = (what: string, err: unknown) =>
+    deps.logger.warn(
+      `[vetra-apps] cleaning up a failed createStudioApp: ${what} failed: ${String(err)}`,
+    );
+  let deleted = false;
+  try {
+    if (!repo.inInstallation)
+      await github.addRepoToInstallation(
+        repo.userToken,
+        repo.installationId,
+        repo.id,
+      );
+    deleted = await github.deleteRepo(repo.installationId, repo.fullName);
+  } catch (err) {
+    warn(`deleting ${repo.fullName} with the installation token`, err);
+  }
+  if (!deleted && !repo.inInstallation) {
+    try {
+      deleted = await github.deleteRepoAsUser(repo.userToken, repo.fullName);
+    } catch (err) {
+      warn(`deleting ${repo.fullName} with the user token`, err);
+    }
+  }
+  if (!deleted)
+    deps.logger.warn(
+      `[vetra-apps] could not delete the GitHub repository ${repo.fullName} after a failed createStudioApp; remove it by hand`,
+    );
 }
 
 /**
