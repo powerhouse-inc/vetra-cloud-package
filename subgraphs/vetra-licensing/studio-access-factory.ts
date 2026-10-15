@@ -1,10 +1,11 @@
 import type { Kysely } from "kysely";
+import { defaultLlmBudgetUsd } from "../../shared/llm-budget.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import type { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createAppReads, type AppReads, type AppReadsClient } from "./app-reads.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import { createGrantStore } from "./grants.js";
-import { keyCiphertextForCode, redeemedCodeOf } from "./invite-codes.js";
+import { keyCiphertextForCode, llmBudgetForCode, redeemedCodeOf } from "./invite-codes.js";
 import { createKeyVault, type KeyVault } from "./key-vault.js";
 import { createAppLedger, reactorLedgerSource } from "./licensing-ledger.js";
 import { createHolderLicences } from "./licence-view.js";
@@ -71,6 +72,8 @@ export function buildStudioAccessDeps(input: {
     redeemedCode: (licenseId, userDid) =>
       redeemedCodeOf(input.db, licenseId, userDid, new Date().toISOString()),
     keyCiphertextForCode: (code) => keyCiphertextForCode(input.db, code),
+    llmBudgetForCode: (code) => llmBudgetForCode(input.db, code),
+    defaultLlmBudgetUsd: defaultLlmBudgetUsd(process.env),
     keyVault: input.keyVault,
     now: () => new Date().toISOString(),
   };

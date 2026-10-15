@@ -400,7 +400,7 @@ describe("vetraSubscriptions: studio", () => {
   let studio: Sub;
 
   it("reports no access, all null, to someone who never held a studio licence", async () => {
-    expect(await q("studioAccess", {}, asHolder)).toStrictEqual({ allowed: false, licenseId: null, expires: null, hasAttachedKey: false });
+    expect(await q("studioAccess", {}, asHolder)).toStrictEqual({ allowed: false, licenseId: null, expires: null, hasAttachedKey: false, llmBudgetUsd: 0 });
     expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder)).toBe(false);
     expect(setSecret).not.toHaveBeenCalled();
   });
@@ -408,7 +408,7 @@ describe("vetraSubscriptions: studio", () => {
   it("grants access through a studio code carrying a key", async () => {
     studio = await redeem({ code: "studio-key-1" });
     expect(await q("studioAccess", {}, asHolder)).toStrictEqual({
-      allowed: true, licenseId: studio.licenseId, expires: plus(studio.start!, 30), hasAttachedKey: true,
+      allowed: true, licenseId: studio.licenseId, expires: plus(studio.start!, 30), hasAttachedKey: true, llmBudgetUsd: 0,
     });
   });
 
@@ -444,7 +444,7 @@ describe("vetraSubscriptions: studio", () => {
   it("after cancelling: no access, but the licence is still named for its warnings", async () => {
     expect(await m("cancelSubscription", { licenseId: studio.licenseId }, asHolder)).toBe(true);
     expect(await q("studioAccess", {}, asHolder)).toStrictEqual({
-      allowed: false, licenseId: studio.licenseId, expires: plus(studio.start!, 30), hasAttachedKey: false,
+      allowed: false, licenseId: studio.licenseId, expires: plus(studio.start!, 30), hasAttachedKey: false, llmBudgetUsd: 0,
     });
     expect(await m("applyStudioKey", { tenantId: "t-1", secretNames: ["ANTHROPIC_API_KEY"] }, asHolder)).toBe(false);
   });

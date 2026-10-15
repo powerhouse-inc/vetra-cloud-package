@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { studioAccess, studioKeyForDid, type StudioAccessDeps } from "../studio-access.js";
+import { studioAccess, studioKeyForDid, studioLlmBudgetForDid, type StudioAccessDeps } from "../studio-access.js";
 import type { AuthorisedLicence } from "../licence-view.js";
 
 const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
@@ -23,18 +23,19 @@ const deps = (
   licencesOf: vi.fn(async (appId: string) => (appId === STUDIO ? licences : [])),
   redeemedCode: async (id, did) => (did === DID ? (codes[id] ?? null) : null),
   keyCiphertextForCode: async (c) => (c === "with-key" ? "enc:sk-ant" : null),
+  llmBudgetForCode: async (c) => (c === "budget-30" ? 30 : c === "budget-0" ? 0 : null),
   keyVault: { encrypt: async (p) => `enc:${p}`, decrypt: async (c) => c.slice(4) },
   now: () => NOW,
   ...over,
 });
 
-const DENIED = { allowed: false, licenseId: null, expires: null, hasAttachedKey: false };
+const DENIED = { allowed: false, licenseId: null, expires: null, hasAttachedKey: false, llmBudgetUsd: 0 };
 
 describe("studio access", () => {
   it("allows an ACTIVE studio licence and resolves the key its holder redeemed", async () => {
     const d = deps([L("a")], { a: "with-key" });
     expect(await studioAccess(d, DID)).toStrictEqual({
-      allowed: true, licenseId: "a", expires: "2026-10-31T00:00:00.000Z", hasAttachedKey: true,
+      allowed: true, licenseId: "a", expires: "2026-10-31T00:00:00.000Z", hasAttachedKey: true, llmBudgetUsd: 0,
     });
     expect(await studioKeyForDid(d, DID)).toBe("sk-ant");
   });
@@ -59,7 +60,7 @@ describe("studio access", () => {
 
   it("denies an ACTIVE licence past its end (the keeper has not expired it yet)", async () => {
     const d = deps([L("a", { end: "2026-10-07T00:00:00.000Z" })], { a: "with-key" });
-    expect(await studioAccess(d, DID)).toStrictEqual({ allowed: false, licenseId: "a", expires: "2026-10-07T00:00:00.000Z", hasAttachedKey: false });
+    expect(await studioAccess(d, DID)).toStrictEqual({ allowed: false, licenseId: "a", expires: "2026-10-07T00:00:00.000Z", hasAttachedKey: false, llmBudgetUsd: 0 });
     expect(await studioKeyForDid(d, DID)).toBeNull();
   });
 
@@ -68,7 +69,7 @@ describe("studio access", () => {
       L("older", { status: "EXPIRED", end: "2026-08-01T00:00:00.000Z", endedAt: "2026-08-01T00:00:00.000Z" }),
       L("newest", { status: status as "EXPIRED" | "REVOKED", end: "2026-10-05T00:00:00.000Z", endedAt: "2026-10-05T00:00:00.000Z" }),
     ], { newest: "with-key" });
-    expect(await studioAccess(d, DID)).toStrictEqual({ allowed: false, licenseId: "newest", expires: "2026-10-05T00:00:00.000Z", hasAttachedKey: false });
+    expect(await studioAccess(d, DID)).toStrictEqual({ allowed: false, licenseId: "newest", expires: "2026-10-05T00:00:00.000Z", hasAttachedKey: false, llmBudgetUsd: 0 });
   });
 
   it("is all null for someone who never held a studio licence, or without the studio app", async () => {
@@ -92,5 +93,41 @@ describe("studio access", () => {
     expect(await studioKeyForDid(d, other)).toBe("sk-ant");
     expect(await studioAccess(d, "did:key:z6Mk")).toStrictEqual(DENIED);
     expect(await studioKeyForDid(d, "did:key:z6Mk")).toBeNull();
+  });
+});
+
+describe("studio LLM budget", () => {
+  it("takes the budget of the code the usable licence was redeemed from", async () => {
+    const d = deps([L("a")], { a: "budget-30" });
+    expect(await studioLlmBudgetForDid(d, DID)).toStrictEqual({ allowed: true, budgetUsd: 30 });
+    expect((await studioAccess(d, DID)).llmBudgetUsd).toBe(30);
+  });
+
+  it("follows the chain: a renewal through a code without a budget keeps the predecessor's", async () => {
+    const d = deps([L("a", { status: "REPLACED", replacedBy: "b", endedAt: NOW }), L("b")], { a: "budget-30", b: "no-key" });
+    expect(await studioLlmBudgetForDid(d, DID)).toStrictEqual({ allowed: true, budgetUsd: 30 });
+  });
+
+  it("an explicit 0 on the code wins over the deployment default (no Vetra key)", async () => {
+    const d = deps([L("a")], { a: "budget-0" }, { defaultLlmBudgetUsd: 15 });
+    expect(await studioLlmBudgetForDid(d, DID)).toStrictEqual({ allowed: true, budgetUsd: 0 });
+  });
+
+  it("falls back to the deployment default, else 0", async () => {
+    expect(await studioLlmBudgetForDid(deps([L("a")], { a: "no-key" }, { defaultLlmBudgetUsd: 15 }), DID)).toStrictEqual({
+      allowed: true,
+      budgetUsd: 15,
+    });
+    expect(await studioLlmBudgetForDid(deps([L("a")], { a: "no-key" }), DID)).toStrictEqual({ allowed: true, budgetUsd: 0 });
+  });
+
+  it("is not allowed, budget 0, without a usable licence or for a non-EVM DID", async () => {
+    const lapsed = deps([L("a", { end: "2026-10-07T00:00:00.000Z" })], { a: "budget-30" });
+    expect(await studioLlmBudgetForDid(lapsed, DID)).toStrictEqual({ allowed: false, budgetUsd: 0 });
+    expect((await studioAccess(lapsed, DID)).llmBudgetUsd).toBe(0);
+    expect(await studioLlmBudgetForDid(deps([L("a")], { a: "budget-30" }), "did:key:z6Mk")).toStrictEqual({
+      allowed: false,
+      budgetUsd: 0,
+    });
   });
 });
