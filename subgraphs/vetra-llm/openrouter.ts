@@ -93,6 +93,7 @@ async function errorFor(
   res: Response,
   method: string,
   path: string,
+  literalSecret?: string,
 ): Promise<OpenRouterError> {
   const text = await res.text().catch(() => "");
   let detail = text;
@@ -103,12 +104,30 @@ async function errorFor(
   } catch {
     // Not JSON: keep the raw text (redacted below).
   }
+  const line = `OpenRouter ${method} ${path.split("?")[0]} failed (${res.status}): ${detail}`;
   return new OpenRouterError(
     res.status,
     redactSecrets(
-      `OpenRouter ${method} ${path.split("?")[0]} failed (${res.status}): ${detail}`,
+      literalSecret ? line.split(literalSecret).join("[redacted]") : line,
     ),
   );
+}
+
+/** Parse a 2xx body. A parse error must never carry body text: it may quote a key. */
+function parseOk(
+  text: string,
+  res: Response,
+  method: string,
+  path: string,
+): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new OpenRouterError(
+      res.status,
+      `invalid JSON from ${method} ${path.split("?")[0]}`,
+    );
+  }
 }
 
 export function createOpenRouterApi(opts: {
@@ -134,9 +153,9 @@ export function createOpenRouterApi(opts: {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (allow404 && res.status === 404) return null;
-    if (!res.ok) throw await errorFor(res, method, path);
+    if (!res.ok) throw await errorFor(res, method, path, opts.managementKey);
     const text = await res.text();
-    return text ? (JSON.parse(text) as Raw) : {};
+    return text ? (parseOk(text, res, method, path) as Raw) : {};
   }
 
   return {
@@ -205,7 +224,9 @@ export async function fetchOpenRouterModels(
   const base = (opts.baseUrl ?? OPENROUTER_BASE_URL).replace(/\/+$/, "");
   const res = await (opts.fetch ?? fetch)(`${base}/models`, { method: "GET" });
   if (!res.ok) throw await errorFor(res, "GET", "/models");
-  const body = (await res.json()) as { data?: Raw[] };
+  const body = parseOk(await res.text(), res, "GET", "/models") as {
+    data?: Raw[];
+  };
   return (body.data ?? []).map((m) => {
     const pricing = (m.pricing ?? {}) as Raw;
     const params = Array.isArray(m.supported_parameters)

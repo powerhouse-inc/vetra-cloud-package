@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createFakeOpenRouter } from "./fake-openrouter.js";
 import {
   createOpenRouterApi,
   fetchOpenRouterModels,
@@ -177,6 +178,72 @@ describe("OpenRouter management client", () => {
     expect((err as Error).message).not.toContain("sk-or-");
     expect((err as Error).message).not.toContain("Bearer mgmt");
     expect((err as Error).message).toContain("[redacted]");
+  });
+});
+
+describe("key-bearing bodies never surface", () => {
+  it("does not quote a malformed success body", async () => {
+    const fetchImpl = (async () =>
+      new Response('{"key":"sk-or-v1-leakme" oops', {
+        status: 201,
+      })) as unknown as typeof fetch;
+    const api = createOpenRouterApi({
+      managementKey: "mgmt",
+      fetch: fetchImpl,
+    });
+    const err = await api
+      .createKey({
+        name: "n",
+        limitUsd: 1,
+        limitReset: "monthly",
+        workspaceId: null,
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OpenRouterError);
+    expect((err as Error).message).toBe("invalid JSON from POST /keys");
+    const models = await fetchOpenRouterModels({ fetch: fetchImpl }).catch(
+      (e: unknown) => e,
+    );
+    expect((models as Error).message).toBe("invalid JSON from GET /models");
+  });
+
+  it("redacts an echoed management key whatever its format", async () => {
+    const { fetchImpl } = stubFetch([
+      {
+        status: 401,
+        body: { error: { message: "bad credential plainmgmt42 given" } },
+      },
+    ]);
+    const api = createOpenRouterApi({
+      managementKey: "plainmgmt42",
+      fetch: fetchImpl,
+    });
+    const err = await api.getKey("x").catch((e: unknown) => e);
+    expect((err as Error).message).not.toContain("plainmgmt42");
+    expect((err as Error).message).toContain("[redacted]");
+  });
+});
+
+describe("fake OpenRouter", () => {
+  it("seeds consistent usage and limitRemaining", async () => {
+    const fake = createFakeOpenRouter();
+    const hash = fake.seed({
+      name: "studio:a",
+      createdAt: "2026-10-15T00:00:00Z",
+      usageMonthly: 4,
+      limitUsd: 10,
+    });
+    expect(await fake.api.getKey(hash)).toMatchObject({
+      usage: 4,
+      usageMonthly: 4,
+      limitRemaining: 6,
+    });
+    fake.setUsage(hash, 7);
+    expect(await fake.api.getKey(hash)).toMatchObject({
+      usage: 7,
+      usageMonthly: 7,
+      limitRemaining: 3,
+    });
   });
 });
 

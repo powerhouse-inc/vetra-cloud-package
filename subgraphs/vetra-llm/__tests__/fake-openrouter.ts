@@ -21,7 +21,12 @@ export interface FakeOpenRouter {
     createdAt: string;
     workspaceId?: string | null;
     usageMonthly?: number;
+    /** Defaults to usageMonthly. */
+    usage?: number;
+    limitUsd?: number | null;
   }): string;
+  /** Set a key's usage (and usageMonthly); limitRemaining follows. */
+  setUsage(hash: string, usd: number): void;
 }
 
 export function createFakeOpenRouter(
@@ -100,7 +105,7 @@ export function createFakeOpenRouter(
       if (!k) throw new OpenRouterError(404, "fake: no such key");
       if (patch.limitUsd !== undefined) {
         k.limit = patch.limitUsd;
-        k.limitRemaining = patch.limitUsd - k.usageMonthly;
+        k.limitRemaining = patch.limitUsd - k.usage;
       }
       if (patch.disabled !== undefined) k.disabled = patch.disabled;
       return view(k);
@@ -126,6 +131,13 @@ export function createFakeOpenRouter(
     failNext: (op, status) => {
       failures.set(op, status);
     },
+    setUsage: (hash, usd) => {
+      const k = keys.get(hash);
+      if (!k) throw new Error(`fake: no such key ${hash}`);
+      k.usage = usd;
+      k.usageMonthly = usd;
+      k.limitRemaining = k.limit === null ? null : k.limit - usd;
+    },
     seed: (input) => {
       const k = mint(
         input.name,
@@ -135,6 +147,9 @@ export function createFakeOpenRouter(
         input.createdAt,
       );
       k.usageMonthly = input.usageMonthly ?? 0;
+      k.usage = input.usage ?? k.usageMonthly;
+      k.limit = input.limitUsd ?? null;
+      k.limitRemaining = k.limit === null ? null : k.limit - k.usage;
       return k.hash;
     },
   };
