@@ -18,11 +18,13 @@ import {
   appsTrustedIds,
   createStudioAccessDeps,
 } from "../vetra-licensing/studio-access-factory.js";
+import { studioLlmBudgetForDid } from "../vetra-licensing/studio-access.js";
 import { up } from "./db/migrations.js";
 import type { VetraLlmDB } from "./db/schema.js";
 import { createLlmKeyStore } from "./store.js";
 import { createProcessBroker, transitFromEnv } from "./factory.js";
 import { createLlmResolvers } from "./resolvers.js";
+import { runLlmSweepOnce, SWEEP_INTERVAL_MS } from "./sweeper.js";
 import { schema } from "./schema.js";
 
 /**
@@ -70,7 +72,7 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       trustedIds: appsTrustedIds(appsDb),
       transit,
     });
-    const { broker, cfg } = createProcessBroker({
+    const { broker, cfg, openrouter, keyVault } = createProcessBroker({
       db,
       transit,
       secrets,
@@ -127,6 +129,57 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       secrets,
       logger: console,
     });
+
+    if (openrouter && keyVault && secrets) {
+      let busy = false;
+      const timer = setInterval(() => {
+        if (busy) return;
+        busy = true;
+        runLlmSweepOnce({
+          store: createLlmKeyStore(db),
+          openrouter,
+          keyVault,
+          secrets,
+          budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
+          envOf: async (environmentId) =>
+            (await envDb
+              .selectFrom("environments")
+              .select(["tenantId", "status"])
+              .where("id", "=", environmentId)
+              .executeTakeFirst()) ?? null,
+          workspaceId: cfg.workspaceId,
+          now: () => new Date(),
+          logger: console,
+        })
+          .then((r) => {
+            if (
+              r.deleted +
+                r.disabled +
+                r.enabled +
+                r.limited +
+                r.orphans +
+                r.failed >
+              0
+            ) {
+              console.info(`[vetra-llm] sweep: ${JSON.stringify(r)}`);
+            }
+          })
+          .catch((err: unknown) =>
+            console.warn(
+              `[vetra-llm] sweep failed: ${err instanceof Error ? err.name : "error"}`,
+            ),
+          )
+          .finally(() => {
+            busy = false;
+          });
+      }, SWEEP_INTERVAL_MS);
+      timer.unref?.();
+      this.timers.push(timer);
+      if (!cfg.workspaceId)
+        console.warn(
+          "[vetra-llm] OPENROUTER_WORKSPACE_ID unset — orphan keys are not swept",
+        );
+    }
   }
 
   async onDisconnect() {
