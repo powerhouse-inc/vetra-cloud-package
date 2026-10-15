@@ -588,30 +588,14 @@ export async function createApp(
   caller: Caller,
   input: CreateAppInput,
 ): Promise<AppRow> {
-  await assertNotWorkload(deps, caller);
-  const name = input.name.trim();
-  if (!name || name.length > 100)
-    throw appsError("BAD_USER_INPUT", "Name must be 1-100 characters");
-  // OWNER/ADMIN, or PUBLISHER with every app in scope; admins get no bypass,
-  // and a Renown outage refuses (fail closed).
+  const name = await assertCreatePreconditions(
+    deps,
+    caller,
+    input.name,
+    input.orgId?.trim() || null,
+  );
   const orgId = input.orgId?.trim() || null;
-  if (
-    orgId &&
-    !(await canCreateOrgApp(deps.orgs ?? null, callerAccess(caller), orgId))
-  ) {
-    throw appsError(
-      "FORBIDDEN",
-      "Creating Apps in this organisation needs the publisher role with access to all its apps",
-    );
-  }
   requireGithub(deps);
-  if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
-  if (!deps.renown) throw notConfigured("Renown workload identities");
-  if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
-  // An org App's env is handed over with an announced move; without the
-  // announcement store the move would be reverted.
-  if (orgId && !deps.orgHandoverDb)
-    throw notConfigured("The organisation hand-over store");
   // Only a repo the USER can access on GitHub (not merely the installation).
   const repo = (await userRepos(deps, caller, input.installationId)).find(
     (r) => r.id === String(input.repositoryId),
@@ -671,7 +655,7 @@ export async function createApp(
   }
 
   // The workload identity first (R2), so a refusal leaves nothing behind.
-  const did = await registerAppIdentity(deps, deps.renown, {
+  const did = await registerAppIdentity(deps, deps.renown!, {
     repositoryId: repo.id,
     repository: repo.fullName,
     productionBranch,
@@ -682,8 +666,8 @@ export async function createApp(
 
   // Everything made from here on is undone when a later step fails, so a
   // retry (in another organisation, or personally) is not blocked.
-  const harbor = deps.harbor;
-  const encryptionKey = deps.cfg.encryptionKey;
+  // Both checked by assertCreatePreconditions.
+  const harbor = deps.harbor!;
   const made: CreateMade = {
     project: null,
     robotId: null,
@@ -691,114 +675,51 @@ export async function createApp(
     announced: null,
   };
   let appId: string;
-  let slug: string | null = null;
+  let slug: string;
   let envId: string;
   try {
-    // Harbor 409 = someone else's project: never reuse it, take the next suffix.
-    const conflicts = new Set<string>();
-    for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-      const candidate = await uniqueSlug(deps, name, conflicts);
-      if (await harbor.createProject(`app-${candidate}`)) {
-        slug = candidate;
-        made.project = `app-${candidate}`;
-        break;
-      }
-      conflicts.add(candidate);
-    }
-    if (!slug) {
-      throw appsError(
-        "BAD_USER_INPUT",
-        "Could not reserve a Harbor project for this name; pick another name",
-      );
-    }
+    slug = await reserveSlugAndProject(deps, harbor, name, made, new Set());
     const harborProject = `app-${slug}`;
     const robot = await harbor.createPushRobot(harborProject);
     made.robotId = robot.id;
 
     appId = deps.newId();
-    const link = setAppLink({
-      appId,
-      role: "PRODUCTION",
-      prNumber: null,
-      gitRef: `refs/heads/${productionBranch}`,
-      imageProject: harborProject,
-    });
     // The apps row goes in before the env actions: the gitops render resolves
     // the App's Harbor project from it (see app-image-project.ts).
-    const attach = Boolean(input.productionEnvironmentId && attachEnvState);
-    envId = attach ? input.productionEnvironmentId! : await deps.envs.create();
-    const nowIso = deps.now().toISOString();
+    envId = attachEnvState
+      ? input.productionEnvironmentId!
+      : await deps.envs.create();
     made.appId = appId;
-    await deps.db
-      .insertInto("apps")
-      .values({
-        id: appId,
-        slug,
+    await insertAppRow(deps, {
+      appId,
+      slug,
+      name,
+      caller,
+      orgId,
+      did,
+      robot,
+      installationId: input.installationId,
+      repo,
+      productionBranch,
+      harborProject,
+      productionEnvironmentId: envId,
+    });
+    await provisionProductionEnv(
+      deps,
+      caller,
+      {
+        envId,
+        appId,
         name,
-        owner_address: caller.address,
-        owner_chain_id: caller.chainId,
-        status: "PENDING_IDENTITY",
-        installation_id: input.installationId,
-        repository_id: repo.id,
-        repository_full_name: repo.fullName,
-        production_branch: productionBranch,
-        production_environment_id: envId,
-        previews_enabled: true,
-        preview_limit: DEFAULT_PREVIEW_LIMIT,
-        preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
-        harbor_project: harborProject,
-        harbor_robot_name: robot.name,
-        harbor_robot_id: robot.id,
-        identity_expires_at: null,
-        // Set from the start: the app document is protected for the Vetra
-        // service identity the moment it exists (appDocumentRowOwner).
-        owner_org_id: orgId,
-        harbor_robot_secret_enc: encryptSecret(encryptionKey, robot.secret),
-        identity_did: did,
-        created_at: nowIso,
-        updated_at: nowIso,
-      })
-      .execute();
-    // An org App's env is handed to the org (the creator its first operator;
-    // the operator sync refills the list). The move is announced first,
-    // inside the env lock, so the observability protection keeps it.
-    const handOver =
-      orgId && !(attach && attachEnvState!.ownerOrgId)
-        ? [setOwnerOrg({ ownerOrgId: orgId, operators: [caller.address] })]
-        : [];
-    const targetEnv = envId;
-    const dispatch = (actions: Action[]) =>
-      withEnvLock(targetEnv, async () => {
-        if (handOver.length > 0) {
-          await expectOrgHandover(deps.orgHandoverDb!, targetEnv, orgId);
-          made.announced = { envId: targetEnv, orgId };
-        }
-        await deps.envs.execute(targetEnv, actions);
-      });
-    if (attach) {
-      const wasReady = attachEnvState!.status === "READY";
-      // The link widens the FUSION allowlist, so it re-renders; re-approve only
-      // a settled env (never ship an owner's unapproved pending edits).
-      await dispatch([link, ...handOver]);
-      if (wasReady) await deps.envs.execute(envId, [approveChanges({})]);
-    } else {
-      await dispatch([
-        setLabel({ label: name }),
-        initialize({
-          genericSubdomain: deps.generateSubdomain(envId),
-          genericBaseDomain: "vetra.io",
-          defaultPackageRegistry: deps.cfg.productionRegistry,
-        }),
-        setOwner({ address: caller.address }),
-        ...handOver,
-        link,
-        enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
-        enableService({ type: "CONNECT", prefix: "connect" }),
-      ]);
-      await deps.envs.execute(envId, [approveChanges({})]);
-    }
+        harborProject,
+        productionBranch,
+        orgId,
+        attach: attachEnvState ? { state: attachEnvState } : null,
+      },
+      made,
+    );
   } catch (err) {
-    await undoFailedCreate(deps, harbor, deps.renown, did, made);
+    await undoFailedCreate(deps, harbor, deps.renown!, did, made);
     throw err;
   }
   deps.logger.info(
@@ -807,6 +728,197 @@ export async function createApp(
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);
   return created;
+}
+
+/**
+ * The checks before anything is made: workload refusal, name, org role and
+ * the Harbor/Renown/encryption/hand-over configuration. Returns the trimmed
+ * name.
+ */
+async function assertCreatePreconditions(
+  deps: AppsDeps,
+  caller: Caller,
+  rawName: string,
+  orgId: string | null,
+): Promise<string> {
+  await assertNotWorkload(deps, caller);
+  const name = rawName.trim();
+  if (!name || name.length > 100)
+    throw appsError("BAD_USER_INPUT", "Name must be 1-100 characters");
+  // OWNER/ADMIN, or PUBLISHER with every app in scope; admins get no bypass,
+  // and a Renown outage refuses (fail closed).
+  if (
+    orgId &&
+    !(await canCreateOrgApp(deps.orgs ?? null, callerAccess(caller), orgId))
+  ) {
+    throw appsError(
+      "FORBIDDEN",
+      "Creating Apps in this organisation needs the publisher role with access to all its apps",
+    );
+  }
+  if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
+  if (!deps.renown) throw notConfigured("Renown workload identities");
+  if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
+  // An org App's env is handed over with an announced move; without the
+  // announcement store the move would be reverted.
+  if (orgId && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
+  return name;
+}
+
+/**
+ * Reserve a unique slug and its Harbor project (`app-<slug>`; sets
+ * made.project). Harbor 409 = someone else's project: never reuse it, take the
+ * next suffix.
+ */
+async function reserveSlugAndProject(
+  deps: AppsDeps,
+  harbor: HarborApi,
+  name: string,
+  made: CreateMade,
+  conflicts: Set<string>,
+): Promise<string> {
+  let slug: string | null = null;
+  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
+    const candidate = await uniqueSlug(deps, name, conflicts);
+    if (await harbor.createProject(`app-${candidate}`)) {
+      slug = candidate;
+      made.project = `app-${candidate}`;
+      break;
+    }
+    conflicts.add(candidate);
+  }
+  if (!slug) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Could not reserve a Harbor project for this name; pick another name",
+    );
+  }
+  return slug;
+}
+
+interface InsertAppRowInput {
+  appId: string;
+  slug: string;
+  name: string;
+  caller: Caller;
+  orgId: string | null;
+  did: string;
+  robot: { id: number; name: string; secret: string };
+  installationId: string;
+  repo: { id: string; fullName: string };
+  productionBranch: string;
+  harborProject: string;
+  productionEnvironmentId: string;
+}
+
+/** The apps row, in PENDING_IDENTITY (the identity delegation comes later). */
+async function insertAppRow(
+  deps: AppsDeps,
+  input: InsertAppRowInput,
+): Promise<void> {
+  const nowIso = deps.now().toISOString();
+  const encryptionKey = deps.cfg.encryptionKey!;
+  await deps.db
+    .insertInto("apps")
+    .values({
+      id: input.appId,
+      slug: input.slug,
+      name: input.name,
+      owner_address: input.caller.address,
+      owner_chain_id: input.caller.chainId,
+      status: "PENDING_IDENTITY",
+      installation_id: input.installationId,
+      repository_id: input.repo.id,
+      repository_full_name: input.repo.fullName,
+      production_branch: input.productionBranch,
+      production_environment_id: input.productionEnvironmentId,
+      previews_enabled: true,
+      preview_limit: DEFAULT_PREVIEW_LIMIT,
+      preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
+      harbor_project: input.harborProject,
+      harbor_robot_name: input.robot.name,
+      harbor_robot_id: input.robot.id,
+      identity_expires_at: null,
+      // Set from the start: the app document is protected for the Vetra
+      // service identity the moment it exists (appDocumentRowOwner).
+      owner_org_id: input.orgId,
+      harbor_robot_secret_enc: encryptSecret(encryptionKey, input.robot.secret),
+      identity_did: input.did,
+      created_at: nowIso,
+      updated_at: nowIso,
+    })
+    .execute();
+}
+
+interface ProvisionInput {
+  envId: string;
+  appId: string;
+  name: string;
+  harborProject: string;
+  productionBranch: string;
+  orgId: string | null;
+  /** The existing env being attached (null: a new env is initialised). */
+  attach: { state: VetraCloudEnvironmentState } | null;
+}
+
+/**
+ * Link the production env to the App and dispatch its actions: an attached
+ * env gets the link (and the org hand-over); a new one is initialised, owned,
+ * linked and approved.
+ */
+async function provisionProductionEnv(
+  deps: AppsDeps,
+  caller: Caller,
+  input: ProvisionInput,
+  made: CreateMade,
+): Promise<void> {
+  const { attach, orgId } = input;
+  const link = setAppLink({
+    appId: input.appId,
+    role: "PRODUCTION",
+    prNumber: null,
+    gitRef: `refs/heads/${input.productionBranch}`,
+    imageProject: input.harborProject,
+  });
+  // An org App's env is handed to the org (the creator its first operator;
+  // the operator sync refills the list). The move is announced first,
+  // inside the env lock, so the observability protection keeps it.
+  const handOver =
+    orgId && !(attach && attach.state.ownerOrgId)
+      ? [setOwnerOrg({ ownerOrgId: orgId, operators: [caller.address] })]
+      : [];
+  const targetEnv = input.envId;
+  const dispatch = (actions: Action[]) =>
+    withEnvLock(targetEnv, async () => {
+      if (handOver.length > 0) {
+        await expectOrgHandover(deps.orgHandoverDb!, targetEnv, orgId);
+        made.announced = { envId: targetEnv, orgId };
+      }
+      await deps.envs.execute(targetEnv, actions);
+    });
+  if (attach) {
+    const wasReady = attach.state.status === "READY";
+    // The link widens the FUSION allowlist, so it re-renders; re-approve only
+    // a settled env (never ship an owner's unapproved pending edits).
+    await dispatch([link, ...handOver]);
+    if (wasReady) await deps.envs.execute(input.envId, [approveChanges({})]);
+  } else {
+    await dispatch([
+      setLabel({ label: input.name }),
+      initialize({
+        genericSubdomain: deps.generateSubdomain(input.envId),
+        genericBaseDomain: "vetra.io",
+        defaultPackageRegistry: deps.cfg.productionRegistry,
+      }),
+      setOwner({ address: caller.address }),
+      ...handOver,
+      link,
+      enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
+      enableService({ type: "CONNECT", prefix: "connect" }),
+    ]);
+    await deps.envs.execute(input.envId, [approveChanges({})]);
+  }
 }
 
 /**
