@@ -93,8 +93,6 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     : null;
 
   let encryptionKey: Buffer | null = null;
-  const managedOrg = trimmed(env.VETRA_APPS_MANAGED_GITHUB_ORG);
-  const managedInstallation = trimmed(env.VETRA_APPS_MANAGED_INSTALLATION_ID);
   const rawKey = trimmed(env.VETRA_APPS_ENCRYPTION_KEY);
   if (rawKey) {
     const key = Buffer.from(rawKey, "base64");
@@ -104,6 +102,9 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
         "[vetra-apps] VETRA_APPS_ENCRYPTION_KEY must be base64 of 32 bytes — ignoring it",
       );
   }
+
+  const managedOrg = trimmed(env.VETRA_APPS_MANAGED_GITHUB_ORG);
+  const managedInstallation = trimmed(env.VETRA_APPS_MANAGED_INSTALLATION_ID);
 
   return {
     github,

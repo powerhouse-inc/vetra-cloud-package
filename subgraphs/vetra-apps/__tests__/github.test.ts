@@ -4,9 +4,8 @@ vi.mock("@octokit/auth-app", () => ({
   createAppAuth: () => async () => ({ token: "ghs_installation" }),
 }));
 
-const { createGithubDeployApi, RepoNameTakenError } = await import(
-  "../github.js"
-);
+const { createGithubDeployApi, RepoNameTakenError } =
+  await import("../github.js");
 
 const cfg = {
   appId: "1",
@@ -329,7 +328,10 @@ describe("GitHub deploy client", () => {
             JSON.stringify({
               message: "Repository creation failed.",
               errors: [
-                { message: "name already exists on this account", field: "name" },
+                {
+                  message: "name already exists on this account",
+                  field: "name",
+                },
               ],
             }),
             { status: 422 },
@@ -358,7 +360,8 @@ describe("GitHub deploy client", () => {
 
     it("deleteRepo deletes and treats 404 as done", async () => {
       const f = fakeFetch({
-        "DELETE /repos/vetra-apps/shop": () => new Response(null, { status: 204 }),
+        "DELETE /repos/vetra-apps/shop": () =>
+          new Response(null, { status: 204 }),
         "DELETE /repos/vetra-apps/gone": () =>
           new Response("not found", { status: 404 }),
       });

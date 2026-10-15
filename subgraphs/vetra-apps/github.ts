@@ -126,7 +126,7 @@ export interface GithubDeployApi {
     name: string,
     value: string,
   ): Promise<void>;
-  /** PUT /repos/{full}/contents/{path} on the default branch. */
+  /** PUT /repos/{full}/contents/{path} on the default branch. Creates a new file only; updating an existing path needs the file's `sha` (GitHub returns 422 without it). */
   commitFile(
     installationId: string,
     repoFullName: string,
@@ -416,9 +416,13 @@ export function createGithubDeployApi(
 
     async setRepoVariable(installationId, fullName, name, value) {
       const base = `/repos/${repoPath(fullName)}/actions/variables`;
-      const r = await inst(installationId, "POST", base, { name, value }, [
-        409,
-      ]);
+      const r = await inst(
+        installationId,
+        "POST",
+        base,
+        { name, value },
+        [409],
+      );
       if (r.status === 409)
         await inst(
           installationId,
