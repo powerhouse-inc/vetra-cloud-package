@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
+  isConcurrentIndexError,
 } from "../db/migrations.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
@@ -60,5 +61,15 @@ describe("ensureAppsStudioColumn", () => {
     } finally {
       await db.destroy();
     }
+  });
+});
+
+describe("isConcurrentIndexError", () => {
+  it("accepts duplicate-relation and unique-violation, rejects the rest", () => {
+    expect(isConcurrentIndexError({ code: "42P07" })).toBe(true);
+    expect(isConcurrentIndexError({ code: "23505" })).toBe(true);
+    expect(isConcurrentIndexError({ code: "42601" })).toBe(false);
+    expect(isConcurrentIndexError(new Error("boom"))).toBe(false);
+    expect(isConcurrentIndexError(null)).toBe(false);
   });
 });

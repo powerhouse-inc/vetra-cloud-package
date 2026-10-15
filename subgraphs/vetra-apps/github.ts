@@ -396,6 +396,17 @@ export function createGithubDeployApi(
           `GitHub POST /orgs/${org}/repos → 422: ${text.slice(0, 300)}`,
         );
       }
+      if (r.data.private !== true) {
+        // A managed repo must never be public. Remove it so the name is not
+        // left taken, then fail; the caller's undo also deletes (404 is fine).
+        await this.deleteRepo(installationId, r.data.full_name).catch(
+          () => undefined,
+        );
+        throw new GithubHttpError(
+          502,
+          `GitHub created ${r.data.full_name} as a public repository`,
+        );
+      }
       return {
         id: String(r.data.id),
         fullName: r.data.full_name,

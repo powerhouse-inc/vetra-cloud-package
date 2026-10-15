@@ -767,6 +767,9 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
  * on the row and never app-linked: CI must never deploy into it. Everything
  * made is undone when a step fails.
  */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
 export async function createStudioApp(
   deps: AppsDeps,
   caller: Caller,
@@ -868,9 +871,17 @@ async function createStudioAppLocked(
           managed.installationId,
           managed.org,
           slug,
-          `${name} — built with Vetra Studio`,
+          `${name.replace(CONTROL_CHARS, " ")} — built with Vetra Studio`.slice(
+            0,
+            350,
+          ),
         );
         made.repo = repo.fullName;
+        if (repo.private !== true)
+          throw new GithubHttpError(
+            502,
+            `${repo.fullName} was created as a public repository`,
+          );
       } catch (err) {
         if (!(err instanceof RepoNameTakenError)) throw err;
         conflicts.add(slug);

@@ -4,7 +4,7 @@ vi.mock("@octokit/auth-app", () => ({
   createAppAuth: () => async () => ({ token: "ghs_installation" }),
 }));
 
-const { createGithubDeployApi, RepoNameTakenError } =
+const { createGithubDeployApi, RepoNameTakenError, GithubHttpError } =
   await import("../github.js");
 
 const cfg = {
@@ -319,6 +319,31 @@ describe("GitHub deploy client", () => {
           description: "A shop",
         },
       });
+    });
+
+    it("createOrgRepo rejects a public response and removes the repo", async () => {
+      const f = fakeFetch({
+        "POST /orgs/vetra-apps/repos": () =>
+          Response.json(
+            {
+              id: 5,
+              full_name: "vetra-apps/shop",
+              private: false,
+              default_branch: "main",
+            },
+            { status: 201 },
+          ),
+        "DELETE /repos/vetra-apps/shop": () =>
+          new Response(null, { status: 204 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await expect(
+        gh.createOrgRepo(INST, "vetra-apps", "shop", ""),
+      ).rejects.toBeInstanceOf(GithubHttpError);
+      expect(f.calls.map((c: { method: string }) => c.method)).toStrictEqual([
+        "POST",
+        "DELETE",
+      ]);
     });
 
     it("createOrgRepo maps a 422 name clash to RepoNameTakenError", async () => {

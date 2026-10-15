@@ -231,6 +231,41 @@ describe("createStudioApp", () => {
     expect(h.harbor.projects).toStrictEqual(["app-a"]);
   });
 
+  it("undoes and errors when the repository comes back public", async () => {
+    const studio = await seedStudio();
+    const createOrgRepo = h.github.createOrgRepo.bind(h.github);
+    h.github.createOrgRepo = async (...args) => ({
+      ...(await createOrgRepo(...args)),
+      private: false,
+    });
+    await expect(
+      createStudioApp(h.deps, owner, {
+        name: "Shop",
+        studioEnvironmentId: studio,
+      }),
+    ).rejects.toThrow(/public repository/);
+    expect(h.github.calls.deleteRepo).toStrictEqual([
+      ["88", "vetra-apps/shop"],
+    ]);
+    expect(h.harbor.projects).toStrictEqual([]);
+    expect(await h.db.selectFrom("apps").select("id").execute()).toHaveLength(
+      0,
+    );
+  });
+
+  it("strips control characters and caps the repository description", async () => {
+    const studio = await seedStudio();
+    await createStudioApp(h.deps, owner, {
+      name: "Sh\nop\t\u007fshop",
+      studioEnvironmentId: studio,
+    });
+    const description = h.github.calls.createOrgRepo[0][3] as string;
+    expect(
+      description.split("").some((c) => c.charCodeAt(0) < 32 || c === "\u007f"),
+    ).toBe(false);
+    expect(description.length).toBeLessThanOrEqual(350);
+  });
+
   it("creates no env when the workflow commit fails, and removes the repository", async () => {
     const studio = await seedStudio();
     const envsBefore = [...h.envs.docs.keys()];
