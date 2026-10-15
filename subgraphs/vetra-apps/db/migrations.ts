@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 
 export async function up(db: Kysely<any>): Promise<void> {
   await db.schema
@@ -117,6 +117,7 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists()
     .execute();
   await addConnectionTokenColumns(db);
+  await ensureAppsStudioColumn(db);
 }
 
 async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
@@ -164,4 +165,22 @@ export async function ensureAppsOrgColumn(db: Kysely<any>): Promise<void> {
       // Column already exists, or no apps table yet
     }
   }
+}
+
+/**
+ * The Studio env an App was created from (null: an imported repo), and at
+ * most one live App per Studio. Idempotent.
+ */
+export async function ensureAppsStudioColumn(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("apps")
+      .addColumn("studio_environment_id", "varchar(255)")
+      .execute();
+  } catch {
+    // Column already exists
+  }
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS apps_studio_env_live ON apps (studio_environment_id) WHERE status <> 'DELETED' AND studio_environment_id IS NOT NULL`.execute(
+    db,
+  );
 }

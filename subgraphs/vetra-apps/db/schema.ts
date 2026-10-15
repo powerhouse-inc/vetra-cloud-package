@@ -44,6 +44,8 @@ export interface AppsTable {
   owner_org_id: string | null;
   /** Renown names another publisher than owner_org_id: org members cannot operate the App until the sync reconciles it (m10). */
   org_disputed?: boolean | null;
+  /** The Vetra Studio env the App was created from (null: an imported repo). One live App per Studio. */
+  studio_environment_id: string | null;
   created_at: string;
   updated_at: string;
 }

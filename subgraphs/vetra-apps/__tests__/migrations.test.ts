@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely, sql } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
-import { ensureAppsOrgColumn } from "../db/migrations.js";
+import {
+  ensureAppsOrgColumn,
+  ensureAppsStudioColumn,
+} from "../db/migrations.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -12,10 +15,48 @@ describe("ensureAppsOrgColumn (m4)", () => {
       await sql`CREATE TABLE apps (id varchar(64) PRIMARY KEY)`.execute(db);
       await ensureAppsOrgColumn(db);
       await ensureAppsOrgColumn(db);
-      await db.insertInto("apps").values({ id: "a", owner_org_id: "o1" }).execute();
-      expect(await db.selectFrom("apps").select(["id", "owner_org_id"]).execute()).toStrictEqual([
-        { id: "a", owner_org_id: "o1" },
-      ]);
+      await db
+        .insertInto("apps")
+        .values({ id: "a", owner_org_id: "o1" })
+        .execute();
+      expect(
+        await db.selectFrom("apps").select(["id", "owner_org_id"]).execute(),
+      ).toStrictEqual([{ id: "a", owner_org_id: "o1" }]);
+    } finally {
+      await db.destroy();
+    }
+  });
+});
+
+describe("ensureAppsStudioColumn", () => {
+  it("adds studio_environment_id with one live App per Studio; idempotent", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE TABLE apps (id varchar(64) PRIMARY KEY, status varchar(32) NOT NULL)`.execute(
+        db,
+      );
+      await ensureAppsStudioColumn(db);
+      await ensureAppsStudioColumn(db);
+      const row = (id: string, status: string, studio: string | null) => ({
+        id,
+        status,
+        studio_environment_id: studio,
+      });
+      await db
+        .insertInto("apps")
+        .values([
+          row("a", "DELETED", "s1"),
+          row("b", "ACTIVE", "s1"),
+          row("c", "ACTIVE", null),
+          row("d", "ACTIVE", null),
+        ])
+        .execute();
+      await expect(
+        db
+          .insertInto("apps")
+          .values(row("e", "PENDING_IDENTITY", "s1"))
+          .execute(),
+      ).rejects.toThrow();
     } finally {
       await db.destroy();
     }
