@@ -77,6 +77,7 @@ export const schema: DocumentNode = gql`
     ownerAddress: String!
     "Renown organisation owning the App; null for personal Apps."
     ownerOrgId: String
+    studioEnvironmentId: String
     status: AppStatus!
     repository: AppRepository!
     productionBranch: String!
@@ -122,6 +123,12 @@ export const schema: DocumentNode = gql`
     slug: String!
     installUrl: String!
     authorizeUrl: String!
+  }
+
+  input CreateStudioAppInput {
+    name: String!
+    studioEnvironmentId: String!
+    orgId: String
   }
 
   input CreateAppInput {
@@ -173,6 +180,7 @@ export const schema: DocumentNode = gql`
   type Mutation {
     connectGithubDeploy(code: String!): [GithubDeployInstallation!]!
     createApp(input: CreateAppInput!): App!
+    createStudioApp(input: CreateStudioAppInput!): App!
     confirmAppIdentity(appId: ID!): App!
     updateApp(appId: ID!, input: UpdateAppInput!): App!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
