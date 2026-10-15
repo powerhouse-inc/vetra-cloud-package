@@ -429,6 +429,7 @@ export function testConfig(
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: "vetra-studio",
+    managedGithub: { org: "vetra-apps", installationId: "88" },
     ...over,
   };
 }
