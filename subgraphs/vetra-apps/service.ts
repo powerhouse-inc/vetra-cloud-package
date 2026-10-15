@@ -22,6 +22,7 @@ import type { EnvGateway } from "./envs.js";
 import { classifyEnv } from "../../processors/vetra-cloud-environment/gitops.js";
 import {
   GithubHttpError,
+  RepoNameTakenError,
   type GithubDeployApi,
   type GithubRepo,
   type GithubUserTokens,
@@ -36,6 +37,7 @@ import {
   isOrgMember,
 } from "../../shared/org-access.js";
 import { withEnvLock } from "../../shared/key-lock.js";
+import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import {
   expectOrgHandover,
   withdrawOrgHandover,
@@ -673,6 +675,7 @@ export async function createApp(
     robotId: null,
     appId: null,
     announced: null,
+    repo: null,
   };
   let appId: string;
   let slug: string;
@@ -724,6 +727,173 @@ export async function createApp(
   }
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
+  );
+  const created = (await getApp(deps.db, appId))!;
+  await mirrorAppRow(deps, created);
+  return created;
+}
+
+export interface CreateStudioAppInput {
+  name: string;
+  /** The Vetra Studio env the App is built in; recorded, never app-linked. */
+  studioEnvironmentId: string;
+  orgId?: string | null;
+}
+
+const STUDIO_WORKFLOW_PATH = ".github/workflows/vetra.yml";
+const STUDIO_PRODUCTION_BRANCH = "main";
+
+/**
+ * Turn a Vetra Studio into an App: a private repository in the Vetra-managed
+ * GitHub org (same word as the slug and the Harbor project), its Renown
+ * identity, Harbor robot, a new production env, the VETRA_APP_ID variable and
+ * the deploy workflow (committed with [skip ci]). The Studio env is recorded
+ * on the row and never app-linked: CI must never deploy into it. Everything
+ * made is undone when a step fails.
+ */
+export async function createStudioApp(
+  deps: AppsDeps,
+  caller: Caller,
+  input: CreateStudioAppInput,
+): Promise<AppRow> {
+  const managed = deps.cfg.managedGithub;
+  if (!managed || !deps.github)
+    throw notConfigured("The Vetra-managed GitHub org (VETRA_APPS_MANAGED_*)");
+  const github = deps.github;
+  const orgId = input.orgId?.trim() || null;
+  const name = await assertCreatePreconditions(deps, caller, input.name, orgId);
+
+  const studio = await deps.envs.getState(input.studioEnvironmentId);
+  if (!studio || !studio.packages.some((p) => isStudioAgentPackage(p.name)))
+    throw appsError("BAD_USER_INPUT", "Not a Vetra Studio");
+  const mayUse = await canOperate(
+    deps.orgs ?? null,
+    { address: caller.address, isAdmin: false },
+    {
+      owner: studio.owner ?? null,
+      ownerOrgId: studio.ownerOrgId ?? null,
+      appDid: null,
+    },
+  );
+  if (!mayUse) throw appsError("FORBIDDEN", "You do not own this Studio");
+  const taken = await deps.db
+    .selectFrom("apps")
+    .select("id")
+    .where("studio_environment_id", "=", input.studioEnvironmentId)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  if (taken) throw appsError("BAD_USER_INPUT", "This Studio is already an App");
+
+  // Both checked by assertCreatePreconditions.
+  const harbor = deps.harbor!;
+  const renown = deps.renown!;
+  const productionBranch = STUDIO_PRODUCTION_BRANCH;
+  const made: CreateMade = {
+    project: null,
+    robotId: null,
+    appId: null,
+    announced: null,
+    repo: null,
+  };
+  let did: string | null = null;
+  let appId: string;
+  let slug = "";
+  let envId: string;
+  try {
+    // Slug, Harbor project and repository name are the same word; a taken
+    // repository name releases the project and takes the next suffix.
+    let repo: GithubRepo | null = null;
+    const conflicts = new Set<string>();
+    for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS && !repo; attempt++) {
+      slug = await reserveSlugAndProject(deps, harbor, name, made, conflicts);
+      try {
+        repo = await github.createOrgRepo(
+          managed.installationId,
+          managed.org,
+          slug,
+          `${name} — built with Vetra Studio`,
+        );
+        made.repo = repo.fullName;
+      } catch (err) {
+        if (!(err instanceof RepoNameTakenError)) throw err;
+        conflicts.add(slug);
+        await harbor.deleteProject(made.project!);
+        made.project = null;
+      }
+    }
+    if (!repo) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Could not reserve a repository for this name; pick another name",
+      );
+    }
+    const harborProject = made.project!;
+
+    did = await registerAppIdentity(deps, renown, {
+      repositoryId: repo.id,
+      repository: repo.fullName,
+      productionBranch,
+      ownerAddress: caller.address,
+      chainId: caller.chainId,
+      orgId,
+    });
+    const robot = await harbor.createPushRobot(harborProject);
+    made.robotId = robot.id;
+
+    appId = deps.newId();
+    // The row goes in before the env actions (see createApp).
+    envId = await deps.envs.create();
+    made.appId = appId;
+    await insertAppRow(deps, {
+      appId,
+      slug,
+      name,
+      caller,
+      orgId,
+      did,
+      robot,
+      installationId: managed.installationId,
+      repo,
+      productionBranch,
+      harborProject,
+      productionEnvironmentId: envId,
+      studioEnvironmentId: input.studioEnvironmentId,
+    });
+    await provisionProductionEnv(
+      deps,
+      caller,
+      {
+        envId,
+        appId,
+        name,
+        harborProject,
+        productionBranch,
+        orgId,
+        attach: null,
+      },
+      made,
+    );
+
+    await github.setRepoVariable(
+      managed.installationId,
+      repo.fullName,
+      "VETRA_APP_ID",
+      appId,
+    );
+    await github.commitFile(managed.installationId, repo.fullName, {
+      path: STUDIO_WORKFLOW_PATH,
+      content: workflowTemplate(appId, productionBranch, {
+        packageManager: "pnpm",
+        declaresPackageManager: false,
+      }),
+      message: "chore: add the Vetra deploy workflow [skip ci]",
+    });
+  } catch (err) {
+    await undoFailedCreate(deps, harbor, renown, did, made);
+    throw err;
+  }
+  deps.logger.info(
+    `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo}, studio ${input.studioEnvironmentId}, env ${envId}`,
   );
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);
@@ -810,6 +980,8 @@ interface InsertAppRowInput {
   productionBranch: string;
   harborProject: string;
   productionEnvironmentId: string;
+  /** The Vetra Studio env the App is created from (never app-linked). */
+  studioEnvironmentId?: string | null;
 }
 
 /** The apps row, in PENDING_IDENTITY (the identity delegation comes later). */
@@ -843,6 +1015,7 @@ async function insertAppRow(
       // Set from the start: the app document is protected for the Vetra
       // service identity the moment it exists (appDocumentRowOwner).
       owner_org_id: input.orgId,
+      studio_environment_id: input.studioEnvironmentId ?? null,
       harbor_robot_secret_enc: encryptSecret(encryptionKey, input.robot.secret),
       identity_did: input.did,
       created_at: nowIso,
@@ -1010,18 +1183,21 @@ interface CreateMade {
   appId: string | null;
   /** The announced organisation move (withdrawn on failure). */
   announced: { envId: string; orgId: string | null } | null;
+  /** The managed repository created for a Studio App (full name). */
+  repo: string | null;
 }
 
 /**
- * Undo a createApp that failed after the identity was registered: the apps
- * row, the announcement, the robot, the project, and the identity when no
- * live App uses it. Best effort: every failure is logged, none is thrown.
+ * Undo a createApp/createStudioApp that failed: the apps row, the
+ * announcement, the robot, the project, the managed repository, and the
+ * identity (when registered, null: not yet) when no live App uses it. Best
+ * effort: every failure is logged, none is thrown.
  */
 async function undoFailedCreate(
   deps: AppsDeps,
   harbor: HarborApi,
   renown: RenownApi,
-  did: string,
+  did: string | null,
   made: CreateMade,
 ): Promise<void> {
   const step = async (what: string, fn: () => Promise<unknown>) => {
@@ -1050,6 +1226,15 @@ async function undoFailedCreate(
     await step("deleting the Harbor project", () =>
       harbor.deleteProject(project),
     );
+  const managed = deps.cfg.managedGithub;
+  const repo = made.repo;
+  if (repo && deps.github && managed) {
+    const github = deps.github;
+    await step("deleting the repository", () =>
+      github.deleteRepo(managed.installationId, repo),
+    );
+  }
+  if (did === null) return;
   await step("deleting the identity", async () => {
     if (!(await identityInUse(deps, did)))
       await renown.deleteWorkloadIdentity(did);

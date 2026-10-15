@@ -343,6 +343,8 @@ export function fakeHarbor(): HarborApi & {
     },
     async deleteProject(p) {
       existing.delete(p);
+      const i = projects.indexOf(p);
+      if (i >= 0) projects.splice(i, 1);
       deletedProjects.push(p);
     },
   };
@@ -363,6 +365,8 @@ export function fakeRenown(): RenownApi & {
   identities: Map<string, FakeIdentity>;
   deleted: string[];
   updated: unknown[];
+  /** One-shot: the next registerWorkloadIdentity throws (then resets). */
+  failNextRegistration: boolean;
 } {
   const self = {
     delegation: null as { expiresAt: string | null } | null,
@@ -370,6 +374,7 @@ export function fakeRenown(): RenownApi & {
     identities: new Map<string, FakeIdentity>(),
     deleted: [] as string[],
     updated: [] as unknown[],
+    failNextRegistration: false,
     // As the served API (A5/M11): the same address gets the existing identity
     // back unchanged (whatever its organisation); another address, CONFLICT.
     async registerWorkloadIdentity(input: {
@@ -377,6 +382,10 @@ export function fakeRenown(): RenownApi & {
       ownerAddress: string;
       ownerOrgId?: string;
     }) {
+      if (self.failNextRegistration) {
+        self.failNextRegistration = false;
+        throw new Error("renown: registration failed");
+      }
       self.registered.push(input);
       const existing = self.identities.get(input.repositoryId);
       if (existing) {
