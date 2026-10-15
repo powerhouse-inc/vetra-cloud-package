@@ -134,6 +134,34 @@ describe("provisionVetraKey", () => {
     expect((await s.store.get(ENV))?.status).toBe("DELETED");
   });
 
+  it("writes the key last: a failed var write leaves no key in the tenant and undoes the mint (I2)", async () => {
+    const s = await setup();
+    s.secrets.setEnvVar.mockRejectedValueOnce(new Error("vars down"));
+    await expect(provision(s.broker)).rejects.toThrow("vars down");
+    expect(s.secrets.setSecret).not.toHaveBeenCalled();
+    expect(s.secrets.secret(TENANT, "OPENROUTER_API_KEY")).toBeUndefined();
+    expect(s.fake.keys.size).toBe(0);
+    expect((await s.store.get(ENV))?.status).toBe("DELETED");
+  });
+
+  it("keeps the key when the row cannot be released, so an ACTIVE row never points at a deleted key (I3)", async () => {
+    const s = await setup();
+    s.secrets.setSecret.mockRejectedValueOnce(new Error("secrets down"));
+    vi.spyOn(s.store, "update").mockRejectedValueOnce(new Error("pg down"));
+    await expect(provision(s.broker)).rejects.toThrow("secrets down");
+    const [key] = [...s.fake.keys.values()];
+    expect(s.fake.calls.some((c) => c.startsWith("deleteKey:"))).toBe(false);
+    expect(await s.store.get(ENV)).toMatchObject({
+      status: "ACTIVE",
+      key_hash: key.hash,
+    });
+    expect(
+      s.logs.some(
+        (l) => l.includes(key.hash) && l.includes("could not release"),
+      ),
+    ).toBe(true);
+  });
+
   it("undoes the key when storing the row fails", async () => {
     const s = await setup(undefined, {
       keyVault: {
@@ -205,6 +233,27 @@ describe("provisionVetraKey", () => {
       llmBudgetUsd: 25,
     });
     expect(s.fake.keys.size).toBe(1);
+  });
+
+  it("re-mints when the key is gone on OpenRouter and nothing changed (fast path, I3)", async () => {
+    const s = await setup();
+    await provision(s.broker);
+    const [old] = [...s.fake.keys.values()];
+    s.fake.keys.clear();
+    expect(await provision(s.broker)).toStrictEqual({
+      connected: true,
+      llmBudgetUsd: 20,
+    });
+    expect(s.fake.calls.filter((c) => c.startsWith("createKey"))).toHaveLength(
+      2,
+    );
+    const [fresh] = [...s.fake.keys.values()];
+    expect(fresh.hash).not.toBe(old.hash);
+    expect(s.secrets.secret(TENANT, "OPENROUTER_API_KEY")).toBe(fresh.secret);
+    expect(await s.store.get(ENV)).toMatchObject({
+      status: "ACTIVE",
+      key_hash: fresh.hash,
+    });
   });
 
   it("refuses with SERVICE_NOT_CONFIGURED without a management key or key storage", async () => {

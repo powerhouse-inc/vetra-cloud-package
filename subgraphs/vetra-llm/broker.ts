@@ -115,6 +115,16 @@ const safe = (err: unknown): string =>
     err instanceof Error ? `${err.name}: ${err.message}` : String(err),
   );
 
+/**
+ * Assumes ONE switchboard replica: every key mutation is serialised per env by
+ * the process-local withKeyLock (llmLockKey), as the rest of this codebase's
+ * locks are. With two replicas, two concurrent provisions of one env could
+ * each POST /keys; the last upsert wins the row, the other key is unrecorded,
+ * and the tenant secret may hold either one. The orphan sweep would then
+ * delete the unrecorded key, which may be the very key the Studio holds,
+ * leaving it with a dead key until the next provision. Scaling out needs a
+ * cross-process guard first (e.g. a conditional insert on environment_id).
+ */
 export function createLlmBroker(d: BrokerDeps): LlmBroker {
   const usageCache = new Map<
     string,
@@ -190,6 +200,9 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
             limitUsd: budget.budgetUsd,
             disabled: false,
           });
+        } else if (!(await openrouter.getKey(held.key_hash))) {
+          // Nothing to update, so confirm the key still exists.
+          throw new OpenRouterError(404, "key not found");
         }
         await d.store.update(env, {
           status: "ACTIVE",
@@ -287,31 +300,37 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         const grant = await ensureLocked(input);
         if (!grant) return { connected: false, llmBudgetUsd: 0 };
         try {
+          // The key goes last: when any write fails, the tenant never holds
+          // a key the undo below is about to delete.
+          await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
           await d.secrets.setSecret(
             input.tenantId,
             OPENROUTER_KEY_SECRET,
             grant.key,
           );
-          await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
         } catch (err) {
           d.logger.error(
             `[vetra-llm] writing the key of ${env} to tenant ${input.tenantId} failed: ${safe(err)}`,
           );
           if (grant.created) {
-            // Undo the mint. Even when the delete fails the row goes DELETED:
-            // the key is then unrecorded and the orphan sweep removes it.
-            await undoMint(configured().openrouter, env, grant.hash);
-            await d.store
-              .update(env, {
+            // Undo the mint: release the row first, delete the key only once
+            // it is released, so an ACTIVE row never points at a deleted key.
+            // A failed delete leaves the key unrecorded for the orphan sweep.
+            let released = false;
+            try {
+              await d.store.update(env, {
                 status: "DELETED",
                 key_ciphertext: null,
                 updated_at: d.now().toISOString(),
-              })
-              .catch((e: unknown) =>
-                d.logger.error(
-                  `[vetra-llm] undo: could not mark key ${grant.hash} of ${env} DELETED: ${safe(e)}`,
-                ),
+              });
+              released = true;
+            } catch (e) {
+              d.logger.error(
+                `[vetra-llm] undo: could not release the row of ${env}; keeping key ${grant.hash}: ${safe(e)}`,
               );
+            }
+            if (released)
+              await undoMint(configured().openrouter, env, grant.hash);
           }
           throw err;
         }
