@@ -163,13 +163,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build package
-        run: pnpm exec ph-cli build
-
-      - name: Run tests
-        run: pnpm test || true
-        continue-on-error: true
-
+      # Bump first (locally) so the single build below already carries the new
+      # version -- it used to build twice: once as a gate before the bump and
+      # again after it for the tarball. The build still gates the release: the
+      # bump is only committed and pushed after it succeeds.
       - name: Bump version
         id: version
         run: |
@@ -186,6 +183,9 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Bumped: $CURRENT_VERSION -> $NEW_VERSION"
 
+      - name: Build package
+        run: pnpm run build
+
       - name: Commit and push version bump
         if: needs.prepare.outputs.dry_run != 'true'
         run: |
@@ -197,9 +197,9 @@ jobs:
         if: needs.prepare.outputs.dry_run != 'true'
         id: pack
         run: |
-          # Rebuild after the version bump (what prepublishOnly did), then pack
-          # once: every registry gets the byte-identical tarball.
-          pnpm run build
+          # The build above already ran on the bumped version (what
+          # prepublishOnly did). Pack once without lifecycle scripts: every
+          # registry gets the byte-identical tarball.
           TARBALL=$(npm pack --ignore-scripts --silent | tail -1)
           echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
           echo "Packed $TARBALL ($(sha1sum "$TARBALL" | cut -c1-40))"
@@ -254,6 +254,46 @@ jobs:
           git push origin "v${{ steps.version.outputs.new_version }}"
 
   # ==========================================================================
+  # Test suite.
+  #
+  # Never gated the release (it ran inside Publish NPM as `pnpm test || true`
+  # with continue-on-error) but sat on its critical path for ~7 minutes. It
+  # now runs alongside the release on the same pre-bump commit. Still
+  # non-blocking: nothing `needs` it and continue-on-error keeps the run green,
+  # but a failure now shows as a failed job instead of being swallowed.
+  # ==========================================================================
+  test:
+    name: Test
+    needs: prepare
+    if: needs.prepare.outputs.skip_release != 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.branch }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm test
+
+  # ==========================================================================
   # Build the studio-housekeeping activator image.
   #
   # The connect/switchboard/secrets-controller images are built elsewhere, but
@@ -279,6 +319,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Hosted runners are discarded after the job; tearing the builder
+          # down (`docker buildx rm`) only added ~40 s to every image job.
+          cleanup: false
 
       - name: Login to Docker Registry
         uses: docker/login-action@v3
@@ -308,8 +352,11 @@ jobs:
           target: housekeeping-service
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # One scope per image: both jobs run concurrently and shared the
+          # default scope, so whichever exported last overwrote the other's
+          # cache index.
+          cache-from: type=gha,scope=housekeeping-service
+          cache-to: type=gha,scope=housekeeping-service,mode=max
 
   # ==========================================================================
   # Build the secrets-controller image.
@@ -339,6 +386,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Hosted runners are discarded after the job; tearing the builder
+          # down (`docker buildx rm`) only added ~40 s to every image job.
+          cleanup: false
 
       - name: Login to Docker Registry
         uses: docker/login-action@v3
@@ -368,5 +419,8 @@ jobs:
           target: secrets-controller
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # One scope per image: both jobs run concurrently and shared the
+          # default scope, so whichever exported last overwrote the other's
+          # cache index.
+          cache-from: type=gha,scope=secrets-controller
+          cache-to: type=gha,scope=secrets-controller,mode=max
