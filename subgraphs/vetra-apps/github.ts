@@ -110,10 +110,39 @@ export interface GithubDeployApi {
       body: string;
     },
   ): Promise<string>;
+  /** Create a private repo in `org` (POST /orgs/{org}/repos, auto_init). Throws RepoNameTakenError on 422 "name already exists". */
+  createOrgRepo(
+    installationId: string,
+    org: string,
+    name: string,
+    description: string,
+  ): Promise<GithubRepo>;
+  /** DELETE /repos/{full}; 404 counts as done. */
+  deleteRepo(installationId: string, repoFullName: string): Promise<void>;
+  /** Create or update an Actions variable (POST, then PATCH on 409). */
+  setRepoVariable(
+    installationId: string,
+    repoFullName: string,
+    name: string,
+    value: string,
+  ): Promise<void>;
+  /** PUT /repos/{full}/contents/{path} on the default branch. */
+  commitFile(
+    installationId: string,
+    repoFullName: string,
+    input: { path: string; content: string; message: string },
+  ): Promise<void>;
 }
 
 const API = "https://api.github.com";
 type FetchLike = typeof fetch;
+
+export class RepoNameTakenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepoNameTakenError";
+  }
+}
 
 export class GithubHttpError extends Error {
   constructor(
@@ -343,6 +372,72 @@ export function createGithubDeployApi(
         },
       );
       return String(data.id);
+    },
+
+    async createOrgRepo(installationId, org, name, description) {
+      const r = await inst<{
+        id: number;
+        full_name: string;
+        private: boolean;
+        default_branch: string;
+      }>(
+        installationId,
+        "POST",
+        `/orgs/${encodeURIComponent(org)}/repos`,
+        { name, description, private: true, auto_init: true },
+        [422],
+      );
+      if (r.status === 422) {
+        const text = JSON.stringify(r.data ?? "");
+        if (/already exists/i.test(text))
+          throw new RepoNameTakenError(`${org}/${name} exists`);
+        throw new GithubHttpError(
+          422,
+          `GitHub POST /orgs/${org}/repos → 422: ${text.slice(0, 300)}`,
+        );
+      }
+      return {
+        id: String(r.data.id),
+        fullName: r.data.full_name,
+        private: r.data.private,
+        defaultBranch: r.data.default_branch,
+      };
+    },
+
+    async deleteRepo(installationId, fullName) {
+      await inst(
+        installationId,
+        "DELETE",
+        `/repos/${repoPath(fullName)}`,
+        undefined,
+        [404],
+      );
+    },
+
+    async setRepoVariable(installationId, fullName, name, value) {
+      const base = `/repos/${repoPath(fullName)}/actions/variables`;
+      const r = await inst(installationId, "POST", base, { name, value }, [
+        409,
+      ]);
+      if (r.status === 409)
+        await inst(
+          installationId,
+          "PATCH",
+          `${base}/${encodeURIComponent(name)}`,
+          { name, value },
+        );
+    },
+
+    async commitFile(installationId, fullName, input) {
+      await inst(
+        installationId,
+        "PUT",
+        `/repos/${repoPath(fullName)}/contents/${repoPath(input.path)}`,
+        {
+          message: input.message,
+          content: Buffer.from(input.content, "utf8").toString("base64"),
+        },
+      );
     },
 
     async createDeploymentStatus(

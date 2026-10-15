@@ -4,7 +4,9 @@ vi.mock("@octokit/auth-app", () => ({
   createAppAuth: () => async () => ({ token: "ghs_installation" }),
 }));
 
-const { createGithubDeployApi } = await import("../github.js");
+const { createGithubDeployApi, RepoNameTakenError } = await import(
+  "../github.js"
+);
 
 const cfg = {
   appId: "1",
@@ -280,6 +282,143 @@ describe("GitHub deploy client", () => {
     const gh = createGithubDeployApi(cfg, f.impl as never);
     await expect(gh.listUserInstallationRepos("t", "5")).rejects.toMatchObject({
       status: 404,
+    });
+  });
+  describe("managed repo calls", () => {
+    const INST = "88";
+
+    it("createOrgRepo posts to the org and maps the repo", async () => {
+      const f = fakeFetch({
+        "POST /orgs/vetra-apps/repos": () =>
+          Response.json(
+            {
+              id: 5,
+              full_name: "vetra-apps/shop",
+              private: true,
+              default_branch: "main",
+            },
+            { status: 201 },
+          ),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      expect(
+        await gh.createOrgRepo(INST, "vetra-apps", "shop", "A shop"),
+      ).toStrictEqual({
+        id: "5",
+        fullName: "vetra-apps/shop",
+        private: true,
+        defaultBranch: "main",
+      });
+      expect(f.calls[0]).toMatchObject({
+        method: "POST",
+        url: "https://api.github.com/orgs/vetra-apps/repos",
+        auth: "token ghs_installation",
+        body: {
+          name: "shop",
+          private: true,
+          auto_init: true,
+          description: "A shop",
+        },
+      });
+    });
+
+    it("createOrgRepo maps a 422 name clash to RepoNameTakenError", async () => {
+      const f = fakeFetch({
+        "POST /orgs/vetra-apps/repos": () =>
+          new Response(
+            JSON.stringify({
+              message: "Repository creation failed.",
+              errors: [
+                { message: "name already exists on this account", field: "name" },
+              ],
+            }),
+            { status: 422 },
+          ),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await expect(
+        gh.createOrgRepo(INST, "vetra-apps", "shop", ""),
+      ).rejects.toBeInstanceOf(RepoNameTakenError);
+    });
+
+    it("createOrgRepo surfaces other 422s as errors", async () => {
+      const f = fakeFetch({
+        "POST /orgs/vetra-apps/repos": () =>
+          new Response(JSON.stringify({ message: "Validation Failed" }), {
+            status: 422,
+          }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      const err = await gh
+        .createOrgRepo(INST, "vetra-apps", "shop", "")
+        .catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(RepoNameTakenError);
+      expect(err).toMatchObject({ status: 422 });
+    });
+
+    it("deleteRepo deletes and treats 404 as done", async () => {
+      const f = fakeFetch({
+        "DELETE /repos/vetra-apps/shop": () => new Response(null, { status: 204 }),
+        "DELETE /repos/vetra-apps/gone": () =>
+          new Response("not found", { status: 404 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await gh.deleteRepo(INST, "vetra-apps/shop");
+      await gh.deleteRepo(INST, "vetra-apps/gone");
+      expect(f.calls.map((c) => `${c.method} ${c.url}`)).toStrictEqual([
+        "DELETE https://api.github.com/repos/vetra-apps/shop",
+        "DELETE https://api.github.com/repos/vetra-apps/gone",
+      ]);
+    });
+
+    it("setRepoVariable creates, and updates on 409", async () => {
+      const f = fakeFetch({
+        "POST /repos/vetra-apps/shop/actions/variables": () =>
+          new Response(null, { status: 201 }),
+        "POST /repos/vetra-apps/dup/actions/variables": () =>
+          new Response("exists", { status: 409 }),
+        "PATCH /repos/vetra-apps/dup/actions/variables/VETRA_APP_ID": () =>
+          new Response(null, { status: 204 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await gh.setRepoVariable(INST, "vetra-apps/shop", "VETRA_APP_ID", "a1");
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0]).toMatchObject({
+        method: "POST",
+        body: { name: "VETRA_APP_ID", value: "a1" },
+      });
+      await gh.setRepoVariable(INST, "vetra-apps/dup", "VETRA_APP_ID", "a2");
+      expect(f.calls.slice(1).map((c) => `${c.method} ${c.url}`)).toStrictEqual(
+        [
+          "POST https://api.github.com/repos/vetra-apps/dup/actions/variables",
+          "PATCH https://api.github.com/repos/vetra-apps/dup/actions/variables/VETRA_APP_ID",
+        ],
+      );
+      expect(f.calls[2].body).toStrictEqual({
+        name: "VETRA_APP_ID",
+        value: "a2",
+      });
+    });
+
+    it("commitFile PUTs base64 content to the contents API", async () => {
+      const f = fakeFetch({
+        "PUT /repos/vetra-apps/shop/contents/": () =>
+          Response.json({}, { status: 201 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await gh.commitFile(INST, "vetra-apps/shop", {
+        path: ".github/workflows/vetra.yml",
+        content: "name: vetra\n",
+        message: "ci: add workflow",
+      });
+      expect(f.calls[0]).toMatchObject({
+        method: "PUT",
+        url: "https://api.github.com/repos/vetra-apps/shop/contents/.github/workflows/vetra.yml",
+        body: {
+          message: "ci: add workflow",
+          content: Buffer.from("name: vetra\n").toString("base64"),
+        },
+      });
     });
   });
 });

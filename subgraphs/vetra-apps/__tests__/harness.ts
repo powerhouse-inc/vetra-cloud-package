@@ -25,7 +25,7 @@ import {
 import type { VetraAppsDB } from "../db/schema.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
-import type { GithubDeployApi } from "../github.js";
+import { RepoNameTakenError, type GithubDeployApi } from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
 import {
@@ -209,6 +209,8 @@ export function fakeGithub(): GithubDeployApi & {
   prStates: Map<number, "open" | "closed" | "error">;
   /** Repo path → contents, for toolchain detection. Absent path reads as null. */
   files: Map<string, string>;
+  /** Repo names (within the managed org) that already exist; createOrgRepo throws RepoNameTakenError for these. */
+  takenRepoNames: Set<string>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -220,9 +222,29 @@ export function fakeGithub(): GithubDeployApi & {
       return result(...args);
     };
   let deploymentSeq = 0;
+  let repoSeq = 0;
+  const takenRepoNames = new Set<string>();
   return {
     calls,
     files,
+    takenRepoNames,
+    createOrgRepo: rec(
+      "createOrgRepo",
+      (_i: string, org: string, name: string) => {
+        if (takenRepoNames.has(name))
+          throw new RepoNameTakenError(`${org}/${name} exists`);
+        takenRepoNames.add(name);
+        return {
+          id: String(9000 + ++repoSeq),
+          fullName: `${org}/${name}`,
+          private: true,
+          defaultBranch: "main",
+        };
+      },
+    ),
+    deleteRepo: rec("deleteRepo", () => undefined),
+    setRepoVariable: rec("setRepoVariable", () => undefined),
+    commitFile: rec("commitFile", () => undefined),
     getRepoFile: rec("getRepoFile", (_i: string, _r: string, path: string) =>
       files.has(path) ? files.get(path)! : null,
     ),
