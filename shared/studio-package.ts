@@ -8,3 +8,8 @@ export const STUDIO_AGENT_PACKAGE_NAMES: readonly string[] = ["vetra", "vetra-cl
 export function isStudioAgentPackage(name: string | null | undefined): boolean {
   return !!name && STUDIO_AGENT_PACKAGE_NAMES.includes(name);
 }
+
+/** Whether an environment document's state installs the studio agent package (the document is the truth, not the projection). */
+export function isStudioState(state: { packages: ReadonlyArray<{ name: string }> } | null | undefined): boolean {
+  return !!state && state.packages.some((p) => isStudioAgentPackage(p.name));
+}
