@@ -142,6 +142,29 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     expect(publicTables.rows).toStrictEqual([]);
   });
 
+  it("adds invite_codes.llm_budget_usd inside a namespace schema and reads it back as a number", async () => {
+    const pg = new PGlite();
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });
+    await pg.exec(`CREATE SCHEMA ns_budget`);
+    const ns = db.withSchema("ns_budget") as unknown as Kysely<any>;
+    await up(ns);
+    await up(ns);
+    await ns
+      .insertInto("invite_codes")
+      .values({ code: "code-ns-01", app_id: "a", kind: "k", active: true, created_at: "2026-10-15T00:00:00.000Z", llm_budget_usd: 12.5 })
+      .execute();
+    const row = await ns
+      .selectFrom("invite_codes")
+      .select("llm_budget_usd")
+      .where("code", "=", "code-ns-01")
+      .executeTakeFirstOrThrow();
+    expect(row.llm_budget_usd).toBe(12.5);
+    const publicTables = await pg.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+    );
+    expect(publicTables.rows).toStrictEqual([]);
+  });
+
   it("migrates a production database that already holds old-shape rows", async () => {
     const pg = new PGlite();
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });

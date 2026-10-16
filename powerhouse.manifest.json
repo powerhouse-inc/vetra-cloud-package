@@ -74,6 +74,10 @@
     {
       "id": "vetra-apps",
       "name": "Vetra Apps"
+    },
+    {
+      "id": "vetra-llm",
+      "name": "Vetra LLM"
     }
   ],
   "config": []

@@ -336,6 +336,83 @@ describe("vetraPublisher end to end", () => {
     expect(listed.find((x) => x.code === "Launch-2026")?.active).toBe(true);
   });
 
+  it("sets, replaces and clears the key on an existing code, never returning it", async () => {
+    const code = ((await m("createInviteCode", { input: { appId: APP, kind: "2026-pro", code: "KeyLater-01" } })) as { code: string }).code;
+    const stored = async (c = code) =>
+      (await h.db.selectFrom("invite_codes").select("anthropic_key_ciphertext").where("code", "=", c).executeTakeFirstOrThrow()).anthropic_key_ciphertext;
+    const flag = async () => ((await q("inviteCodes", { appId: APP })) as { code: string; hasAnthropicKey: boolean }[]).find((x) => x.code === code)?.hasAnthropicKey;
+    expect(await flag()).toBe(false);
+    expect(await m("setInviteCodeAnthropicKey", { appId: APP, code, anthropicKey: "sk-ant-new" })).toBe(true);
+    expect(await stored()).toBe("enc:sk-ant-new");
+    expect(await flag()).toBe(true);
+    expect(JSON.stringify(await q("inviteCodes", { appId: APP }))).not.toContain("sk-ant");
+    expect(await m("setInviteCodeAnthropicKey", { appId: APP, code: ` ${code} `, anthropicKey: "  sk-ant-two  " })).toBe(true);
+    expect(await stored()).toBe("enc:sk-ant-two");
+    // Clear: null, "" and whitespace all clear.
+    for (const clear of [null, "", "   "]) {
+      await m("setInviteCodeAnthropicKey", { appId: APP, code, anthropicKey: "sk-ant-again" });
+      expect(await m("setInviteCodeAnthropicKey", { appId: APP, code, anthropicKey: clear })).toBe(true);
+      expect(await stored()).toBeNull();
+    }
+    await m("setInviteCodeAnthropicKey", { appId: APP, code, anthropicKey: "sk-ant-again" });
+    expect(await m("setInviteCodeAnthropicKey", { appId: APP, code })).toBe(true);
+    expect(await stored()).toBeNull();
+    expect(await flag()).toBe(false);
+  });
+
+  it("refuses to set a key on a missing code, another app's code or without key storage", async () => {
+    expect(await codeOf(m("setInviteCodeAnthropicKey", { appId: APP, code: "no-such-code", anthropicKey: "sk-ant-x" }))).toBe("NOT_FOUND");
+    const code = ((await m("createInviteCode", { input: { appId: APP, kind: "2026-pro", code: "Guarded-01", anthropicKey: "sk-ant-keep" } })) as { code: string }).code;
+    // The same code addressed through an app the caller owns but that does not hold it.
+    expect(await codeOf(m("setInviteCodeAnthropicKey", { appId: HELD, code, anthropicKey: "sk-ant-x" }))).toBe("NOT_FOUND");
+    const noVault = h.build({ keyVault: null });
+    const call = (key: string | null) => noVault.VetraPublisherMutations.setInviteCodeAnthropicKey!({}, { appId: APP, code, anthropicKey: key }, asOwner);
+    expect(await codeOf(call("sk-ant-y"))).toBe("INVALID_INPUT");
+    const row = () => h.db.selectFrom("invite_codes").select("anthropic_key_ciphertext").where("code", "=", code).executeTakeFirstOrThrow();
+    expect((await row()).anthropic_key_ciphertext).toBe("enc:sk-ant-keep");
+    // Clearing needs no vault.
+    expect(await codeOf(call(null))).toBe("OK");
+    expect((await row()).anthropic_key_ciphertext).toBeNull();
+  });
+
+  it("refuses a non-owner of the app", async () => {
+    const code = ((await m("createInviteCode", { input: { appId: APP, kind: "2026-pro", code: "NonOwner-01" } })) as { code: string }).code;
+    const other = r.VetraPublisherMutations.setInviteCodeAnthropicKey!({}, { appId: APP, code, anthropicKey: "sk-ant-x" }, asUser(OTHER));
+    expect(await codeOf(other)).toBe("NOT_FOUND");
+    expect((await h.db.selectFrom("invite_codes").select("anthropic_key_ciphertext").where("code", "=", code).executeTakeFirstOrThrow()).anthropic_key_ciphertext).toBeNull();
+  });
+
+  it("creates a code with a monthly LLM budget, then sets, changes and clears it", async () => {
+    const created = (await m("createInviteCode", {
+      input: { appId: APP, kind: "2026-pro", code: "Budget-0001", llmBudgetUsd: 20 },
+    })) as { code: string; llmBudgetUsd: number | null };
+    expect(created.llmBudgetUsd).toBe(20);
+    const budget = async () =>
+      ((await q("inviteCodes", { appId: APP })) as { code: string; llmBudgetUsd: number | null }[]).find(
+        (x) => x.code === "Budget-0001",
+      )?.llmBudgetUsd;
+    expect(await m("setInviteCodeLlmBudget", { appId: APP, code: "Budget-0001", llmBudgetUsd: 35.5 })).toBe(true);
+    expect(await budget()).toBe(35.5);
+    expect(await m("setInviteCodeLlmBudget", { appId: APP, code: " Budget-0001 ", llmBudgetUsd: null })).toBe(true);
+    expect(await budget()).toBeNull();
+  });
+
+  it("refuses a bad budget, another app's code and a non-owner", async () => {
+    await m("createInviteCode", { input: { appId: APP, kind: "2026-pro", code: "Budget-0002" } });
+    expect(await codeOf(m("setInviteCodeLlmBudget", { appId: APP, code: "Budget-0002", llmBudgetUsd: -5 }))).toBe(
+      "INVALID_INPUT",
+    );
+    expect(await codeOf(m("setInviteCodeLlmBudget", { appId: HELD, code: "Budget-0002", llmBudgetUsd: 5 }))).toBe(
+      "NOT_FOUND",
+    );
+    const other = r.VetraPublisherMutations.setInviteCodeLlmBudget!(
+      {},
+      { appId: APP, code: "Budget-0002", llmBudgetUsd: 5 },
+      asUser(OTHER),
+    );
+    expect(await codeOf(other)).toBe("NOT_FOUND");
+  });
+
   it("an attached key without key storage is refused before anything is stored", async () => {
     const noVault = h.build({ keyVault: null });
     const call = noVault.VetraPublisherMutations.createInviteCode!({}, { input: { appId: APP, kind: "2026-pro", code: "NoVault-01", anthropicKey: "sk-ant-y" } }, asOwner);

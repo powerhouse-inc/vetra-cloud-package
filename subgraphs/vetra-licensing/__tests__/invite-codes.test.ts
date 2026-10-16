@@ -18,11 +18,14 @@ import {
   isUsable,
   keyCiphertextForCode,
   listInviteCodes,
+  llmBudgetForCode,
   normalizeCode,
   redeemedCodeOf,
   releaseReservation,
   reserveRedemption,
   setInviteCodeActive,
+  setInviteCodeAnthropicKey,
+  setInviteCodeLlmBudget,
 } from "../invite-codes.js";
 
 let db: Kysely<VetraLicensingDB> | undefined;
@@ -154,6 +157,45 @@ describe("invite codes", () => {
     expect(await setInviteCodeActive(d, "app-1", "CODE-CCC", false)).toBe(false);
     expect(await setInviteCodeActive(d, "app-1", " code-ccc ", false)).toBe(true);
     expect((await getCode(d, "code-ccc"))!.active).toBe(false);
+  });
+
+  it("sets and clears the key ciphertext only within the owning app", async () => {
+    const d = await open();
+    await createInviteCode(d, { ...base, code: "code-ccc" });
+    expect(await setInviteCodeAnthropicKey(d, "app-2", "code-ccc", "enc:k")).toBe(false);
+    expect(await setInviteCodeAnthropicKey(d, "app-1", "no-such", "enc:k")).toBe(false);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBeNull();
+    expect(await setInviteCodeAnthropicKey(d, "app-1", " code-ccc ", "enc:k")).toBe(true);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBe("enc:k");
+    expect(await setInviteCodeAnthropicKey(d, "app-1", "code-ccc", null)).toBe(true);
+    expect(await keyCiphertextForCode(d, "code-ccc")).toBeNull();
+  });
+
+  it("stores the LLM budget as a number, sets and clears it only within the owning app", async () => {
+    const d = await open();
+    await createInviteCode(d, { ...base, code: "code-bbb1", llmBudgetUsd: 20.5 });
+    expect(await llmBudgetForCode(d, "code-bbb1")).toBe(20.5);
+    expect(typeof (await llmBudgetForCode(d, "code-bbb1"))).toBe("number");
+    expect((await listInviteCodes(d, "app-1")).find((c) => c.code === "code-bbb1")?.llmBudgetUsd).toBe(20.5);
+    expect(await setInviteCodeLlmBudget(d, "app-2", "code-bbb1", 5)).toBe(false);
+    expect(await setInviteCodeLlmBudget(d, "app-1", "no-such-code", 5)).toBe(false);
+    expect(await setInviteCodeLlmBudget(d, "app-1", " code-bbb1 ", 5)).toBe(true);
+    expect(await llmBudgetForCode(d, "code-bbb1")).toBe(5);
+    expect(await setInviteCodeLlmBudget(d, "app-1", "code-bbb1", null)).toBe(true);
+    expect(await llmBudgetForCode(d, "code-bbb1")).toBeNull();
+    expect(await llmBudgetForCode(d, "no-such-code")).toBeNull();
+  });
+
+  it("defaults the budget to null and refuses a negative, non-finite or over-cap one", async () => {
+    const d = await open();
+    expect((await createInviteCode(d, { ...base, code: "code-none1" })).llmBudgetUsd).toBeNull();
+    expect((await createInviteCode(d, { ...base, code: "code-round", llmBudgetUsd: 12.346 })).llmBudgetUsd).toBe(12.35);
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 10_000.01]) {
+      await expect(createInviteCode(d, { ...base, code: "code-bad01", llmBudgetUsd: bad })).rejects.toBeInstanceOf(
+        InvalidCodeInputError,
+      );
+      await expect(setInviteCodeLlmBudget(d, "app-1", "code-none1", bad)).rejects.toBeInstanceOf(InvalidCodeInputError);
+    }
   });
 
   it("is usable only while active, unexpired and under its cap", async () => {

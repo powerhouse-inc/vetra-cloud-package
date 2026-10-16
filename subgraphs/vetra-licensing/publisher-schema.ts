@@ -144,6 +144,8 @@ export const publisherSchema: DocumentNode = gql`
     maxUses: Int
     redemptions: Int!
     hasAnthropicKey: Boolean!
+    "Monthly LLM budget (USD) of Studios redeemed from this code; null = the deployment default."
+    llmBudgetUsd: Float
     createdAt: String!
   }
 
@@ -257,6 +259,8 @@ export const publisherSchema: DocumentNode = gql`
     maxUses: Int
     "Write-only; stored encrypted, never returned."
     anthropicKey: String
+    "Monthly LLM budget (USD) for Studios of licences redeemed from this code; omit for the deployment default."
+    llmBudgetUsd: Float
   }
 
   type VetraPublisherQueries {
@@ -292,6 +296,8 @@ export const publisherSchema: DocumentNode = gql`
     revokeLicense(input: RevokeLicenseInput!): Boolean!
     createInviteCode(input: CreateInviteCodeInput!): PublisherInviteCode!
     setInviteCodeActive(appId: String!, code: String!, active: Boolean!): Boolean!
+    setInviteCodeAnthropicKey(appId: String!, code: String!, anthropicKey: String): Boolean!
+    setInviteCodeLlmBudget(appId: String!, code: String!, llmBudgetUsd: Float): Boolean!
     addToAllowList(appId: String!, user: String!): Boolean!
     removeFromAllowList(appId: String!, user: String!): Boolean!
     """

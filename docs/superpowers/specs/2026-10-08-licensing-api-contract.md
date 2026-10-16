@@ -244,6 +244,7 @@ type StudioAccess {
   licenseId: String                 # the usable studio licence; when not allowed, the caller's newest studio licence (so its warnings can be shown); null only if the caller never held one
   expires: String                   # the end of the licence named by licenseId
   hasAttachedKey: Boolean!
+  llmBudgetUsd: Float!
 }
 
 input RedeemInviteCodeInput {

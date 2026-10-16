@@ -1,4 +1,5 @@
 import { GraphQLError } from "graphql";
+import { redactSecrets } from "../../shared/redact.js";
 import {
   UnauthenticatedError,
   AppIdentityInactiveError,
@@ -111,16 +112,11 @@ export class OperationRejectedError extends Error {
 /** What every unrecognised error becomes on the wire. */
 export const INTERNAL_ERROR_MESSAGE = "Internal error";
 
-/** Values that must not reach a log line even inside an error message. */
-const SECRET_PATTERNS: RegExp[] = [
-  /sk-ant-[A-Za-z0-9_-]+/g, // Claude keys
-  /vault:v\d+:[A-Za-z0-9+/=]+/g, // OpenBao transit ciphertexts
-  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, // credentials
-  /\b(token|password|secret)=[^\s&]+/gi,
-];
+/** Licensing-only patterns, on top of the shared base list in shared/redact.ts. */
+const EXTRA_SECRET_PATTERNS: RegExp[] = [/\b(token|password|secret)=[^\s&]+/gi];
 
 function redact(text: string): string {
-  return SECRET_PATTERNS.reduce((t, re) => t.replace(re, "[redacted]"), text).slice(0, 1000);
+  return redactSecrets(text, EXTRA_SECRET_PATTERNS);
 }
 
 /** One server-side line for an error a client only sees as INTERNAL. */

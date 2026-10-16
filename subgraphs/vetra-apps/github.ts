@@ -110,15 +110,37 @@ export interface GithubDeployApi {
       body: string;
     },
   ): Promise<string>;
-  /** Create a private repo in `org` (POST /orgs/{org}/repos, auto_init). Throws RepoNameTakenError on 422 "name already exists". */
-  createOrgRepo(
-    installationId: string,
-    org: string,
+  /**
+   * Create a private repo (auto_init) with the USER's token in `account`:
+   * POST /orgs/{login}/repos for an Organization, POST /user/repos otherwise.
+   * GitHub itself refuses (403, GithubHttpError) when the user may not create
+   * repositories there. Throws RepoNameTakenError on 422 "already exists".
+   * A repo that comes back public is returned as such: the caller must undo
+   * it (a user-token delete may not reach a repo outside the installation).
+   */
+  createRepoAsUser(
+    userToken: string,
+    account: { login: string; type: string },
     name: string,
     description: string,
   ): Promise<GithubRepo>;
-  /** DELETE /repos/{full}; 404 counts as done. */
-  deleteRepo(installationId: string, repoFullName: string): Promise<void>;
+  /**
+   * Add a repository to a selected-repositories installation with the user's
+   * token (PUT /user/installations/{id}/repositories/{repo}); 204/304 = ok.
+   */
+  addRepoToInstallation(
+    userToken: string,
+    installationId: string,
+    repositoryId: string,
+  ): Promise<void>;
+  /** Whether the installation covers all of the account's repos or a selection (GET /app/installations/{id}, app JWT). */
+  getInstallationRepositorySelection(
+    installationId: string,
+  ): Promise<"all" | "selected">;
+  /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
+  deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
+  /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
+  deleteRepoAsUser(userToken: string, repoFullName: string): Promise<boolean>;
   /** Create or update an Actions variable (POST, then PATCH on 409). */
   setRepoVariable(
     installationId: string,
@@ -186,11 +208,12 @@ export function createGithubDeployApi(
     path: string,
     body?: unknown,
     okStatuses: number[] = [],
+    scheme = "token",
   ): Promise<{ status: number; data: T }> {
     const res = await fetchImpl(`${API}${path}`, {
       method,
       headers: {
-        ...headers(token),
+        ...headers(token, scheme),
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -374,37 +397,30 @@ export function createGithubDeployApi(
       return String(data.id);
     },
 
-    async createOrgRepo(installationId, org, name, description) {
-      const r = await inst<{
+    async createRepoAsUser(userToken, account, name, description) {
+      const path =
+        account.type === "Organization"
+          ? `/orgs/${encodeURIComponent(account.login)}/repos`
+          : "/user/repos";
+      const r = await call<{
         id: number;
         full_name: string;
         private: boolean;
         default_branch: string;
       }>(
-        installationId,
+        userToken,
         "POST",
-        `/orgs/${encodeURIComponent(org)}/repos`,
+        path,
         { name, description, private: true, auto_init: true },
         [422],
       );
       if (r.status === 422) {
         const text = JSON.stringify(r.data ?? "");
         if (/already exists/i.test(text))
-          throw new RepoNameTakenError(`${org}/${name} exists`);
+          throw new RepoNameTakenError(`${account.login}/${name} exists`);
         throw new GithubHttpError(
           422,
-          `GitHub POST /orgs/${org}/repos → 422: ${text.slice(0, 300)}`,
-        );
-      }
-      if (r.data.private !== true) {
-        // A managed repo must never be public. Remove it so the name is not
-        // left taken, then fail; the caller's undo also deletes (404 is fine).
-        await this.deleteRepo(installationId, r.data.full_name).catch(
-          () => undefined,
-        );
-        throw new GithubHttpError(
-          502,
-          `GitHub created ${r.data.full_name} as a public repository`,
+          `GitHub POST ${path} → 422: ${text.slice(0, 300)}`,
         );
       }
       return {
@@ -415,14 +431,55 @@ export function createGithubDeployApi(
       };
     },
 
+    async addRepoToInstallation(userToken, installationId, repositoryId) {
+      await call(
+        userToken,
+        "PUT",
+        `/user/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(repositoryId)}`,
+        undefined,
+        [304],
+      );
+    },
+
+    async getInstallationRepositorySelection(installationId) {
+      const { token } = await auth({ type: "app" });
+      const { data } = await call<{ repository_selection?: string }>(
+        token,
+        "GET",
+        `/app/installations/${encodeURIComponent(installationId)}`,
+        undefined,
+        [],
+        "Bearer",
+      );
+      const selection = data.repository_selection;
+      if (selection !== "all" && selection !== "selected")
+        throw new GithubHttpError(
+          502,
+          `GitHub installation ${installationId}: unknown repository_selection ${String(selection)}`,
+        );
+      return selection;
+    },
+
+    async deleteRepoAsUser(userToken, fullName) {
+      const r = await call(
+        userToken,
+        "DELETE",
+        `/repos/${repoPath(fullName)}`,
+        undefined,
+        [404],
+      );
+      return r.status !== 404;
+    },
+
     async deleteRepo(installationId, fullName) {
-      await inst(
+      const r = await inst(
         installationId,
         "DELETE",
         `/repos/${repoPath(fullName)}`,
         undefined,
         [404],
       );
+      return r.status !== 404;
     },
 
     async setRepoVariable(installationId, fullName, name, value) {

@@ -283,35 +283,33 @@ describe("GitHub deploy client", () => {
       status: 404,
     });
   });
-  describe("managed repo calls", () => {
+  describe("Studio App repo calls", () => {
     const INST = "88";
+    const ORG_ACCOUNT = { login: "acme", type: "Organization" };
+    const USER_ACCOUNT = { login: "alice", type: "User" };
+    const created =
+      (fullName: string, priv = true) =>
+      () =>
+        Response.json(
+          { id: 5, full_name: fullName, private: priv, default_branch: "main" },
+          { status: 201 },
+        );
 
-    it("createOrgRepo posts to the org and maps the repo", async () => {
-      const f = fakeFetch({
-        "POST /orgs/vetra-apps/repos": () =>
-          Response.json(
-            {
-              id: 5,
-              full_name: "vetra-apps/shop",
-              private: true,
-              default_branch: "main",
-            },
-            { status: 201 },
-          ),
-      });
+    it("createRepoAsUser posts to the org with the user token and maps the repo", async () => {
+      const f = fakeFetch({ "POST /orgs/acme/repos": created("acme/shop") });
       const gh = createGithubDeployApi(cfg, f.impl as never);
       expect(
-        await gh.createOrgRepo(INST, "vetra-apps", "shop", "A shop"),
+        await gh.createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", "A shop"),
       ).toStrictEqual({
         id: "5",
-        fullName: "vetra-apps/shop",
+        fullName: "acme/shop",
         private: true,
         defaultBranch: "main",
       });
       expect(f.calls[0]).toMatchObject({
         method: "POST",
-        url: "https://api.github.com/orgs/vetra-apps/repos",
-        auth: "token ghs_installation",
+        url: "https://api.github.com/orgs/acme/repos",
+        auth: "token ghu_user",
         body: {
           name: "shop",
           private: true,
@@ -321,34 +319,34 @@ describe("GitHub deploy client", () => {
       });
     });
 
-    it("createOrgRepo rejects a public response and removes the repo", async () => {
-      const f = fakeFetch({
-        "POST /orgs/vetra-apps/repos": () =>
-          Response.json(
-            {
-              id: 5,
-              full_name: "vetra-apps/shop",
-              private: false,
-              default_branch: "main",
-            },
-            { status: 201 },
-          ),
-        "DELETE /repos/vetra-apps/shop": () =>
-          new Response(null, { status: 204 }),
-      });
+    it("createRepoAsUser posts to /user/repos for a user account", async () => {
+      const f = fakeFetch({ "POST /user/repos": created("alice/shop") });
       const gh = createGithubDeployApi(cfg, f.impl as never);
-      await expect(
-        gh.createOrgRepo(INST, "vetra-apps", "shop", ""),
-      ).rejects.toBeInstanceOf(GithubHttpError);
-      expect(f.calls.map((c: { method: string }) => c.method)).toStrictEqual([
-        "POST",
-        "DELETE",
+      expect(
+        (await gh.createRepoAsUser("ghu_user", USER_ACCOUNT, "shop", ""))
+          .fullName,
+      ).toBe("alice/shop");
+      expect(
+        f.calls.map((c) => `${c.method} ${c.url} ${c.auth}`),
+      ).toStrictEqual([
+        "POST https://api.github.com/user/repos token ghu_user",
       ]);
     });
 
-    it("createOrgRepo maps a 422 name clash to RepoNameTakenError", async () => {
+    it("createRepoAsUser returns a public response as such, for the caller's undo (no user-token delete)", async () => {
       const f = fakeFetch({
-        "POST /orgs/vetra-apps/repos": () =>
+        "POST /orgs/acme/repos": created("acme/shop", false),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      expect(
+        await gh.createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", ""),
+      ).toMatchObject({ id: "5", fullName: "acme/shop", private: false });
+      expect(f.calls.map((c) => c.method)).toStrictEqual(["POST"]);
+    });
+
+    it("createRepoAsUser maps a 422 name clash to RepoNameTakenError", async () => {
+      const f = fakeFetch({
+        "POST /user/repos": () =>
           new Response(
             JSON.stringify({
               message: "Repository creation failed.",
@@ -364,23 +362,96 @@ describe("GitHub deploy client", () => {
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
       await expect(
-        gh.createOrgRepo(INST, "vetra-apps", "shop", ""),
+        gh.createRepoAsUser("ghu_user", USER_ACCOUNT, "shop", ""),
       ).rejects.toBeInstanceOf(RepoNameTakenError);
     });
 
-    it("createOrgRepo surfaces other 422s as errors", async () => {
+    it("createRepoAsUser surfaces other 422s as errors", async () => {
       const f = fakeFetch({
-        "POST /orgs/vetra-apps/repos": () =>
+        "POST /orgs/acme/repos": () =>
           new Response(JSON.stringify({ message: "Validation Failed" }), {
             status: 422,
           }),
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
       const err = await gh
-        .createOrgRepo(INST, "vetra-apps", "shop", "")
+        .createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", "")
         .catch((e: unknown) => e);
       expect(err).not.toBeInstanceOf(RepoNameTakenError);
       expect(err).toMatchObject({ status: 422 });
+    });
+
+    it("createRepoAsUser surfaces GitHub's 403 with its status", async () => {
+      const f = fakeFetch({
+        "POST /orgs/acme/repos": () =>
+          new Response(JSON.stringify({ message: "Must have admin rights" }), {
+            status: 403,
+          }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await expect(
+        gh.createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", ""),
+      ).rejects.toMatchObject({ status: 403 });
+    });
+
+    it("addRepoToInstallation PUTs with the user token; 204 and 304 are fine", async () => {
+      const f = fakeFetch({
+        "PUT /user/installations/88/repositories/5": () =>
+          new Response(null, { status: 204 }),
+        "PUT /user/installations/88/repositories/6": () =>
+          new Response(null, { status: 304 }),
+        "PUT /user/installations/88/repositories/7": () =>
+          new Response("nope", { status: 403 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      await gh.addRepoToInstallation("ghu_user", INST, "5");
+      await gh.addRepoToInstallation("ghu_user", INST, "6");
+      await expect(
+        gh.addRepoToInstallation("ghu_user", INST, "7"),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(f.calls[0]).toMatchObject({
+        method: "PUT",
+        url: "https://api.github.com/user/installations/88/repositories/5",
+        auth: "token ghu_user",
+      });
+    });
+
+    it("getInstallationRepositorySelection reads the installation with the app JWT", async () => {
+      const f = fakeFetch({
+        "GET /app/installations/88": () =>
+          Response.json({ id: 88, repository_selection: "selected" }),
+        "GET /app/installations/89": () =>
+          Response.json({ id: 89, repository_selection: "all" }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      expect(await gh.getInstallationRepositorySelection(INST)).toBe(
+        "selected",
+      );
+      expect(await gh.getInstallationRepositorySelection("89")).toBe("all");
+      f.impl.mockImplementationOnce(async () => Response.json({ id: 90 }));
+      await expect(
+        gh.getInstallationRepositorySelection("90"),
+      ).rejects.toBeInstanceOf(GithubHttpError);
+      expect(f.calls[0]).toMatchObject({
+        method: "GET",
+        url: "https://api.github.com/app/installations/88",
+        auth: "Bearer ghs_installation",
+      });
+    });
+
+    it("deleteRepoAsUser deletes with the user token and reports a 404 as not deleted", async () => {
+      const f = fakeFetch({
+        "DELETE /repos/acme/shop": () => new Response(null, { status: 204 }),
+      });
+      const gh = createGithubDeployApi(cfg, f.impl as never);
+      expect(await gh.deleteRepoAsUser("ghu_user", "acme/shop")).toBe(true);
+      expect(await gh.deleteRepoAsUser("ghu_user", "acme/gone")).toBe(false);
+      expect(
+        f.calls.map((c) => `${c.method} ${c.url} ${c.auth}`),
+      ).toStrictEqual([
+        "DELETE https://api.github.com/repos/acme/shop token ghu_user",
+        "DELETE https://api.github.com/repos/acme/gone token ghu_user",
+      ]);
     });
 
     it("deleteRepo deletes and treats 404 as done", async () => {
@@ -391,8 +462,8 @@ describe("GitHub deploy client", () => {
           new Response("not found", { status: 404 }),
       });
       const gh = createGithubDeployApi(cfg, f.impl as never);
-      await gh.deleteRepo(INST, "vetra-apps/shop");
-      await gh.deleteRepo(INST, "vetra-apps/gone");
+      expect(await gh.deleteRepo(INST, "vetra-apps/shop")).toBe(true);
+      expect(await gh.deleteRepo(INST, "vetra-apps/gone")).toBe(false);
       expect(f.calls.map((c) => `${c.method} ${c.url}`)).toStrictEqual([
         "DELETE https://api.github.com/repos/vetra-apps/shop",
         "DELETE https://api.github.com/repos/vetra-apps/gone",

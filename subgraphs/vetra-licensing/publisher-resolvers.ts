@@ -28,7 +28,7 @@ import { RenownProfileError, type AppProfileWrite, type RenownProfileRelay } fro
 import { authorisedLicences } from "./licence-view.js";
 import { grantLicense, replaceGrant, type PublisherGrantDeps } from "./issuers/publisher-grant.js";
 import { TermNotIssuableError, withLicenceLock } from "./issue.js";
-import { createInviteCode, listInviteCodes, setInviteCodeActive } from "./invite-codes.js";
+import { createInviteCode, listInviteCodes, setInviteCodeActive, setInviteCodeAnthropicKey, setInviteCodeLlmBudget } from "./invite-codes.js";
 import {
   AppTamperedError,
   InvalidPublisherInputError,
@@ -631,6 +631,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             expiresAt?: Opt<string>;
             maxUses?: Opt<number>;
             anthropicKey?: Opt<string>;
+            llmBudgetUsd?: Opt<number>;
           }>,
           ctx,
         ) => {
@@ -654,6 +655,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             expiresAt: a.input.expiresAt ?? null,
             maxUses: a.input.maxUses ?? null,
             anthropicKeyCiphertext,
+            llmBudgetUsd: a.input.llmBudgetUsd ?? null,
             now: deps.now(),
           });
         },
@@ -664,6 +666,35 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           const appId = await owned(a.appId, ctx, true);
           // Another app's code fails exactly like a missing one.
           if (!(await setInviteCodeActive(deps.codes, appId, a.code, a.active))) {
+            throw new UnknownInviteCodeError();
+          }
+          return true;
+        },
+      ),
+
+      setInviteCodeAnthropicKey: withCodes(
+        async (a: { appId: string; code: string; anthropicKey?: Opt<string> }, ctx) => {
+          const appId = await owned(a.appId, ctx, true);
+          // null, "" or whitespace clears the key.
+          const key = a.anthropicKey?.trim();
+          let ciphertext: string | null = null;
+          if (key) {
+            if (!deps.keyVault) throw new KeyStorageUnavailableError();
+            ciphertext = await deps.keyVault.encrypt(key);
+          }
+          // Another app's code fails exactly like a missing one.
+          if (!(await setInviteCodeAnthropicKey(deps.codes, appId, a.code, ciphertext))) {
+            throw new UnknownInviteCodeError();
+          }
+          return true;
+        },
+      ),
+
+      setInviteCodeLlmBudget: withCodes(
+        async (a: { appId: string; code: string; llmBudgetUsd?: Opt<number> }, ctx) => {
+          const appId = await owned(a.appId, ctx, true);
+          // Another app's code fails exactly like a missing one.
+          if (!(await setInviteCodeLlmBudget(deps.codes, appId, a.code, a.llmBudgetUsd ?? null))) {
             throw new UnknownInviteCodeError();
           }
           return true;

@@ -76,10 +76,6 @@ export async function createStudioEnvironmentDoc(
           // The env's own document id, so the agent (and the studio's Deploy
           // view via studio.config.json) can scope GitHub connections to it.
           { name: "VETRA_ENVIRONMENT_ID", value: documentId, isSecret: false },
-          // Gate agent work on a credential: an unclaimed (key-less) warm pod
-          // refuses to run until a claim injects the key — so "no key" is the
-          // lock, complementing/replacing the network policy.
-          { name: "VETRA_REQUIRE_API_KEY", value: "true", isSecret: false },
           // Point the agent's env-creation/deploy at the right switchboard.
           // Without this, vetra-cli falls to its staging default, so prod warm
           // studios would create environments on staging.
