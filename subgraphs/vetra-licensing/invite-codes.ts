@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import type { Kysely } from "kysely";
+import { MAX_LLM_BUDGET_USD, isValidLlmBudget, roundUsd } from "../../shared/llm-budget.js";
 import type { InviteCodes, InviteRedemptions, VetraLicensingDB } from "./db/schema.js";
 
 /**
@@ -35,6 +36,7 @@ export interface InviteCodeView {
   maxUses: number | null;
   redemptions: number;
   hasAnthropicKey: boolean;
+  llmBudgetUsd: number | null;
   createdAt: string;
 }
 
@@ -86,6 +88,7 @@ function view(row: InviteCodes, redemptions: number): InviteCodeView {
     maxUses: row.max_uses,
     redemptions,
     hasAnthropicKey: row.anthropic_key_ciphertext !== null,
+    llmBudgetUsd: row.llm_budget_usd ?? null,
     createdAt: row.created_at,
   };
 }
@@ -100,9 +103,11 @@ export async function createInviteCode(
     expiresAt: string | null;
     maxUses: number | null;
     anthropicKeyCiphertext: string | null;
+    llmBudgetUsd?: number | null;
     now: string;
   },
 ): Promise<InviteCodeView> {
+  const llmBudgetUsd = llmBudgetOf(input.llmBudgetUsd);
   if (input.code !== null) {
     const code = normalizeCode(input.code);
     if (!code) throw new InvalidCodeInputError("code must not be empty");
@@ -127,6 +132,7 @@ export async function createInviteCode(
       expires_at: expiresAt,
       max_uses: input.maxUses,
       anthropic_key_ciphertext: input.anthropicKeyCiphertext,
+      llm_budget_usd: llmBudgetUsd,
       created_at: input.now,
       legacy_case_insensitive: false,
     };
@@ -175,6 +181,37 @@ export async function setInviteCodeAnthropicKey(
   const res = await db
     .updateTable("invite_codes")
     .set({ anthropic_key_ciphertext: anthropicKeyCiphertext })
+    .where("code", "=", normalizeCode(code))
+    .where("app_id", "=", appId)
+    .executeTakeFirst();
+  return Number(res.numUpdatedRows) > 0;
+}
+
+/** A budget input as stored: null stays null, the rest rounded to cents; out of range is refused. */
+function llmBudgetOf(v: number | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  if (!isValidLlmBudget(v)) {
+    throw new InvalidCodeInputError(`llmBudgetUsd must be between 0 and ${MAX_LLM_BUDGET_USD}`);
+  }
+  return roundUsd(v);
+}
+
+/**
+ * Sets (USD) or clears (null: the deployment default applies) the monthly LLM
+ * budget on an existing code. False when the code does not exist or belongs to
+ * another app. Licences take their budget from the code they were redeemed
+ * from, so this reaches existing holders (the vetra-llm sweeper applies it).
+ */
+export async function setInviteCodeLlmBudget(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+  code: string,
+  llmBudgetUsd: number | null,
+): Promise<boolean> {
+  const budget = llmBudgetOf(llmBudgetUsd);
+  const res = await db
+    .updateTable("invite_codes")
+    .set({ llm_budget_usd: budget })
     .where("code", "=", normalizeCode(code))
     .where("app_id", "=", appId)
     .executeTakeFirst();
@@ -323,6 +360,14 @@ export async function keyCiphertextForCode(
   code: string,
 ): Promise<string | null> {
   return (await getCode(db, code))?.anthropic_key_ciphertext ?? null;
+}
+
+/** The monthly LLM budget (USD) set on a code; null when unset or the code is unknown. */
+export async function llmBudgetForCode(
+  db: Kysely<VetraLicensingDB>,
+  code: string,
+): Promise<number | null> {
+  return (await getCode(db, code))?.llm_budget_usd ?? null;
 }
 
 /**

@@ -55,6 +55,8 @@ export const subscriptionsSchema: DocumentNode = gql`
     "The end of the licence named by licenseId."
     expires: String
     hasAttachedKey: Boolean!
+    "The effective monthly LLM budget (USD) of the usable studio licence, through its code chain or the deployment default; 0 without one (no Vetra key)."
+    llmBudgetUsd: Float!
   }
 
   input RedeemInviteCodeInput {

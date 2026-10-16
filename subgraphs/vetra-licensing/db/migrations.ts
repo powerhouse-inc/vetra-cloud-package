@@ -30,7 +30,7 @@ async function addColumnIfMissing(
   db: Kysely<any>,
   table: string,
   column: string,
-  type: "varchar(255)" | "text" | "boolean",
+  type: "varchar(255)" | "text" | "boolean" | "double precision",
   build?: ColumnDefinitionBuilderCallback,
 ): Promise<void> {
   const schema = namespaceSchema(db, table);
@@ -199,6 +199,10 @@ export async function up(db: Kysely<any>): Promise<void> {
   await addColumnIfMissing(db, "invite_codes", "legacy_case_insensitive", "boolean", (c) =>
     c.notNull().defaultTo(false),
   );
+  // The monthly LLM budget (USD) a licence redeemed from this code gets for
+  // its Studio's OpenRouter key; null = the deployment default. double
+  // precision, not numeric: it must read back as a number.
+  await addColumnIfMissing(db, "invite_codes", "llm_budget_usd", "double precision");
 
   await db.schema.createTable("invite_redemptions")
     .addColumn("code", "varchar(255)", (c) => c.notNull())

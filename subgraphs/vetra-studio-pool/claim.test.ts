@@ -1,11 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { claimWarmEnvironment } from "./claim.js";
+import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 
-const SECRET_NAMES = [
-  "ANTHROPIC_API_KEY",
-  "VETRA_ANTHROPIC_API_KEY",
-  "VETRA_CLI_ANTHROPIC_API_KEY",
-];
+const LEGACY_NAMES = ["ANTHROPIC_API_KEY", "VETRA_ANTHROPIC_API_KEY", "VETRA_CLI_ANTHROPIC_API_KEY"];
 
 type ClaimedEnv = {
   id: string;
@@ -13,7 +9,7 @@ type ClaimedEnv = {
   subdomain: string;
   poolState: string;
 };
-type SecretEntry = { key: string; value: string };
+type SecretEntry = { key: string; value: string; secret?: boolean };
 const WARM_STATE = { owner: null, ownerOrgId: null, services: [] };
 
 function deps(over: Partial<any> = {}) {
@@ -28,9 +24,13 @@ function deps(over: Partial<any> = {}) {
         poolState: "CLAIMED",
       })),
     },
-    getKeyForDid: vi.fn<(...args: unknown[]) => Promise<string | null>>(
-      async () => "sk-ant-real",
-    ),
+    hasStudioAccess: vi.fn(async (_did: string) => true),
+    grantLlmKey: vi.fn(async (_env: string, _did: string) => ({
+      key: "sk-or-v1-real",
+      model: "anthropic/claude-sonnet-4.6",
+    })),
+    releaseLlmKey: vi.fn(async (_env: string) => {}),
+    legacyAnthropicKey: vi.fn(async (_did: string) => "sk-ant-real" as string | null),
     setOwner: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
     replaceTenantConfig: vi.fn<
       (tenantId: string, state: unknown, entries: SecretEntry[]) => Promise<void>
@@ -47,10 +47,11 @@ function deps(over: Partial<any> = {}) {
 }
 
 describe("claimWarmEnvironment", () => {
-  it("returns null when the caller has no attached key (without consuming an env)", async () => {
-    const d = deps({ getKeyForDid: vi.fn(async () => null) });
+  it("returns null without a usable studio licence (without consuming an env or minting a key)", async () => {
+    const d = deps({ hasStudioAccess: vi.fn(async () => false) });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
     expect(d.claimDb.claimOneAvailable).not.toHaveBeenCalled();
+    expect(d.grantLlmKey).not.toHaveBeenCalled();
   });
 
   it("returns null when no env is available", async () => {
@@ -61,10 +62,11 @@ describe("claimWarmEnvironment", () => {
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
   });
 
-  it("looks up the key by full DID; sets owner + claims by derived address", async () => {
+  it("gates on the full DID; grants the key for the claimed env; sets owner + claims by derived address", async () => {
     const d = deps();
     const res = await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER");
-    expect(d.getKeyForDid).toHaveBeenCalledWith("did:pkh:eip155:1:0xCALLER");
+    expect(d.hasStudioAccess).toHaveBeenCalledWith("did:pkh:eip155:1:0xCALLER");
+    expect(d.grantLlmKey).toHaveBeenCalledWith("doc-1", "did:pkh:eip155:1:0xCALLER");
     expect(d.claimDb.claimOneAvailable).toHaveBeenCalledWith(
       "0xcaller",
       "0.0.1-dev.19",
@@ -78,28 +80,123 @@ describe("claimWarmEnvironment", () => {
     });
   });
 
-  it("writes all secrets + ADMINS in ONE batch (single notify → single pod bounce)", async () => {
+  it("writes the model key, its model, legacy keys, ADMINS and the session secret in ONE batch", async () => {
     const d = deps();
     await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCALLER");
-    // Exactly one batched write — NOT one-per-key (which would bounce the pod
-    // once per secret).
     expect(d.replaceTenantConfig).toHaveBeenCalledTimes(1);
     const [tenantId, state, entries] = d.replaceTenantConfig.mock.calls[0];
-    // The document's own config is re-derived from its state in the same write.
     expect(state).toBe(WARM_STATE);
     expect(tenantId).toBe("warm-newt-aaaa1111-aaaa1111");
-    // The three Anthropic key names all carry the resolved key value...
-    for (const name of SECRET_NAMES) {
-      expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
-    }
-    // ...and ADMINS carries the claimant's lowercased address, so the owner is
-    // an admin of the embedded switchboard without a gitops re-render.
+    expect(entries).toContainEqual({ key: "OPENROUTER_API_KEY", value: "sk-or-v1-real" });
+    // The model is a plain env var, not a secret.
+    expect(entries).toContainEqual({ key: "VETRA_MODEL", value: "anthropic/claude-sonnet-4.6", secret: false });
+    // Transition only (removed in phase 3): agents built before OpenRouter still read these.
+    for (const name of LEGACY_NAMES) expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
-    // Per-env session-export secret: present with a 64-char lowercase hex value.
-    expect(
-      entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value,
-    ).toMatch(/^[0-9a-f]{64}$/);
-    expect(entries).toHaveLength(5);
+    expect(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
+    expect(entries).toHaveLength(7);
+  });
+
+  it("still claims without an LLM budget or legacy key: the Studio comes up in connect-a-model mode", async () => {
+    const d = deps({ grantLlmKey: vi.fn(async () => null), legacyAnthropicKey: vi.fn(async () => null) });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).not.toBeNull();
+    const [, , entries] = d.replaceTenantConfig.mock.calls[0];
+    expect(entries.map((e) => e.key).sort()).toStrictEqual(["ADMINS", "VETRA_SESSION_EXPORT_SECRET"]);
+    expect(d.releaseLlmKey).not.toHaveBeenCalled();
+  });
+
+  it("releases the minted key and deletes the env when the claim fails after the grant", async () => {
+    const d = deps();
+    d.replaceTenantConfig = vi.fn(async () => {
+      throw new Error("inject boom");
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.releaseLlmKey).toHaveBeenCalledWith("doc-1");
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("releases the minted key when setOwner fails after the grant", async () => {
+    const d = deps({
+      setOwner: vi.fn(async () => {
+        throw new Error("owner boom");
+      }),
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.releaseLlmKey).toHaveBeenCalledWith("doc-1");
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("deletes the env even when the key release itself fails", async () => {
+    const d = deps({
+      releaseLlmKey: vi.fn(async () => {
+        throw new Error("release boom");
+      }),
+    });
+    d.replaceTenantConfig = vi.fn(async () => {
+      throw new Error("inject boom");
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("releases a key the broker minted before the grant threw (secret write failed)", async () => {
+    const live = new Set<string>();
+    const d = deps({
+      grantLlmKey: vi.fn(async (env: string) => {
+        live.add(env);
+        throw new Error("secret write failed");
+      }),
+      releaseLlmKey: vi.fn(async (env: string) => {
+        live.delete(env);
+      }),
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.replaceTenantConfig).not.toHaveBeenCalled();
+    expect(d.releaseLlmKey).toHaveBeenCalledWith("doc-1");
+    expect(live.size).toBe(0);
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+  });
+
+  it("legacyKeyFor: flag on looks the key up, flag off never does", async () => {
+    const lookup = vi.fn(async () => "sk-ant-real" as string | null);
+    expect(await legacyKeyFor(true, lookup, "did:x")).toBe("sk-ant-real");
+    expect(lookup).toHaveBeenCalledWith("did:x");
+    lookup.mockClear();
+    expect(await legacyKeyFor(false, lookup, "did:x")).toBeNull();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("flag off: no Anthropic names are written", async () => {
+    const d = deps({ legacyAnthropicKey: (did: string) => legacyKeyFor(false, async () => "sk-ant-real", did) });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    const [, , entries] = d.replaceTenantConfig.mock.calls[0];
+    for (const n of LEGACY_NAMES) expect(entries.map((e) => e.key)).not.toContain(n);
+  });
+
+  it("logs only the error name when the key release fails", async () => {
+    const d = deps({
+      releaseLlmKey: vi.fn(async () => {
+        throw new Error("boom sk-or-v1-leak");
+      }),
+    });
+    d.replaceTenantConfig = vi.fn(async () => {
+      throw new Error("inject boom");
+    });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    const lines = d.logger.warn.mock.calls.flat().map(String);
+    expect(lines.some((l) => l.includes("key release failed"))).toBe(true);
+    for (const l of lines) expect(l).not.toContain("sk-or-");
+  });
+
+  it("never logs the model key", async () => {
+    const d = deps();
+    d.replaceTenantConfig = vi.fn(async () => {
+      throw new Error("upstream said sk-or-v1-leak");
+    });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    const lines = [...d.logger.info.mock.calls, ...d.logger.warn.mock.calls, ...d.logger.error.mock.calls].flat();
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) expect(String(line)).not.toMatch(/sk-or-|sk-ant-/);
   });
 
   it("injects the secrets BEFORE transferring ownership (setOwner)", async () => {

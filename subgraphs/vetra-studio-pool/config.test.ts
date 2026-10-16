@@ -10,6 +10,7 @@ describe("loadPoolConfig", () => {
       registry: "https://registry.vetra.io",
       switchboardUrl: "https://switchboard.staging.vetra.io",
       enabled: false,
+      legacyAnthropicKey: true,
     });
   });
 
@@ -29,6 +30,7 @@ describe("loadPoolConfig", () => {
       registry: "https://r",
       switchboardUrl: "https://sb",
       enabled: true,
+      legacyAnthropicKey: true,
     });
   });
 
@@ -40,5 +42,10 @@ describe("loadPoolConfig", () => {
     const c = loadPoolConfig({ STUDIO_POOL_SIZE: "abc" });
     expect(c.size).toBe(5);
     expect(c.enabled).toBe(false);
+  });
+
+  it("turns the legacy Anthropic write off after cut-over", () => {
+    expect(loadPoolConfig({ STUDIO_POOL_LEGACY_ANTHROPIC_KEY: "false" }).legacyAnthropicKey).toBe(false);
+    expect(loadPoolConfig({ STUDIO_POOL_LEGACY_ANTHROPIC_KEY: "true" }).legacyAnthropicKey).toBe(true);
   });
 });

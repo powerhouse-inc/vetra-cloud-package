@@ -103,6 +103,7 @@ describe("subgraph schema composition", () => {
       "createInviteCode",
       "setInviteCodeActive",
       "setInviteCodeAnthropicKey",
+      "setInviteCodeLlmBudget",
       "addToAllowList",
       "removeFromAllowList",
       "updateAppProfile",

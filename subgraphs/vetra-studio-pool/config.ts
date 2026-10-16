@@ -8,6 +8,8 @@ export interface PoolConfig {
    * studios target the prod switchboard instead of the staging default. */
   switchboardUrl: string;
   enabled: boolean;
+  /** STUDIO_POOL_LEGACY_ANTHROPIC_KEY: write the licence's Anthropic key on claim (transition; "false" after cut-over, removed in phase 3). */
+  legacyAnthropicKey: boolean;
 }
 
 const DEFAULTS = {
@@ -34,5 +36,6 @@ export function loadPoolConfig(env: Record<string, string | undefined>): PoolCon
     registry: env.STUDIO_POOL_REGISTRY ?? DEFAULTS.registry,
     switchboardUrl: env.STUDIO_POOL_SWITCHBOARD_URL ?? DEFAULTS.switchboardUrl,
     enabled: explicitValid && parsed > 0,
+    legacyAnthropicKey: env.STUDIO_POOL_LEGACY_ANTHROPIC_KEY !== "false",
   };
 }

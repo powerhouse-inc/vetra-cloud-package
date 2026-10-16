@@ -382,6 +382,37 @@ describe("vetraPublisher end to end", () => {
     expect((await h.db.selectFrom("invite_codes").select("anthropic_key_ciphertext").where("code", "=", code).executeTakeFirstOrThrow()).anthropic_key_ciphertext).toBeNull();
   });
 
+  it("creates a code with a monthly LLM budget, then sets, changes and clears it", async () => {
+    const created = (await m("createInviteCode", {
+      input: { appId: APP, kind: "2026-pro", code: "Budget-0001", llmBudgetUsd: 20 },
+    })) as { code: string; llmBudgetUsd: number | null };
+    expect(created.llmBudgetUsd).toBe(20);
+    const budget = async () =>
+      ((await q("inviteCodes", { appId: APP })) as { code: string; llmBudgetUsd: number | null }[]).find(
+        (x) => x.code === "Budget-0001",
+      )?.llmBudgetUsd;
+    expect(await m("setInviteCodeLlmBudget", { appId: APP, code: "Budget-0001", llmBudgetUsd: 35.5 })).toBe(true);
+    expect(await budget()).toBe(35.5);
+    expect(await m("setInviteCodeLlmBudget", { appId: APP, code: " Budget-0001 ", llmBudgetUsd: null })).toBe(true);
+    expect(await budget()).toBeNull();
+  });
+
+  it("refuses a bad budget, another app's code and a non-owner", async () => {
+    await m("createInviteCode", { input: { appId: APP, kind: "2026-pro", code: "Budget-0002" } });
+    expect(await codeOf(m("setInviteCodeLlmBudget", { appId: APP, code: "Budget-0002", llmBudgetUsd: -5 }))).toBe(
+      "INVALID_INPUT",
+    );
+    expect(await codeOf(m("setInviteCodeLlmBudget", { appId: HELD, code: "Budget-0002", llmBudgetUsd: 5 }))).toBe(
+      "NOT_FOUND",
+    );
+    const other = r.VetraPublisherMutations.setInviteCodeLlmBudget!(
+      {},
+      { appId: APP, code: "Budget-0002", llmBudgetUsd: 5 },
+      asUser(OTHER),
+    );
+    expect(await codeOf(other)).toBe("NOT_FOUND");
+  });
+
   it("an attached key without key storage is refused before anything is stored", async () => {
     const noVault = h.build({ keyVault: null });
     const call = noVault.VetraPublisherMutations.createInviteCode!({}, { input: { appId: APP, kind: "2026-pro", code: "NoVault-01", anthropicKey: "sk-ant-y" } }, asOwner);

@@ -5,3 +5,4 @@ export * as VetraHousekeepingSubgraph from "./vetra-housekeeping/index.js";
 export * as VetraLicensingSubgraph from "./vetra-licensing/index.js";
 export * as VetraStudioPoolSubgraph from "./vetra-studio-pool/index.js";
 export * as VetraAppsSubgraph from "./vetra-apps/index.js";
+export * as VetraLlmSubgraph from "./vetra-llm/index.js";
