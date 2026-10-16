@@ -38,7 +38,10 @@ export interface ProcessBroker {
 export function createProcessBroker(input: {
   db: Kysely<VetraLlmDB>;
   transit: OpenBaoTransitClient | null;
-  secrets: Pick<SecretsService, "setSecret" | "setEnvVar"> | null;
+  secrets: Pick<
+    SecretsService,
+    "setSecret" | "setEnvVar" | "deleteSecret"
+  > | null;
   studio: StudioAccessDeps;
   env: Record<string, string | undefined>;
 }): ProcessBroker {

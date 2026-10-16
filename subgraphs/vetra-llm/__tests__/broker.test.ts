@@ -201,6 +201,9 @@ describe("provisionVetraKey", () => {
     });
     expect([...s.fake.keys.values()][0].disabled).toBe(true);
     expect((await s.store.get(ENV))?.status).toBe("DISABLED");
+    // The tenant must not keep a disabled key: the agent falls back to
+    // no-model mode instead of 401ing.
+    expect(s.secrets.secret(TENANT, OPENROUTER_KEY_SECRET)).toBeUndefined();
   });
 
   it("re-enables a disabled key and applies a changed budget", async () => {

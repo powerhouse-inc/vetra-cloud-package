@@ -62,7 +62,10 @@ export interface BrokerDeps {
   openrouter: OpenRouterApi | null;
   /** Null without OPENBAO_ADDR. */
   keyVault: KeyVault | null;
-  secrets: Pick<SecretsService, "setSecret" | "setEnvVar"> | null;
+  secrets: Pick<
+    SecretsService,
+    "setSecret" | "setEnvVar" | "deleteSecret"
+  > | null;
   /** The holder's licence gate and effective monthly budget (studioLlmBudgetForDid). */
   budgetForDid(did: string): Promise<StudioLlmBudget>;
   cfg: Pick<LlmConfig, "defaultModel" | "workspaceId">;
@@ -82,7 +85,9 @@ export interface LlmBroker {
   }): Promise<VetraKeyGrant | null>;
   /**
    * ensureVetraKey + OPENROUTER_API_KEY / VETRA_MODEL into the tenant; a key
-   * minted here is deleted when the write fails.
+   * minted here is deleted when the write fails. When there is no grant
+   * (licence ended, budget 0), OPENROUTER_API_KEY is removed so the agent
+   * falls back to no-model mode instead of 401ing with a disabled key.
    */
   provisionVetraKey(input: {
     environmentId: string;
@@ -298,7 +303,19 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         if (!d.secrets) throw notConfigured("tenant secrets (OPENBAO_ADDR)");
         const env = input.environmentId;
         const grant = await ensureLocked(input);
-        if (!grant) return { connected: false, llmBudgetUsd: 0 };
+        if (!grant) {
+          // The agent must fall back to no-model mode, not 401 with a disabled
+          // key. A failed delete leaves the wrong error mode until the sweeper
+          // retries it (<=15 min); the key itself is already disabled.
+          try {
+            await d.secrets.deleteSecret(input.tenantId, OPENROUTER_KEY_SECRET);
+          } catch (err) {
+            d.logger.warn(
+              `[vetra-llm] removing the key secret of ${env} failed: ${safe(err)}`,
+            );
+          }
+          return { connected: false, llmBudgetUsd: 0 };
+        }
         try {
           // The key goes last: when any write fails, the tenant never holds
           // a key the undo below is about to delete.
