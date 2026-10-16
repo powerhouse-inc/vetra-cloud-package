@@ -206,6 +206,37 @@ describe("provisionVetraKey", () => {
     expect(s.secrets.secret(TENANT, OPENROUTER_KEY_SECRET)).toBeUndefined();
   });
 
+  it("no grant and no Vetra key: leaves the tenant's own key alone", async () => {
+    const s = await setup({ allowed: false, budgetUsd: 0 });
+    await s.secrets.setSecret(TENANT, OPENROUTER_KEY_SECRET, "user-own-key");
+    await provision(s.broker);
+    expect(s.secrets.deleteSecret).not.toHaveBeenCalled();
+    expect(s.secrets.secret(TENANT, OPENROUTER_KEY_SECRET)).toBe(
+      "user-own-key",
+    );
+  });
+
+  it("no grant: a failed secret delete rejects and the next call retries it", async () => {
+    const s = await setup();
+    await provision(s.broker);
+    s.budgetForDid.mockResolvedValue({ allowed: false, budgetUsd: 0 });
+    s.secrets.deleteSecret.mockRejectedValueOnce(new Error("secrets down"));
+    await expect(provision(s.broker)).rejects.toThrow("secrets down");
+    expect((await s.store.get(ENV))?.status).toBe("DISABLED");
+    await provision(s.broker);
+    expect(s.secrets.secret(TENANT, OPENROUTER_KEY_SECRET)).toBeUndefined();
+  });
+
+  it("re-enables a key disabled on OpenRouter while the row stayed ACTIVE", async () => {
+    const s = await setup();
+    await provision(s.broker);
+    const key = [...s.fake.keys.values()][0];
+    key.disabled = true;
+    await provision(s.broker);
+    expect(key.disabled).toBe(false);
+    expect(s.fake.keys.size).toBe(1);
+  });
+
   it("re-enables a disabled key and applies a changed budget", async () => {
     const s = await setup();
     await provision(s.broker);

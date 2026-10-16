@@ -205,9 +205,13 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
             limitUsd: budget.budgetUsd,
             disabled: false,
           });
-        } else if (!(await openrouter.getKey(held.key_hash))) {
-          // Nothing to update, so confirm the key still exists.
-          throw new OpenRouterError(404, "key not found");
+        } else {
+          // Nothing to update, so confirm the key still exists and is enabled
+          // (a disable may have landed on OpenRouter while our row update failed).
+          const live = await openrouter.getKey(held.key_hash);
+          if (!live) throw new OpenRouterError(404, "key not found");
+          if (live.disabled)
+            await openrouter.updateKey(held.key_hash, { disabled: false });
         }
         await d.store.update(env, {
           status: "ACTIVE",
@@ -305,15 +309,11 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         const grant = await ensureLocked(input);
         if (!grant) {
           // The agent must fall back to no-model mode, not 401 with a disabled
-          // key. A failed delete leaves the wrong error mode until the sweeper
-          // retries it (<=15 min); the key itself is already disabled.
-          try {
+          // key. Only a Studio that held a Vetra key loses the secret; one with
+          // no row may carry the user's own key. A failed delete throws: the
+          // row is already DISABLED, so the sweeper won't retry it, the caller does.
+          if ((await d.store.get(env))?.key_hash)
             await d.secrets.deleteSecret(input.tenantId, OPENROUTER_KEY_SECRET);
-          } catch (err) {
-            d.logger.warn(
-              `[vetra-llm] removing the key secret of ${env} failed: ${safe(err)}`,
-            );
-          }
           return { connected: false, llmBudgetUsd: 0 };
         }
         try {
