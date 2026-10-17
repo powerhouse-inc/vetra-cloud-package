@@ -535,9 +535,14 @@ const CLINT_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
     // studios/node) and limit 8Gi->6Gi (~20% over the observed max, so bursts
     // still work and no realistic OOM). CPU unchanged. Node heap 6144->4608
     // (~75% of the 6Gi cap).
-    requests: { cpu: "750m", memory: "3Gi" },
-    limits: { cpu: "4", memory: "6Gi" },
-    nodeMaxOldSpaceMb: 4608,
+    // 2026-10-17: full-suite builds (agent + `ph vetra --watch` + tsc/test
+    // workers, each a Node process) OOMKilled a studio at 6Gi. Limit -> 16Gi
+    // for those bursts; request 3Gi -> 4Gi. The heap cap is PER PROCESS
+    // (NODE_OPTIONS reaches every child), so it stays well under the pod cap
+    // at 6144MB: no single process can take the whole 16Gi.
+    requests: { cpu: "750m", memory: "4Gi" },
+    limits: { cpu: "4", memory: "16Gi" },
+    nodeMaxOldSpaceMb: 6144,
   },
 };
 
