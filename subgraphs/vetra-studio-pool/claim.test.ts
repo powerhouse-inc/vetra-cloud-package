@@ -28,6 +28,7 @@ function deps(over: Partial<any> = {}) {
     grantLlmKey: vi.fn(async (_env: string, _did: string) => ({
       key: "sk-or-v1-real",
       model: "anthropic/claude-sonnet-4.6",
+      fallbackModels: ["openai/gpt-5"],
     })),
     releaseLlmKey: vi.fn(async (_env: string) => {}),
     legacyAnthropicKey: vi.fn(async (_did: string) => "sk-ant-real" as string | null),
@@ -94,7 +95,8 @@ describe("claimWarmEnvironment", () => {
     for (const name of LEGACY_NAMES) expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
     expect(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
-    expect(entries).toHaveLength(7);
+    expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
+    expect(entries).toHaveLength(8);
   });
 
   it("still claims without an LLM budget or legacy key: the Studio comes up in connect-a-model mode", async () => {

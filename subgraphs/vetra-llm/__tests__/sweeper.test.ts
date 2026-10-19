@@ -45,6 +45,7 @@ async function setup(
       async (did: string) =>
         opts.budgets?.[did] ?? { allowed: true, budgetUsd: 20 },
     ),
+    budgetOverride: async () => null,
     envOf: async (id) =>
       opts.envs && id in opts.envs
         ? opts.envs[id]

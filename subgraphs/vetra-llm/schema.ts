@@ -53,6 +53,13 @@ export const schema: DocumentNode = gql`
       dryRun: Boolean = true
       removeAnthropicSecrets: Boolean = false
     ): StudioLlmMigrationReport!
+    "Operators of the Studio only. Asks the Vetra team for more LLM budget. True when a request was recorded; false when one is already open (at most one per Studio per 24 h)."
+    requestStudioLlmBudget(environmentId: String!): Boolean!
+    "Platform admins only. Sets the Studio's monthly LLM budget (wins over invite-code and default budgets), updates its key's limit now and marks its open budget requests handled."
+    setStudioLlmBudget(
+      environmentId: String!
+      limitUsd: Float!
+    ): StudioLlmUsage!
   }
 
   extend type Query {

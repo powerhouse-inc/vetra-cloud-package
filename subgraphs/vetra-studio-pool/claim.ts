@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { STUDIO_KEY_SECRET_NAMES } from "../vetra-licensing/subscriptions-resolvers.js";
-import { MODEL_VAR, OPENROUTER_KEY_SECRET } from "../vetra-llm/broker.js";
+import { MODEL_FALLBACKS_VAR, MODEL_VAR, OPENROUTER_KEY_SECRET } from "../vetra-llm/broker.js";
 import type { ClaimDb } from "./pool-db.js";
 
 const SECRET_RETRIES = 3;
@@ -19,7 +19,10 @@ export interface ClaimDeps {
    * has no budget or the broker is not configured: the Studio then serves in
    * connect-a-model mode.
    */
-  grantLlmKey: (environmentId: string, did: string) => Promise<{ key: string; model: string } | null>;
+  grantLlmKey: (
+    environmentId: string,
+    did: string,
+  ) => Promise<{ key: string; model: string; fallbackModels: string[] } | null>;
   /** Delete the env's Vetra key after a failed claim (the env is deleted too). */
   releaseLlmKey: (environmentId: string) => Promise<void>;
   /**
@@ -45,7 +48,8 @@ export interface ClaimDeps {
    * Anything written before the claim (and not declared by the document) is
    * gone. `entries` carry the model key and model, the legacy key names,
    * `ADMINS` (so the claimant is the embedded switchboard's admin without a
-   * gitops re-render) and the session-export secret.
+   * gitops re-render) and the session-export secret; the model entries
+   * include VETRA_MODEL_FALLBACKS.
    */
   replaceTenantConfig: (
     tenantId: string,
@@ -159,6 +163,8 @@ export async function claimWarmEnvironment(
         ? [
             { key: OPENROUTER_KEY_SECRET, value: llm.key },
             { key: MODEL_VAR, value: llm.model, secret: false },
+            // Always present (empty for none): the replace drops anything absent.
+            { key: MODEL_FALLBACKS_VAR, value: llm.fallbackModels.join(","), secret: false },
           ]
         : []),
       ...(anthropic ? STUDIO_KEY_SECRET_NAMES.map((key) => ({ key, value: anthropic })) : []),

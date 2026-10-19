@@ -4,7 +4,7 @@ import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-ser
 import { didForAddress } from "../vetra-licensing/did.js";
 import type { StudioLlmBudget } from "../vetra-licensing/studio-access.js";
 import { STUDIO_KEY_SECRET_NAMES } from "../vetra-licensing/subscriptions-resolvers.js";
-import type { ProvisionResult } from "./broker.js";
+import { studioBudget, type ProvisionResult } from "./broker.js";
 
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 
@@ -38,6 +38,8 @@ export function claimedStudiosFrom(
 export interface MigrationDeps {
   listClaimedStudios(): Promise<ClaimedStudio[]>;
   budgetForDid(did: string): Promise<StudioLlmBudget>;
+  /** The Studio's admin budget override; wins over the licence's budget. */
+  budgetOverride(environmentId: string): Promise<number | null>;
   provision(input: {
     environmentId: string;
     tenantId: string;
@@ -86,7 +88,7 @@ export async function migrateStudiosToOpenRouter(
     report.scanned += 1;
     try {
       const ownerDid = didForAddress(s.owner);
-      const budget = await d.budgetForDid(ownerDid);
+      const budget = await studioBudget(d, ownerDid, s.id);
       if (!budget.allowed) report.noLicence.push(s.id);
       else if (budget.budgetUsd <= 0) report.noBudget.push(s.id);
       else if (opts.dryRun) report.provisioned.push(s.id);

@@ -8,6 +8,7 @@ import {
   OPENROUTER_KEY_SECRET,
   llmLockKey,
   sameUsd,
+  studioBudget,
 } from "./broker.js";
 import type { OpenRouterApi } from "./openrouter.js";
 import type { LlmKeyStore } from "./store.js";
@@ -28,6 +29,8 @@ export interface SweepDeps {
   keyVault: KeyVault;
   secrets: Pick<SecretsService, "setSecret" | "deleteSecret">;
   budgetForDid(did: string): Promise<StudioLlmBudget>;
+  /** The Studio's admin budget override; wins over the licence's budget. */
+  budgetOverride(environmentId: string): Promise<number | null>;
   /** The env's projection row; null when the env document is gone. */
   envOf(
     environmentId: string,
@@ -69,7 +72,7 @@ async function sweepRow(
     return;
   }
 
-  const budget = await d.budgetForDid(row.owner_did);
+  const budget = await studioBudget(d, row.owner_did, environmentId);
   if (!budget.allowed || budget.budgetUsd <= 0) {
     if (row.status === "ACTIVE") {
       await d.openrouter.updateKey(row.key_hash, { disabled: true });
@@ -143,7 +146,7 @@ async function sweepOrphans(
  * - a deleted or released Studio → its key is deleted;
  * - a licence no longer usable → the key is disabled and the secret removed;
  * - a renewed licence → the key is re-enabled, its limit updated and the secret written back;
- * - a changed budget → the limit is PATCHed;
+ * - a changed budget (licence or admin override) → the limit is PATCHed;
  * - `studio:` keys with no row → deleted, but only within this deployment's
  *   workspace and only once they are older than the grace window.
  *

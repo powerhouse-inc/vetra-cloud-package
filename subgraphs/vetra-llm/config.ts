@@ -17,6 +17,11 @@ export interface LlmConfig {
   workspaceId: string | null;
   /** VETRA_LLM_DEFAULT_MODEL: the model a new Studio key starts with. */
   defaultModel: string;
+  /**
+   * VETRA_LLM_FALLBACK_MODELS (comma-separated): written to every Studio as
+   * VETRA_MODEL_FALLBACKS alongside VETRA_MODEL; empty when unset.
+   */
+  fallbackModels: string[];
   /** OPENROUTER_BASE_URL: tests and local fakes only. */
   baseUrl: string;
 }
@@ -29,6 +34,10 @@ export function loadLlmConfig(
     managementKey: s("OPENROUTER_MANAGEMENT_KEY"),
     workspaceId: s("OPENROUTER_WORKSPACE_ID"),
     defaultModel: s("VETRA_LLM_DEFAULT_MODEL") ?? DEFAULT_STUDIO_MODEL,
+    fallbackModels: (env.VETRA_LLM_FALLBACK_MODELS ?? "")
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean),
     baseUrl: s("OPENROUTER_BASE_URL") ?? OPENROUTER_BASE_URL,
   };
 }

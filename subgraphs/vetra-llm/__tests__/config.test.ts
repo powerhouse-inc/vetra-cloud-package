@@ -7,6 +7,7 @@ describe("loadLlmConfig", () => {
       managementKey: null,
       workspaceId: null,
       defaultModel: "anthropic/claude-sonnet-4.6",
+      fallbackModels: [],
       baseUrl: "https://openrouter.ai/api/v1",
     });
     expect(DEFAULT_STUDIO_MODEL).toBe("anthropic/claude-sonnet-4.6");
@@ -18,12 +19,14 @@ describe("loadLlmConfig", () => {
         OPENROUTER_MANAGEMENT_KEY: " mgmt ",
         OPENROUTER_WORKSPACE_ID: "ws-1",
         VETRA_LLM_DEFAULT_MODEL: "openai/gpt-5",
+        VETRA_LLM_FALLBACK_MODELS: "a/b, c/d",
         OPENROUTER_BASE_URL: "http://fake",
       }),
     ).toStrictEqual({
       managementKey: "mgmt",
       workspaceId: "ws-1",
       defaultModel: "openai/gpt-5",
+      fallbackModels: ["a/b", "c/d"],
       baseUrl: "http://fake",
     });
     expect(

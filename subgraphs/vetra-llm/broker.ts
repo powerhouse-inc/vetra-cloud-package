@@ -13,6 +13,8 @@ import type { LlmKeyStore } from "./store.js";
 export const OPENROUTER_KEY_SECRET = "OPENROUTER_API_KEY";
 /** The tenant env var the agent reads as its main model (ph-clint: VETRA_ + model). */
 export const MODEL_VAR = "VETRA_MODEL";
+/** The agent's fallback models, comma-separated (VETRA_LLM_FALLBACK_MODELS); empty for none. */
+export const MODEL_FALLBACKS_VAR = "VETRA_MODEL_FALLBACKS";
 export const KEY_NAME_PREFIX = "studio:";
 /** Verified enum (daily | weekly | monthly | null) in https://openrouter.ai/openapi.yaml. */
 export const LIMIT_RESET = "monthly" as const;
@@ -38,6 +40,8 @@ export function nextMonthlyReset(now: Date): string {
 export interface VetraKeyGrant {
   key: string;
   model: string;
+  /** Written as VETRA_MODEL_FALLBACKS next to VETRA_MODEL. */
+  fallbackModels: string[];
   limitUsd: number;
   /** True when this call minted the key (an undo deletes it). */
   created: boolean;
@@ -68,7 +72,9 @@ export interface BrokerDeps {
   > | null;
   /** The holder's licence gate and effective monthly budget (studioLlmBudgetForDid). */
   budgetForDid(did: string): Promise<StudioLlmBudget>;
-  cfg: Pick<LlmConfig, "defaultModel" | "workspaceId">;
+  /** The Studio's admin budget override (USD/month); null when none. */
+  budgetOverride(environmentId: string): Promise<number | null>;
+  cfg: Pick<LlmConfig, "defaultModel" | "workspaceId" | "fallbackModels">;
   now(): Date;
   logger: Pick<Console, "info" | "warn" | "error">;
 }
@@ -98,6 +104,31 @@ export interface LlmBroker {
   releaseVetraKey(environmentId: string): Promise<void>;
   /** This month's spend against the limit; null without a key. Cached 60 s. */
   studioLlmUsage(environmentId: string): Promise<StudioLlmUsage | null>;
+  /**
+   * An admin override was written: set an ACTIVE key's limit to it now (a
+   * DISABLED key is left to the sweeper, which re-enables it with the
+   * override when the licence allows). Returns the fresh usage; without a
+   * key, the usage a new key would start with.
+   */
+  applyBudgetOverride(
+    environmentId: string,
+    limitUsd: number,
+  ): Promise<StudioLlmUsage>;
+}
+
+/**
+ * The Studio's effective monthly budget: the licence gates, then an admin
+ * override wins over the licence's invite-code or default budget.
+ */
+export async function studioBudget(
+  d: Pick<BrokerDeps, "budgetForDid" | "budgetOverride">,
+  did: string,
+  environmentId: string,
+): Promise<StudioLlmBudget> {
+  const budget = await d.budgetForDid(did);
+  if (!budget.allowed) return budget;
+  const override = await d.budgetOverride(environmentId);
+  return override === null ? budget : { allowed: true, budgetUsd: override };
 }
 
 /** A row whose key still exists on OpenRouter and can be decrypted. */
@@ -172,7 +203,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     const { openrouter, keyVault } = configured();
     const env = input.environmentId;
     usageCache.delete(env);
-    const budget = await d.budgetForDid(input.ownerDid);
+    const budget = await studioBudget(d, input.ownerDid, env);
     const row = await d.store.get(env);
     const now = d.now().toISOString();
     const held = heldRow(row);
@@ -222,6 +253,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         return {
           key: await keyVault.decrypt(held.key_ciphertext),
           model: held.model,
+          fallbackModels: d.cfg.fallbackModels,
           limitUsd: budget.budgetUsd,
           created: false,
           hash: held.key_hash,
@@ -270,6 +302,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     return {
       key: created.key,
       model,
+      fallbackModels: d.cfg.fallbackModels,
       limitUsd: budget.budgetUsd,
       created: true,
       hash,
@@ -288,6 +321,29 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     });
   }
 
+  async function usageOf(
+    environmentId: string,
+  ): Promise<StudioLlmUsage | null> {
+    const nowMs = d.now().getTime();
+    const hit = usageCache.get(environmentId);
+    if (hit && nowMs - hit.at < USAGE_CACHE_MS) return hit.value;
+    const row = await d.store.get(environmentId);
+    let value: StudioLlmUsage | null = null;
+    if (row && row.status !== "DELETED" && row.key_hash) {
+      const key = await configured().openrouter.getKey(row.key_hash);
+      value = {
+        source: row.source,
+        model: row.model,
+        usageUsd: key?.usageMonthly ?? 0,
+        limitUsd: key?.limit ?? row.limit_usd,
+        resetsAt:
+          row.limit_reset === LIMIT_RESET ? nextMonthlyReset(d.now()) : null,
+      };
+    }
+    usageCache.set(environmentId, { at: nowMs, value });
+    return value;
+  }
+
   return {
     ensureVetraKey: (input) =>
       withKeyLock(llmLockKey(input.environmentId), async () => {
@@ -296,6 +352,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
           ? {
               key: g.key,
               model: g.model,
+              fallbackModels: g.fallbackModels,
               limitUsd: g.limitUsd,
               created: g.created,
             }
@@ -320,6 +377,12 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
           // The key goes last: when any write fails, the tenant never holds
           // a key the undo below is about to delete.
           await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
+          // Always written, empty for none, so a removed list converges.
+          await d.secrets.setEnvVar(
+            input.tenantId,
+            MODEL_FALLBACKS_VAR,
+            grant.fallbackModels.join(","),
+          );
           await d.secrets.setSecret(
             input.tenantId,
             OPENROUTER_KEY_SECRET,
@@ -359,25 +422,36 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         releaseLocked(environmentId),
       ),
 
-    async studioLlmUsage(environmentId) {
-      const nowMs = d.now().getTime();
-      const hit = usageCache.get(environmentId);
-      if (hit && nowMs - hit.at < USAGE_CACHE_MS) return hit.value;
-      const row = await d.store.get(environmentId);
-      let value: StudioLlmUsage | null = null;
-      if (row && row.status !== "DELETED" && row.key_hash) {
-        const key = await configured().openrouter.getKey(row.key_hash);
-        value = {
-          source: row.source,
-          model: row.model,
-          usageUsd: key?.usageMonthly ?? 0,
-          limitUsd: key?.limit ?? row.limit_usd,
-          resetsAt:
-            row.limit_reset === LIMIT_RESET ? nextMonthlyReset(d.now()) : null,
-        };
-      }
-      usageCache.set(environmentId, { at: nowMs, value });
-      return value;
+    async applyBudgetOverride(environmentId, limitUsd) {
+      await withKeyLock(llmLockKey(environmentId), async () => {
+        usageCache.delete(environmentId);
+        const held = heldRow(await d.store.get(environmentId));
+        if (
+          !held ||
+          held.status !== "ACTIVE" ||
+          sameUsd(held.limit_usd, limitUsd)
+        )
+          return;
+        await configured().openrouter.updateKey(held.key_hash, { limitUsd });
+        await d.store.update(environmentId, {
+          limit_usd: limitUsd,
+          updated_at: d.now().toISOString(),
+        });
+        d.logger.info(
+          `[vetra-llm] key ${held.key_hash} of ${environmentId}: limit $${limitUsd}/month (override)`,
+        );
+      });
+      return (
+        (await usageOf(environmentId)) ?? {
+          source: "VETRA",
+          model: d.cfg.defaultModel,
+          usageUsd: 0,
+          limitUsd,
+          resetsAt: nextMonthlyReset(d.now()),
+        }
+      );
     },
+
+    studioLlmUsage: usageOf,
   };
 }
