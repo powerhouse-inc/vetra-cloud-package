@@ -28,6 +28,77 @@ export class RepoAlreadyExistsError extends Error {
   }
 }
 
+/** Raised when GitHub refuses a repository name for any reason other than
+ * "already exists" (422); `reason` is GitHub's own wording. */
+export class RepoNameInvalidError extends Error {
+  constructor(readonly reason: string) {
+    super(`GitHub rejected the repository name: ${reason}`);
+    this.name = "RepoNameInvalidError";
+  }
+}
+
+/** A GitHub API failure with its HTTP status (0: GitHub did not answer). */
+export class GithubApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GithubApiError";
+  }
+}
+
+/** Every user-token GitHub call gives up after this long. */
+const GITHUB_TIMEOUT_MS = 30_000;
+
+/** fetch with a timeout; a network failure or timeout is GithubApiError 0. */
+async function githubFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new GithubApiError(
+      0,
+      `GitHub did not respond (${new URL(url).pathname}): ${String(error)}`,
+    );
+  }
+}
+
+// eslint-disable-next-line no-control-regex
+const UNPRINTABLE = /[\u0000-\u001f\u007f]/g;
+
+/** GitHub's own explanations in an error body (`errors[].message`, then `message`). */
+function githubReasons(text: string): string[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (typeof data !== "object" || data === null) return [];
+  const body = data as { message?: unknown; errors?: unknown };
+  const reasons: string[] = [];
+  if (Array.isArray(body.errors)) {
+    for (const e of body.errors) {
+      if (typeof e === "string") reasons.push(e);
+      else if (
+        typeof e === "object" &&
+        e !== null &&
+        typeof (e as { message?: unknown }).message === "string"
+      )
+        reasons.push((e as { message: string }).message);
+    }
+  }
+  if (typeof body.message === "string") reasons.push(body.message);
+  return reasons.map((r) => r.replace(UNPRINTABLE, " ").trim().slice(0, 200));
+}
+
+/** GitHub's wording for an organisation policy (SAML, access restrictions, ...). */
+export const ORG_POLICY_TEXT =
+  /\bpolic(y|ies)\b|\bSAML\b|access restrictions|organi[sz]ation (has )?(enabled|restricts|forbids|disallows|requires)/i;
+
 type AppAuth = ReturnType<typeof createAppAuth>;
 
 let cachedAuth: AppAuth | null = null;
@@ -123,11 +194,12 @@ export type UserInstallation = {
 export async function findUserInstallation(
   userAccessToken: string,
 ): Promise<UserInstallation | null> {
-  const response = await fetch(`${GITHUB_API}/user/installations`, {
+  const response = await githubFetch(`${GITHUB_API}/user/installations`, {
     headers: userHeaders(userAccessToken),
   });
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to list app installations: ${response.status} ${response.statusText}`,
     );
   }
@@ -152,13 +224,14 @@ export async function addRepoToInstallation(
   installationId: string,
   repositoryId: number,
 ): Promise<void> {
-  const response = await fetch(
+  const response = await githubFetch(
     `${GITHUB_API}/user/installations/${installationId}/repositories/${repositoryId}`,
     { method: "PUT", headers: userHeaders(userAccessToken) },
   );
   if (response.status === 204 || response.status === 304) return;
   const detail = await response.text().catch(() => "");
-  throw new Error(
+  throw new GithubApiError(
+    response.status,
     `Failed to add repository to installation: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ""}`,
   );
 }
@@ -168,19 +241,27 @@ export async function createRepo(
   userAccessToken: string,
   name: string,
 ): Promise<CreatedRepo> {
-  const response = await fetch(`${GITHUB_API}/user/repos`, {
+  const response = await githubFetch(`${GITHUB_API}/user/repos`, {
     method: "POST",
     headers: { ...userHeaders(userAccessToken), "Content-Type": "application/json" },
     body: JSON.stringify({ name, private: true, auto_init: false }),
   });
-  if (response.status === 422) {
-    throw new RepoAlreadyExistsError(
-      `A repository named "${name}" already exists`,
-    );
-  }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(
+    const reasons = githubReasons(detail);
+    if (response.status === 422) {
+      if (reasons.some((r) => /already exists/i.test(r)))
+        throw new RepoAlreadyExistsError(
+          `A repository named "${name}" already exists`,
+        );
+      // A policy refusal is reported as such (see GithubApiError below); any
+      // other 422 is the name: the specific reason precedes GitHub's generic
+      // "Repository creation failed."
+      if (!ORG_POLICY_TEXT.test(reasons.join("; ")))
+        throw new RepoNameInvalidError(reasons[0] ?? "rejected by GitHub");
+    }
+    throw new GithubApiError(
+      response.status,
       `Failed to create repository: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 500)}` : ""}`,
     );
   }
@@ -196,11 +277,12 @@ export async function createRepo(
 export async function fetchGithubUser(
   userAccessToken: string,
 ): Promise<{ login: string; id: number }> {
-  const response = await fetch(`${GITHUB_API}/user`, {
+  const response = await githubFetch(`${GITHUB_API}/user`, {
     headers: userHeaders(userAccessToken),
   });
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to resolve the authenticated user: ${response.status} ${response.statusText}`,
     );
   }
@@ -231,7 +313,8 @@ export async function findUserAccountInstallation(
   );
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to look up account installation: ${response.status} ${response.statusText}`,
     );
   }
@@ -266,7 +349,8 @@ export async function findRepoInstallationId(
   });
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to look up repo installation: ${response.status} ${response.statusText}`,
     );
   }
@@ -282,21 +366,23 @@ export async function findUserRepo(
   userAccessToken: string,
   name: string,
 ): Promise<CreatedRepo | null> {
-  const userResponse = await fetch(`${GITHUB_API}/user`, {
+  const userResponse = await githubFetch(`${GITHUB_API}/user`, {
     headers: userHeaders(userAccessToken),
   });
   if (!userResponse.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      userResponse.status,
       `Failed to resolve the authenticated user: ${userResponse.status} ${userResponse.statusText}`,
     );
   }
   const { login } = (await userResponse.json()) as { login: string };
-  const repoResponse = await fetch(`${GITHUB_API}/repos/${login}/${name}`, {
+  const repoResponse = await githubFetch(`${GITHUB_API}/repos/${login}/${name}`, {
     headers: userHeaders(userAccessToken),
   });
   if (repoResponse.status === 404) return null;
   if (!repoResponse.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      repoResponse.status,
       `Failed to look up repository: ${repoResponse.status} ${repoResponse.statusText}`,
     );
   }
@@ -343,7 +429,8 @@ export async function startDeviceFlow(): Promise<DeviceFlowStart> {
     body: JSON.stringify({ client_id: githubClientId() }),
   });
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to start device flow: ${response.status} ${response.statusText}`,
     );
   }
@@ -395,7 +482,8 @@ export async function exchangeDeviceCode(
     },
   );
   if (!response.ok) {
-    throw new Error(
+    throw new GithubApiError(
+      response.status,
       `Failed to exchange device code: ${response.status} ${response.statusText}`,
     );
   }

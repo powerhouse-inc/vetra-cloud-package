@@ -16,16 +16,69 @@ import {
   findUserAccountInstallation,
   findUserInstallation,
   findUserRepo,
+  GithubApiError,
   mintInstallationToken,
+  ORG_POLICY_TEXT,
   ReinstallRequiredError,
   RepoAlreadyExistsError,
+  RepoNameInvalidError,
   startDeviceFlow,
   type DeviceFlowStart,
 } from "./github-app.js";
 
-/** A GraphQLError carrying the error code in `extensions.code` and `message`. */
-function ghError(code: string): GraphQLError {
-  return new GraphQLError(code, { extensions: { code } });
+/**
+ * A GraphQLError carrying the code in `extensions.code`; the message is the
+ * code unless a customer-readable one is given.
+ */
+function ghError(
+  code: string,
+  message: string = code,
+  extensions: Record<string, unknown> = {},
+): GraphQLError {
+  return new GraphQLError(message, { extensions: { ...extensions, code } });
+}
+
+/** Where failures are logged (production logs at warn and above). */
+export type GithubAuthLogger = {
+  warn(msg: string): void;
+  error(msg: string): void;
+};
+
+/**
+ * The customer-facing error for a GitHub failure (each message names the
+ * next step), or null when it is not one the customer can act on.
+ */
+export function githubFailure(error: unknown): GraphQLError | null {
+  if (error instanceof RepoNameInvalidError)
+    return ghError(
+      "REPO_NAME_INVALID",
+      `GitHub did not accept this repository name (${error.reason}). Choose another name.`,
+      { reason: error.reason },
+    );
+  if (!(error instanceof GithubApiError)) return null;
+  const { status } = error;
+  if (status === 0 || status >= 500)
+    return ghError(
+      "GITHUB_UNAVAILABLE",
+      "GitHub is not responding. Try again in a minute.",
+    );
+  if (status === 401)
+    return ghError(
+      "GITHUB_NOT_CONNECTED",
+      "Your GitHub connection has expired or was removed. Reconnect GitHub, then try again.",
+    );
+  if ((status === 403 || status === 422) && ORG_POLICY_TEXT.test(error.message))
+    return ghError(
+      "ORG_POLICY",
+      "A policy of your GitHub organisation does not allow this. Ask an owner of the organisation to allow it, then try again.",
+    );
+  // 404: GitHub hides what the token may not reach.
+  if (status === 403 || status === 404)
+    return ghError(
+      "INSUFFICIENT_PERMISSION",
+      "Vetra does not have permission to create repositories in this GitHub account. Install the Vetra GitHub app on the account with the repository Administration permission, then try again.",
+    );
+  return null;
 }
 
 /**
@@ -111,7 +164,25 @@ function toStatus(connection: GithubConnection | null): ConnectionStatusView {
 
 export function createResolvers(
   db: Kysely<VetraGithubAuthDB>,
+  logger: GithubAuthLogger = console,
 ): Record<string, any> {
+  /**
+   * A failed `what` (while `step`): refusals as they are, GitHub failures as
+   * their customer code (logged at warn), anything else logged at error level
+   * and answered generically, so upstream bodies never reach the caller.
+   */
+  function failure(what: string, step: string, error: unknown): GraphQLError {
+    if (error instanceof GraphQLError) return error;
+    const mapped = githubFailure(error);
+    const line = `[vetra-github-auth] ${what} failed while ${step}: ${String(error)}`;
+    if (mapped) {
+      logger.warn(line);
+      return mapped;
+    }
+    logger.error(line);
+    return ghError("INTERNAL_SERVER_ERROR", `${what} failed`);
+  }
+
   /**
    * The user token for a device code: from the in-process cache when an
    * earlier poll already exchanged it (codes are single-use), else via a
@@ -257,41 +328,56 @@ export function createResolvers(
         ctx: AuthContext,
       ): Promise<ConnectionStatusView> => {
         const did = requireDid(ctx);
-        const userAccessToken = await resolveDeviceToken(did, deviceCode);
-
-        // A user token can only act on what the app's installation can access,
-        // so repo creation is impossible until the app is installed somewhere
-        // the user can see. Surface that as a machine code, not a 500.
-        const installation = await findUserInstallation(userAccessToken);
-        if (!installation) throw ghError("APP_NOT_INSTALLED");
-
-        let repo;
+        let step = "authorizing with GitHub";
         try {
-          repo = await createRepo(userAccessToken, repoName);
-        } catch (error) {
-          if (error instanceof RepoAlreadyExistsError) {
+          const userAccessToken = await resolveDeviceToken(did, deviceCode);
+
+          // A user token can only act on what the app's installation can
+          // access, so repo creation is impossible until the app is installed
+          // somewhere the user can see. Surface that as a machine code, not a 500.
+          step = "looking up the GitHub app installation";
+          const installation = await findUserInstallation(userAccessToken);
+          if (!installation) throw ghError("APP_NOT_INSTALLED");
+
+          step = "creating the GitHub repository";
+          let repo;
+          try {
+            repo = await createRepo(userAccessToken, repoName);
+          } catch (error) {
+            if (!(error instanceof RepoAlreadyExistsError)) throw error;
+            step = "looking up the existing repository";
             const existing = await findUserRepo(userAccessToken, repoName);
             if (!existing) throw ghError("REPO_ALREADY_EXISTS");
             repo = existing;
-          } else {
-            throw error;
           }
-        }
 
-        // Selected-repositories installs don't include the new repo; add it so
-        // push tokens resolve. Best-effort: push-time APP_NOT_INSTALLED remains
-        // the enforcement if this fails.
-        if (installation.repositorySelection === "selected") {
-          await addRepoToInstallation(
-            userAccessToken,
-            installation.id,
-            repo.id,
-          ).catch(() => {});
-        }
+          // Selected-repositories installs don't include the new repo; add it
+          // so push tokens resolve. Best-effort: push-time APP_NOT_INSTALLED
+          // remains the enforcement if this fails.
+          if (installation.repositorySelection === "selected") {
+            await addRepoToInstallation(
+              userAccessToken,
+              installation.id,
+              repo.id,
+            ).catch((error: unknown) =>
+              logger.warn(
+                `[vetra-github-auth] adding ${repo.fullName} to installation ${installation.id} failed: ${String(error)}`,
+              ),
+            );
+          }
 
-        const connection = await saveConnection(db, did, environmentId, repo.fullName);
-        deviceTokenCache.delete(deviceCode);
-        return toStatus(connection);
+          step = "saving the connection";
+          const connection = await saveConnection(
+            db,
+            did,
+            environmentId,
+            repo.fullName,
+          );
+          deviceTokenCache.delete(deviceCode);
+          return toStatus(connection);
+        } catch (error) {
+          throw failure("connectGithub", step, error);
+        }
       },
     },
   };

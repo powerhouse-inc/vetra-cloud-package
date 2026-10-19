@@ -21,7 +21,9 @@ import type { AppDeploymentKind, VetraAppsDB } from "./db/schema.js";
 import type { EnvGateway } from "./envs.js";
 import { classifyEnv } from "../../processors/vetra-cloud-environment/gitops.js";
 import {
+  classifyGithubError,
   GithubHttpError,
+  GithubUnavailableError,
   RepoNameTakenError,
   type GithubDeployApi,
   type GithubRepo,
@@ -52,7 +54,7 @@ import {
   syncApps,
 } from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
-import { appsError, notConfigured } from "./errors.js";
+import { appsError, githubErrors, notConfigured } from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   ACTIVE_DEPLOYMENT_STATUSES,
@@ -87,6 +89,8 @@ import {
 export interface AppsLogger {
   info(msg: string): void;
   warn(msg: string): void;
+  /** Unexpected failures (production logs at warn and above). Never log tokens. */
+  error(msg: string): void;
 }
 
 export interface AppsDeps {
@@ -375,11 +379,7 @@ export async function myGithubDeployInstallations(
   }));
 }
 
-const notConnected = () =>
-  appsError(
-    "GITHUB_NOT_CONNECTED",
-    "Connect GitHub (Vetra Deploy) again to continue",
-  );
+const notConnected = () => githubErrors.notConnected();
 
 /**
  * The caller's GitHub user token for `installationId`, refreshed when it has
@@ -444,6 +444,11 @@ async function userTokenFor(
     deps.logger.warn(
       `[vetra-apps] GitHub user token refresh failed: ${String(err)}`,
     );
+    if (
+      err instanceof GithubUnavailableError ||
+      (err instanceof GithubHttpError && err.status >= 500)
+    )
+      throw githubErrors.unavailable();
     throw notConnected();
   }
 }
@@ -676,23 +681,31 @@ export async function createApp(
     appId: null,
     announced: null,
     repo: null,
+    envId: null,
   };
   let appId: string;
   let slug: string;
   let envId: string;
+  let step = "reserving the Harbor project";
   try {
     slug = await reserveSlugAndProject(deps, harbor, name, made, new Set());
     const harborProject = `app-${slug}`;
+    step = "creating the Harbor robot";
     const robot = await harbor.createPushRobot(harborProject);
     made.robotId = robot.id;
 
     appId = deps.newId();
     // The apps row goes in before the env actions: the gitops render resolves
     // the App's Harbor project from it (see app-image-project.ts).
-    envId = attachEnvState
-      ? input.productionEnvironmentId!
-      : await deps.envs.create();
+    step = "creating the production environment";
+    if (attachEnvState) {
+      envId = input.productionEnvironmentId!;
+    } else {
+      envId = await deps.envs.create();
+      made.envId = envId;
+    }
     made.appId = appId;
+    step = "recording the App";
     await insertAppRow(deps, {
       appId,
       slug,
@@ -707,6 +720,7 @@ export async function createApp(
       harborProject,
       productionEnvironmentId: envId,
     });
+    step = "provisioning the production environment";
     await provisionProductionEnv(
       deps,
       caller,
@@ -723,7 +737,8 @@ export async function createApp(
     );
   } catch (err) {
     await undoFailedCreate(deps, harbor, deps.renown!, did, made);
-    throw err;
+    const account = repo.fullName.split("/")[0] ?? repo.fullName;
+    throw createFailure(deps, "createApp", step, account, err);
   }
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
@@ -829,7 +844,7 @@ export async function createStudioApp(
     // 404: the Vetra Deploy app is no longer installed there.
     if (err instanceof GithubHttpError && err.status === 404)
       throw notConnected();
-    throw err;
+    throw classifyGithubError(err, connection.account_login) ?? err;
   }
 
   // One create per Studio at a time in this process (the check, the repo and
@@ -894,18 +909,23 @@ async function createStudioAppLocked(
     appId: null,
     announced: null,
     repo: null,
+    envId: null,
   };
   let did: string | null = null;
   let appId: string;
   let slug = "";
   let envId: string;
+  // What is under way, for the log when it fails.
+  let step = "reserving the Harbor project";
   try {
     // Slug, Harbor project and repository name are the same word; a taken
     // repository name releases the project and takes the next suffix.
     let repo: GithubRepo | null = null;
     const conflicts = new Set<string>();
     for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS && !repo; attempt++) {
+      step = "reserving the Harbor project";
       slug = await reserveSlugAndProject(deps, harbor, name, made, conflicts);
+      step = "creating the GitHub repository";
       try {
         repo = await github.createRepoAsUser(
           userToken,
@@ -926,8 +946,7 @@ async function createStudioAppLocked(
           inInstallation: repositorySelection === "all",
         };
         if (repo.private !== true)
-          throw new GithubHttpError(
-            502,
+          throw new Error(
             `${repo.fullName} was created as a public repository`,
           );
         // /user/repos creates under the token's own user: it must be the
@@ -942,46 +961,24 @@ async function createStudioAppLocked(
             `GitHub created the repository under ${repoOwner}, not ${account.login}; connect GitHub as ${account.login}`,
           );
       } catch (err) {
-        // 404: GitHub hides an org the user cannot create repositories in.
-        if (
-          err instanceof GithubHttpError &&
-          (err.status === 403 || err.status === 404)
-        )
-          throw appsError(
-            "FORBIDDEN",
-            `You cannot create repositories in ${account.login} on GitHub`,
-          );
-        if (err instanceof GithubHttpError && err.status === 401)
-          throw notConnected();
+        // Other GitHub refusals are mapped below, after the undo.
         if (!(err instanceof RepoNameTakenError)) throw err;
         conflicts.add(slug);
         await harbor.deleteProject(made.project!);
         made.project = null;
       }
     }
-    if (!repo) {
-      throw appsError(
-        "BAD_USER_INPUT",
-        "Could not reserve a repository for this name; pick another name",
-      );
-    }
+    if (!repo) throw githubErrors.repoExists();
     const harborProject = made.project!;
     // The installation token calls below (variable, workflow commit, later
     // deploys) need the repo inside the installation.
     if (repositorySelection === "selected") {
-      try {
-        await github.addRepoToInstallation(userToken, installationId, repo.id);
-      } catch (err) {
-        if (err instanceof GithubHttpError && err.status === 403)
-          throw appsError(
-            "FORBIDDEN",
-            `You cannot add repositories to the Vetra Deploy installation on ${account.login}`,
-          );
-        throw err;
-      }
+      step = "adding the repository to the GitHub app installation";
+      await github.addRepoToInstallation(userToken, installationId, repo.id);
       made.repo!.inInstallation = true;
     }
 
+    step = "registering the Renown identity";
     did = await registerAppIdentity(deps, renown, {
       repositoryId: repo.id,
       repository: repo.fullName,
@@ -990,18 +987,21 @@ async function createStudioAppLocked(
       chainId: caller.chainId,
       orgId,
     });
+    step = "creating the Harbor robot";
     const robot = await harbor.createPushRobot(harborProject);
     made.robotId = robot.id;
 
     appId = deps.newId();
     // The repository is complete before the env exists: provisioning approves
     // the env (it renders and runs), so it is the last step, as in createApp.
+    step = "setting the repository variable";
     await github.setRepoVariable(
       installationId,
       repo.fullName,
       "VETRA_APP_ID",
       appId,
     );
+    step = "committing the deploy workflow";
     await github.commitFile(installationId, repo.fullName, {
       path: STUDIO_WORKFLOW_PATH,
       content: workflowTemplate(appId, productionBranch, {
@@ -1012,8 +1012,11 @@ async function createStudioAppLocked(
     });
 
     // The row goes in before the env actions (see createApp).
+    step = "creating the production environment";
     envId = await deps.envs.create();
+    made.envId = envId;
     made.appId = appId;
+    step = "recording the App";
     await insertAppRow(deps, {
       appId,
       slug,
@@ -1029,6 +1032,7 @@ async function createStudioAppLocked(
       productionEnvironmentId: envId,
       studioEnvironmentId: studioId,
     });
+    step = "provisioning the production environment";
     await provisionProductionEnv(
       deps,
       caller,
@@ -1047,7 +1051,7 @@ async function createStudioAppLocked(
     await undoFailedCreate(deps, harbor, renown, did, made);
     // Another replica made this Studio's App meanwhile.
     if (isUniqueViolation(err, STUDIO_APP_INDEX)) throw studioAlreadyAnApp();
-    throw err;
+    throw createFailure(deps, "createStudioApp", step, account.login, err);
   }
   deps.logger.info(
     `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo?.fullName}, studio ${studioId}, env ${envId}`,
@@ -1351,11 +1355,39 @@ interface CreateMade {
     userToken: string;
     inInstallation: boolean;
   } | null;
+  /** The production env document made for the App (never an attached one). */
+  envId: string | null;
+}
+
+/**
+ * The error a failed (and undone) create reports: refusals as they are, a
+ * GitHub failure as its customer code (logged at warn), anything else as
+ * DEPLOY_SETUP_FAILED, logged at error level with the step.
+ */
+function createFailure(
+  deps: AppsDeps,
+  what: string,
+  step: string,
+  account: string,
+  err: unknown,
+): GraphQLError {
+  if (err instanceof GraphQLError) return err;
+  const mapped = classifyGithubError(err, account);
+  if (mapped) {
+    deps.logger.warn(
+      `[vetra-apps] ${what} failed while ${step}: ${String(err)}`,
+    );
+    return mapped;
+  }
+  deps.logger.error(
+    `[vetra-apps] ${what} failed while ${step}: ${String(err)}`,
+  );
+  return githubErrors.deploySetupFailed();
 }
 
 /**
  * Undo a createApp/createStudioApp that failed: the apps row, the
- * announcement, the robot, the project, the Studio App repository, and the
+ * production env document it made, the announcement, the robot, the project, the Studio App repository, and the
  * identity (when registered, null: not yet) when no live App uses it. Best
  * effort: every failure is logged, none is thrown.
  */
@@ -1370,7 +1402,7 @@ async function undoFailedCreate(
     try {
       await fn();
     } catch (err) {
-      deps.logger.warn(
+      deps.logger.error(
         `[vetra-apps] cleaning up a failed createApp: ${what} failed: ${String(err)}`,
       );
     }
@@ -1380,6 +1412,9 @@ async function undoFailedCreate(
     await step("deleting the row", () =>
       deps.db.deleteFrom("apps").where("id", "=", appId).execute(),
     );
+  const { envId } = made;
+  if (envId)
+    await step("deleting the production env", () => deps.envs.delete(envId));
   if (announced && deps.orgHandoverDb) {
     const db = deps.orgHandoverDb;
     await step("withdrawing the hand-over", () =>

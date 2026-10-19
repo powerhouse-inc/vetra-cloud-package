@@ -366,7 +366,7 @@ describe("GitHub deploy client", () => {
       ).rejects.toBeInstanceOf(RepoNameTakenError);
     });
 
-    it("createRepoAsUser surfaces other 422s as errors", async () => {
+    it("createRepoAsUser surfaces other 422s as RepoNameInvalidError with GitHub's reason", async () => {
       const f = fakeFetch({
         "POST /orgs/acme/repos": () =>
           new Response(JSON.stringify({ message: "Validation Failed" }), {
@@ -378,7 +378,10 @@ describe("GitHub deploy client", () => {
         .createRepoAsUser("ghu_user", ORG_ACCOUNT, "shop", "")
         .catch((e: unknown) => e);
       expect(err).not.toBeInstanceOf(RepoNameTakenError);
-      expect(err).toMatchObject({ status: 422 });
+      expect(err).toMatchObject({
+        name: "RepoNameInvalidError",
+        reason: "Validation Failed",
+      });
     });
 
     it("createRepoAsUser surfaces GitHub's 403 with its status", async () => {
