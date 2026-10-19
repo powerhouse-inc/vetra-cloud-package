@@ -7,6 +7,9 @@ import { ClintPullWorker } from '../clint-pull-worker.js';
 
 const TICK_MS = 15_000;
 const SERVICES = JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'agent' }]);
+const PROVISIONING_SERVICES = JSON.stringify([
+  { type: 'CLINT', enabled: true, prefix: 'agent', status: 'PROVISIONING' },
+]);
 
 async function setupDbs() {
   const envDb = new Kysely<any>({
@@ -185,26 +188,35 @@ describe('ClintPullWorker: dead and failing environments', () => {
     expect(documentExists).not.toHaveBeenCalled();
   });
 
-  it('keeps polling a PROVISIONING studio every 15s however many polls fail', async () => {
+  it('keeps polling a PROVISIONING studio every 15s for its first 20 failures', async () => {
     const dbs = await setupDbs();
-    await dbs.insertEnv(
-      'coming',
-      'READY',
-      JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'agent', status: 'PROVISIONING' }]),
-    );
+    await dbs.insertEnv('coming', 'READY', PROVISIONING_SERVICES);
     const documentExists = vi.fn(async () => true);
     const clock = { now: 1_000_000 };
     const worker = makeWorker(dbs, documentExists, clock);
 
     await runTicks(worker, clock, 20); // 0 s … 285 s
     expect(agentPolls.coming).toBe(20);
-    // The existence check still runs at the threshold, then at most once per 5 min.
+    // The existence check still runs at the 3rd failure (30 s).
     expect(documentExists).toHaveBeenCalledTimes(1);
-    await runTicks(worker, clock, 2); // 300 s, 315 s
-    expect(documentExists).toHaveBeenCalledTimes(1);
-    await runTicks(worker, clock, 1); // 330 s: 5 min after the first check (30 s)
-    expect(documentExists).toHaveBeenCalledTimes(2);
-    expect(agentPolls.coming).toBe(23);
+  });
+
+  it('backs off a PROVISIONING studio failing 21 times', async () => {
+    const dbs = await setupDbs();
+    await dbs.insertEnv('stuck', 'READY', PROVISIONING_SERVICES);
+    const documentExists = vi.fn(async () => true);
+    const clock = { now: 1_000_000 };
+    const worker = makeWorker(dbs, documentExists, clock);
+
+    // 20 failures at 15 s (0 … 285 s), then the exemption ends: the 21st poll
+    // waits 5 min (585 s), the 22nd another 5 min (885 s).
+    await runTicks(worker, clock, 39); // 0 … 570 s
+    expect(agentPolls.stuck).toBe(20);
+    await runTicks(worker, clock, 1); // 585 s
+    expect(agentPolls.stuck).toBe(21);
+    await runTicks(worker, clock, 20); // 600 … 885 s
+    expect(agentPolls.stuck).toBe(22);
+    expect(await dbs.envIds()).toEqual(['stuck']);
   });
 
   it('keeps polling an environment pending a deploy every 15s', async () => {
@@ -221,11 +233,7 @@ describe('ClintPullWorker: dead and failing environments', () => {
 
   it('removes a deleted environment even while it is PROVISIONING, logging at error', async () => {
     const dbs = await setupDbs();
-    await dbs.insertEnv(
-      'gone',
-      'READY',
-      JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'agent', status: 'PROVISIONING' }]),
-    );
+    await dbs.insertEnv('gone', 'READY', PROVISIONING_SERVICES);
     const clock = { now: 1_000_000 };
     const worker = makeWorker(dbs, vi.fn(async () => false), clock);
     vi.mocked(logger.error).mockClear();

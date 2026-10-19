@@ -57,4 +57,28 @@ describe('environmentDocumentExists', () => {
     const c = client(new Error('connection reset'), () => ({}));
     await expect(environmentDocumentExists(c, 'x')).rejects.toThrow('connection reset');
   });
+
+  it('positive deletion evidence is gone, even with a taken stream', async () => {
+    const c = client(true, new Error('Document not found: x'));
+    const isMarkedDeleted = vi.fn(async () => true);
+    expect(await environmentDocumentExists(c, 'x', undefined, { isMarkedDeleted })).toBe(false);
+    expect(c.isDocumentIdTaken).not.toHaveBeenCalled();
+  });
+
+  it('no deletion evidence falls back to the stream logic', async () => {
+    const isMarkedDeleted = vi.fn(async () => false);
+    expect(
+      await environmentDocumentExists(client(true, new Error('Document not found: x')), 'x', undefined, { isMarkedDeleted }),
+    ).toBe(true);
+    expect(await environmentDocumentExists(client(false, () => ({})), 'x', undefined, { isMarkedDeleted })).toBe(false);
+  });
+
+  it('a failing deletion query throws (the caller keeps the record)', async () => {
+    const isMarkedDeleted = vi.fn(async () => {
+      throw new Error('relation "reactor.DocumentSnapshot" does not exist');
+    });
+    await expect(
+      environmentDocumentExists(client(false, () => ({})), 'x', undefined, { isMarkedDeleted }),
+    ).rejects.toThrow('does not exist');
+  });
 });

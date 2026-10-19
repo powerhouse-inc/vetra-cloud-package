@@ -80,6 +80,12 @@ const DEFAULT_EXISTENCE_CHECK_TIMEOUT_MS = 5_000;
  * these keep the 15 s cadence (no backoff) however many polls fail.
  */
 const DEPLOY_PENDING_STATUSES = new Set(["CHANGES_PUSHED", "DEPLOYING"]);
+/**
+ * The coming-up exemption ends after this many consecutive failures (5 min at
+ * 15 s): a studio stuck in PROVISIONING / a deploy that never lands then backs
+ * off like any other failing env.
+ */
+export const COMING_UP_MAX_FAILURES = 20;
 
 /** A service that's still coming up: never backed off. */
 function isComingUp(svc: ClintServiceTuple): boolean {
@@ -330,8 +336,11 @@ export class ClintPullWorker {
         }
         const failures = (this.failing.get(key)?.failures ?? 0) + 1;
         const overThreshold = failures >= FAILURES_BEFORE_BACKOFF;
-        // A studio still coming up keeps the 15 s cadence; others back off.
-        const backOff = overThreshold && !isComingUp(t);
+        // A studio still coming up keeps the 15 s cadence for its first
+        // COMING_UP_MAX_FAILURES failures; everything else backs off.
+        const backOff =
+          overThreshold &&
+          (!isComingUp(t) || failures >= COMING_UP_MAX_FAILURES);
         this.failing.set(key, {
           failures,
           nextPollAt: backOff ? now + FAILING_POLL_INTERVAL_MS : 0,

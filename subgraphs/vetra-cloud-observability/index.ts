@@ -14,7 +14,10 @@ import {
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
-import { environmentDocumentExists } from "./env-existence.js";
+import {
+  environmentDocumentExists,
+  reactorSnapshotMarkedDeleted,
+} from "./env-existence.js";
 import { DeployStuckTracker } from "./deploy-health.js";
 import { DumpsRepo } from "./dumps/repo.js";
 import { S3Helper } from "./dumps/s3.js";
@@ -285,10 +288,19 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           dispatch,
           // After 3 failed polls: is the env document still there? A row that
           // outlived its document is removed so it stops being polled.
-          // Decided from the operation store, not the snapshot read model
-          // (which can miss rows); anything uncertain keeps the record.
+          // Gone = positive deletion evidence in the reactor's DocumentSnapshot
+          // (every delete is a soft delete, invisible to get() while
+          // REACTOR_DOCUMENT_DECISIONS is off), or no operation stream at all.
+          // Anything uncertain keeps the record. The processor db is the same
+          // Postgres as the reactor's; if it isn't, the query throws → keep.
           documentExists: (documentId, signal) =>
-            environmentDocumentExists(this.reactorClient, documentId, signal),
+            environmentDocumentExists(this.reactorClient, documentId, signal, {
+              isMarkedDeleted: (id) =>
+                reactorSnapshotMarkedDeleted(
+                  this.relationalDb as unknown as Kysely<any>,
+                  id,
+                ),
+            }),
         });
         this.clintPullWorker.start();
         console.info("[observability] ClintPullWorker started");
