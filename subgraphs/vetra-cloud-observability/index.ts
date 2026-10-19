@@ -14,6 +14,8 @@ import {
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
+import { isDocumentNotFound } from "../vetra-apps/envs.js";
+import { DeployStuckTracker } from "./deploy-health.js";
 import { DumpsRepo } from "./dumps/repo.js";
 import { S3Helper } from "./dumps/s3.js";
 import {
@@ -281,6 +283,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           // endpoint is discovered, so the cold-create (BYOK) provisioning UI
           // completes instead of spinning forever.
           dispatch,
+          // After 3 failed polls: is the env document still there? A row that
+          // outlived its document is removed so it stops being polled.
+          documentExists: async (documentId) => {
+            try {
+              await this.reactorClient.get(documentId);
+              return true;
+            } catch (err) {
+              if (isDocumentNotFound(err)) return false;
+              throw err;
+            }
+          },
         });
         this.clintPullWorker.start();
         console.info("[observability] ClintPullWorker started");
@@ -513,6 +526,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * and the observability environment_status table.
    */
   private startDeploymentReconciler(observabilityDb: Kysely<ObservabilityDB>) {
+    const stuckTracker = new DeployStuckTracker();
     const reconcile = async () => {
       try {
         // Get the processor's environments namespace to read document states
@@ -533,6 +547,14 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           deployingSince: string | null;
           services: unknown;
         }>;
+
+        // Deploys pending for more than 15 min: one error per stuck episode.
+        for (const env of stuckTracker.newlyStuck(pendingEnvs, Date.now())) {
+          console.error(
+            `[deployment-reconciler] ${env.name ?? env.id} (${env.id}): stuck in ${env.status} ` +
+              `for ${Math.round(env.stuckForMs / 60_000)} min`,
+          );
+        }
 
         if (pendingEnvs.length === 0) return;
 
@@ -662,8 +684,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                   `waiting (${Math.round(elapsed / 1000)}s / ${VetraCloudObservabilitySubgraph.DEPLOYMENT_GRACE_MS / 1000}s grace)`,
                 );
               } else {
-                console.info(
-                  `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus}, ` +
+                // A failed deploy is what operators need to see: error level
+                // (prod logs at warn). Logged once — the env leaves DEPLOYING.
+                console.error(
+                  `[deployment-reconciler] ${label} (${env.id}): → DEPLOYMENT_FAILED (${argoHealthStatus}, ` +
                   `grace period exceeded after ${Math.round(elapsed / 1000)}s)`,
                 );
                 await envDb

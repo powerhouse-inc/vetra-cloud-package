@@ -3,6 +3,8 @@ import type { ILogger } from "document-model";
 import { withTracingSuppressed } from "./trace-suppress.js";
 import { OBSERVABILITY_PULL_USER_AGENT } from "../vetra-housekeeping/policy.js";
 import { isApexCapable } from "../../shared/apex.js";
+import { removeEnvironmentRecord } from "../../processors/vetra-cloud-environment/cleanup.js";
+import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 
 export type ClintServiceTuple = {
   documentId: string;
@@ -48,11 +50,25 @@ export type ClintPullWorkerConfig = {
     type: string,
     input: Record<string, unknown>,
   ) => Promise<void>;
+  /**
+   * Whether the environment document still exists in the reactor. Asked after
+   * {@link FAILURES_BEFORE_BACKOFF} consecutive failed polls: `false` removes
+   * the env's read-model row (it outlived its document) so nothing polls it
+   * again; `true` or a throw keeps the row and backs off. When absent, failing
+   * envs are only backed off.
+   */
+  documentExists?: (documentId: string) => Promise<boolean>;
+  /** Clock for the poll backoff. Defaults to `Date.now`; injected by tests. */
+  now?: () => number;
 };
 
 const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DOMAIN = "vetra.io";
+/** Consecutive failed polls before the existence check and the backoff. */
+export const FAILURES_BEFORE_BACKOFF = 3;
+/** While failing (after the threshold): at most one poll per this interval. */
+export const FAILING_POLL_INTERVAL_MS = 5 * 60_000;
 
 // Canonical definition lives in the dependency-free housekeeping policy module
 // (imported above); re-export for the worker's existing consumers + tests.
@@ -186,6 +202,10 @@ function parseBrand(body: unknown): ParsedBrand | null {
   };
 }
 
+function serviceKey(svc: ClintServiceTuple): string {
+  return `${svc.documentId}|${svc.prefix}`;
+}
+
 export class ClintPullWorker {
   private readonly config: ClintPullWorkerConfig;
   private timer: NodeJS.Timeout | null = null;
@@ -202,6 +222,16 @@ export class ClintPullWorker {
    * on the next pod restart (rare, acceptable).
    */
   private readonly statusAdvanceAttempted = new Set<string>();
+  /**
+   * Consecutive-failure state per polled service (`documentId|prefix`). Absent
+   * = healthy (polled every tick). Pruned each tick to the services still
+   * listed, so it never outgrows the fleet.
+   */
+  private readonly failing = new Map<
+    string,
+    { failures: number; nextPollAt: number }
+  >();
+  private readonly now: () => number;
 
   constructor(config: ClintPullWorkerConfig) {
     this.config = config;
@@ -210,6 +240,7 @@ export class ClintPullWorker {
       config.buildBrandUrl ??
       ((svc) => `https://${new URL(this.buildAgentUrl(svc)).host}/switchboard/graphql`);
     this.fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    this.now = config.now ?? Date.now;
   }
 
   start(): void {
@@ -237,16 +268,85 @@ export class ClintPullWorker {
     // (volume scales O(tenant-count)). See trace-suppress.ts.
     await withTracingSuppressed(async () => {
       const tuples = await this.listClintServices();
-      await Promise.all(
-        tuples.map((t) =>
-          Promise.all([
+      const now = this.now();
+      const listed = new Set(tuples.map(serviceKey));
+      for (const key of this.failing.keys()) {
+        if (!listed.has(key)) this.failing.delete(key);
+      }
+      const due = tuples.filter(
+        (t) => (this.failing.get(serviceKey(t))?.nextPollAt ?? 0) <= now,
+      );
+      const results = await Promise.all(
+        due.map(async (t) => {
+          const [ok] = await Promise.all([
             this.pullOne(t),
             // A Studio's BrandSheet lives on its own (apex) switchboard.
             t.isApex ? this.pullBrand(t) : Promise.resolve(),
-          ]),
-        ),
+          ]);
+          return { t, ok };
+        }),
       );
+      const suspect = new Set<string>();
+      for (const { t, ok } of results) {
+        const key = serviceKey(t);
+        if (ok) {
+          this.failing.delete(key);
+          continue;
+        }
+        const failures = (this.failing.get(key)?.failures ?? 0) + 1;
+        const backOff = failures >= FAILURES_BEFORE_BACKOFF;
+        this.failing.set(key, {
+          failures,
+          nextPollAt: backOff ? now + FAILING_POLL_INTERVAL_MS : 0,
+        });
+        if (backOff) suspect.add(t.documentId);
+      }
+      for (const documentId of suspect) {
+        await this.checkFailingEnvironment(documentId);
+      }
     });
+  }
+
+  /**
+   * A service failed {@link FAILURES_BEFORE_BACKOFF}+ polls in a row. If its
+   * environment document is gone, the read-model row outlived it (the delete
+   * subscription missed it): remove the row so nothing polls it again. The
+   * orphan-dir GC then sees the tenant as dead too. A check that throws keeps
+   * the row: a reactor hiccup must never delete a live env's record.
+   */
+  private async checkFailingEnvironment(documentId: string): Promise<void> {
+    if (!this.config.documentExists) return;
+    let exists: boolean;
+    try {
+      exists = await this.config.documentExists(documentId);
+    } catch (err) {
+      this.config.logger.warn(
+        `[clint-pull-worker] ${documentId} existence check failed, backing off: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+    if (exists) return;
+    try {
+      // envDb is the processor's namespace: the `environments` table it types.
+      await removeEnvironmentRecord(
+        this.config.envDb as Kysely<EnvironmentsDB>,
+        documentId,
+      );
+      for (const key of this.failing.keys()) {
+        if (key.startsWith(`${documentId}|`)) this.failing.delete(key);
+      }
+      this.config.logger.warn(
+        `[clint-pull-worker] ${documentId} environment document no longer exists: removed its record, stopped polling`,
+      );
+    } catch (err) {
+      this.config.logger.warn(
+        `[clint-pull-worker] ${documentId} failed to remove the record of a deleted environment: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**
@@ -341,7 +441,8 @@ export class ClintPullWorker {
     return out;
   }
 
-  private async pullOne(svc: ClintServiceTuple): Promise<void> {
+  /** Poll one agent's routes. Resolves `true` when the agent answered 2xx. */
+  private async pullOne(svc: ClintServiceTuple): Promise<boolean> {
     const url = this.buildAgentUrl(svc);
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
@@ -356,18 +457,20 @@ export class ClintPullWorker {
         this.config.logger.warn(
           `[clint-pull-worker] ${svc.documentId} ${svc.prefix} ${res.status} from ${url}`,
         );
-        return;
+        return false;
       }
       const body = (await res.json()) as unknown;
       const raw = Array.isArray(body) ? body : [];
       const routes = raw.filter(isProxyRoute);
       await this.upsert(svc, routes);
       await this.maybeMarkServiceActive(svc, routes);
+      return true;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.config.logger.warn(
         `[clint-pull-worker] ${svc.documentId} ${svc.prefix} fetch failed: ${reason}`,
       );
+      return false;
     } finally {
       clearTimeout(t);
     }
