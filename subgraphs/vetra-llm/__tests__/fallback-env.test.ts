@@ -4,7 +4,11 @@ import {
   type ClaimDeps,
 } from "../../vetra-studio-pool/claim.js";
 import { createLlmBroker, MODEL_FALLBACKS_VAR } from "../broker.js";
-import { DEFAULT_STUDIO_MODEL, loadLlmConfig } from "../config.js";
+import {
+  DEFAULT_STUDIO_MODEL,
+  loadLlmConfig,
+  parseFallbackModels,
+} from "../config.js";
 import { createLlmKeyStore } from "../store.js";
 import { createFakeOpenRouter } from "./fake-openrouter.js";
 import { createFakeSecrets, fakeKeyVault, holderDid } from "./fakes.js";
@@ -48,6 +52,54 @@ describe("VETRA_LLM_FALLBACK_MODELS", () => {
         VETRA_LLM_FALLBACK_MODELS: " openai/gpt-5 , ,google/gemini-2.5-pro,",
       }).fallbackModels,
     ).toStrictEqual(["openai/gpt-5", "google/gemini-2.5-pro"]);
+  });
+
+  it("blank is the agent's default chain ([]), `none` passes through verbatim", () => {
+    const warn = vi.fn();
+    expect(
+      parseFallbackModels(undefined, DEFAULT_STUDIO_MODEL, { warn }),
+    ).toStrictEqual([]);
+    expect(
+      parseFallbackModels("  ", DEFAULT_STUDIO_MODEL, { warn }),
+    ).toStrictEqual([]);
+    expect(
+      parseFallbackModels("none", DEFAULT_STUDIO_MODEL, { warn }),
+    ).toStrictEqual(["none"]);
+    expect(
+      parseFallbackModels(" NONE ", DEFAULT_STUDIO_MODEL, { warn }),
+    ).toStrictEqual(["none"]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("drops the primary model and caps the list at 3, with a warn", () => {
+    const warn = vi.fn();
+    expect(
+      parseFallbackModels(
+        `${DEFAULT_STUDIO_MODEL},a/1,b/2,c/3,d/4`,
+        DEFAULT_STUDIO_MODEL,
+        { warn },
+      ),
+    ).toStrictEqual(["a/1", "b/2", "c/3"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain(
+      "VETRA_LLM_FALLBACK_MODELS trimmed",
+    );
+    // The primary is VETRA_LLM_DEFAULT_MODEL when set.
+    expect(
+      loadLlmConfig(
+        {
+          VETRA_LLM_DEFAULT_MODEL: "x/main",
+          VETRA_LLM_FALLBACK_MODELS: "x/main,y/1",
+        },
+        { warn },
+      ).fallbackModels,
+    ).toStrictEqual(["y/1"]);
+    // An untrimmed list logs nothing.
+    warn.mockClear();
+    expect(
+      parseFallbackModels("a/1,b/2", DEFAULT_STUDIO_MODEL, { warn }),
+    ).toStrictEqual(["a/1", "b/2"]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("claim and broker write VETRA_MODEL_FALLBACKS", async () => {
@@ -110,8 +162,18 @@ describe("VETRA_LLM_FALLBACK_MODELS", () => {
     });
   });
 
-  it("writes an empty VETRA_MODEL_FALLBACKS when unset, so a removed list converges", async () => {
-    const { b, secrets } = await broker([]);
+  it("writes `none` verbatim", async () => {
+    const { b, secrets } = await broker(["none"]);
+    await b.provisionVetraKey({
+      environmentId: "env-1",
+      tenantId: TENANT,
+      ownerDid: holderDid(),
+    });
+    expect(secrets.envVar(TENANT, "VETRA_MODEL_FALLBACKS")).toBe("none");
+  });
+
+  it("writes a blank VETRA_MODEL_FALLBACKS when unset (the agent's default chain), so a removed list converges", async () => {
+    const { b, secrets } = await broker(loadLlmConfig({}).fallbackModels);
     await b.provisionVetraKey({
       environmentId: "env-1",
       tenantId: TENANT,

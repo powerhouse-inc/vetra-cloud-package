@@ -13,7 +13,10 @@ import type { LlmKeyStore } from "./store.js";
 export const OPENROUTER_KEY_SECRET = "OPENROUTER_API_KEY";
 /** The tenant env var the agent reads as its main model (ph-clint: VETRA_ + model). */
 export const MODEL_VAR = "VETRA_MODEL";
-/** The agent's fallback models, comma-separated (VETRA_LLM_FALLBACK_MODELS); empty for none. */
+/**
+ * The agent's fallback models (from VETRA_LLM_FALLBACK_MODELS). Contract:
+ * blank → the agent's default chain; `none` → no fallbacks; else a comma list.
+ */
 export const MODEL_FALLBACKS_VAR = "VETRA_MODEL_FALLBACKS";
 export const KEY_NAME_PREFIX = "studio:";
 /** Verified enum (daily | weekly | monthly | null) in https://openrouter.ai/openapi.yaml. */
@@ -105,10 +108,11 @@ export interface LlmBroker {
   /** This month's spend against the limit; null without a key. Cached 60 s. */
   studioLlmUsage(environmentId: string): Promise<StudioLlmUsage | null>;
   /**
-   * An admin override was written: set an ACTIVE key's limit to it now (a
-   * DISABLED key is left to the sweeper, which re-enables it with the
-   * override when the licence allows). Returns the fresh usage; without a
-   * key, the usage a new key would start with.
+   * An admin override was written: set an ACTIVE key's limit to it now when
+   * the holder's licence is still usable. A DISABLED key is left to the
+   * sweeper, which re-enables it with the override when the licence allows.
+   * Returns the fresh usage; without a key, the usage a new key would start
+   * with.
    */
   applyBudgetOverride(
     environmentId: string,
@@ -377,7 +381,8 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
           // The key goes last: when any write fails, the tenant never holds
           // a key the undo below is about to delete.
           await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
-          // Always written, empty for none, so a removed list converges.
+          // Always written (blank = the agent's default chain, `none` = no
+          // fallbacks), so a changed or removed list converges.
           await d.secrets.setEnvVar(
             input.tenantId,
             MODEL_FALLBACKS_VAR,
@@ -432,6 +437,14 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
           sameUsd(held.limit_usd, limitUsd)
         )
           return;
+        // The licence still gates: a lapsed one never gets a higher limit
+        // (the sweeper disables its key).
+        if (!(await d.budgetForDid(held.owner_did)).allowed) {
+          d.logger.warn(
+            `[vetra-llm] override for ${environmentId} not applied: the holder's licence is not usable`,
+          );
+          return;
+        }
         await configured().openrouter.updateKey(held.key_hash, { limitUsd });
         await d.store.update(environmentId, {
           limit_usd: limitUsd,

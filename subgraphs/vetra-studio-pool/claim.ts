@@ -163,7 +163,8 @@ export async function claimWarmEnvironment(
         ? [
             { key: OPENROUTER_KEY_SECRET, value: llm.key },
             { key: MODEL_VAR, value: llm.model, secret: false },
-            // Always present (empty for none): the replace drops anything absent.
+            // Always present (blank = the agent's default chain, `none` = no
+            // fallbacks): the replace drops anything absent.
             { key: MODEL_FALLBACKS_VAR, value: llm.fallbackModels.join(","), secret: false },
           ]
         : []),

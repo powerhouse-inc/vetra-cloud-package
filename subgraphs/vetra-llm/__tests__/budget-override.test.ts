@@ -117,6 +117,19 @@ describe("per-Studio budget override", () => {
     expect(s.fake.keys.size).toBe(0);
   });
 
+  it("applyBudgetOverride never raises the limit of a key whose licence lapsed", async () => {
+    const s = await brokerSetup({ allowed: true, budgetUsd: 20 });
+    await s.broker.ensureVetraKey({
+      environmentId: ENV,
+      ownerDid: holderDid(),
+    });
+    s.budgetForDid.mockResolvedValue({ allowed: false, budgetUsd: 0 });
+    await s.override(200);
+    await s.broker.applyBudgetOverride(ENV, 200);
+    expect([...s.fake.keys.values()][0].limit).toBe(20);
+    expect((await s.store.get(ENV))?.limit_usd).toBe(20);
+  });
+
   it("an override lifts a licence with no budget", async () => {
     const s = await brokerSetup({ allowed: true, budgetUsd: 0 });
     await s.override(30);
@@ -197,6 +210,29 @@ describe("setStudioLlmBudget", () => {
     );
     expect([...s.fake.keys.values()][0].limit).toBe(0);
     expect((await s.store.get(ENV))?.limit_usd).toBe(0);
+  });
+
+  it("setStudioLlmBudget refuses an environment that is not a Studio", async () => {
+    const s = await resolverHarness({
+      over: {
+        envRow: async (id) =>
+          id === "plain-env"
+            ? { owner: OWNER, ownerOrgId: null, appId: null, tenantId: "t-p" }
+            : null,
+        envState: async () => ({ packages: [] }),
+      },
+    });
+    destroy = s.destroy;
+    expect(
+      await s.code(
+        s.r.VetraLlmMutations.setStudioLlmBudget(
+          {},
+          { environmentId: "plain-env", limitUsd: 50 },
+          asUser(ADMIN),
+        ),
+      ),
+    ).toBe("BAD_USER_INPUT");
+    expect(await s.budgets.getOverride("plain-env")).toBeNull();
   });
 
   it("setStudioLlmBudget is admin-only", async () => {
