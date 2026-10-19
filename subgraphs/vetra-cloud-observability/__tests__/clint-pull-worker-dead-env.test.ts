@@ -44,10 +44,10 @@ async function setupDbs() {
     .addColumn('concept', 'text')
     .addColumn('updatedAt', 'text')
     .execute();
-  const insertEnv = (id: string) =>
+  const insertEnv = (id: string, status = 'READY', services = SERVICES) =>
     envDb
       .insertInto('environments')
-      .values({ id, name: id, subdomain: id, services: SERVICES, status: 'READY' })
+      .values({ id, name: id, subdomain: id, services, status })
       .execute();
   const envIds = async () =>
     (await envDb.selectFrom('environments').select('id').execute()).map(
@@ -88,8 +88,9 @@ afterEach(() => {
 
 function makeWorker(
   dbs: Awaited<ReturnType<typeof setupDbs>>,
-  documentExists: (id: string) => Promise<boolean>,
+  documentExists: (id: string, signal?: AbortSignal) => Promise<boolean>,
   clock: { now: number },
+  extra: { intervalMs?: number } = {},
 ) {
   return new ClintPullWorker({
     envDb: dbs.envDb,
@@ -99,6 +100,7 @@ function makeWorker(
     buildBrandUrl: (svc) => `http://${svc.documentId}/switchboard/graphql`,
     documentExists,
     now: () => clock.now,
+    ...extra,
   });
 }
 
@@ -125,7 +127,7 @@ describe('ClintPullWorker: dead and failing environments', () => {
     expect(await dbs.envIds()).toContain('gone');
 
     await runTicks(worker, clock, 1);
-    expect(documentExists).toHaveBeenCalledWith('gone');
+    expect(documentExists).toHaveBeenCalledWith('gone', expect.any(AbortSignal));
     expect(await dbs.envIds()).toEqual(['alive']);
 
     // Stopped polling it.
@@ -181,5 +183,115 @@ describe('ClintPullWorker: dead and failing environments', () => {
     await runTicks(worker, clock, 9); // 2 minutes
     expect(agentPolls.healthy).toBe(9);
     expect(documentExists).not.toHaveBeenCalled();
+  });
+
+  it('keeps polling a PROVISIONING studio every 15s however many polls fail', async () => {
+    const dbs = await setupDbs();
+    await dbs.insertEnv(
+      'coming',
+      'READY',
+      JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'agent', status: 'PROVISIONING' }]),
+    );
+    const documentExists = vi.fn(async () => true);
+    const clock = { now: 1_000_000 };
+    const worker = makeWorker(dbs, documentExists, clock);
+
+    await runTicks(worker, clock, 20); // 0 s … 285 s
+    expect(agentPolls.coming).toBe(20);
+    // The existence check still runs at the threshold, then at most once per 5 min.
+    expect(documentExists).toHaveBeenCalledTimes(1);
+    await runTicks(worker, clock, 2); // 300 s, 315 s
+    expect(documentExists).toHaveBeenCalledTimes(1);
+    await runTicks(worker, clock, 1); // 330 s: 5 min after the first check (30 s)
+    expect(documentExists).toHaveBeenCalledTimes(2);
+    expect(agentPolls.coming).toBe(23);
+  });
+
+  it('keeps polling an environment pending a deploy every 15s', async () => {
+    const dbs = await setupDbs();
+    await dbs.insertEnv('pushed', 'CHANGES_PUSHED');
+    await dbs.insertEnv('deploying', 'DEPLOYING');
+    const clock = { now: 1_000_000 };
+    const worker = makeWorker(dbs, vi.fn(async () => true), clock);
+
+    await runTicks(worker, clock, 8);
+    expect(agentPolls.pushed).toBe(8);
+    expect(agentPolls.deploying).toBe(8);
+  });
+
+  it('removes a deleted environment even while it is PROVISIONING, logging at error', async () => {
+    const dbs = await setupDbs();
+    await dbs.insertEnv(
+      'gone',
+      'READY',
+      JSON.stringify([{ type: 'CLINT', enabled: true, prefix: 'agent', status: 'PROVISIONING' }]),
+    );
+    const clock = { now: 1_000_000 };
+    const worker = makeWorker(dbs, vi.fn(async () => false), clock);
+    vi.mocked(logger.error).mockClear();
+
+    await runTicks(worker, clock, 3);
+    expect(await dbs.envIds()).toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('gone environment document no longer exists'));
+  });
+
+  describe('with fake timers', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps the record when the existence check times out after 5s', async () => {
+      const dbs = await setupDbs();
+      await dbs.insertEnv('slow');
+      let aborted = false;
+      const documentExists = vi.fn(
+        (_id: string, signal?: AbortSignal) =>
+          new Promise<boolean>(() => {
+            signal?.addEventListener('abort', () => {
+              aborted = true;
+            });
+          }),
+      );
+      const clock = { now: 1_000_000 };
+      const worker = makeWorker(dbs, documentExists, clock);
+      await runTicks(worker, clock, 2);
+
+      const third = worker.tickOnce();
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await third;
+      expect(aborted).toBe(true);
+      expect(await dbs.envIds()).toEqual(['slow']);
+    });
+
+    it('skips a tick while the previous one is still running', async () => {
+      const dbs = await setupDbs();
+      await dbs.insertEnv('hung');
+      let release: (r: Response) => void = () => {};
+      vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+        if (new URL(String(input)).pathname !== '/_proxy/routes') {
+          return new Response(null, { status: 502 });
+        }
+        agentPolls.hung = (agentPolls.hung ?? 0) + 1;
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      });
+      const clock = { now: 1_000_000 };
+      const worker = makeWorker(dbs, vi.fn(async () => true), clock, { intervalMs: TICK_MS });
+
+      worker.start();
+      await vi.advanceTimersByTimeAsync(TICK_MS * 3);
+      expect(agentPolls.hung).toBe(1);
+
+      release(Response.json([]));
+      await vi.advanceTimersByTimeAsync(TICK_MS);
+      expect(agentPolls.hung).toBe(2);
+      worker.stop();
+    });
   });
 });

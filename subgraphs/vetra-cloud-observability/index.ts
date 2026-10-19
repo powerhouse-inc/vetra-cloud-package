@@ -14,7 +14,7 @@ import {
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
-import { isDocumentNotFound } from "../vetra-apps/envs.js";
+import { environmentDocumentExists } from "./env-existence.js";
 import { DeployStuckTracker } from "./deploy-health.js";
 import { DumpsRepo } from "./dumps/repo.js";
 import { S3Helper } from "./dumps/s3.js";
@@ -285,15 +285,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           dispatch,
           // After 3 failed polls: is the env document still there? A row that
           // outlived its document is removed so it stops being polled.
-          documentExists: async (documentId) => {
-            try {
-              await this.reactorClient.get(documentId);
-              return true;
-            } catch (err) {
-              if (isDocumentNotFound(err)) return false;
-              throw err;
-            }
-          },
+          // Decided from the operation store, not the snapshot read model
+          // (which can miss rows); anything uncertain keeps the record.
+          documentExists: (documentId, signal) =>
+            environmentDocumentExists(this.reactorClient, documentId, signal),
         });
         this.clintPullWorker.start();
         console.info("[observability] ClintPullWorker started");
@@ -695,10 +690,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                   .set({ deployingSince: null })
                   .where("id", "=", env.id)
                   .execute();
-                await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
+                const reported = await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
                   code: argoHealthStatus,
                   message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
                 });
+                if (!reported) {
+                  console.error(
+                    `[deployment-reconciler] ${label} (${env.id}, tenant ${env.tenantId}): ` +
+                      `failed to record DEPLOYMENT_FAILED (ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}); ` +
+                      `retried after another grace period while still degraded`,
+                  );
+                }
               }
             } else if (argoHealthStatus === "MISSING") {
               // MISSING is expected for new tenants — ArgoCD hasn't synced yet
@@ -881,15 +883,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     type: string,
     input: Record<string, unknown>,
     logTag: string = "deployment-reconciler",
-  ) {
+  ): Promise<boolean> {
     try {
       const action = createAction(type, input);
       await this.reactorClient.execute(documentId, "main", [action]);
       console.info(`[${logTag}] Dispatched ${type} for ${documentId}`);
+      return true;
     } catch (err) {
       console.error(
-        `[${logTag}] Failed to dispatch ${type}: ${String(err)}`,
+        `[${logTag}] Failed to dispatch ${type} for ${documentId}: ${String(err)}`,
       );
+      return false;
     }
   }
 
