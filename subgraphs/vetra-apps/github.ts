@@ -171,13 +171,35 @@ export class RepoNameTakenError extends Error {
 }
 
 export class GithubHttpError extends Error {
+  /**
+   * `reasons`: GitHub's own explanations from the response body (never the
+   * method/path, which carry org and repository names). `rateLimited`: a 429,
+   * or a 403 that is GitHub's primary or secondary rate limit.
+   */
   constructor(
     readonly status: number,
     message: string,
+    readonly reasons: string[] = [],
+    readonly rateLimited = status === 429,
   ) {
     super(message);
     this.name = "GithubHttpError";
   }
+}
+
+/** A 429, or a 403 that GitHub uses for a primary or secondary rate limit. */
+function isRateLimited(
+  status: number,
+  headers: Headers,
+  reasons: string[],
+): boolean {
+  if (status === 429) return true;
+  if (status !== 403) return false;
+  return (
+    headers.get("x-ratelimit-remaining") === "0" ||
+    headers.has("retry-after") ||
+    reasons.some((r) => /rate limit/i.test(r))
+  );
 }
 
 /** GitHub refused a repository name (422 other than "already exists"); `reason` is GitHub's own wording. */
@@ -216,10 +238,11 @@ export function classifyGithubError(
     return githubErrors.repoNameInvalid(err.reason);
   if (err instanceof GithubUnavailableError) return githubErrors.unavailable();
   if (!(err instanceof GithubHttpError)) return null;
+  if (err.rateLimited || err.status === 429) return githubErrors.unavailable();
   if (err.status === 401) return githubErrors.notConnected();
   if (
     (err.status === 403 || err.status === 422) &&
-    ORG_POLICY_TEXT.test(err.message)
+    err.reasons.some((r) => ORG_POLICY_TEXT.test(r))
   )
     return githubErrors.orgPolicy(account);
   // 404: GitHub hides what the user or the installation may not reach.
@@ -229,7 +252,7 @@ export function classifyGithubError(
   return null;
 }
 
-/** GitHub's own explanations in a 422 body (`message` and `errors[].message`). */
+/** GitHub's own explanations in an error body (`errors[].message`, then `message`). */
 function githubReasons(data: unknown): string[] {
   if (typeof data !== "object" || data === null) return [];
   const body = data as { message?: unknown; errors?: unknown };
@@ -301,9 +324,18 @@ export function createGithubDeployApi(
     }
     if (!res.ok && !okStatuses.includes(res.status)) {
       const detail = await res.text().catch(() => "");
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(detail);
+      } catch {
+        // a non-JSON body has no reasons
+      }
+      const reasons = githubReasons(parsed);
       throw new GithubHttpError(
         res.status,
         `GitHub ${method} ${path} → ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+        reasons,
+        isRateLimited(res.status, res.headers, reasons),
       );
     }
     const text = res.status === 204 ? "" : await res.text();
@@ -500,10 +532,11 @@ export function createGithubDeployApi(
         if (reasons.some((m) => /already exists/i.test(m)))
           throw new RepoNameTakenError(`${account.login}/${name} exists`);
         const text = reasons.join("; ");
-        if (ORG_POLICY_TEXT.test(text))
+        if (reasons.some((r) => ORG_POLICY_TEXT.test(r)))
           throw new GithubHttpError(
             422,
             `GitHub POST ${path} → 422: ${text.slice(0, 300)}`,
+            reasons,
           );
         // The specific reason ("name is invalid") comes before GitHub's
         // generic "Repository creation failed."

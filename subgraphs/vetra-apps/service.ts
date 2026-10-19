@@ -736,9 +736,19 @@ export async function createApp(
       made,
     );
   } catch (err) {
-    await undoFailedCreate(deps, harbor, deps.renown!, did, made);
+    const cleanedUp = await undoFailedCreate(
+      deps,
+      harbor,
+      deps.renown!,
+      did,
+      made,
+    );
     const account = repo.fullName.split("/")[0] ?? repo.fullName;
-    throw createFailure(deps, "createApp", step, account, err);
+    // The customer's own repository is never changed by createApp.
+    throw createFailure(deps, "createApp", step, account, err, {
+      repoRolledBack: false,
+      cleanedUp,
+    });
   }
   deps.logger.info(
     `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
@@ -1048,10 +1058,13 @@ async function createStudioAppLocked(
       made,
     );
   } catch (err) {
-    await undoFailedCreate(deps, harbor, renown, did, made);
+    const cleanedUp = await undoFailedCreate(deps, harbor, renown, did, made);
     // Another replica made this Studio's App meanwhile.
     if (isUniqueViolation(err, STUDIO_APP_INDEX)) throw studioAlreadyAnApp();
-    throw createFailure(deps, "createStudioApp", step, account.login, err);
+    throw createFailure(deps, "createStudioApp", step, account.login, err, {
+      repoRolledBack: made.repo !== null,
+      cleanedUp,
+    });
   }
   deps.logger.info(
     `[vetra-apps] created Studio App ${slug} (${appId}) in ${made.repo?.fullName}, studio ${studioId}, env ${envId}`,
@@ -1370,6 +1383,7 @@ function createFailure(
   step: string,
   account: string,
   err: unknown,
+  outcome: { repoRolledBack: boolean; cleanedUp: boolean },
 ): GraphQLError {
   if (err instanceof GraphQLError) return err;
   const mapped = classifyGithubError(err, account);
@@ -1382,14 +1396,15 @@ function createFailure(
   deps.logger.error(
     `[vetra-apps] ${what} failed while ${step}: ${String(err)}`,
   );
-  return githubErrors.deploySetupFailed();
+  return githubErrors.deploySetupFailed(outcome);
 }
 
 /**
  * Undo a createApp/createStudioApp that failed: the apps row, the
  * production env document it made, the announcement, the robot, the project, the Studio App repository, and the
  * identity (when registered, null: not yet) when no live App uses it. Best
- * effort: every failure is logged, none is thrown.
+ * effort: every failure is logged, none is thrown; false when any step
+ * failed (something may be left behind).
  */
 async function undoFailedCreate(
   deps: AppsDeps,
@@ -1397,11 +1412,13 @@ async function undoFailedCreate(
   renown: RenownApi,
   did: string | null,
   made: CreateMade,
-): Promise<void> {
+): Promise<boolean> {
+  let cleanedUp = true;
   const step = async (what: string, fn: () => Promise<unknown>) => {
     try {
       await fn();
     } catch (err) {
+      cleanedUp = false;
       deps.logger.error(
         `[vetra-apps] cleaning up a failed createApp: ${what} failed: ${String(err)}`,
       );
@@ -1427,13 +1444,16 @@ async function undoFailedCreate(
     await step("deleting the Harbor project", () =>
       harbor.deleteProject(project),
     );
-  if (made.repo && deps.github)
-    await undoStudioRepo(deps, deps.github, made.repo);
-  if (did === null) return;
-  await step("deleting the identity", async () => {
-    if (!(await identityInUse(deps, did)))
-      await renown.deleteWorkloadIdentity(did);
-  });
+  if (made.repo && deps.github) {
+    if (!(await undoStudioRepo(deps, deps.github, made.repo)))
+      cleanedUp = false;
+  }
+  if (did !== null)
+    await step("deleting the identity", async () => {
+      if (!(await identityInUse(deps, did)))
+        await renown.deleteWorkloadIdentity(did);
+    });
+  return cleanedUp;
 }
 
 /**
@@ -1442,13 +1462,14 @@ async function undoFailedCreate(
  * selected installation is first added to it, then deleted with the
  * installation token; the user-token delete is the last resort. A 404 is
  * never taken as done here: we just created the repo, so it means we could
- * not reach it, and it is logged for removal by hand. Never throws.
+ * not reach it, and it is logged for removal by hand. Never throws; false
+ * when the repository could not be deleted.
  */
 async function undoStudioRepo(
   deps: AppsDeps,
   github: GithubDeployApi,
   repo: NonNullable<CreateMade["repo"]>,
-): Promise<void> {
+): Promise<boolean> {
   const warn = (what: string, err: unknown) =>
     deps.logger.warn(
       `[vetra-apps] cleaning up a failed createStudioApp: ${what} failed: ${String(err)}`,
@@ -1476,6 +1497,7 @@ async function undoStudioRepo(
     deps.logger.warn(
       `[vetra-apps] could not delete the GitHub repository ${repo.fullName} after a failed createStudioApp; remove it by hand`,
     );
+  return deleted;
 }
 
 /**

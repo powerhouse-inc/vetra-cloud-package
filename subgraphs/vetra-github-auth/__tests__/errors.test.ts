@@ -6,6 +6,7 @@ import { up } from "../db/migrations.js";
 import type { VetraGithubAuthDB } from "../db/schema.js";
 import {
   createRepo,
+  exchangeDeviceCode,
   GithubApiError,
   RepoAlreadyExistsError,
   RepoNameInvalidError,
@@ -64,6 +65,21 @@ describe("createRepo", () => {
     const err = await createRepo("ghu", "widget").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GithubApiError);
     expect((err as GithubApiError).status).toBe(0);
+  });
+});
+
+describe("timeouts on the connect path", () => {
+  it("a device-code exchange that times out is GithubApiError 0", async () => {
+    vi.stubEnv("GITHUB_APP_CLIENT_ID", "cid");
+    fetchMock.mockRejectedValueOnce(
+      new DOMException("The operation timed out.", "TimeoutError"),
+    );
+    const err = await exchangeDeviceCode("dc").catch((e: unknown) => e);
+    vi.unstubAllEnvs();
+    expect(err).toBeInstanceOf(GithubApiError);
+    expect((err as GithubApiError).status).toBe(0);
+    // Every connect-path call is bounded.
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 });
 
@@ -133,10 +149,49 @@ describe("connectGithub error codes", () => {
     [403, { message: "Resource protected by organization SAML enforcement." }, "ORG_POLICY"],
     [401, { message: "Bad credentials" }, "GITHUB_NOT_CONNECTED"],
     [502, { message: "Bad Gateway" }, "GITHUB_UNAVAILABLE"],
+    [429, { message: "Too Many Requests" }, "GITHUB_UNAVAILABLE"],
+    [403, { message: "API rate limit exceeded for user ID 1." }, "GITHUB_UNAVAILABLE"],
   ])("maps a %i on repo creation (%j) to %s", async (status, body, code) => {
     const err = await connect(() => json(status, body));
     expect(err.extensions.code).toBe(code);
     expect(err.message).not.toBe(code);
+  });
+
+  it("a 403 with x-ratelimit-remaining: 0 is GITHUB_UNAVAILABLE", async () => {
+    const err = await connect(
+      () =>
+        new Response(JSON.stringify({ message: "Forbidden" }), {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0" },
+        }),
+    );
+    expect(err.extensions.code).toBe("GITHUB_UNAVAILABLE");
+  });
+
+  it("a plain 403 for repo privacy-policy is INSUFFICIENT_PERMISSION, not ORG_POLICY", async () => {
+    fetchMock.mockImplementation(async () => json(403, { message: "Forbidden" }));
+    const err = await createRepo("ghu", "privacy-policy").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GithubApiError);
+    const { githubFailure } = await import("../resolvers.js");
+    expect(githubFailure(err)?.extensions.code).toBe("INSUFFICIENT_PERMISSION");
+    // Names in the message (an org "saml-labs" in the path) are never read as a policy.
+    expect(
+      githubFailure(new GithubApiError(403, "GitHub POST /orgs/saml-labs/repos → 403"))
+        ?.extensions.code,
+    ).toBe("INSUFFICIENT_PERMISSION");
+  });
+
+  it("startGithubDeviceFlow: a network error is GITHUB_UNAVAILABLE", async () => {
+    vi.stubEnv("GITHUB_APP_CLIENT_ID", "cid");
+    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    const resolvers = createResolvers(db, logger);
+    const err = await resolvers.VetraGithubAuthMutations.startGithubDeviceFlow(
+      null,
+      {},
+      ctx,
+    ).catch((e: { extensions: Record<string, unknown> }) => e);
+    vi.unstubAllEnvs();
+    expect(err.extensions.code).toBe("GITHUB_UNAVAILABLE");
   });
 
   it("logs an unexpected failure at error level with the step, never the token", async () => {

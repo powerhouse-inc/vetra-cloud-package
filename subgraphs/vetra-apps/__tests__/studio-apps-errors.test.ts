@@ -172,6 +172,55 @@ describe("createStudioApp GitHub errors", () => {
     await expectNothingLeft();
   });
 
+  it("a plain 403 for slug privacy-policy in org saml-labs is INSUFFICIENT_PERMISSION, not ORG_POLICY", async () => {
+    await h.db
+      .updateTable("github_deploy_connections")
+      .set({ account_login: "saml-labs" })
+      .execute();
+    githubAnswers(() => json(403, { message: "Forbidden" }));
+    const studio = await seedStudio();
+    const err = await failure(
+      createStudioApp(h.deps, owner, {
+        name: "Privacy Policy",
+        studioEnvironmentId: studio,
+        installationId: INSTALLATION,
+      }),
+    );
+    expect(err.extensions.code).toBe("INSUFFICIENT_PERMISSION");
+    expect(err.message).toContain("saml-labs");
+  });
+
+  it.each([
+    [
+      "a 403 with x-ratelimit-remaining: 0",
+      () =>
+        new Response(JSON.stringify({ message: "Forbidden" }), {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0" },
+        }),
+    ],
+    [
+      "a 403 with retry-after",
+      () =>
+        new Response(JSON.stringify({ message: "Forbidden" }), {
+          status: 403,
+          headers: { "retry-after": "60" },
+        }),
+    ],
+    [
+      "a 403 secondary rate limit message",
+      () =>
+        json(403, {
+          message: "You have exceeded a secondary rate limit. Please wait.",
+        }),
+    ],
+    ["a 429", () => json(429, { message: "Too Many Requests" })],
+  ])("GITHUB_UNAVAILABLE on %s", async (_label, respond) => {
+    githubAnswers(respond);
+    const err = await createFails();
+    expect(err.extensions.code).toBe("GITHUB_UNAVAILABLE");
+  });
+
   it("GITHUB_UNAVAILABLE when the installation lookup gets a 5xx", async () => {
     const { GithubHttpError } = await import("../github.js");
     h.github.getInstallationRepositorySelection = async () => {
@@ -189,13 +238,51 @@ describe("createStudioApp setup errors after the repository exists", () => {
     };
     const err = await createFails();
     expect(err.extensions.code).toBe("DEPLOY_SETUP_FAILED");
-    expect(err.message).toMatch(/rolled back/i);
+    expect(err.message).toBe(
+      "Setting up the deployment failed after the repository was created. Everything was rolled back; try again.",
+    );
     expect(err.message).not.toContain("harbor");
     expect(h.github.calls.deleteRepo).toStrictEqual([[INSTALLATION, "acme/shop"]]);
     await expectNothingLeft();
     const logged = vi.mocked(h.deps.logger.error).mock.calls.map((c) => c[0]);
     expect(logged.some((m) => /Harbor robot/.test(m) && /500/.test(m))).toBe(true);
     expect(logged.join("\n")).not.toContain("user-token");
+  });
+
+  it("DEPLOY_SETUP_FAILED before any repository was made says nothing was changed", async () => {
+    h.harbor.createProject = async () => {
+      throw new Error("harbor: 503");
+    };
+    const err = await createFails();
+    expect(err.extensions.code).toBe("DEPLOY_SETUP_FAILED");
+    expect(err.message).toBe(
+      "Setting up the deployment failed. Nothing was changed; try again.",
+    );
+    expect(h.github.calls.createRepoAsUser ?? []).toHaveLength(0);
+  });
+
+  it("DEPLOY_SETUP_FAILED says so when an undo step fails", async () => {
+    h.harbor.createPushRobot = async () => {
+      throw new Error("harbor: 500 robot creation failed");
+    };
+    h.harbor.deleteProject = async () => {
+      throw new Error("harbor: 500 delete failed");
+    };
+    const err = await createFails();
+    expect(err.extensions.code).toBe("DEPLOY_SETUP_FAILED");
+    expect(err.message).toBe(
+      "Setting up the deployment failed and some resources could not be cleaned up automatically; try again or contact support.",
+    );
+  });
+
+  it("DEPLOY_SETUP_FAILED says so when the repository could not be deleted", async () => {
+    h.harbor.createPushRobot = async () => {
+      throw new Error("harbor: 500");
+    };
+    h.github.deleteRepo = async () => false;
+    h.github.deleteRepoAsUser = async () => false;
+    const err = await createFails();
+    expect(err.message).toMatch(/could not be cleaned up automatically/);
   });
 
   it("DEPLOY_SETUP_FAILED when creating the production env fails", async () => {
@@ -239,18 +326,23 @@ describe("createStudioApp setup errors after the repository exists", () => {
 });
 
 describe("createApp rollback", () => {
-  it("deletes the new production env document it created", async () => {
+  it("deletes the new production env document it created, and says nothing was changed", async () => {
     const before = new Set(h.envs.docs.keys());
     h.envs.execute = async () => {
       throw new Error("INITIALIZE rejected");
     };
-    await expect(
+    const err = await failure(
       createApp(h.deps, owner, {
         name: "Shop",
         installationId: INSTALLATION,
         repositoryId: REPO_ID,
       }),
-    ).rejects.toThrow();
+    );
+    // createApp never touches the customer's own repository.
+    expect(err.extensions.code).toBe("DEPLOY_SETUP_FAILED");
+    expect(err.message).toBe(
+      "Setting up the deployment failed. Nothing was changed; try again.",
+    );
     expect(h.envs.deleted).toHaveLength(1);
     expect(new Set(h.envs.docs.keys())).toStrictEqual(before);
   });

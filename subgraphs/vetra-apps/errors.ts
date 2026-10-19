@@ -68,10 +68,18 @@ export const githubErrors = {
       "GITHUB_UNAVAILABLE",
       "GitHub is not responding. Try again in a minute.",
     ),
-  deploySetupFailed: () =>
+  /**
+   * `repoRolledBack`: Vetra created a repository and removed it again;
+   * `cleanedUp` false: an undo step failed.
+   */
+  deploySetupFailed: (outcome: { repoRolledBack: boolean; cleanedUp: boolean }) =>
     appsError(
       "DEPLOY_SETUP_FAILED",
-      "Setting up the deployment failed after the repository was created. Everything was rolled back; try again.",
+      !outcome.cleanedUp
+        ? "Setting up the deployment failed and some resources could not be cleaned up automatically; try again or contact support."
+        : outcome.repoRolledBack
+          ? "Setting up the deployment failed after the repository was created. Everything was rolled back; try again."
+          : "Setting up the deployment failed. Nothing was changed; try again.",
     ),
 };
 

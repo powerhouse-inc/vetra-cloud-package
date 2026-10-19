@@ -37,15 +37,40 @@ export class RepoNameInvalidError extends Error {
   }
 }
 
-/** A GitHub API failure with its HTTP status (0: GitHub did not answer). */
+/**
+ * A GitHub API failure with its HTTP status (0: GitHub did not answer).
+ * `reasons`: GitHub's own explanations from the body (never the URL, which
+ * carries account and repository names). `rateLimited`: a 429, or a 403 that
+ * is GitHub's primary or secondary rate limit.
+ */
 export class GithubApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly reasons: string[] = [],
+    readonly rateLimited = status === 429,
   ) {
     super(message);
     this.name = "GithubApiError";
   }
+}
+
+/** The GithubApiError for a failed response (`detail`: its body, when already read). */
+async function apiError(
+  response: Response,
+  message: string,
+  detail?: string,
+): Promise<GithubApiError> {
+  const text = detail ?? (await response.text().catch(() => ""));
+  const reasons = githubReasons(text);
+  const { status, headers } = response;
+  const rateLimited =
+    status === 429 ||
+    (status === 403 &&
+      (headers.get("x-ratelimit-remaining") === "0" ||
+        headers.has("retry-after") ||
+        reasons.some((r) => /rate limit/i.test(r))));
+  return new GithubApiError(status, message, reasons, rateLimited);
 }
 
 /** Every user-token GitHub call gives up after this long. */
@@ -198,10 +223,7 @@ export async function findUserInstallation(
     headers: userHeaders(userAccessToken),
   });
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to list app installations: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to list app installations: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as {
     installations?: { id: number; repository_selection?: string }[];
@@ -230,10 +252,7 @@ export async function addRepoToInstallation(
   );
   if (response.status === 204 || response.status === 304) return;
   const detail = await response.text().catch(() => "");
-  throw new GithubApiError(
-    response.status,
-    `Failed to add repository to installation: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ""}`,
-  );
+  throw await apiError(response, `Failed to add repository to installation: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ""}`, detail);
 }
 
 /** Create a blank private repo in the user's account with their access token. */
@@ -260,10 +279,7 @@ export async function createRepo(
       if (!ORG_POLICY_TEXT.test(reasons.join("; ")))
         throw new RepoNameInvalidError(reasons[0] ?? "rejected by GitHub");
     }
-    throw new GithubApiError(
-      response.status,
-      `Failed to create repository: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 500)}` : ""}`,
-    );
+    throw await apiError(response, `Failed to create repository: ${response.status} ${response.statusText}${detail ? ` — ${detail.slice(0, 500)}` : ""}`, detail);
   }
   const body = (await response.json()) as {
     id: number;
@@ -281,10 +297,7 @@ export async function fetchGithubUser(
     headers: userHeaders(userAccessToken),
   });
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to resolve the authenticated user: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to resolve the authenticated user: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as { login: string; id: number };
   return { login: body.login, id: body.id };
@@ -300,7 +313,7 @@ export async function findUserAccountInstallation(
 ): Promise<UserInstallation | null> {
   const auth = appAuth();
   const { token: jwt } = await auth({ type: "app" });
-  const response = await fetch(
+  const response = await githubFetch(
     `${GITHUB_API}/users/${encodeURIComponent(login)}/installation`,
     {
       headers: {
@@ -313,10 +326,7 @@ export async function findUserAccountInstallation(
   );
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to look up account installation: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to look up account installation: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as {
     id: number;
@@ -339,7 +349,7 @@ export async function findRepoInstallationId(
 ): Promise<string | null> {
   const auth = appAuth();
   const { token: jwt } = await auth({ type: "app" });
-  const response = await fetch(`${GITHUB_API}/repos/${repoFullName}/installation`, {
+  const response = await githubFetch(`${GITHUB_API}/repos/${repoFullName}/installation`, {
     headers: {
       Authorization: `Bearer ${jwt}`,
       Accept: "application/vnd.github+json",
@@ -349,10 +359,7 @@ export async function findRepoInstallationId(
   });
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to look up repo installation: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to look up repo installation: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as { id: number };
   return String(body.id);
@@ -370,10 +377,7 @@ export async function findUserRepo(
     headers: userHeaders(userAccessToken),
   });
   if (!userResponse.ok) {
-    throw new GithubApiError(
-      userResponse.status,
-      `Failed to resolve the authenticated user: ${userResponse.status} ${userResponse.statusText}`,
-    );
+    throw await apiError(userResponse, `Failed to resolve the authenticated user: ${userResponse.status} ${userResponse.statusText}`);
   }
   const { login } = (await userResponse.json()) as { login: string };
   const repoResponse = await githubFetch(`${GITHUB_API}/repos/${login}/${name}`, {
@@ -381,10 +385,7 @@ export async function findUserRepo(
   });
   if (repoResponse.status === 404) return null;
   if (!repoResponse.ok) {
-    throw new GithubApiError(
-      repoResponse.status,
-      `Failed to look up repository: ${repoResponse.status} ${repoResponse.statusText}`,
-    );
+    throw await apiError(repoResponse, `Failed to look up repository: ${repoResponse.status} ${repoResponse.statusText}`);
   }
   const body = (await repoResponse.json()) as {
     id: number;
@@ -419,7 +420,7 @@ export type DeviceFlowStart = {
  * `user_code`, verification URL, and `device_code`.
  */
 export async function startDeviceFlow(): Promise<DeviceFlowStart> {
-  const response = await fetch(`${GITHUB_OAUTH_HOST}/login/device/code`, {
+  const response = await githubFetch(`${GITHUB_OAUTH_HOST}/login/device/code`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -429,10 +430,7 @@ export async function startDeviceFlow(): Promise<DeviceFlowStart> {
     body: JSON.stringify({ client_id: githubClientId() }),
   });
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to start device flow: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to start device flow: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as {
     device_code: string;
@@ -465,7 +463,7 @@ export type DeviceFlowExchange =
 export async function exchangeDeviceCode(
   deviceCode: string,
 ): Promise<DeviceFlowExchange> {
-  const response = await fetch(
+  const response = await githubFetch(
     `${GITHUB_OAUTH_HOST}/login/oauth/access_token`,
     {
       method: "POST",
@@ -482,10 +480,7 @@ export async function exchangeDeviceCode(
     },
   );
   if (!response.ok) {
-    throw new GithubApiError(
-      response.status,
-      `Failed to exchange device code: ${response.status} ${response.statusText}`,
-    );
+    throw await apiError(response, `Failed to exchange device code: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as {
     access_token?: string;

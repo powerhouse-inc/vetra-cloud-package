@@ -57,7 +57,7 @@ export function githubFailure(error: unknown): GraphQLError | null {
     );
   if (!(error instanceof GithubApiError)) return null;
   const { status } = error;
-  if (status === 0 || status >= 500)
+  if (status === 0 || status >= 500 || status === 429 || error.rateLimited)
     return ghError(
       "GITHUB_UNAVAILABLE",
       "GitHub is not responding. Try again in a minute.",
@@ -67,7 +67,11 @@ export function githubFailure(error: unknown): GraphQLError | null {
       "GITHUB_NOT_CONNECTED",
       "Your GitHub connection has expired or was removed. Reconnect GitHub, then try again.",
     );
-  if ((status === 403 || status === 422) && ORG_POLICY_TEXT.test(error.message))
+  // Only GitHub's own wording: the message carries account and repo names.
+  if (
+    (status === 403 || status === 422) &&
+    error.reasons.some((r) => ORG_POLICY_TEXT.test(r))
+  )
     return ghError(
       "ORG_POLICY",
       "A policy of your GitHub organisation does not allow this. Ask an owner of the organisation to allow it, then try again.",
@@ -281,7 +285,12 @@ export function createResolvers(
         const did = requireDid(ctx);
         const connection = await getConnection(db, did, environmentId);
         if (!connection) throw ghError("NOT_CONNECTED");
-        const installationId = await findRepoInstallationId(connection.repoFullName);
+        let installationId: string | null;
+        try {
+          installationId = await findRepoInstallationId(connection.repoFullName);
+        } catch (error) {
+          throw failure("getPushToken", "looking up the repository installation", error);
+        }
         if (!installationId) throw ghError("APP_NOT_INSTALLED");
         const repoName = connection.repoFullName.split("/").pop();
         try {
@@ -300,7 +309,11 @@ export function createResolvers(
         ctx: AuthContext,
       ): Promise<DeviceFlowStart> => {
         requireDid(ctx);
-        return startDeviceFlow();
+        try {
+          return await startDeviceFlow();
+        } catch (error) {
+          throw failure("startGithubDeviceFlow", "starting the device flow", error);
+        }
       },
 
       authorizeGithub: async (
@@ -309,13 +322,19 @@ export function createResolvers(
         ctx: AuthContext,
       ): Promise<{ githubLogin: string | null; appInstalled: boolean }> => {
         const did = requireDid(ctx);
-        const userAccessToken = await resolveDeviceToken(did, deviceCode);
-        const installation = await findUserInstallation(userAccessToken);
-        const identity = await getIdentity(db, did);
-        return {
-          githubLogin: identity?.githubLogin ?? null,
-          appInstalled: installation !== null,
-        };
+        let step = "authorizing with GitHub";
+        try {
+          const userAccessToken = await resolveDeviceToken(did, deviceCode);
+          step = "looking up the GitHub app installation";
+          const installation = await findUserInstallation(userAccessToken);
+          const identity = await getIdentity(db, did);
+          return {
+            githubLogin: identity?.githubLogin ?? null,
+            appInstalled: installation !== null,
+          };
+        } catch (error) {
+          throw failure("authorizeGithub", step, error);
+        }
       },
 
       connectGithub: async (
