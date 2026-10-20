@@ -64,7 +64,7 @@ export interface ClaimDeps {
   /** Fully delete an env (deleteDocument) — used to clean up a half-claimed env
    *  on failure so it doesn't leak a pod/namespace/cert as a TERMINATING husk. */
   deleteEnv: (documentId: string) => Promise<void>;
-  cfg: { version: string };
+  cfg: { version: string; renownUrl?: string };
   nowIso: () => string;
   /** Optional async sleep (injectable for tests); defaults to setTimeout. */
   sleep?: (ms: number) => Promise<void>;
@@ -170,6 +170,11 @@ export async function claimWarmEnvironment(
         : []),
       ...(anthropic ? STUDIO_KEY_SECRET_NAMES.map((key) => ({ key, value: anthropic })) : []),
       { key: "ADMINS", value: addr },
+      // Warm envs created before this was configured lack it in their document,
+      // and the replace drops anything undeclared — so re-state it here.
+      ...(d.cfg.renownUrl?.trim()
+        ? [{ key: "VETRA_CLOUD_RENOWN_URL", value: d.cfg.renownUrl.trim(), secret: false }]
+        : []),
       // Per-env random secret gating vetra-cli's session-export endpoints
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },

@@ -32,6 +32,8 @@ export interface CreateEnvConfig {
    * warm studio's vetra-cli creates/deploys environments against the right
    * (per-tenant) switchboard instead of the CLI's staging default. */
   switchboardUrl: string;
+  /** Renown URL stamped as VETRA_CLOUD_RENOWN_URL when non-blank. */
+  renownUrl?: string;
 }
 
 export interface CreatedStudioEnv {
@@ -84,6 +86,11 @@ export async function createStudioEnvironmentDoc(
             value: cfg.switchboardUrl,
             isSecret: false,
           },
+          // Log in on the Renown the switchboard verifies against (unset =
+          // the Studio's www.renown.id default).
+          ...(cfg.renownUrl?.trim()
+            ? [{ name: "VETRA_CLOUD_RENOWN_URL", value: cfg.renownUrl.trim(), isSecret: false }]
+            : []),
           // Point the agent's product PUBLISH at the pool's registry. Without
           // it, vetra-cli's resolveRegistryUrl falls to its hardcoded
           // registry.dev.vetra.io default, so prod warm studios would publish
