@@ -108,3 +108,38 @@ describe("createStudioEnvironmentDoc: protected before anything else", () => {
     expect(reactor.execute).not.toHaveBeenCalled();
   });
 });
+
+describe("createStudioEnvironmentDoc: Renown URL", () => {
+  async function envOf(renownUrl?: string) {
+    const execute = vi.fn<(d: string, b: string, a: unknown[]) => Promise<void>>(async () => {});
+    await createStudioEnvironmentDoc(
+      { createDocument: async () => "aaaabbbb-1111", execute },
+      {
+        version: "0.0.1",
+        sizeName: "VETRA_AGENT_XXL",
+        registry: "https://registry.vetra.io",
+        switchboardUrl: "https://sb",
+        renownUrl,
+      },
+    );
+    const actions = execute.mock.calls[0][2] as {
+      type: string;
+      input: { clintConfig?: { env?: { name: string; value: string }[] } };
+    }[];
+    return actions.find((a) => a.type === "ENABLE_SERVICE")?.input.clintConfig?.env ?? [];
+  }
+
+  it("stamps VETRA_CLOUD_RENOWN_URL when configured", async () => {
+    expect(await envOf("https://renown-staging.vetra.io")).toContainEqual({
+      name: "VETRA_CLOUD_RENOWN_URL",
+      value: "https://renown-staging.vetra.io",
+      isSecret: false,
+    });
+  });
+
+  it("does not stamp it when unset or blank", async () => {
+    for (const v of [undefined, "", "  "]) {
+      expect((await envOf(v)).map((e) => e.name)).not.toContain("VETRA_CLOUD_RENOWN_URL");
+    }
+  });
+});

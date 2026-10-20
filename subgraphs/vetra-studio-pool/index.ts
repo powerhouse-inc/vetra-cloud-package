@@ -175,7 +175,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             if (perm) await protectForOwner(perm, documentId, address);
           },
           deleteEnv,
-          cfg: { version: cfg.version },
+          cfg: { version: cfg.version, renownUrl: cfg.renownUrl },
           nowIso: () => new Date().toISOString(),
           logger: console,
         },
@@ -223,6 +223,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             sizeName: cfg.sizeName,
             registry: cfg.registry,
             switchboardUrl: cfg.switchboardUrl,
+            renownUrl: cfg.renownUrl,
           }),
         deleteEnv,
         cfg,

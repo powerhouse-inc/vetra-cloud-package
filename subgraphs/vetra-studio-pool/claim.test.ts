@@ -99,6 +99,19 @@ describe("claimWarmEnvironment", () => {
     expect(entries).toHaveLength(8);
   });
 
+  it("re-states the Renown URL on claim when configured, and omits it when unset", async () => {
+    const d = deps({ cfg: { version: "0.0.1-dev.19", renownUrl: "https://renown-staging.vetra.io" } });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    expect(d.replaceTenantConfig.mock.calls[0][2]).toContainEqual({
+      key: "VETRA_CLOUD_RENOWN_URL",
+      value: "https://renown-staging.vetra.io",
+      secret: false,
+    });
+    const d2 = deps();
+    await claimWarmEnvironment(d2 as never, "did:pkh:eip155:1:0xCaller");
+    expect(d2.replaceTenantConfig.mock.calls[0][2].map((e) => e.key)).not.toContain("VETRA_CLOUD_RENOWN_URL");
+  });
+
   it("still claims without an LLM budget or legacy key: the Studio comes up in connect-a-model mode", async () => {
     const d = deps({ grantLlmKey: vi.fn(async () => null), legacyAnthropicKey: vi.fn(async () => null) });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).not.toBeNull();
