@@ -6,7 +6,8 @@ import {
   type AppsContext,
   type Caller,
 } from "./auth.js";
-import { appsError } from "./errors.js";
+import { appsError, githubErrors } from "./errors.js";
+import { GithubHttpError, GithubUnavailableError } from "./github.js";
 
 /**
  * GraphQL is for people (owner / admin). CI workload tokens (bearer with a
@@ -57,8 +58,10 @@ import {
 
 /**
  * Resolver errors that are not GraphQLErrors (GitHub/Harbor/Renown/reactor
- * failures) are logged and surfaced with a generic message, so upstream
- * response bodies never leak to callers.
+ * failures) are logged at error level with the resolver name and surfaced
+ * with a generic message, so upstream response bodies never leak to callers.
+ * GitHub being down (5xx, no answer) or a revoked user token (401) get their
+ * customer codes.
  */
 async function guard<T>(
   deps: AppsDeps,
@@ -69,7 +72,21 @@ async function guard<T>(
     return await run();
   } catch (err) {
     if (err instanceof GraphQLError) throw err;
-    deps.logger.warn(`[vetra-apps] ${name} failed: ${String(err)}`);
+    // GitHub down or the user's token revoked: say so, whatever the resolver.
+    if (
+      err instanceof GithubUnavailableError ||
+      (err instanceof GithubHttpError && err.status >= 500)
+    ) {
+      deps.logger.warn(`[vetra-apps] ${name} failed: ${String(err)}`);
+      throw githubErrors.unavailable();
+    }
+    if (err instanceof GithubHttpError && err.status === 401) {
+      deps.logger.warn(`[vetra-apps] ${name} failed: ${String(err)}`);
+      throw githubErrors.notConnected();
+    }
+    // Production logs at warn: an unexpected failure is an error. The step
+    // is the resolver name; upstream bodies stay in the log, never the reply.
+    deps.logger.error(`[vetra-apps] ${name} failed: ${String(err)}`);
     throw new GraphQLError(`${name} failed`, {
       extensions: { code: "INTERNAL_SERVER_ERROR" },
     });

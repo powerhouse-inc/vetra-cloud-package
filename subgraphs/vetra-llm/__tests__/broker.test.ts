@@ -49,7 +49,12 @@ async function setup(
     keyVault: fakeKeyVault,
     secrets,
     budgetForDid,
-    cfg: { defaultModel: DEFAULT_STUDIO_MODEL, workspaceId: "ws-staging" },
+    budgetOverride: async () => null,
+    cfg: {
+      defaultModel: DEFAULT_STUDIO_MODEL,
+      workspaceId: "ws-staging",
+      fallbackModels: [],
+    },
     now: () => NOW,
     logger,
     ...over,
@@ -93,12 +98,13 @@ describe("provisionVetraKey", () => {
     expect(MODEL_VAR).toBe("VETRA_MODEL");
     expect(s.secrets.secret(TENANT, "OPENROUTER_API_KEY")).toBe(key.secret);
     expect(s.secrets.envVar(TENANT, "VETRA_MODEL")).toBe(DEFAULT_STUDIO_MODEL);
-    // Exactly one secret and one var, nothing else.
+    // Exactly one secret and the model vars, nothing else.
     expect(s.secrets.setSecret.mock.calls).toStrictEqual([
       [TENANT, "OPENROUTER_API_KEY", key.secret],
     ]);
     expect(s.secrets.setEnvVar.mock.calls).toStrictEqual([
       [TENANT, "VETRA_MODEL", DEFAULT_STUDIO_MODEL],
+      [TENANT, "VETRA_MODEL_FALLBACKS", ""],
     ]);
   });
 

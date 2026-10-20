@@ -31,6 +31,41 @@ describe("vetra-llm migrations", () => {
     }
   });
 
+  it("creates the budget override and request tables in the namespace, idempotently", async () => {
+    const pg = new PGlite();
+    const root = new Kysely<any>({ dialect: new PGliteDialect(pg) });
+    try {
+      await sql`CREATE SCHEMA "vetra-llm"`.execute(root);
+      const ns = root.withSchema("vetra-llm");
+      await up(ns);
+      await up(ns);
+      const cols = await pg.query<{ table_name: string; column_name: string }>(
+        `SELECT table_name, column_name FROM information_schema.columns
+         WHERE table_schema = 'vetra-llm' AND table_name LIKE 'studio_llm_budget_%'
+         ORDER BY table_name, ordinal_position`,
+      );
+      expect(
+        cols.rows.map((r) => `${r.table_name}.${r.column_name}`),
+      ).toStrictEqual([
+        "studio_llm_budget_overrides.environment_id",
+        "studio_llm_budget_overrides.limit_usd",
+        "studio_llm_budget_overrides.set_by",
+        "studio_llm_budget_overrides.updated_at",
+        "studio_llm_budget_requests.id",
+        "studio_llm_budget_requests.environment_id",
+        "studio_llm_budget_requests.requested_by",
+        "studio_llm_budget_requests.requested_at",
+        "studio_llm_budget_requests.handled_at",
+      ]);
+      const publicTables = await pg.query(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+      );
+      expect(publicTables.rows).toStrictEqual([]);
+    } finally {
+      await root.destroy();
+    }
+  });
+
   it("survives two boots racing on the same schema", async () => {
     const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
     try {

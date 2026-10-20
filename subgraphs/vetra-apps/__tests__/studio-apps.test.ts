@@ -166,14 +166,14 @@ describe("createStudioApp", () => {
   });
 
   // Review Focus 2
-  it("maps GitHub's 403 on repo creation to FORBIDDEN and leaves nothing behind", async () => {
+  it("maps GitHub's 403 on repo creation to INSUFFICIENT_PERMISSION and leaves nothing behind", async () => {
     const studio = await seedStudio();
     h.github.forbiddenAccounts.set("acme", 403);
     await expect(
       create({ name: "Shop", studioEnvironmentId: studio }),
     ).rejects.toMatchObject({
-      message: "You cannot create repositories in acme on GitHub",
-      extensions: { code: "FORBIDDEN" },
+      message: expect.stringContaining("Install the Vetra GitHub app on acme"),
+      extensions: { code: "INSUFFICIENT_PERMISSION" },
     });
     expect(h.harbor.projects).toStrictEqual([]);
     expect(h.harbor.deletedProjects).toStrictEqual(["app-shop"]);
@@ -205,7 +205,7 @@ describe("createStudioApp", () => {
     h.github.addRepoFailures.push(502); // the create's add fails, the undo's works
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
-    ).rejects.toMatchObject({ status: 502 });
+    ).rejects.toMatchObject({ extensions: { code: "GITHUB_UNAVAILABLE" } });
     expect(h.github.calls.addRepoToInstallation).toStrictEqual([
       ["user-token", INSTALLATION, "9001"],
       ["user-token", INSTALLATION, "9001"],
@@ -226,7 +226,7 @@ describe("createStudioApp", () => {
     });
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
-    ).rejects.toThrow(/public repository/);
+    ).rejects.toMatchObject({ extensions: { code: "DEPLOY_SETUP_FAILED" } });
     expect(h.github.order.slice(-2)).toStrictEqual([
       "addRepoToInstallation",
       "deleteRepo",
@@ -236,15 +236,13 @@ describe("createStudioApp", () => {
     ]);
   });
 
-  it("maps a 403 on adding to the installation to FORBIDDEN and falls back to the user-token delete", async () => {
+  it("maps a 403 on adding to the installation to INSUFFICIENT_PERMISSION and falls back to the user-token delete", async () => {
     h.github.repositorySelection.set(INSTALLATION, "selected");
     h.github.addRepoFailures.push(403, 403);
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
     ).rejects.toMatchObject({
-      message:
-        "You cannot add repositories to the Vetra Deploy installation on acme",
-      extensions: { code: "FORBIDDEN" },
+      extensions: { code: "INSUFFICIENT_PERMISSION" },
     });
     expect(h.github.calls.deleteRepo ?? []).toHaveLength(0);
     expect(h.github.calls.deleteRepoAsUser).toStrictEqual([
@@ -263,7 +261,9 @@ describe("createStudioApp", () => {
     h.github.userDeleteMissing.value = true;
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
-    ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+    ).rejects.toMatchObject({
+      extensions: { code: "INSUFFICIENT_PERMISSION" },
+    });
     expect(h.github.calls.deleteRepoAsUser).toStrictEqual([
       ["user-token", "acme/shop"],
     ]);
@@ -275,13 +275,13 @@ describe("createStudioApp", () => {
     ).toBe(true);
   });
 
-  it("maps a 404 on repo creation to FORBIDDEN", async () => {
+  it("maps a 404 on repo creation to INSUFFICIENT_PERMISSION", async () => {
     h.github.forbiddenAccounts.set("acme", 404);
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
     ).rejects.toMatchObject({
-      message: "You cannot create repositories in acme on GitHub",
-      extensions: { code: "FORBIDDEN" },
+      message: expect.stringContaining("Install the Vetra GitHub app on acme"),
+      extensions: { code: "INSUFFICIENT_PERMISSION" },
     });
     expect(h.harbor.projects).toStrictEqual([]);
   });
@@ -336,7 +336,7 @@ describe("createStudioApp", () => {
     };
     await expect(
       create({ name: "Shop", studioEnvironmentId: await seedStudio() }),
-    ).rejects.toThrow("GitHub down");
+    ).rejects.toMatchObject({ extensions: { code: "DEPLOY_SETUP_FAILED" } });
     expect(h.github.calls.deleteRepo).toStrictEqual([
       [INSTALLATION, "acme/shop"],
     ]);
@@ -458,7 +458,7 @@ describe("createStudioApp", () => {
     });
     await expect(
       create({ name: "Shop", studioEnvironmentId: studio }),
-    ).rejects.toThrow(/public repository/);
+    ).rejects.toMatchObject({ extensions: { code: "DEPLOY_SETUP_FAILED" } });
     expect(h.github.calls.deleteRepo).toStrictEqual([
       [INSTALLATION, "acme/shop"],
     ]);
@@ -487,7 +487,7 @@ describe("createStudioApp", () => {
     };
     await expect(
       create({ name: "Shop", studioEnvironmentId: studio }),
-    ).rejects.toThrow("GitHub down");
+    ).rejects.toMatchObject({ extensions: { code: "DEPLOY_SETUP_FAILED" } });
     expect([...h.envs.docs.keys()]).toStrictEqual(envsBefore);
     expect(h.envs.executed).toHaveLength(executedBefore);
     expect(h.github.calls.deleteRepo).toStrictEqual([

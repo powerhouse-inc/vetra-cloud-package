@@ -21,7 +21,7 @@ import {
 import { studioLlmBudgetForDid } from "../vetra-licensing/studio-access.js";
 import { up } from "./db/migrations.js";
 import type { VetraLlmDB } from "./db/schema.js";
-import { createLlmKeyStore } from "./store.js";
+import { createBudgetStore, createLlmKeyStore } from "./store.js";
 import { createProcessBroker, transitFromEnv } from "./factory.js";
 import { createLlmResolvers } from "./resolvers.js";
 import { claimedStudiosFrom, migrateStudiosToOpenRouter } from "./migrate.js";
@@ -90,6 +90,9 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       "vetra-cloud-environments",
     )) as unknown as Kysely<DB>;
     const envs = createReactorEnvGateway(this.reactorClient as never);
+    const budgets = createBudgetStore(db);
+    const budgetOverride = (environmentId: string) =>
+      budgets.getOverride(environmentId);
 
     this.resolvers = createLlmResolvers({
       broker,
@@ -129,6 +132,8 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       }),
       secrets,
       logger: console,
+      budgets,
+      now: () => new Date(),
       migrate: (opts) =>
         migrateStudiosToOpenRouter(
           {
@@ -142,6 +147,7 @@ export class VetraLlmSubgraph extends BaseSubgraph {
                   .execute(),
               ),
             budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
+            budgetOverride,
             provision: (input) => broker.provisionVetraKey(input),
             secrets,
             logger: console,
@@ -161,6 +167,7 @@ export class VetraLlmSubgraph extends BaseSubgraph {
           keyVault,
           secrets,
           budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
+          budgetOverride,
           envOf: async (environmentId) =>
             (await envDb
               .selectFrom("environments")

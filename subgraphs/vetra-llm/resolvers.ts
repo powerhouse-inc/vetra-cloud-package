@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { withKeyLock } from "../../shared/key-lock.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { isStudioState } from "../../shared/studio-package.js";
@@ -12,8 +12,11 @@ import { didForAddress } from "../vetra-licensing/did.js";
 import { OPENROUTER_KEY_SECRET, llmLockKey, type LlmBroker } from "./broker.js";
 import { llmError, notConfigured, toLlmGraphQLError } from "./errors.js";
 import type { MigrationReport } from "./migrate.js";
+import type { LlmBudgetStore } from "./store.js";
 
 const SESSION_EXPORT_SECRET = "VETRA_SESSION_EXPORT_SECRET";
+/** At most one open budget request per Studio in this window. */
+export const BUDGET_REQUEST_WINDOW_MS = 24 * 3_600_000;
 
 export interface LlmContext {
   user?: { address?: string };
@@ -38,6 +41,9 @@ export interface LlmResolverDeps {
   access: EnvAccess;
   secrets: Pick<SecretsService, "setSecret" | "listSecretKeys"> | null;
   logger: Pick<Console, "info" | "warn" | "error">;
+  /** Per-Studio budget overrides and budget requests. */
+  budgets: LlmBudgetStore;
+  now(): Date;
   /** The admin-only cut-over migration job (migrate.ts). */
   migrate(opts: {
     dryRun: boolean;
@@ -188,6 +194,61 @@ export function createLlmResolvers(
             dryRun: a.dryRun ?? true,
             removeAnthropicSecrets: a.removeAnthropicSecrets ?? false,
           });
+        },
+      ),
+
+      requestStudioLlmBudget: wrap(
+        async (a: { environmentId: string }, ctx) => {
+          const { caller } = await operable(a.environmentId, ctx);
+          const env = a.environmentId;
+          // Serialises the check-then-insert per Studio (one replica, as the broker).
+          return withKeyLock(`${llmLockKey(env)}:budget-request`, async () => {
+            const now = deps.now();
+            const since = new Date(
+              now.getTime() - BUDGET_REQUEST_WINDOW_MS,
+            ).toISOString();
+            if (await deps.budgets.openRequestSince(env, since)) return false;
+            await deps.budgets.addRequest({
+              id: randomUUID(),
+              environment_id: env,
+              requested_by: caller.address,
+              requested_at: now.toISOString(),
+              handled_at: null,
+            });
+            // Error level: the only level prod (LOG_LEVEL=warn) surfaces reliably.
+            deps.logger.error(
+              `[vetra-llm] budget request ${env} by ${caller.address}`,
+            );
+            return true;
+          });
+        },
+      ),
+
+      setStudioLlmBudget: wrap(
+        async (a: { environmentId: string; limitUsd: number }, ctx) => {
+          const caller = requireCaller(ctx);
+          if (!caller.isAdmin)
+            throw llmError("FORBIDDEN", "platform admins only");
+          if (!Number.isFinite(a.limitUsd) || a.limitUsd < 0)
+            throw llmError("BAD_USER_INPUT", "limitUsd must be 0 or more");
+          const env = a.environmentId;
+          if (!(await deps.envRow(env)))
+            throw llmError("NOT_FOUND", "environment not found");
+          if (!isStudioState(await deps.envState(env)))
+            throw llmError("BAD_USER_INPUT", "not a Vetra Studio");
+          const now = deps.now().toISOString();
+          // The override first: if the key update fails, the sweeper converges on it.
+          await deps.budgets.setOverride({
+            environment_id: env,
+            limit_usd: a.limitUsd,
+            set_by: caller.address,
+            updated_at: now,
+          });
+          const handled = await deps.budgets.handleRequests(env, now);
+          deps.logger.warn(
+            `[vetra-llm] budget override ${env}: $${a.limitUsd}/month by ${caller.address} (${handled} request(s) handled)`,
+          );
+          return deps.broker.applyBudgetOverride(env, a.limitUsd);
         },
       ),
     },

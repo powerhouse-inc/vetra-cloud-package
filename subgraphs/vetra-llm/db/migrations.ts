@@ -39,4 +39,39 @@ export async function up(db: Kysely<any>): Promise<void> {
   } catch (err) {
     if (!isConcurrentIndexError(err)) throw err;
   }
+  try {
+    await db.schema
+      .createTable("studio_llm_budget_overrides")
+      .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
+      .addColumn("limit_usd", "double precision", (c) => c.notNull())
+      .addColumn("set_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .ifNotExists()
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createTable("studio_llm_budget_requests")
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("requested_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("requested_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("handled_at", "varchar(64)")
+      .ifNotExists()
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createIndex("studio_llm_budget_requests_env_idx")
+      .ifNotExists()
+      .on("studio_llm_budget_requests")
+      .column("environment_id")
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
