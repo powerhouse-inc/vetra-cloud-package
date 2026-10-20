@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { STUDIO_KEY_SECRET_NAMES } from "../vetra-licensing/subscriptions-resolvers.js";
-import { MODEL_VAR, OPENROUTER_KEY_SECRET } from "../vetra-llm/broker.js";
+import { MODEL_FALLBACKS_VAR, MODEL_VAR, OPENROUTER_KEY_SECRET } from "../vetra-llm/broker.js";
 import type { ClaimDb } from "./pool-db.js";
 
 const SECRET_RETRIES = 3;
@@ -19,7 +19,10 @@ export interface ClaimDeps {
    * has no budget or the broker is not configured: the Studio then serves in
    * connect-a-model mode.
    */
-  grantLlmKey: (environmentId: string, did: string) => Promise<{ key: string; model: string } | null>;
+  grantLlmKey: (
+    environmentId: string,
+    did: string,
+  ) => Promise<{ key: string; model: string; fallbackModels: string[] } | null>;
   /** Delete the env's Vetra key after a failed claim (the env is deleted too). */
   releaseLlmKey: (environmentId: string) => Promise<void>;
   /**
@@ -45,7 +48,8 @@ export interface ClaimDeps {
    * Anything written before the claim (and not declared by the document) is
    * gone. `entries` carry the model key and model, the legacy key names,
    * `ADMINS` (so the claimant is the embedded switchboard's admin without a
-   * gitops re-render) and the session-export secret.
+   * gitops re-render) and the session-export secret; the model entries
+   * include VETRA_MODEL_FALLBACKS.
    */
   replaceTenantConfig: (
     tenantId: string,
@@ -60,7 +64,7 @@ export interface ClaimDeps {
   /** Fully delete an env (deleteDocument) — used to clean up a half-claimed env
    *  on failure so it doesn't leak a pod/namespace/cert as a TERMINATING husk. */
   deleteEnv: (documentId: string) => Promise<void>;
-  cfg: { version: string };
+  cfg: { version: string; renownUrl?: string };
   nowIso: () => string;
   /** Optional async sleep (injectable for tests); defaults to setTimeout. */
   sleep?: (ms: number) => Promise<void>;
@@ -159,10 +163,18 @@ export async function claimWarmEnvironment(
         ? [
             { key: OPENROUTER_KEY_SECRET, value: llm.key },
             { key: MODEL_VAR, value: llm.model, secret: false },
+            // Always present (blank = the agent's default chain, `none` = no
+            // fallbacks): the replace drops anything absent.
+            { key: MODEL_FALLBACKS_VAR, value: llm.fallbackModels.join(","), secret: false },
           ]
         : []),
       ...(anthropic ? STUDIO_KEY_SECRET_NAMES.map((key) => ({ key, value: anthropic })) : []),
       { key: "ADMINS", value: addr },
+      // Warm envs created before this was configured lack it in their document,
+      // and the replace drops anything undeclared — so re-state it here.
+      ...(d.cfg.renownUrl?.trim()
+        ? [{ key: "VETRA_CLOUD_RENOWN_URL", value: d.cfg.renownUrl.trim(), secret: false }]
+        : []),
       // Per-env random secret gating vetra-cli's session-export endpoints
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },

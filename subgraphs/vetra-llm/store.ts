@@ -1,5 +1,10 @@
 import type { Kysely } from "kysely";
-import type { StudioLlmKeys, VetraLlmDB } from "./db/schema.js";
+import type {
+  StudioLlmBudgetOverrides,
+  StudioLlmBudgetRequests,
+  StudioLlmKeys,
+  VetraLlmDB,
+} from "./db/schema.js";
 
 export type StudioLlmKeysPatch = Partial<
   Omit<StudioLlmKeys, "environment_id" | "created_at">
@@ -58,6 +63,72 @@ export function createLlmKeyStore(db: Kysely<VetraLlmDB>): LlmKeyStore {
         .where("key_hash", "is not", null)
         .orderBy("environment_id")
         .execute();
+    },
+  };
+}
+
+export interface LlmBudgetStore {
+  /** The Studio's admin override (USD/month); null when none. */
+  getOverride(environmentId: string): Promise<number | null>;
+  /** Insert or replace the Studio's override. */
+  setOverride(row: StudioLlmBudgetOverrides): Promise<void>;
+  /** An unhandled request made at or after `sinceIso`; null when none. */
+  openRequestSince(
+    environmentId: string,
+    sinceIso: string,
+  ): Promise<StudioLlmBudgetRequests | null>;
+  addRequest(row: StudioLlmBudgetRequests): Promise<void>;
+  /** Mark every unhandled request of the Studio handled; returns how many. */
+  handleRequests(environmentId: string, handledAt: string): Promise<number>;
+}
+
+export function createBudgetStore(db: Kysely<VetraLlmDB>): LlmBudgetStore {
+  return {
+    async getOverride(environmentId) {
+      const row = await db
+        .selectFrom("studio_llm_budget_overrides")
+        .select("limit_usd")
+        .where("environment_id", "=", environmentId)
+        .executeTakeFirst();
+      return row?.limit_usd ?? null;
+    },
+    async setOverride(row) {
+      await db
+        .insertInto("studio_llm_budget_overrides")
+        .values(row)
+        .onConflict((oc) =>
+          oc.column("environment_id").doUpdateSet({
+            limit_usd: row.limit_usd,
+            set_by: row.set_by,
+            updated_at: row.updated_at,
+          }),
+        )
+        .execute();
+    },
+    async openRequestSince(environmentId, sinceIso) {
+      // ISO-8601 UTC strings order lexicographically.
+      return (
+        (await db
+          .selectFrom("studio_llm_budget_requests")
+          .selectAll()
+          .where("environment_id", "=", environmentId)
+          .where("handled_at", "is", null)
+          .where("requested_at", ">=", sinceIso)
+          .orderBy("requested_at", "desc")
+          .executeTakeFirst()) ?? null
+      );
+    },
+    async addRequest(row) {
+      await db.insertInto("studio_llm_budget_requests").values(row).execute();
+    },
+    async handleRequests(environmentId, handledAt) {
+      const res = await db
+        .updateTable("studio_llm_budget_requests")
+        .set({ handled_at: handledAt })
+        .where("environment_id", "=", environmentId)
+        .where("handled_at", "is", null)
+        .executeTakeFirst();
+      return Number(res.numUpdatedRows);
     },
   };
 }

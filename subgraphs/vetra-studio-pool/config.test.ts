@@ -9,6 +9,7 @@ describe("loadPoolConfig", () => {
       sizeName: "VETRA_AGENT_XXL",
       registry: "https://registry.vetra.io",
       switchboardUrl: "https://switchboard.staging.vetra.io",
+      renownUrl: "",
       enabled: false,
       legacyAnthropicKey: true,
     });
@@ -22,6 +23,7 @@ describe("loadPoolConfig", () => {
         STUDIO_POOL_SIZE_NAME: "VETRA_AGENT_XL",
         STUDIO_POOL_REGISTRY: "https://r",
         STUDIO_POOL_SWITCHBOARD_URL: "https://sb",
+        STUDIO_POOL_RENOWN_URL: " https://renown-staging.vetra.io ",
       }),
     ).toEqual({
       size: 3,
@@ -29,6 +31,7 @@ describe("loadPoolConfig", () => {
       sizeName: "VETRA_AGENT_XL",
       registry: "https://r",
       switchboardUrl: "https://sb",
+      renownUrl: "https://renown-staging.vetra.io",
       enabled: true,
       legacyAnthropicKey: true,
     });

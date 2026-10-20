@@ -28,6 +28,7 @@ function deps(over: Partial<any> = {}) {
     grantLlmKey: vi.fn(async (_env: string, _did: string) => ({
       key: "sk-or-v1-real",
       model: "anthropic/claude-sonnet-4.6",
+      fallbackModels: ["openai/gpt-5"],
     })),
     releaseLlmKey: vi.fn(async (_env: string) => {}),
     legacyAnthropicKey: vi.fn(async (_did: string) => "sk-ant-real" as string | null),
@@ -94,7 +95,21 @@ describe("claimWarmEnvironment", () => {
     for (const name of LEGACY_NAMES) expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
     expect(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
-    expect(entries).toHaveLength(7);
+    expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
+    expect(entries).toHaveLength(8);
+  });
+
+  it("re-states the Renown URL on claim when configured, and omits it when unset", async () => {
+    const d = deps({ cfg: { version: "0.0.1-dev.19", renownUrl: "https://renown-staging.vetra.io" } });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    expect(d.replaceTenantConfig.mock.calls[0][2]).toContainEqual({
+      key: "VETRA_CLOUD_RENOWN_URL",
+      value: "https://renown-staging.vetra.io",
+      secret: false,
+    });
+    const d2 = deps();
+    await claimWarmEnvironment(d2 as never, "did:pkh:eip155:1:0xCaller");
+    expect(d2.replaceTenantConfig.mock.calls[0][2].map((e) => e.key)).not.toContain("VETRA_CLOUD_RENOWN_URL");
   });
 
   it("still claims without an LLM budget or legacy key: the Studio comes up in connect-a-model mode", async () => {

@@ -11,7 +11,7 @@ import type { TenantOwnersResult } from "../../../shared/tenant-owners.js";
 import { createLlmBroker } from "../broker.js";
 import { DEFAULT_STUDIO_MODEL } from "../config.js";
 import { createLlmResolvers, type LlmResolverDeps } from "../resolvers.js";
-import { createLlmKeyStore } from "../store.js";
+import { createBudgetStore, createLlmKeyStore } from "../store.js";
 import { createFakeOpenRouter } from "./fake-openrouter.js";
 import { createProcessBroker } from "../factory.js";
 import { schema } from "../schema.js";
@@ -52,13 +52,19 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
   const fake = createFakeOpenRouter();
   const secrets = createFakeSecrets();
   const store = createLlmKeyStore(h.db);
+  const budgets = createBudgetStore(h.db);
   const broker = createLlmBroker({
     store,
     openrouter: fake.api,
     keyVault: fakeKeyVault,
     secrets,
     budgetForDid: async () => ({ allowed: true, budgetUsd }),
-    cfg: { defaultModel: DEFAULT_STUDIO_MODEL, workspaceId: null },
+    budgetOverride: (env) => budgets.getOverride(env),
+    cfg: {
+      defaultModel: DEFAULT_STUDIO_MODEL,
+      workspaceId: null,
+      fallbackModels: [],
+    },
     now: () => new Date("2026-10-15T12:00:00.000Z"),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
@@ -78,6 +84,8 @@ async function setup(over: Partial<LlmResolverDeps> = {}, budgetUsd = 20) {
     access: OWNER_ONLY_ACCESS,
     secrets,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    budgets,
+    now: () => new Date("2026-10-15T12:00:00.000Z"),
     migrate: vi.fn(
       async (o: { dryRun: boolean; removeAnthropicSecrets: boolean }) => ({
         dryRun: o.dryRun,

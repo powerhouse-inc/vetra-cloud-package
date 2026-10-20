@@ -10,7 +10,7 @@ import { createLlmBroker, type LlmBroker } from "./broker.js";
 import { loadLlmConfig, type LlmConfig } from "./config.js";
 import type { VetraLlmDB } from "./db/schema.js";
 import { createOpenRouterApi, type OpenRouterApi } from "./openrouter.js";
-import { createLlmKeyStore } from "./store.js";
+import { createBudgetStore, createLlmKeyStore } from "./store.js";
 
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
 
@@ -53,12 +53,14 @@ export function createProcessBroker(input: {
       })
     : null;
   const keyVault = createKeyVault(input.transit);
+  const budgets = createBudgetStore(input.db);
   const broker = createLlmBroker({
     store: createLlmKeyStore(input.db),
     openrouter,
     keyVault,
     secrets: input.secrets,
     budgetForDid: (did) => studioLlmBudgetForDid(input.studio, did),
+    budgetOverride: (env) => budgets.getOverride(env),
     cfg,
     now: () => new Date(),
     logger: console,

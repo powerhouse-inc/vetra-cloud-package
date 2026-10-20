@@ -635,7 +635,7 @@ describe("createApp in an organisation", () => {
     h.harbor.createPushRobot = async () => {
       throw new Error("harbor: create robot → 500");
     };
-    expect(await code(createApp(h.deps, owner, input))).toMatch(/create robot/);
+    expect(await code(createApp(h.deps, owner, input))).toBe("DEPLOY_SETUP_FAILED");
     expect(h.harbor.deletedProjects).toStrictEqual(["app-org-shop"]);
     expect(h.renown.identities.has("4343")).toBe(false);
     h.harbor.createPushRobot = createPushRobot;
@@ -652,7 +652,7 @@ describe("createApp in an organisation", () => {
         throw new Error("reactor down");
       return execute(id, actions);
     };
-    expect(await code(createApp(h.deps, owner, input))).toMatch(/reactor down/);
+    expect(await code(createApp(h.deps, owner, input))).toBe("DEPLOY_SETUP_FAILED");
     const rows = await h.db
       .selectFrom("apps")
       .select("id")
@@ -662,6 +662,8 @@ describe("createApp in an organisation", () => {
     expect(h.harbor.deletedProjects).toStrictEqual(["app-org-shop"]);
     expect(h.harbor.deletedRobots).toHaveLength(1);
     expect(h.renown.identities.has("4343")).toBe(false);
+    // The fresh production env document goes too.
+    expect(h.envs.deleted).toHaveLength(1);
     expect(
       await h.obsDb.selectFrom("org_expected_handovers").selectAll().execute(),
     ).toStrictEqual([]);

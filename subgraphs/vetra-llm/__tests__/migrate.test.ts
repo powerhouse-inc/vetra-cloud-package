@@ -27,6 +27,7 @@ function deps(over: Partial<MigrationDeps> = {}) {
           ? { allowed: true, budgetUsd: 0 }
           : { allowed: false, budgetUsd: 0 },
     ),
+    budgetOverride: async () => null,
     provision: vi.fn(async (i: { environmentId: string }) => {
       if (i.environmentId === "broken")
         throw new Error("openrouter down sk-or-v1-leak");
@@ -57,6 +58,22 @@ describe("migrateStudiosToOpenRouter", () => {
       anthropicSecretsRemoved: 0,
     });
     expect(d.provision).not.toHaveBeenCalled();
+  });
+
+  it("honours a per-Studio budget override, but not over a lapsed licence", async () => {
+    const { d } = deps({
+      budgetOverride: async (env: string) =>
+        env === "no-budget" || env === "lapsed" ? 30 : null,
+    });
+    const r = await migrateStudiosToOpenRouter(d, {
+      dryRun: true,
+      removeAnthropicSecrets: false,
+    });
+    expect(r).toMatchObject({
+      provisioned: ["budgeted", "no-budget", "broken"],
+      noBudget: [],
+      noLicence: ["lapsed"],
+    });
   });
 
   it("provisions budgeted Studios with the owner's DID, isolates failures and never logs keys", async () => {

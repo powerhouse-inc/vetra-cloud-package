@@ -14,6 +14,11 @@ import {
 import { up } from "./db/migrations.js";
 import { startWatchers, type WatcherHandle } from "./watchers.js";
 import { ClintPullWorker } from "./clint-pull-worker.js";
+import {
+  environmentDocumentExists,
+  reactorSnapshotMarkedDeleted,
+} from "./env-existence.js";
+import { DeployStuckTracker } from "./deploy-health.js";
 import { DumpsRepo } from "./dumps/repo.js";
 import { S3Helper } from "./dumps/s3.js";
 import {
@@ -281,6 +286,21 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           // endpoint is discovered, so the cold-create (BYOK) provisioning UI
           // completes instead of spinning forever.
           dispatch,
+          // After 3 failed polls: is the env document still there? A row that
+          // outlived its document is removed so it stops being polled.
+          // Gone = positive deletion evidence in the reactor's DocumentSnapshot
+          // (every delete is a soft delete, invisible to get() while
+          // REACTOR_DOCUMENT_DECISIONS is off), or no operation stream at all.
+          // Anything uncertain keeps the record. The processor db is the same
+          // Postgres as the reactor's; if it isn't, the query throws → keep.
+          documentExists: (documentId, signal) =>
+            environmentDocumentExists(this.reactorClient, documentId, signal, {
+              isMarkedDeleted: (id) =>
+                reactorSnapshotMarkedDeleted(
+                  this.relationalDb as unknown as Kysely<any>,
+                  id,
+                ),
+            }),
         });
         this.clintPullWorker.start();
         console.info("[observability] ClintPullWorker started");
@@ -513,6 +533,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    * and the observability environment_status table.
    */
   private startDeploymentReconciler(observabilityDb: Kysely<ObservabilityDB>) {
+    const stuckTracker = new DeployStuckTracker();
     const reconcile = async () => {
       try {
         // Get the processor's environments namespace to read document states
@@ -533,6 +554,14 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           deployingSince: string | null;
           services: unknown;
         }>;
+
+        // Deploys pending for more than 15 min: one error per stuck episode.
+        for (const env of stuckTracker.newlyStuck(pendingEnvs, Date.now())) {
+          console.error(
+            `[deployment-reconciler] ${env.name ?? env.id} (${env.id}): stuck in ${env.status} ` +
+              `for ${Math.round(env.stuckForMs / 60_000)} min`,
+          );
+        }
 
         if (pendingEnvs.length === 0) return;
 
@@ -662,8 +691,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                   `waiting (${Math.round(elapsed / 1000)}s / ${VetraCloudObservabilitySubgraph.DEPLOYMENT_GRACE_MS / 1000}s grace)`,
                 );
               } else {
-                console.info(
-                  `[deployment-reconciler] ${label}: → FAILED (${argoHealthStatus}, ` +
+                // A failed deploy is what operators need to see: error level
+                // (prod logs at warn). Logged once — the env leaves DEPLOYING.
+                console.error(
+                  `[deployment-reconciler] ${label} (${env.id}): → DEPLOYMENT_FAILED (${argoHealthStatus}, ` +
                   `grace period exceeded after ${Math.round(elapsed / 1000)}s)`,
                 );
                 await envDb
@@ -671,10 +702,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
                   .set({ deployingSince: null })
                   .where("id", "=", env.id)
                   .execute();
-                await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
+                const reported = await this.dispatchAction(env.id, "REPORT_DEPLOYMENT_FAILED", {
                   code: argoHealthStatus,
                   message: `ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}`,
                 });
+                if (!reported) {
+                  console.error(
+                    `[deployment-reconciler] ${label} (${env.id}, tenant ${env.tenantId}): ` +
+                      `failed to record DEPLOYMENT_FAILED (ArgoCD health: ${argoHealthStatus}, sync: ${argoSyncStatus}); ` +
+                      `retried after another grace period while still degraded`,
+                  );
+                }
               }
             } else if (argoHealthStatus === "MISSING") {
               // MISSING is expected for new tenants — ArgoCD hasn't synced yet
@@ -857,15 +895,17 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     type: string,
     input: Record<string, unknown>,
     logTag: string = "deployment-reconciler",
-  ) {
+  ): Promise<boolean> {
     try {
       const action = createAction(type, input);
       await this.reactorClient.execute(documentId, "main", [action]);
       console.info(`[${logTag}] Dispatched ${type} for ${documentId}`);
+      return true;
     } catch (err) {
       console.error(
-        `[${logTag}] Failed to dispatch ${type}: ${String(err)}`,
+        `[${logTag}] Failed to dispatch ${type} for ${documentId}: ${String(err)}`,
       );
+      return false;
     }
   }
 

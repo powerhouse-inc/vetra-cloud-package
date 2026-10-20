@@ -558,7 +558,7 @@ export async function makeHarness(
       return clock.now;
     },
     newId: () => `id-${++idSeq}`,
-    logger: { info: vi.fn(), warn: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
   return {
     deps,
