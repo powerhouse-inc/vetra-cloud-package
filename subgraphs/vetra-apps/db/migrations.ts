@@ -130,10 +130,12 @@ export const STUDIO_LAUNCH_KEY_INDEX = "app_deployments_studio_launch_key";
  * Who started a deployment and for whom (D20, Task 2.3): `trigger`
  * (STUDIO_LAUNCH, STUDIO_ROLLBACK, OWNER, CI; null on older rows),
  * `on_behalf_of` (the owner's did:pkh) and the Studio's `version_number`.
- * Plus the idempotency key of a Studio launch: at most one pending, under
- * way or READY STUDIO_LAUNCH row per (app_id, version_number, sha), so a
- * retried launch finds the same deployment (a FAILED or SUPERSEDED one
- * leaves the index and may be tried again). Additive and idempotent; schema
+ * `pre_apply_packages` (JSON names the env had installed right before a
+ * Studio deployment was applied; a restore removes only what it added).
+ * Plus the idempotency key of a Studio launch: at most one pending or under
+ * way STUDIO_LAUNCH row per (app_id, version_number, sha), so concurrent
+ * retries find the same deployment (READY ones are matched by the service
+ * only while still live; a later launch of the same version is a new one). Additive and idempotent; schema
  * builder only, so it lands in the namespace schema.
  */
 export async function ensureDeploymentTriggerColumns(
@@ -143,6 +145,7 @@ export async function ensureDeploymentTriggerColumns(
     ["trigger", "text"],
     ["on_behalf_of", "text"],
     ["version_number", "integer"],
+    ["pre_apply_packages", "text"],
   ] as const) {
     try {
       await db.schema
@@ -162,7 +165,7 @@ export async function ensureDeploymentTriggerColumns(
       .on("app_deployments")
       .columns(["app_id", "version_number", "sha"])
       .where(sql.ref("trigger"), "=", "STUDIO_LAUNCH")
-      .where(sql.ref("status"), "in", ["PENDING", "DEPLOYING", "READY"])
+      .where(sql.ref("status"), "in", ["PENDING", "DEPLOYING"])
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err)) throw err;

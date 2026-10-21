@@ -288,17 +288,18 @@ describe("ensureDeploymentTriggerColumns (Task 2.3)", () => {
       await ensureDeploymentTriggerColumns(db);
 
       expect(await db.selectFrom("app_deployments").selectAll().execute()).toStrictEqual([
-        { id: "old", app_id: "a", sha: "s", status: "READY", trigger: null, on_behalf_of: null, version_number: null },
+        { id: "old", app_id: "a", sha: "s", status: "READY", trigger: null, on_behalf_of: null, version_number: null, pre_apply_packages: null },
       ]);
       const row = (id: string, status: string, trigger = "STUDIO_LAUNCH") => ({
         id, app_id: "a", sha: "s", status, trigger, version_number: 1,
       });
-      await db.insertInto("app_deployments").values(row("l1", "READY")).execute();
-      // A second live launch of the same (app, version, sha) is refused…
-      await expect(db.insertInto("app_deployments").values(row("l2", "PENDING")).execute()).rejects.toMatchObject({
+      await db.insertInto("app_deployments").values(row("l1", "PENDING")).execute();
+      // A second in-flight launch of the same (app, version, sha) is refused…
+      await expect(db.insertInto("app_deployments").values(row("l2", "DEPLOYING")).execute()).rejects.toMatchObject({
         code: "23505",
       });
-      // …a FAILED one and other triggers are not in the key.
+      // …READY and FAILED ones and other triggers are not in the key.
+      await db.insertInto("app_deployments").values(row("d1", "READY")).execute();
       await db.insertInto("app_deployments").values(row("f1", "FAILED")).execute();
       await db.insertInto("app_deployments").values(row("r1", "PENDING", "STUDIO_ROLLBACK")).execute();
       await db.insertInto("app_deployments").values(row("r2", "PENDING", "STUDIO_ROLLBACK")).execute();

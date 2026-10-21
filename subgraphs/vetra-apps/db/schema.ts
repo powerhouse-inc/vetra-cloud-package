@@ -95,6 +95,8 @@ export interface AppDeploymentsTable {
   on_behalf_of?: string | null;
   /** The Studio product's version number (Studio launches and rollbacks to them). */
   version_number?: number | null;
+  /** JSON package names the env had right before a Studio deployment was applied. */
+  pre_apply_packages?: string | null;
   created_at: string;
   updated_at: string;
 }

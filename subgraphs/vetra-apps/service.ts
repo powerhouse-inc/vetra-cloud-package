@@ -3070,6 +3070,7 @@ function deploymentRow(
     trigger: req.trigger,
     on_behalf_of: req.onBehalfOf,
     version_number: req.versionNumber,
+    pre_apply_packages: null,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -3277,25 +3278,43 @@ async function studioProductionEnv(
   return state;
 }
 
-/** The pending, under-way or READY launch of (app, version, sha), if any. */
+/**
+ * The launch of (app, version, sha) a retry gets back: one still pending or
+ * under way, or a READY one that is still what runs on the production env
+ * (no later deployment other than FAILED/SUPERSEDED ones). A READY one that
+ * is no longer live (a Go back came after it) is not: the launch is new.
+ */
 async function findStudioLaunch(
   db: Kysely<VetraAppsDB>,
-  appId: string,
+  app: AppRow,
   versionNumber: number,
   sha: string,
 ): Promise<DeploymentRow | null> {
-  return (
-    (await db
-      .selectFrom("app_deployments")
-      .selectAll()
-      .where("app_id", "=", appId)
-      .where("trigger", "=", "STUDIO_LAUNCH")
-      .where("version_number", "=", versionNumber)
-      .where("sha", "=", sha)
-      .where("status", "in", ["PENDING", "DEPLOYING", "READY"])
-      .orderBy("created_at", "desc")
-      .executeTakeFirst()) ?? null
-  );
+  const rows = await db
+    .selectFrom("app_deployments")
+    .selectAll()
+    .where("app_id", "=", app.id)
+    .where("trigger", "=", "STUDIO_LAUNCH")
+    .where("version_number", "=", versionNumber)
+    .where("sha", "=", sha)
+    .where("status", "in", ["PENDING", "DEPLOYING", "READY"])
+    .orderBy("created_at", "desc")
+    .orderBy("id", "desc")
+    .execute();
+  const inFlight = rows.find((r) => r.status !== "READY");
+  if (inFlight) return inFlight;
+  const ready = rows[0];
+  if (!ready || ready.environment_id !== app.production_environment_id)
+    return null;
+  const later = await db
+    .selectFrom("app_deployments")
+    .select("id")
+    .where("environment_id", "=", app.production_environment_id)
+    .where("id", "!=", ready.id)
+    .where("created_at", ">=", ready.created_at)
+    .where("status", "not in", ["FAILED", "SUPERSEDED"])
+    .executeTakeFirst();
+  return later ? null : ready;
 }
 
 /**
@@ -3389,7 +3408,7 @@ export async function launchStudioVersion(
   const app = await studioAppFor(deps, caller, input.appId, secret);
   await studioProductionEnv(deps, app);
   const sha = input.sha.toLowerCase();
-  const existing = await findStudioLaunch(deps.db, app.id, versionNumber, sha);
+  const existing = await findStudioLaunch(deps.db, app, versionNumber, sha);
   if (existing) return existing;
   try {
     return await queueStudioDeployment(deps, app, {
@@ -3409,7 +3428,7 @@ export async function launchStudioVersion(
   } catch (err) {
     // A concurrent retry recorded it first: that one is it.
     if (!isUniqueViolation(err, STUDIO_LAUNCH_KEY_INDEX)) throw err;
-    const made = await findStudioLaunch(deps.db, app.id, versionNumber, sha);
+    const made = await findStudioLaunch(deps.db, app, versionNumber, sha);
     if (!made) throw err;
     return made;
   }
@@ -3430,7 +3449,8 @@ export async function rollbackStudioVersion(
 ): Promise<DeploymentRow> {
   if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
   const source = await getDeployment(deps.db, deploymentId);
-  if (!source) throw appsError("NOT_FOUND", "Deployment not found");
+  // An unknown id reads as another App's: the same refusal.
+  if (!source) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
   const app = await studioAppFor(deps, caller, source.app_id, secret);
   if (
     source.kind !== "PRODUCTION" ||
@@ -3459,7 +3479,10 @@ export async function rollbackStudioVersion(
   });
 }
 
-/** A deployment of the agent's own product (X23); null when there is none with that id. */
+/**
+ * A deployment of the agent's own product (X23). An unknown id is refused
+ * like another App's (STUDIO_BINDING), so nothing tells them apart.
+ */
 export async function studioDeploymentFor(
   deps: AppsDeps,
   caller: Caller,
@@ -3468,7 +3491,7 @@ export async function studioDeploymentFor(
 ): Promise<DeploymentRow | null> {
   if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
   const d = await getDeployment(deps.db, deploymentId);
-  if (!d) return null;
+  if (!d) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
   await studioAppFor(deps, caller, d.app_id, secret);
   return d;
 }
@@ -3582,6 +3605,19 @@ export async function setStudioProductDrive(
   return (await getApp(deps.db, app.id))!;
 }
 
+/** A JSON list of package names, or null when absent or unreadable. */
+function parsePackageNames(raw: string | null | undefined): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((n): n is string => typeof n === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A recorded deployment back as the request it was made from. */
 function requestFromRow(d: DeploymentRow): DeployRequest {
   return {
@@ -3629,6 +3665,7 @@ export async function applyQueuedDeployment(
   if (!claimed) return false;
   const app = await getApp(deps.db, claimed.app_id);
   const envId = claimed.environment_id;
+  let attempted = false;
   let applied = false;
   try {
     if (!app || app.status !== "ACTIVE")
@@ -3636,6 +3673,16 @@ export async function applyQueuedDeployment(
     if (!envId || envId !== app.production_environment_id)
       throw new Error("the environment is no longer the App's production environment");
     const state = assertProductionEnv(app, await deps.envs.getState(envId));
+    // What the env had installed before this deployment touched it: a
+    // restore removes only what this deployment added on top of that.
+    await deps.db
+      .updateTable("app_deployments")
+      .set({
+        pre_apply_packages: JSON.stringify(state.packages.map((p) => p.name)),
+      })
+      .where("id", "=", claimed.id)
+      .execute();
+    attempted = true;
     applied = await applyToEnv(
       deps,
       app,
@@ -3655,7 +3702,8 @@ export async function applyQueuedDeployment(
     );
   }
   await notifyChanged(deps, claimed.id);
-  if (!applied) {
+  // Nothing reached the env (App gone, env moved): nothing to put back.
+  if (attempted && !applied) {
     const failed = await getDeployment(deps.db, claimed.id);
     if (failed) await restoreAfterStudioFailure(deps, failed);
   }
@@ -3722,7 +3770,14 @@ export async function restoreAfterStudioFailure(
   ) {
     return null;
   }
-  const keep = new Set(parsePackages(previous.packages).map((p) => p.name));
+  // Only what the failed deployment added on top of what the env had
+  // installed before it was applied (never a package that was live, e.g.
+  // one a newer version added and a Go back kept). Unknown → remove nothing.
+  const before = parsePackageNames(failed.pre_apply_packages);
+  const keep = new Set([
+    ...parsePackages(previous.packages).map((p) => p.name),
+    ...(before ?? []),
+  ]);
   const restore = await performDeploy(deps, app, state, {
     ...requestFromRow(previous),
     runUrl: null,
@@ -3730,9 +3785,11 @@ export async function restoreAfterStudioFailure(
     actorDid: null,
     trigger: "STUDIO_ROLLBACK",
     onBehalfOf: failed.on_behalf_of ?? null,
-    removePackages: parsePackages(failed.packages)
-      .map((p) => p.name)
-      .filter((name) => !keep.has(name)),
+    removePackages: before
+      ? parsePackages(failed.packages)
+          .map((p) => p.name)
+          .filter((name) => !keep.has(name))
+      : [],
   });
   deps.logger.info(
     `[vetra-apps] deployment ${failed.id} of ${app.slug} failed; putting back ${previous.id}${previous.version_number ? ` (version ${previous.version_number})` : ""} as ${restore.id}`,

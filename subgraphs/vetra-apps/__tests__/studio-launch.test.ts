@@ -178,7 +178,8 @@ describe("launchStudioVersion (D20)", () => {
 
     // The agent reads its own deployment.
     expect(await studioDeploymentFor(h.deps, agent, d.id, p.secret)).toMatchObject({ id: d.id, status: "READY" });
-    expect(await studioDeploymentFor(h.deps, agent, "nope", p.secret)).toBeNull();
+    // An unknown id is refused like another App's.
+    expect(await code(studioDeploymentFor(h.deps, agent, "nope", p.secret))).toBe("STUDIO_BINDING");
 
     // A second launch keeps the first launch time.
     await launch(p, launchInput(p, 2, SHA2));
@@ -301,7 +302,7 @@ describe("rollbackStudioVersion (D20)", () => {
     expect((await getDeployment(h.db, v2.id))!.status).toBe("FAILED");
 
     expect(await code(rollbackStudioVersion(h.deps, agent, v2.id, p.secret))).toBe("BAD_USER_INPUT");
-    expect(await code(rollbackStudioVersion(h.deps, agent, "missing", p.secret))).toBe("NOT_FOUND");
+    expect(await code(rollbackStudioVersion(h.deps, agent, "missing", p.secret))).toBe("STUDIO_BINDING");
     // A pending one is not a version that went live either.
     const pending = await launch(p, launchInput(p, 3, "3333333ccccccc"));
     expect(await code(rollbackStudioVersion(h.deps, agent, pending.id, p.secret))).toBe("BAD_USER_INPUT");
@@ -514,5 +515,69 @@ describe("owner and CI deployments record their trigger", () => {
     const v1 = await launchToReady(p, launchInput(p, 1, SHA1));
     const back = await rollbackApp(h.deps, owner, v1.id);
     expect(back).toMatchObject({ trigger: "OWNER", version_number: 1, on_behalf_of: OWNER_DID });
+  });
+});
+
+describe("fix round 1", () => {
+  it("a failed launch after a Go back never uninstalls a package that was live", async () => {
+    const p = await seedProduct();
+    const A = { name: "@vetra-apps/my-shop", version: "0.1.0" };
+    const v1 = await launchToReady(p, launchInput(p, 1, SHA1, [A]));
+    await launchToReady(p, launchInput(p, 2, SHA2, [
+      { name: "@vetra-apps/my-shop", version: "0.2.0" },
+      { name: "@vetra-apps/my-shop-b", version: "0.1.0" },
+    ]));
+    // Go back to version 1: the env keeps B (its documents stay readable).
+    await rollbackStudioVersion(h.deps, agent, v1.id, p.secret);
+    await runDeploymentWatcherOnce(h.deps);
+    h.envs.setStatus(p.envId, "READY");
+    await runDeploymentWatcherOnce(h.deps);
+    expect(await envPackages(p.envId)).toStrictEqual([
+      "@vetra-apps/my-shop-b@0.1.0",
+      "@vetra-apps/my-shop@0.1.0",
+    ]);
+    // Version 3 (A and B again) fails.
+    const v3 = await launch(p, launchInput(p, 3, "3333333ccccccc", [
+      { name: "@vetra-apps/my-shop", version: "0.3.0" },
+      { name: "@vetra-apps/my-shop-b", version: "0.3.0" },
+    ]));
+    await runDeploymentWatcherOnce(h.deps);
+    expect(JSON.parse((await getDeployment(h.db, v3.id))!.pre_apply_packages!)).toStrictEqual([
+      "@vetra-apps/my-shop",
+      "@vetra-apps/my-shop-b",
+    ]);
+    h.envs.setStatus(p.envId, "DEPLOYMENt_FAILED");
+    await runDeploymentWatcherOnce(h.deps);
+    expect((await getDeployment(h.db, v3.id))!.status).toBe("FAILED");
+    // The restore puts A back on version 1 and leaves B installed.
+    const names = (await h.envs.getState(p.envId))!.packages.map((x) => x.name).sort();
+    expect(names).toStrictEqual(["@vetra-apps/my-shop", "@vetra-apps/my-shop-b"]);
+    expect((await h.envs.getState(p.envId))!.packages.find((x) => x.name === A.name)!.version).toBe("0.1.0");
+  });
+
+  it("a READY launch that is no longer live is launched again as a new deployment", async () => {
+    const p = await seedProduct();
+    const v1 = await launchToReady(p, launchInput(p, 1, SHA1));
+    const v2 = await launchToReady(p, launchInput(p, 2, SHA2));
+    // Still live: a retry gets it back.
+    expect((await launch(p, launchInput(p, 2, SHA2))).id).toBe(v2.id);
+    await rollbackStudioVersion(h.deps, agent, v1.id, p.secret);
+    const again = await launch(p, launchInput(p, 2, SHA2));
+    expect(again.id).not.toBe(v2.id);
+    expect(again).toMatchObject({ status: "PENDING", version_number: 2, trigger: "STUDIO_LAUNCH" });
+    // And a retry of that one gets it back.
+    expect((await launch(p, launchInput(p, 2, SHA2))).id).toBe(again.id);
+  });
+
+  it("a queued deployment that never reached the env restores nothing", async () => {
+    const p = await seedProduct();
+    await launchToReady(p, launchInput(p, 1, SHA1));
+    const v2 = await launch(p, launchInput(p, 2, SHA2));
+    await h.db.updateTable("apps").set({ status: "DISCONNECTED" }).where("id", "=", p.app.id).execute();
+    const before = h.envs.executed.length;
+    await runDeploymentWatcherOnce(h.deps);
+    expect(await getDeployment(h.db, v2.id)).toMatchObject({ status: "FAILED", error: "App is DISCONNECTED" });
+    expect(h.envs.executed.length).toBe(before);
+    expect(await h.db.selectFrom("app_deployments").select("id").where("actor_github", "=", RESTORE_ACTOR).execute()).toHaveLength(0);
   });
 });
