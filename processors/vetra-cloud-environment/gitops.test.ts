@@ -473,8 +473,11 @@ describe("generateValuesYaml — vetra-cli switchboard auth env", () => {
       "doc-auth-owner",
     );
     expect(yaml).toMatch(/name: "AUTH_ENABLED", value: "true"/);
-    expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true"/);
-    expect(yaml).toMatch(/name: "DEFAULT_PROTECTION", value: "true"/);
+    // Admin-only: the Studio's own switchboard serves its owner (ADMINS) and
+    // nobody else. Per-document permissions would let any signed-in user
+    // create documents there and gain write access through relationships.
+    expect(yaml).toMatch(/name: "DOCUMENT_PERMISSIONS_ENABLED", value: "false"/);
+    expect(yaml).not.toMatch(/DEFAULT_PROTECTION/);
     // The studio switchboard must verify Renown credentials: skipping it lets
     // anyone self-sign a token claiming the owner's address (verified live on
     // 2026-09-30 — a forged admin token got 200 with skip, 401 without).

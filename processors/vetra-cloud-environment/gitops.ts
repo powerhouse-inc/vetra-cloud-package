@@ -633,8 +633,11 @@ export function tenantConfigEntries(
   return out;
 }
 
-// Switchboard auth env for a vetra-cli agent's embedded switchboard. Turns on
-// DOCUMENT_PERMISSIONS auth with the env owner as supreme admin.
+// Switchboard auth env for a vetra-cli agent's embedded switchboard: auth on,
+// document permissions off, i.e. the switchboard's ADMIN_ONLY policy — only
+// the env owner (ADMINS) may read or write the Studio's documents. Per-document
+// permissions would let any signed-in Renown user create documents there and
+// inherit write access through relationships (Task 5.SIG review, C1).
 // owner null → auth on, no ADMINS yet (next deploy adds it once claimed).
 // No SKIP_CREDENTIAL_VERIFICATION: the embedded switchboard verifies bearer
 // tokens against Renown (www.renown.id, the same instance studio logins use).
@@ -646,8 +649,7 @@ function switchboardAuthEnv(
 ): { name: string; value: string }[] {
   const entries = [
     { name: "AUTH_ENABLED", value: "true" },
-    { name: "DOCUMENT_PERMISSIONS_ENABLED", value: "true" },
-    { name: "DEFAULT_PROTECTION", value: "true" },
+    { name: "DOCUMENT_PERMISSIONS_ENABLED", value: "false" },
   ];
   if (owner) entries.push({ name: "ADMINS", value: owner.toLowerCase() });
   return entries;
