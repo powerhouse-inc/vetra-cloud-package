@@ -7,6 +7,12 @@ export type AppStatus =
   | "DISCONNECTED"
   | "DELETED";
 export type AppDeploymentKind = "PRODUCTION" | "PREVIEW";
+/** Who started a deployment (D20); null on rows made before it was recorded. */
+export type DeploymentTrigger =
+  | "STUDIO_LAUNCH"
+  | "STUDIO_ROLLBACK"
+  | "OWNER"
+  | "CI";
 export type AppDeploymentStatus =
   | "PENDING"
   | "DEPLOYING"
@@ -84,6 +90,11 @@ export interface AppDeploymentsTable {
   run_url: string | null;
   error: string | null;
   github_deployment_id: string | null;
+  trigger?: DeploymentTrigger | null;
+  /** did:pkh of the owner the deployment was made for (the agent's or CI's principal). */
+  on_behalf_of?: string | null;
+  /** The Studio product's version number (Studio launches and rollbacks to them). */
+  version_number?: number | null;
   created_at: string;
   updated_at: string;
 }

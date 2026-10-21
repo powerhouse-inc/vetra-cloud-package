@@ -8,13 +8,15 @@ import {
   getApp,
   getDeployment,
   parsePackages,
-  updateDeployment,
   type AppRow,
   type DeploymentRow,
 } from "./repo.js";
 import {
+  applyQueuedDeployment,
   deletePreview,
   isPullRequestClosed,
+  QUEUED_TRIGGERS,
+  restoreAfterStudioFailure,
   PREVIEW_COMMENT_MARKER,
   UNLAUNCHED_STUDIO_APP_DAYS,
   type AppsDeps,
@@ -49,9 +51,14 @@ export function deploymentApplied(
 }
 
 /**
- * One watcher pass: DEPLOYING → READY once the env is READY with the
- * deployment's versions, → FAILED on DEPLOYMENt_FAILED, a vanished env or the
- * 15 min timeout. Returns the ids that changed.
+ * One watcher pass: a queued Studio deployment (PENDING, trigger
+ * STUDIO_LAUNCH / STUDIO_ROLLBACK) is applied; DEPLOYING → READY once the env
+ * is READY with the deployment's versions, → FAILED on DEPLOYMENt_FAILED, a
+ * vanished env or the 15 min timeout. A transition is written only while the
+ * row is still in the status it was read in (a deployment superseded
+ * meanwhile stays SUPERSEDED). A Studio deployment that FAILED after it was
+ * applied puts the previous version back (restoreAfterStudioFailure).
+ * Returns the ids that changed.
  */
 export async function runDeploymentWatcherOnce(
   deps: AppsDeps,
@@ -61,13 +68,30 @@ export async function runDeploymentWatcherOnce(
     .selectFrom("app_deployments")
     .selectAll()
     .where("status", "in", ["PENDING", "DEPLOYING"])
+    .orderBy("created_at", "asc")
     .execute();
   const changed: string[] = [];
   for (const d of rows) {
     try {
+      if (
+        d.status === "PENDING" &&
+        d.trigger &&
+        QUEUED_TRIGGERS.includes(d.trigger) &&
+        deps.now().getTime() - Date.parse(d.created_at) <= timeoutMs
+      ) {
+        if (await applyQueuedDeployment(deps, d.id)) changed.push(d.id);
+        continue;
+      }
       const next = await nextStatus(deps, d, timeoutMs);
       if (!next) continue;
-      await updateDeployment(deps.db, d.id, next, deps.now().toISOString());
+      const moved = await deps.db
+        .updateTable("app_deployments")
+        .set({ ...next, updated_at: deps.now().toISOString() })
+        .where("id", "=", d.id)
+        .where("status", "=", d.status)
+        .returningAll()
+        .executeTakeFirst();
+      if (!moved) continue;
       changed.push(d.id);
       await deps
         .onDeploymentChanged?.(d.id)
@@ -76,6 +100,11 @@ export async function runDeploymentWatcherOnce(
             `[vetra-apps] feedback for ${d.id} failed: ${String(err)}`,
           ),
         );
+      // Only an applied deployment can have left the env half-way.
+      if (moved.status === "FAILED" && d.status === "DEPLOYING") {
+        const restore = await restoreAfterStudioFailure(deps, moved);
+        if (restore) changed.push(restore.id);
+      }
     } catch (err) {
       deps.logger.warn(`[vetra-apps] watcher: ${d.id}: ${String(err)}`);
     }

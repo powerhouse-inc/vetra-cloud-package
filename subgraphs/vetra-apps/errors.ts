@@ -27,7 +27,9 @@ export type StudioLaunchErrorCode =
    */
   | "STUDIO_SECRET_PENDING"
   /** ensureStudioProduct's adoptEnvironmentId names an env that may not become the product's. */
-  | "ADOPT_NOT_ALLOWED";
+  | "ADOPT_NOT_ALLOWED"
+  /** setStudioProductDrive with another drive than the one already recorded. */
+  | "PRODUCT_DRIVE_SET";
 
 /** The GitHub and deploy-setup failures a customer can act on. */
 export type GithubSetupErrorCode =

@@ -41,6 +41,11 @@ import {
   deployApp,
   ensureStudioProduct,
   githubDeployAppInfo,
+  launchStudioVersion,
+  rollbackStudioVersion,
+  setStudioProductDrive,
+  studioDeploymentFor,
+  type LaunchStudioVersionInput,
   githubDeployRepositories,
   myApps,
   myGithubDeployInstallations,
@@ -120,6 +125,9 @@ export function deploymentFields(d: DeploymentRow) {
     actorGithub: d.actor_github,
     runUrl: d.run_url,
     error: d.error,
+    trigger: d.trigger ?? null,
+    onBehalfOf: d.on_behalf_of ?? null,
+    versionNumber: d.version_number ?? null,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
   };
@@ -260,6 +268,16 @@ export function createResolvers(deps: AppsDeps) {
           const d = await appDeploymentFor(deps, requireCaller(ctx), id);
           return d ? mapDeployment(deps, d) : null;
         }),
+      studioDeployment: (_: unknown, { id }: { id: string }, ctx: AppsContext) =>
+        guard(deps, "studioDeployment", async () => {
+          const d = await studioDeploymentFor(
+            deps,
+            requireCaller(ctx),
+            id,
+            presentedStudioSecret(ctx),
+          );
+          return d ? mapDeployment(deps, d) : null;
+        }),
       githubDeployAppInfo: (_: unknown, __: unknown, ctx: AppsContext) =>
         guard(deps, "githubDeployAppInfo", () => {
           requireCaller(ctx);
@@ -386,6 +404,55 @@ export function createResolvers(deps: AppsDeps) {
           mapDeployment(
             deps,
             await rollbackApp(deps, requireCaller(ctx), deploymentId),
+          ),
+        ),
+      launchStudioVersion: (
+        _: unknown,
+        { input }: { input: LaunchStudioVersionInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "launchStudioVersion", async () =>
+          mapDeployment(
+            deps,
+            await launchStudioVersion(
+              deps,
+              requireCaller(ctx),
+              input,
+              presentedStudioSecret(ctx),
+            ),
+          ),
+        ),
+      rollbackStudioVersion: (
+        _: unknown,
+        { deploymentId }: { deploymentId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rollbackStudioVersion", async () =>
+          mapDeployment(
+            deps,
+            await rollbackStudioVersion(
+              deps,
+              requireCaller(ctx),
+              deploymentId,
+              presentedStudioSecret(ctx),
+            ),
+          ),
+        ),
+      setStudioProductDrive: (
+        _: unknown,
+        { appId, driveId }: { appId: string; driveId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setStudioProductDrive", async () =>
+          mapApp(
+            deps,
+            await setStudioProductDrive(
+              deps,
+              requireCaller(ctx),
+              appId,
+              driveId,
+              presentedStudioSecret(ctx),
+            ),
           ),
         ),
       rotateStudioLaunchSecret: (

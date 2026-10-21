@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
+  ensureDeploymentTriggerColumns,
   ensureStudioLaunchSecretsTable,
   ensureStudioProductColumns,
   isConcurrentIndexError,
@@ -265,5 +266,75 @@ describe("ensureStudioProductColumns (Task 2.2)", () => {
     await expect(
       ensureStudioProductColumns(failing(Object.assign(new Error("boom"), { code: "42501" }))),
     ).rejects.toThrow("boom");
+  });
+});
+
+describe("ensureDeploymentTriggerColumns (Task 2.3)", () => {
+  it("adds trigger, on_behalf_of and version_number plus the launch key in the namespace schema; existing rows untouched; idempotent and concurrent-safe", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      await sql`CREATE TABLE "vetra-apps".app_deployments (
+        id varchar(64) PRIMARY KEY,
+        app_id varchar(64) NOT NULL,
+        sha varchar(64) NOT NULL,
+        status varchar(32) NOT NULL
+      )`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await db.insertInto("app_deployments").values({ id: "old", app_id: "a", sha: "s", status: "READY" }).execute();
+
+      await ensureDeploymentTriggerColumns(db);
+      await Promise.all([1, 2, 3].map(() => ensureDeploymentTriggerColumns(db)));
+      await ensureDeploymentTriggerColumns(db);
+
+      expect(await db.selectFrom("app_deployments").selectAll().execute()).toStrictEqual([
+        { id: "old", app_id: "a", sha: "s", status: "READY", trigger: null, on_behalf_of: null, version_number: null },
+      ]);
+      const row = (id: string, status: string, trigger = "STUDIO_LAUNCH") => ({
+        id, app_id: "a", sha: "s", status, trigger, version_number: 1,
+      });
+      await db.insertInto("app_deployments").values(row("l1", "READY")).execute();
+      // A second live launch of the same (app, version, sha) is refused…
+      await expect(db.insertInto("app_deployments").values(row("l2", "PENDING")).execute()).rejects.toMatchObject({
+        code: "23505",
+      });
+      // …a FAILED one and other triggers are not in the key.
+      await db.insertInto("app_deployments").values(row("f1", "FAILED")).execute();
+      await db.insertInto("app_deployments").values(row("r1", "PENDING", "STUDIO_ROLLBACK")).execute();
+      await db.insertInto("app_deployments").values(row("r2", "PENDING", "STUDIO_ROLLBACK")).execute();
+
+      const indexes = await sql<{ schemaname: string }>`
+        SELECT schemaname FROM pg_indexes WHERE indexname = 'app_deployments_studio_launch_key'`.execute(root);
+      expect(indexes.rows).toStrictEqual([{ schemaname: "vetra-apps" }]);
+      const inPublic = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE column_name = 'version_number' AND table_schema = 'public'`.execute(root);
+      expect(inPublic.rows[0].n).toBe(0);
+    } finally {
+      await root.destroy();
+    }
+  });
+
+  it("tolerates a lost race and rethrows anything else", async () => {
+    const failing = (columnErr: unknown, indexErr: unknown) => {
+      const make = (err: unknown) => {
+        const builder: Record<string, unknown> = {};
+        for (const m of ["addColumn", "ifNotExists", "unique", "on", "columns", "where"]) builder[m] = () => builder;
+        builder.execute = () => (err ? Promise.reject(err as Error) : Promise.resolve());
+        return builder;
+      };
+      return {
+        schema: { alterTable: () => make(columnErr), createIndex: () => make(indexErr) },
+      } as unknown as Kysely<any>;
+    };
+    const pgError = (code: string) => Object.assign(new Error(code === "42501" ? "boom" : "dup"), { code });
+    for (const c of ["42701", "42P07", "23505"]) {
+      await expect(ensureDeploymentTriggerColumns(failing(pgError(c), null))).resolves.toBeUndefined();
+    }
+    for (const c of ["42P07", "23505"]) {
+      await expect(ensureDeploymentTriggerColumns(failing(null, pgError(c)))).resolves.toBeUndefined();
+    }
+    await expect(ensureDeploymentTriggerColumns(failing(pgError("42501"), null))).rejects.toThrow("boom");
+    await expect(ensureDeploymentTriggerColumns(failing(null, pgError("42501")))).rejects.toThrow("boom");
   });
 });

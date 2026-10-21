@@ -13,7 +13,7 @@ import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environm
 import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
-import type { AppsDeps } from "./service.js";
+import { applyQueuedDeployment, type AppsDeps } from "./service.js";
 import { adoptPersonApps, appDocumentRowOwner } from "./org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { setPersonAppAdopter } from "../../shared/person-app-adoption.js";
@@ -178,6 +178,15 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
+    // A Studio launch/rollback is applied right after it was recorded (the
+    // agent's request returns at once); the watcher picks up any it misses.
+    deps.onDeploymentQueued = (id) => {
+      void applyQueuedDeployment(deps, id).catch((err: unknown) =>
+        console.warn(
+          `[vetra-apps] applying deployment ${id} failed (the watcher retries): ${String(err)}`,
+        ),
+      );
+    };
     deps.onPreviewRemoved = (app, preview, reason) =>
       reportPreviewRemovedToGithub(deps, app, preview, reason);
 
