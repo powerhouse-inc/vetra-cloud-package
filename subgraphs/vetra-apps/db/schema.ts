@@ -7,6 +7,12 @@ export type AppStatus =
   | "DISCONNECTED"
   | "DELETED";
 export type AppDeploymentKind = "PRODUCTION" | "PREVIEW";
+/** Who started a deployment (D20); null on rows made before it was recorded. */
+export type DeploymentTrigger =
+  | "STUDIO_LAUNCH"
+  | "STUDIO_ROLLBACK"
+  | "OWNER"
+  | "CI";
 export type AppDeploymentStatus =
   | "PENDING"
   | "DEPLOYING"
@@ -22,9 +28,10 @@ export interface AppsTable {
   owner_address: string;
   owner_chain_id: number;
   status: AppStatus;
-  installation_id: string;
-  repository_id: string;
-  repository_full_name: string;
+  /** GitHub repository of the App; all three null for a Studio product without GitHub (ensureStudioProduct). */
+  installation_id: string | null;
+  repository_id: string | null;
+  repository_full_name: string | null;
   production_branch: string;
   production_environment_id: string;
   previews_enabled: boolean;
@@ -46,6 +53,12 @@ export interface AppsTable {
   org_disputed?: boolean | null;
   /** The Vetra Studio env the App was created from (null: an imported repo). One live App per Studio. */
   studio_environment_id: string | null;
+  /** The live product's drive (D21), set once at first launch; null before. */
+  product_drive_id?: string | null;
+  /** When the product first went live (a version launched); null = never launched. */
+  launched_at?: string | null;
+  /** When an existing env of the owner was adopted as production (§6.6); never swept. */
+  adopted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +90,13 @@ export interface AppDeploymentsTable {
   run_url: string | null;
   error: string | null;
   github_deployment_id: string | null;
+  trigger?: DeploymentTrigger | null;
+  /** did:pkh of the owner the deployment was made for (the agent's or CI's principal). */
+  on_behalf_of?: string | null;
+  /** The Studio product's version number (Studio launches and rollbacks to them). */
+  version_number?: number | null;
+  /** JSON package names the env had right before a Studio deployment was applied. */
+  pre_apply_packages?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -94,8 +114,16 @@ export interface GithubDeployConnectionsTable {
   refresh_token_expires_at: string | null;
 }
 
+/** One row per Studio env: the sha256 (hex) of its launch secret, never the secret. */
+export interface StudioLaunchSecretsTable {
+  environment_id: string;
+  secret_hash: string;
+  rotated_at: string;
+}
+
 export interface VetraAppsDB {
   apps: AppsTable;
+  studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
   app_deployments: AppDeploymentsTable;
   github_deploy_connections: GithubDeployConnectionsTable;

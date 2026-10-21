@@ -8,11 +8,12 @@ import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
 import { loadAppsConfig, missingConfig } from "./config.js";
-import { createReactorEnvGateway } from "./envs.js";
+import { createReactorEnvGateway, subdomainTakenIn } from "./envs.js";
+import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
-import type { AppsDeps } from "./service.js";
+import { applyQueuedDeployment, type AppsDeps } from "./service.js";
 import { adoptPersonApps, appDocumentRowOwner } from "./org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { setPersonAppAdopter } from "../../shared/person-app-adoption.js";
@@ -42,11 +43,15 @@ import {
   runDeploymentWatcherOnce,
   runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
+  runUnlaunchedStudioAppSweepOnce,
   SWEEP_INTERVAL_MS,
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
+import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
+import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -125,6 +130,23 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       "vetra-cloud-observability",
     )) as unknown as Kysely<ObservabilityDB>;
 
+    // A Studio's launch secret is written through the tenant secrets
+    // (OpenBao transit); without OpenBao the rotation answers
+    // SERVICE_NOT_CONFIGURED.
+    const openbaoAddr = process.env.OPENBAO_ADDR;
+    const studioSecrets = openbaoAddr
+      ? createSecretsService({
+          db: (await this.relationalDb.createNamespace(
+            "vetra-cloud-secrets",
+          )) as unknown as Kysely<SecretsDB>,
+          transit: new OpenBaoTransitClient({
+            addr: openbaoAddr,
+            role: process.env.OPENBAO_TRANSIT_ROLE ?? "vetra-secrets",
+            keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
+          }),
+        })
+      : null;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -138,6 +160,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
+      studioSecrets,
+      // A product's <slug>.vetra.io must not collide with an env's hosts.
+      subdomainTaken: subdomainTakenIn(
+        (await this.relationalDb.createNamespace(
+          "vetra-cloud-environments",
+        )) as unknown as Kysely<EnvironmentsDB>,
+      ),
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,
@@ -149,6 +178,15 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ),
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
+    // A Studio launch/rollback is applied right after it was recorded (the
+    // agent's request returns at once); the watcher picks up any it misses.
+    deps.onDeploymentQueued = (id) => {
+      void applyQueuedDeployment(deps, id).catch((err: unknown) =>
+        console.warn(
+          `[vetra-apps] applying deployment ${id} failed (the watcher retries): ${String(err)}`,
+        ),
+      );
+    };
     deps.onPreviewRemoved = (app, preview, reason) =>
       reportPreviewRemovedToGithub(deps, app, preview, reason);
 
@@ -228,6 +266,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     every(SWEEP_INTERVAL_MS, "preview sweeper", async () => {
       await runPreviewSweepOnce(deps);
       await runIdentityExpirySweepOnce(deps);
+      await runUnlaunchedStudioAppSweepOnce(deps);
     });
 
     every(DRIFT_INTERVAL_MS, "app document drift", () =>

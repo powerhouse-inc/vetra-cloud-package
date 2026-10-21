@@ -118,6 +118,152 @@ export async function up(db: Kysely<any>): Promise<void> {
     .execute();
   await addConnectionTokenColumns(db);
   await ensureAppsStudioColumn(db);
+  await ensureStudioLaunchSecretsTable(db);
+  await ensureStudioProductColumns(db);
+  await ensureDeploymentTriggerColumns(db);
+}
+
+/** Name of the partial unique index that makes a Studio launch idempotent. */
+export const STUDIO_LAUNCH_KEY_INDEX = "app_deployments_studio_launch_key";
+
+/**
+ * Who started a deployment and for whom (D20, Task 2.3): `trigger`
+ * (STUDIO_LAUNCH, STUDIO_ROLLBACK, OWNER, CI; null on older rows),
+ * `on_behalf_of` (the owner's did:pkh) and the Studio's `version_number`.
+ * `pre_apply_packages` (JSON names the env had installed right before a
+ * Studio deployment was applied; a restore removes only what it added).
+ * Plus the idempotency key of a Studio launch: at most one pending or under
+ * way STUDIO_LAUNCH row per (app_id, version_number, sha), so concurrent
+ * retries find the same deployment (READY ones are matched by the service
+ * only while still live; a later launch of the same version is a new one). Additive and idempotent; schema
+ * builder only, so it lands in the namespace schema.
+ */
+export async function ensureDeploymentTriggerColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [column, type] of [
+    ["trigger", "text"],
+    ["on_behalf_of", "text"],
+    ["version_number", "integer"],
+    ["pre_apply_packages", "text"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("app_deployments")
+        .addColumn(column, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      // Two boots racing on the same ALTER: the loser sees a duplicate.
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+    }
+  }
+  await dropStaleLaunchKeyIndex(db);
+  try {
+    await db.schema
+      .createIndex(STUDIO_LAUNCH_KEY_INDEX)
+      .ifNotExists()
+      .unique()
+      .on("app_deployments")
+      .columns(["app_id", "version_number", "sha"])
+      .where(sql.ref("trigger"), "=", "STUDIO_LAUNCH")
+      .where(sql.ref("status"), "in", ["PENDING", "DEPLOYING"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/**
+ * Studio products without GitHub (Task 2.2): the repository columns become
+ * nullable (an App made by ensureStudioProduct has no repository until one is
+ * connected), plus the product drive id, the first-launch time and the
+ * adoption time of a pre-existing env. Additive and idempotent (DROP NOT NULL
+ * on a nullable column is a no-op; ADD COLUMN IF NOT EXISTS); schema builder
+ * only, so it lands in the namespace schema. Existing rows are untouched.
+ */
+export async function ensureStudioProductColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  const tolerate = (err: unknown) => {
+    // Two boots racing on the same ALTER: the loser sees a duplicate.
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  for (const column of [
+    "installation_id",
+    "repository_id",
+    "repository_full_name",
+  ]) {
+    try {
+      await db.schema
+        .alterTable("apps")
+        .alterColumn(column, (c) => c.dropNotNull())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  for (const column of ["product_drive_id", "launched_at", "adopted_at"]) {
+    try {
+      await db.schema
+        .alterTable("apps")
+        .addColumn(column, "text", (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+}
+
+/**
+ * The first definition of the launch key (never released) also covered READY
+ * rows, which blocks launching a version again after a Go back. When the
+ * namespace has that definition, drop it so up() recreates it with the
+ * in-flight predicate. The schema is the one the namespaced builder
+ * qualifies with (current_schema() when unqualified). Concurrent boots:
+ * DROP … IF EXISTS, and the recreate tolerates a lost race.
+ */
+export async function dropStaleLaunchKeyIndex(db: Kysely<any>): Promise<void> {
+  const drop = db.schema.dropIndex(STUDIO_LAUNCH_KEY_INDEX).ifExists();
+  const qualified = /^drop index if exists "((?:[^"]|"")+)"\./i.exec(
+    drop.compile().sql,
+  );
+  const schema = qualified ? qualified[1].replace(/""/g, '"') : null;
+  const found = await sql<{ indexdef: string }>`
+    SELECT indexdef FROM pg_indexes
+    WHERE indexname = ${STUDIO_LAUNCH_KEY_INDEX}
+      AND schemaname = coalesce(${schema}::text, current_schema())`.execute(db);
+  const def = found.rows[0]?.indexdef;
+  if (!def || !def.includes("'READY'")) return;
+  await drop.execute();
+}
+
+/** Postgres 42701 (duplicate column). */
+function isDuplicateColumnError(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "42701";
+}
+
+/**
+ * sha256 of each Studio's launch secret (D20), keyed by the Studio env. The
+ * secret itself lives only in the Studio's tenant secrets. Also run by the
+ * studio pool (subgraph boot order is not fixed). Additive and idempotent;
+ * schema builder only, so it lands in the namespace schema.
+ */
+export async function ensureStudioLaunchSecretsTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("studio_launch_secrets")
+      .ifNotExists()
+      .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
+      .addColumn("secret_hash", "varchar(64)", (c) => c.notNull())
+      .addColumn("rotated_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    // Two boots (vetra-apps and the studio pool, or two replicas) racing on
+    // CREATE TABLE IF NOT EXISTS: the loser sees 42P07/23505; the table is there.
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
 
 async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
@@ -140,6 +286,7 @@ async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "studio_launch_secrets",
     "github_deploy_connections",
     "app_deployments",
     "app_previews",

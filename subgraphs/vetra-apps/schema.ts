@@ -15,6 +15,14 @@ export const schema: DocumentNode = gql`
     PREVIEW
   }
 
+  "Who started a deployment (D20)."
+  enum DeploymentTrigger {
+    STUDIO_LAUNCH
+    STUDIO_ROLLBACK
+    OWNER
+    CI
+  }
+
   enum AppDeploymentStatus {
     PENDING
     DEPLOYING
@@ -65,6 +73,12 @@ export const schema: DocumentNode = gql`
     actorGithub: String
     runUrl: String
     error: String
+    "Null on deployments made before the trigger was recorded."
+    trigger: DeploymentTrigger
+    "did:pkh of the owner the deployment was made for."
+    onBehalfOf: String
+    "The Studio product's version (Studio launches and rollbacks to them)."
+    versionNumber: Int
     createdAt: String!
     updatedAt: String!
     urls: AppUrls!
@@ -79,7 +93,8 @@ export const schema: DocumentNode = gql`
     ownerOrgId: String
     studioEnvironmentId: String
     status: AppStatus!
-    repository: AppRepository!
+    "The GitHub repository; null for a Studio product without GitHub."
+    repository: AppRepository
     productionBranch: String!
     productionEnvironmentId: String!
     previewsEnabled: Boolean!
@@ -95,6 +110,10 @@ export const schema: DocumentNode = gql`
     productionUrls: AppUrls!
     previews: [AppPreview!]!
     latestDeployment: AppDeployment
+    "The live product's drive (Studio products), set at first launch."
+    productDriveId: String
+    "When the product first went live; null = never launched."
+    launchedAt: String
     createdAt: String!
     updatedAt: String!
   }
@@ -133,6 +152,13 @@ export const schema: DocumentNode = gql`
     orgId: String
   }
 
+  input EnsureStudioProductInput {
+    studioEnvironmentId: String!
+    name: String!
+    "An existing environment of the Studio's owner that becomes the product's live environment."
+    adoptEnvironmentId: String
+  }
+
   input CreateAppInput {
     name: String!
     installationId: String!
@@ -168,12 +194,24 @@ export const schema: DocumentNode = gql`
     imageTag: String
   }
 
+  input LaunchStudioVersionInput {
+    appId: ID!
+    versionNumber: Int!
+    sha: String!
+    gitTag: String!
+    packages: [DeployedPackageInput!]!
+  }
+
   type Query {
     "Personal Apps, or with orgId the organisation's Apps (members only)"
-    myApps(orgId: String): [App!]!
+    myApps(orgId: String, "Also list Studio products without a repository" includeStudioProducts: Boolean): [App!]!
     app(id: ID!): App
+    "The Studio's product App (its agent with the launch secret header, or the owner)"
+    studioProduct(studioEnvironmentId: String!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appDeployment(id: ID!): AppDeployment
+    "A deployment of the Studio's own product (its agent, with the launch secret header)"
+    studioDeployment(id: ID!): AppDeployment
     githubDeployAppInfo: GithubDeployAppInfo!
     myGithubDeployInstallations: [GithubDeployInstallation!]!
     githubDeployRepositories(installationId: String!): [GithubRepo!]!
@@ -183,6 +221,8 @@ export const schema: DocumentNode = gql`
     connectGithubDeploy(code: String!): [GithubDeployInstallation!]!
     createApp(input: CreateAppInput!): App!
     createStudioApp(input: CreateStudioAppInput!): App!
+    "The Studio's product App and live environment, created on first call (no GitHub needed)"
+    ensureStudioProduct(input: EnsureStudioProductInput!): App!
     confirmAppIdentity(appId: ID!): App!
     updateApp(appId: ID!, input: UpdateAppInput!): App!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
@@ -190,5 +230,13 @@ export const schema: DocumentNode = gql`
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!
     deployApp(input: DeployAppInput!): AppDeployment!
     rollbackApp(deploymentId: ID!): AppDeployment!
+    "The Studio's agent puts a version of its own product live (returns PENDING; idempotent per appId, versionNumber, sha)"
+    launchStudioVersion(input: LaunchStudioVersionInput!): AppDeployment!
+    "The Studio's agent makes a READY production deployment of its own product live again"
+    rollbackStudioVersion(deploymentId: ID!): AppDeployment!
+    "The Studio's agent records its product's drive (once) and opens the live Connect on it"
+    setStudioProductDrive(appId: ID!, driveId: String!): App!
+    "Admin: give a claimed Studio a new launch secret (writes only that key; backfills Studios without one)"
+    rotateStudioLaunchSecret(environmentId: String!): Boolean!
   }
 `;

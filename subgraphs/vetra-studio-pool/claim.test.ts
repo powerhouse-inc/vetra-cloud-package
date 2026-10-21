@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 
@@ -36,6 +37,7 @@ function deps(over: Partial<any> = {}) {
     replaceTenantConfig: vi.fn<
       (tenantId: string, state: unknown, entries: SecretEntry[]) => Promise<void>
     >(async () => {}),
+    storeLaunchSecretHash: vi.fn(async (_env: string, _hash: string) => {}),
     readEnv: vi.fn(async (_id: string) => ({ owner: null, ownerOrgId: null, state: WARM_STATE })),
     handOver: vi.fn(async (_id: string, _addr: string) => {}),
     deleteEnv: vi.fn(async () => {}),
@@ -96,7 +98,54 @@ describe("claimWarmEnvironment", () => {
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
     expect(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
     expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
-    expect(entries).toHaveLength(8);
+    expect(entries).toHaveLength(9);
+  });
+
+  it("claim writes the launch secret in the same batched write", async () => {
+    const order: string[] = [];
+    const d = deps();
+    d.storeLaunchSecretHash = vi.fn(async () => {
+      order.push("storeLaunchSecretHash");
+    });
+    d.replaceTenantConfig = vi.fn(async () => {
+      order.push("replaceTenantConfig");
+    });
+    await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller");
+    expect(d.replaceTenantConfig).toHaveBeenCalledTimes(1);
+    const [, , entries] = d.replaceTenantConfig.mock.calls[0] as unknown as [string, unknown, SecretEntry[]];
+    const launch = entries.filter((e) => e.key === "VETRA_STUDIO_LAUNCH_SECRET");
+    expect(launch).toHaveLength(1);
+    // A secret (the default), 32 random bytes, distinct from the session secret.
+    expect(launch[0].secret).toBeUndefined();
+    expect(launch[0].value).toMatch(/^[0-9a-f]{64}$/);
+    expect(launch[0].value).not.toBe(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value);
+    // Only its sha256 is stored, for the claimed env, before the write.
+    const sha = createHash("sha256").update(launch[0].value).digest("hex");
+    expect(d.storeLaunchSecretHash).toHaveBeenCalledWith("doc-1", sha);
+    expect(order).toEqual(["storeLaunchSecretHash", "replaceTenantConfig"]);
+    // Never logged.
+    for (const fn of [d.logger.info, d.logger.warn, d.logger.error]) {
+      for (const call of fn.mock.calls) expect(String(call[0])).not.toContain(launch[0].value);
+    }
+    // A fresh secret per claim.
+    const d2 = deps();
+    await claimWarmEnvironment(d2 as never, "did:pkh:eip155:1:0xCaller");
+    const [, , entries2] = d2.replaceTenantConfig.mock.calls[0];
+    expect(entries2.find((e) => e.key === "VETRA_STUDIO_LAUNCH_SECRET")?.value).not.toBe(launch[0].value);
+  });
+
+  it("deletes the env and writes nothing when the launch-secret hash cannot be stored", async () => {
+    const d = deps({
+      storeLaunchSecretHash: vi.fn(async () => {
+        throw new Error("db down");
+      }),
+    });
+    expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.storeLaunchSecretHash).toHaveBeenCalledTimes(3);
+    expect(d.replaceTenantConfig).not.toHaveBeenCalled();
+    expect(d.setOwner).not.toHaveBeenCalled();
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
+    expect(d.releaseLlmKey).toHaveBeenCalledWith("doc-1");
   });
 
   it("re-states the Renown URL on claim when configured, and omits it when unset", async () => {
@@ -116,7 +165,11 @@ describe("claimWarmEnvironment", () => {
     const d = deps({ grantLlmKey: vi.fn(async () => null), legacyAnthropicKey: vi.fn(async () => null) });
     expect(await claimWarmEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).not.toBeNull();
     const [, , entries] = d.replaceTenantConfig.mock.calls[0];
-    expect(entries.map((e) => e.key).sort()).toStrictEqual(["ADMINS", "VETRA_SESSION_EXPORT_SECRET"]);
+    expect(entries.map((e) => e.key).sort()).toStrictEqual([
+      "ADMINS",
+      "VETRA_SESSION_EXPORT_SECRET",
+      "VETRA_STUDIO_LAUNCH_SECRET",
+    ]);
     expect(d.releaseLlmKey).not.toHaveBeenCalled();
   });
 

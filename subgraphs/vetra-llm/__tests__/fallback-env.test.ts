@@ -147,6 +147,7 @@ describe("VETRA_LLM_FALLBACK_MODELS", () => {
         state: { owner: null, ownerOrgId: null, services: [] } as never,
       }),
       replaceTenantConfig,
+      storeLaunchSecretHash: async () => {},
       handOver: async () => {},
       deleteEnv: async () => {},
       cfg: { version: "1" },

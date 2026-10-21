@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
@@ -8,6 +9,8 @@ import {
   createSecretsService,
   ManagedSecretKeyError,
   NOTIFY_CHANNEL,
+  purgeTenantRows,
+  STUDIO_LAUNCH_SECRET_KEY,
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
 } from "../services/secrets-service.js";
@@ -271,5 +274,104 @@ describe("replaceTenantConfig", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(notified).toEqual(["t"]);
     await notifyDb.destroy();
+  });
+});
+
+describe("Studio launch secret (a rotatable managed key)", () => {
+  const keysOf = async (tenantId: string) =>
+    (
+      await db
+        .selectFrom("tenant_secrets")
+        .select(["key", "ciphertext"])
+        .where("tenantId", "=", tenantId)
+        .orderBy("key")
+        .execute()
+    ).map((r) => [r.key, r.ciphertext]);
+
+  it("is refused by every user path", async () => {
+    const v = randomBytes(32).toString("hex");
+    await expect(service.setSecret("t", STUDIO_LAUNCH_SECRET_KEY, v)).rejects.toBeInstanceOf(
+      ManagedSecretKeyError,
+    );
+    await expect(
+      service.setSecrets("t", [{ key: STUDIO_LAUNCH_SECRET_KEY, value: v }]),
+    ).rejects.toBeInstanceOf(ManagedSecretKeyError);
+    await expect(service.setEnvVar("t", STUDIO_LAUNCH_SECRET_KEY, v)).rejects.toBeInstanceOf(
+      ManagedSecretKeyError,
+    );
+    await expect(service.deleteSecret("t", STUDIO_LAUNCH_SECRET_KEY)).rejects.toBeInstanceOf(
+      ManagedSecretKeyError,
+    );
+  });
+
+  it("setManagedSecret overwrites that one key only; never the workflows master key", async () => {
+    await service.setSecret("t", "OPENROUTER_API_KEY", "sk-or");
+    await service.setEnvVar("t", "ADMINS", "0xabc");
+    await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
+    const first = randomBytes(32).toString("hex");
+    const second = randomBytes(32).toString("hex");
+    expect(await service.ensureSecret("t", STUDIO_LAUNCH_SECRET_KEY, () => first)).toBe(true);
+    await service.setManagedSecret("t", STUDIO_LAUNCH_SECRET_KEY, second);
+    expect(await keysOf("t")).toStrictEqual([
+      ["OPENROUTER_API_KEY", "vault:v1:t:sk-or"],
+      [WORKFLOWS_MASTER_KEY, "vault:v1:t:master"],
+      [STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${second}`],
+    ]);
+    expect(await service.listEnvVars("t")).toStrictEqual([{ key: "ADMINS", value: "0xabc" }]);
+    await expect(service.setManagedSecret("t", WORKFLOWS_MASTER_KEY, "x")).rejects.toBeInstanceOf(
+      ManagedSecretKeyError,
+    );
+    await expect(service.setManagedSecret("t", "OPENROUTER_API_KEY", "x")).rejects.toBeInstanceOf(
+      ManagedSecretKeyError,
+    );
+    await expect(service.setManagedSecret("t", STUDIO_LAUNCH_SECRET_KEY, "")).rejects.toThrow();
+  });
+
+  it("replaceTenantConfig writes it from `managed`, ignores it in the plain entries, and keeps it when absent", async () => {
+    const old = randomBytes(32).toString("hex");
+    const fresh = randomBytes(32).toString("hex");
+    await service.ensureSecret("t", STUDIO_LAUNCH_SECRET_KEY, () => old);
+    // Absent: kept.
+    await service.replaceTenantConfig("t", [{ key: "A", value: "1", secret: true }]);
+    expect(await keysOf("t")).toContainEqual([STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${old}`]);
+    // In the plain entries (as a document could declare it): ignored.
+    await service.replaceTenantConfig("t", [
+      { key: STUDIO_LAUNCH_SECRET_KEY, value: "declared", secret: true },
+    ]);
+    expect(await keysOf("t")).toStrictEqual([[STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${old}`]]);
+    // From Vetra (managed): overwritten in the same write.
+    await service.replaceTenantConfig(
+      "t",
+      [{ key: "A", value: "1", secret: true }],
+      [{ key: STUDIO_LAUNCH_SECRET_KEY, value: fresh }],
+    );
+    expect(await keysOf("t")).toStrictEqual([
+      ["A", "vault:v1:t:1"],
+      [STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${fresh}`],
+    ]);
+    await expect(
+      service.replaceTenantConfig("t", [], [{ key: WORKFLOWS_MASTER_KEY, value: "x" }]),
+    ).rejects.toBeInstanceOf(ManagedSecretKeyError);
+  });
+
+  it("replaceTenantConfig takes the last of duplicate managed entries", async () => {
+    const a = randomBytes(32).toString("hex");
+    const b = randomBytes(32).toString("hex");
+    await service.replaceTenantConfig(
+      "t",
+      [],
+      [
+        { key: STUDIO_LAUNCH_SECRET_KEY, value: a },
+        { key: STUDIO_LAUNCH_SECRET_KEY, value: b },
+      ],
+    );
+    expect(await keysOf("t")).toStrictEqual([[STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${b}`]]);
+  });
+
+  it("goes with the tenant on a purge (the workflows master key stays)", async () => {
+    await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
+    await service.ensureSecret("t", STUDIO_LAUNCH_SECRET_KEY, () => randomBytes(32).toString("hex"));
+    expect(await purgeTenantRows(db, "t")).toStrictEqual({ envVars: 0, secrets: 1 });
+    expect(await keysOf("t")).toStrictEqual([[WORKFLOWS_MASTER_KEY, "vault:v1:t:master"]]);
   });
 });

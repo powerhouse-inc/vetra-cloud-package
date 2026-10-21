@@ -1,24 +1,33 @@
 import { GraphQLError } from "graphql";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { Action } from "document-model";
 import {
   addPackage,
   approveChanges,
+  clearAppLink,
   enableService,
   initialize,
+  setApexService,
   setAppLink,
   setDefaultPackageRegistry,
   setFusionConfig,
   setLabel,
   setOwner,
   setOwnerOrg,
+  removePackage,
+  setRuntimeConfig,
   setServiceVersion,
   wakeEnvironment,
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { VetraAppsConfig } from "./config.js";
-import type { AppDeploymentKind, VetraAppsDB } from "./db/schema.js";
-import type { EnvGateway } from "./envs.js";
+import type {
+  AppDeploymentKind,
+  DeploymentTrigger,
+  VetraAppsDB,
+} from "./db/schema.js";
+import { STUDIO_LAUNCH_KEY_INDEX } from "./db/migrations.js";
+import { envUrls, type EnvGateway } from "./envs.js";
 import { classifyEnv } from "../../processors/vetra-cloud-environment/gitops.js";
 import {
   classifyGithubError,
@@ -39,12 +48,22 @@ import {
   isOrgMember,
 } from "../../shared/org-access.js";
 import { withEnvLock, withKeyLock } from "../../shared/key-lock.js";
-import { isStudioAgentPackage } from "../../shared/studio-package.js";
+import { isStudioAgentPackage, isStudioState } from "../../shared/studio-package.js";
+import {
+  assertStudioAgent,
+  DELEGATION_MESSAGE,
+  ensureStudioLaunchSecret,
+  hasLaunchSecret,
+  STUDIO_BINDING_MESSAGE,
+  verifyStudioBinding,
+  verifyStudioSecret,
+} from "./studio-binding.js";
 import {
   expectOrgHandover,
   withdrawOrgHandover,
 } from "../vetra-cloud-observability/env-protection.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
+import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import {
   adoptOrgApps,
   adoptPersonApps,
@@ -58,6 +77,7 @@ import { appsError, githubErrors, notConfigured } from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   ACTIVE_DEPLOYMENT_STATUSES,
+  appRepository,
   getApp,
   getAppByIdentity,
   getDeployment,
@@ -129,6 +149,22 @@ export interface AppsDeps {
    * are served from the table either way in this step.
    */
   docs?: AppDocStore | null;
+  /**
+   * The single-key path of the secrets service, for a Studio's launch secret
+   * (rotateStudioLaunchSecret). Null/absent: OpenBao is not configured.
+   */
+  studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
+  /**
+   * Whether a generic subdomain would collide with an existing env's hosts
+   * (ensureStudioProduct puts a product at <slug>.vetra.io). Absent: only the
+   * reserved names and the Apps' own slugs are avoided.
+   */
+  subdomainTaken?: ((subdomain: string) => Promise<boolean>) | null;
+  /**
+   * Called (not awaited) right after a Studio deployment was recorded
+   * PENDING, to apply it without waiting for the watcher's next pass.
+   */
+  onDeploymentQueued?: (deploymentId: string) => void;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
@@ -280,6 +316,12 @@ async function authorizeCi(
 // ---------------------------------------------------------------------------
 // GitHub connection
 // ---------------------------------------------------------------------------
+
+function requireRepository(app: AppRow) {
+  const repo = appRepository(app);
+  if (!repo) throw appsError("BAD_USER_INPUT", "This App has no repository");
+  return repo;
+}
 
 function requireGithub(deps: AppsDeps): GithubDeployApi {
   if (!deps.github || !deps.cfg.github)
@@ -491,7 +533,25 @@ export async function githubDeployRepositories(
  * Personal Apps (owner_org_id IS NULL), or with `orgId` the organisation's
  * Apps (members and admins only; Apps Renown lists for it are adopted first).
  */
+/**
+ * The caller's Apps (or an organisation's). Studio products without a
+ * repository are listed only with `includeStudioProducts`: Apps pages that
+ * predate them read `repository` as always present (vetra.io adds the flag
+ * when it handles them, Task 4.6).
+ */
 export async function myApps(
+  deps: AppsDeps,
+  caller: Caller,
+  orgId?: string | null,
+  opts: { includeStudioProducts?: boolean | null } = {},
+): Promise<AppRow[]> {
+  const apps = await listMyApps(deps, caller, orgId);
+  return opts.includeStudioProducts
+    ? apps
+    : apps.filter((a) => appRepository(a) !== null);
+}
+
+async function listMyApps(
   deps: AppsDeps,
   caller: Caller,
   orgId?: string | null,
@@ -739,7 +799,7 @@ export async function createApp(
     const cleanedUp = await undoFailedCreate(
       deps,
       harbor,
-      deps.renown!,
+      deps.renown,
       did,
       made,
     );
@@ -1074,6 +1134,451 @@ async function createStudioAppLocked(
   return created;
 }
 
+// ---------------------------------------------------------------------------
+// Studio products without GitHub (Task 2.2)
+// ---------------------------------------------------------------------------
+
+export interface EnsureStudioProductInput {
+  studioEnvironmentId: string;
+  name: string;
+  /**
+   * An existing env of the Studio's owner that becomes the product's
+   * production env instead of a new one (§6.6: an env set up before versions).
+   */
+  adoptEnvironmentId?: string | null;
+}
+
+/**
+ * How the request authenticates: the owner in person, or the Studio's agent
+ * (it sent STUDIO_SECRET_HEADER; `secret` is null when the header was empty).
+ */
+export type StudioProductAuth =
+  | { kind: "owner" }
+  | { kind: "agent"; secret: string | null };
+
+export const STUDIO_SECRET_PENDING_MESSAGE =
+  "This Studio is getting ready to publish. Try again after it restarts.";
+
+/** identity_did of a Studio product made by its owner, until its agent first calls (no caller can present it). */
+export const STUDIO_PRODUCT_IDENTITY_PREFIX = "vetra-studio-product:";
+
+/** Days a Studio product may stay never launched before the sweep removes it (D8, F32). */
+export const UNLAUNCHED_STUDIO_APP_DAYS = 14;
+
+/**
+ * Generic subdomains a product may never take: platform hosts under
+ * vetra.io. A product named after one gets the next suffix.
+ */
+const RESERVED_SUBDOMAINS = new Set([
+  "admin", "alertmanager", "api", "app", "apps", "argocd", "assets", "auth",
+  "blog", "cdn", "connect", "cr", "dev", "docs", "ftp", "git", "github",
+  "grafana", "harbor", "help", "id", "keycloak", "login", "mail", "minio",
+  "monitoring", "mx", "ns1", "ns2", "openbao", "prometheus", "registry",
+  "renown", "renown-staging", "s3", "smtp", "sso", "staging", "static",
+  "status", "studio", "support", "switchboard", "vault", "vetra", "www",
+]);
+
+/** The live (not DELETED) App made from this Studio, or null. */
+async function liveStudioApp(
+  deps: AppsDeps,
+  studioId: string,
+): Promise<AppRow | null> {
+  const row = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("studio_environment_id", "=", studioId)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  return row ? normalizeApp(row) : null;
+}
+
+/**
+ * The Studio the request may act for, by path. Agent: the launch secret
+ * binding (verifyStudioSecret, F8); a Studio without a launch secret gets one
+ * now (X22) and the call is refused with STUDIO_SECRET_PENDING, to be retried
+ * once the Studio has restarted with it. Owner: no App identity, and the
+ * caller owns (or, for an organisation, operates) the Studio.
+ */
+async function authorizeStudio(
+  deps: AppsDeps,
+  caller: Caller,
+  studioId: string,
+  auth: StudioProductAuth,
+): Promise<VetraCloudEnvironmentState> {
+  if (auth.kind === "agent") {
+    if (!caller.appKey)
+      throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
+    if (!(await hasLaunchSecret(deps.db, studioId))) {
+      const studio = await assertStudioAgent(deps, caller, studioId);
+      await ensureStudioLaunchSecret(deps, studioId, studio);
+      throw appsError("STUDIO_SECRET_PENDING", STUDIO_SECRET_PENDING_MESSAGE);
+    }
+    await verifyStudioSecret(deps, caller, auth.secret, studioId);
+    return (await deps.envs.getState(studioId))!;
+  }
+  await assertNotWorkload(deps, caller);
+  const studio = await deps.envs.getState(studioId);
+  if (!studio || !isStudioState(studio))
+    throw appsError("BAD_USER_INPUT", "Not a Vetra Studio");
+  const mayUse = await canOperate(
+    deps.orgs ?? null,
+    { address: caller.address, isAdmin: false },
+    {
+      owner: studio.owner ?? null,
+      ownerOrgId: studio.ownerOrgId ?? null,
+      appDid: null,
+    },
+  );
+  if (!mayUse) throw appsError("FORBIDDEN", "You do not own this Studio");
+  return studio;
+}
+
+/**
+ * The Studio's existing App, checked for the caller: the agent must still act
+ * for it (verifyStudioBinding's App check), the owner as for any App. A
+ * product without GitHub is bound to the agent's current key (identity_did),
+ * so the owner-only paths go on refusing it (assertNotWorkload).
+ */
+async function existingStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  app: AppRow,
+  auth: StudioProductAuth,
+): Promise<AppRow> {
+  if (auth.kind === "owner") return loadAppForOwner(deps, caller, app.id);
+  const synced = await syncAppOrg(deps, app);
+  if (
+    !(await canOperate(
+      deps.orgs ?? null,
+      callerAccess({ ...caller, isAdmin: false }),
+      appResource(synced),
+    ))
+  ) {
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  }
+  return bindAgentIdentity(deps, caller, synced);
+}
+
+/** Point a product without GitHub at the agent's key (no-op when it already is, or for a GitHub App). */
+async function bindAgentIdentity(
+  deps: AppsDeps,
+  caller: Caller,
+  app: AppRow,
+): Promise<AppRow> {
+  const key = caller.appKey!;
+  if (appRepository(app) || app.identity_did === key) return app;
+  const other = await getAppByIdentity(deps.db, key);
+  if (other && other.id !== app.id && other.status !== "DELETED")
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  await deps.db
+    .updateTable("apps")
+    .set({ identity_did: key, updated_at: deps.now().toISOString() })
+    .where("id", "=", app.id)
+    .execute();
+  deps.logger.info(
+    `[vetra-apps] Studio product ${app.slug} (${app.id}) bound to its agent's key`,
+  );
+  const bound = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, bound);
+  return bound;
+}
+
+/**
+ * A Studio's product: its App, without a repository, and a production env at
+ * <slug>.vetra.io with Connect at the apex (or an adopted env of the same
+ * owner). Idempotent per Studio: an existing live App is returned as it is
+ * (its name and address never change here, D19); the partial unique index
+ * apps_studio_env_live guards it across replicas. Callable by the Studio's
+ * agent (launch secret binding) and by the owner. The App is ACTIVE at once:
+ * there is no CI identity to confirm. Its identity_did is the agent's key, so
+ * the owner-only paths refuse the agent (assertNotWorkload). No Harbor robot
+ * and no Renown workload identity are made; the Harbor project is reserved
+ * as for every App. Everything made is undone when a step fails.
+ */
+export async function ensureStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  input: EnsureStudioProductInput,
+  auth: StudioProductAuth,
+): Promise<AppRow> {
+  const studioId = input.studioEnvironmentId.trim();
+  if (!studioId)
+    throw appsError("BAD_USER_INPUT", "studioEnvironmentId is required");
+  const name = input.name.trim();
+  if (!name || name.length > 100)
+    throw appsError("BAD_USER_INPUT", "Name must be 1-100 characters");
+  const studio = await authorizeStudio(deps, caller, studioId, auth);
+  if (RELEASED_STATUSES.has(studio.status))
+    throw appsError("BAD_USER_INPUT", "Studio is terminated");
+
+  return withKeyLock(`studio-app:${studioId}`, async () => {
+    const existing = await liveStudioApp(deps, studioId);
+    if (existing) return existingStudioProduct(deps, caller, existing, auth);
+    try {
+      return await createStudioProduct(deps, caller, {
+        studioId,
+        studio,
+        name,
+        adoptEnvironmentId: input.adoptEnvironmentId?.trim() || null,
+        identityDid:
+          auth.kind === "agent"
+            ? caller.appKey!
+            : `${STUDIO_PRODUCT_IDENTITY_PREFIX}${studioId}`,
+      });
+    } catch (err) {
+      // Another replica made this Studio's App meanwhile: that one is it.
+      if (!isUniqueViolation(err, STUDIO_APP_INDEX)) throw err;
+      const made = await liveStudioApp(deps, studioId);
+      if (!made) throw err;
+      return existingStudioProduct(deps, caller, made, auth);
+    }
+  });
+}
+
+/** The env named by adoptEnvironmentId, when it may become the product's production env (F28). */
+async function adoptableEnv(
+  deps: AppsDeps,
+  studioId: string,
+  studio: VetraCloudEnvironmentState,
+  envId: string,
+): Promise<VetraCloudEnvironmentState> {
+  const refuse = (why: string) =>
+    appsError("ADOPT_NOT_ALLOWED", `This environment cannot become the product's: ${why}`);
+  if (envId === studioId) throw refuse("it is the Studio itself");
+  const state = await deps.envs.getState(envId);
+  if (!state) throw refuse("it does not exist");
+  if (isStudioState(state)) throw refuse("it is a Studio");
+  if (RELEASED_STATUSES.has(state.status)) throw refuse("it is terminated");
+  const studioOrg = studio.ownerOrgId ?? null;
+  const envOrg = state.ownerOrgId ?? null;
+  const sameOwner =
+    studioOrg !== null
+      ? envOrg === studioOrg
+      : envOrg === null &&
+        !!state.owner &&
+        state.owner.toLowerCase() === (studio.owner ?? "").toLowerCase();
+  if (!sameOwner) throw refuse("it belongs to someone else");
+  // Never another App's env: linked to a live App, or recorded as one's
+  // production or preview env.
+  if (state.app?.appId) {
+    const linked = await getApp(deps.db, state.app.appId);
+    if (linked && linked.status !== "DELETED")
+      throw refuse("it belongs to another App");
+  }
+  const usedAsProduction = await deps.db
+    .selectFrom("apps")
+    .select("id")
+    .where("production_environment_id", "=", envId)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  const usedAsPreview = await deps.db
+    .selectFrom("app_previews")
+    .select("app_id")
+    .where("environment_id", "=", envId)
+    .executeTakeFirst();
+  if (usedAsProduction || usedAsPreview)
+    throw refuse("it belongs to another App");
+  return state;
+}
+
+/** Slug + Harbor project app-<slug> for a product; a new env's subdomain is the slug, so it must be free too. */
+async function reserveProductSlug(
+  deps: AppsDeps,
+  harbor: HarborApi,
+  name: string,
+  made: CreateMade,
+  checkSubdomain: boolean,
+): Promise<string> {
+  const conflicts = new Set<string>(RESERVED_SUBDOMAINS);
+  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS * 3; attempt++) {
+    const candidate = await uniqueSlug(deps, name, conflicts);
+    if (
+      checkSubdomain &&
+      deps.subdomainTaken &&
+      (await deps.subdomainTaken(candidate))
+    ) {
+      conflicts.add(candidate);
+      continue;
+    }
+    if (await harbor.createProject(`app-${candidate}`)) {
+      made.project = `app-${candidate}`;
+      return candidate;
+    }
+    conflicts.add(candidate);
+  }
+  throw appsError(
+    "BAD_USER_INPUT",
+    "Could not reserve an address for this name; pick another name",
+  );
+}
+
+async function createStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  ctx: {
+    studioId: string;
+    studio: VetraCloudEnvironmentState;
+    name: string;
+    adoptEnvironmentId: string | null;
+    identityDid: string;
+  },
+): Promise<AppRow> {
+  const { studioId, studio, name, adoptEnvironmentId, identityDid } = ctx;
+  // An agent key already bound to another live App never gets a second one.
+  const holder = await getAppByIdentity(deps.db, identityDid);
+  if (holder && holder.status !== "DELETED")
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
+  const harbor = deps.harbor;
+  // An organisation's Studio makes the organisation's App; the env is handed
+  // over with an announced move.
+  const orgId = studio.ownerOrgId ?? null;
+  if (orgId && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
+  const ownerAddress = orgId
+    ? (studio.owner ?? caller.address).toLowerCase()
+    : caller.address;
+  const adopted = adoptEnvironmentId
+    ? await adoptableEnv(deps, studioId, studio, adoptEnvironmentId)
+    : null;
+
+  const made: CreateMade = {
+    project: null,
+    robotId: null,
+    appId: null,
+    announced: null,
+    repo: null,
+    envId: null,
+  };
+  let linkedAdopted = false;
+  let step = "reserving the address";
+  let slug = "";
+  let envId = "";
+  const appId = deps.newId();
+  try {
+    slug = await reserveProductSlug(deps, harbor, name, made, !adopted);
+    const harborProject = made.project!;
+    step = "creating the production environment";
+    if (adopted) {
+      envId = adoptEnvironmentId!;
+    } else {
+      envId = await deps.envs.create();
+      made.envId = envId;
+    }
+    // The row goes in before the env actions (see createApp).
+    step = "recording the App";
+    const nowIso = deps.now().toISOString();
+    await deps.db
+      .insertInto("apps")
+      .values({
+        id: appId,
+        slug,
+        name,
+        owner_address: ownerAddress,
+        owner_chain_id: caller.chainId,
+        status: "ACTIVE",
+        installation_id: null,
+        repository_id: null,
+        repository_full_name: null,
+        production_branch: STUDIO_PRODUCTION_BRANCH,
+        production_environment_id: envId,
+        // The Studio's own preview is the preview (spec §6.4).
+        previews_enabled: false,
+        preview_limit: DEFAULT_PREVIEW_LIMIT,
+        preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
+        harbor_project: harborProject,
+        harbor_robot_name: "",
+        harbor_robot_id: null,
+        harbor_robot_secret_enc: "",
+        identity_did: identityDid,
+        identity_expires_at: null,
+        owner_org_id: orgId,
+        studio_environment_id: studioId,
+        product_drive_id: null,
+        launched_at: null,
+        adopted_at: adopted ? nowIso : null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .execute();
+    made.appId = appId;
+    step = "provisioning the production environment";
+    linkedAdopted = !!adopted;
+    await provisionProductionEnv(
+      deps,
+      caller,
+      {
+        envId,
+        appId,
+        name,
+        harborProject,
+        productionBranch: STUDIO_PRODUCTION_BRANCH,
+        orgId,
+        attach: adopted ? { state: adopted } : null,
+        subdomain: slug,
+        ownerAddress,
+        connectAtApex: true,
+      },
+      made,
+    );
+  } catch (err) {
+    // An adopted env is never deleted: only the link made here is taken back.
+    if (linkedAdopted) {
+      await deps.envs
+        .execute(envId, [clearAppLink({})])
+        .catch((e: unknown) =>
+          deps.logger.error(
+            `[vetra-apps] unlinking adopted env ${envId} after a failed ensureStudioProduct failed: ${String(e)}`,
+          ),
+        );
+    }
+    const cleanedUp = await undoFailedCreate(deps, harbor, null, null, made);
+    if (err instanceof GraphQLError || isUniqueViolation(err, STUDIO_APP_INDEX))
+      throw err;
+    deps.logger.error(
+      `[vetra-apps] ensureStudioProduct failed while ${step}: ${String(err)}${cleanedUp ? "" : " (cleanup incomplete)"}`,
+    );
+    throw githubErrors.deploySetupFailed({ repoRolledBack: false, cleanedUp });
+  }
+  deps.logger.info(
+    `[vetra-apps] created Studio product ${slug} (${appId}), studio ${studioId}, env ${envId}${adopted ? " (adopted)" : ""}`,
+  );
+  const created = (await getApp(deps.db, appId))!;
+  await mirrorAppRow(deps, created);
+  return created;
+}
+
+/**
+ * The Studio's live App, or null: for its agent (launch secret binding) or
+ * for whoever may view the App.
+ */
+export async function studioProductFor(
+  deps: AppsDeps,
+  caller: Caller,
+  studioEnvironmentId: string,
+  auth: StudioProductAuth,
+): Promise<AppRow | null> {
+  const studioId = studioEnvironmentId.trim();
+  if (!studioId) return null;
+  if (auth.kind === "agent") {
+    await verifyStudioSecret(deps, caller, auth.secret, studioId);
+    const app = await liveStudioApp(deps, studioId);
+    if (!app) return null;
+    await verifyStudioBinding(deps, caller, auth.secret, app);
+    return app;
+  }
+  await assertNotWorkload(deps, caller);
+  const app = await liveStudioApp(deps, studioId);
+  if (!app) return null;
+  try {
+    return await loadAppForOwner(deps, caller, app.id, { need: "view" });
+  } catch (err) {
+    if (err instanceof GraphQLError && err.extensions.code === "FORBIDDEN")
+      return null;
+    throw err;
+  }
+}
+
 /**
  * The checks before anything is made: workload refusal, name, org role and
  * the Harbor/Renown/encryption/hand-over configuration. Returns the trimmed
@@ -1207,6 +1712,28 @@ interface ProvisionInput {
   orgId: string | null;
   /** The existing env being attached (null: a new env is initialised). */
   attach: { state: VetraCloudEnvironmentState } | null;
+  /** genericSubdomain of a new env (default: generated from its id). */
+  subdomain?: string;
+  /** Owner of a new env (default: the caller). */
+  ownerAddress?: string;
+  /** A Studio product: Switchboard and Connect enabled, Connect at the apex. */
+  connectAtApex?: boolean;
+}
+
+/** What makes an env serve a Studio product: Switchboard + Connect, Connect at the apex. */
+function productServiceActions(state: VetraCloudEnvironmentState | null): Action[] {
+  const actions: Action[] = [];
+  for (const [type, prefix] of [
+    ["SWITCHBOARD", "switchboard"],
+    ["CONNECT", "connect"],
+  ] as const) {
+    const svc = state?.services.find((s) => s.type === type);
+    if (!svc?.enabled)
+      actions.push(enableService({ type, prefix: svc?.prefix || prefix }));
+  }
+  if (state?.apexService !== "CONNECT")
+    actions.push(setApexService({ type: "CONNECT" }));
+  return actions;
 }
 
 /**
@@ -1248,21 +1775,26 @@ async function provisionProductionEnv(
     const wasReady = attach.state.status === "READY";
     // The link widens the FUSION allowlist, so it re-renders; re-approve only
     // a settled env (never ship an owner's unapproved pending edits).
-    await dispatch([link, ...handOver]);
+    await dispatch([
+      link,
+      ...handOver,
+      ...(input.connectAtApex ? productServiceActions(attach.state) : []),
+    ]);
     if (wasReady) await deps.envs.execute(input.envId, [approveChanges({})]);
   } else {
     await dispatch([
       setLabel({ label: input.name }),
       initialize({
-        genericSubdomain: deps.generateSubdomain(input.envId),
+        genericSubdomain: input.subdomain ?? deps.generateSubdomain(input.envId),
         genericBaseDomain: "vetra.io",
         defaultPackageRegistry: deps.cfg.productionRegistry,
       }),
-      setOwner({ address: caller.address }),
+      setOwner({ address: input.ownerAddress ?? caller.address }),
       ...handOver,
       link,
       enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
       enableService({ type: "CONNECT", prefix: "connect" }),
+      ...(input.connectAtApex ? [setApexService({ type: "CONNECT" })] : []),
     ]);
     await deps.envs.execute(input.envId, [approveChanges({})]);
   }
@@ -1409,7 +1941,7 @@ function createFailure(
 async function undoFailedCreate(
   deps: AppsDeps,
   harbor: HarborApi,
-  renown: RenownApi,
+  renown: RenownApi | null,
   did: string | null,
   made: CreateMade,
 ): Promise<boolean> {
@@ -1448,7 +1980,7 @@ async function undoFailedCreate(
     if (!(await undoStudioRepo(deps, deps.github, made.repo)))
       cleanedUp = false;
   }
-  if (did !== null)
+  if (did !== null && renown)
     await step("deleting the identity", async () => {
       if (!(await identityInUse(deps, did)))
         await renown.deleteWorkloadIdentity(did);
@@ -1520,6 +2052,9 @@ export async function confirmAppIdentity(
   appId: string,
 ) {
   const app = await loadAppForOwner(deps, caller, appId);
+  // A Studio product without GitHub has no CI workload identity to confirm:
+  // its identity is the Studio agent's key, checked on every agent call.
+  if (!appRepository(app)) return app;
   if (!deps.renown) throw notConfigured("Renown workload identities");
   const delegation = await deps.renown.getDelegation({
     address: app.owner_org_id ? caller.address : app.owner_address,
@@ -1610,6 +2145,8 @@ export async function updateApp(
   ) {
     const branch = input.productionBranch.trim();
     assertBranch(branch);
+    if (!appRepository(app))
+      throw appsError("BAD_USER_INPUT", "This App has no repository");
     // Renown decides which ref may mint production tokens: keep it in sync first.
     if (!deps.renown) throw notConfigured("Renown workload identities");
     await deps.renown.updateWorkloadIdentity(app.identity_did, {
@@ -1724,11 +2261,15 @@ export async function deleteApp(
     if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
     await deps.harbor.deleteRobot(app.harbor_robot_id);
   }
-  if (!deps.renown) throw notConfigured("Renown workload identities");
-  try {
-    await deps.renown.deleteWorkloadIdentity(app.identity_did);
-  } catch (err) {
-    if (!/NOT_FOUND/.test(String(err))) throw err;
+  // A Studio product without GitHub registered no workload identity (its
+  // identity is the Studio agent's key): nothing to delete at Renown.
+  if (appRepository(app)) {
+    if (!deps.renown) throw notConfigured("Renown workload identities");
+    try {
+      await deps.renown.deleteWorkloadIdentity(app.identity_did);
+    } catch (err) {
+      if (!/NOT_FOUND/.test(String(err))) throw err;
+    }
   }
   const nowIso = deps.now().toISOString();
   await deps.db
@@ -1795,15 +2336,16 @@ export async function openAppSetupPullRequest(
   appId: string,
 ): Promise<string> {
   const app = await loadAppForOwner(deps, caller, appId);
+  const repository = requireRepository(app);
   const github = requireGithub(deps);
   const repo = await detectRepoToolchain(
     github,
-    app.installation_id,
-    app.repository_full_name,
+    repository.installationId,
+    repository.fullName,
   );
   return github.openPullRequestWithFile(
-    app.installation_id,
-    app.repository_full_name,
+    repository.installationId,
+    repository.fullName,
     {
       branch: "vetra/setup",
       path: ".github/workflows/vetra.yml",
@@ -1828,6 +2370,8 @@ function registryCredentials(deps: AppsDeps, app: AppRow) {
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
   if (app.status === "DISCONNECTED")
     throw appsError("APP_NOT_ACTIVE", "App is disconnected");
+  if (!app.harbor_robot_secret_enc)
+    throw appsError("BAD_USER_INPUT", "This App has no registry robot");
   return {
     registry: HARBOR_HOST,
     project: app.harbor_project,
@@ -1931,6 +2475,12 @@ interface DeployRequest {
   packages: { name: string; version: string }[];
   /** Full image reference, already validated. */
   image: { repository: string; tag: string } | null;
+  trigger: DeploymentTrigger;
+  /** did:pkh of the owner the deployment is made for. */
+  onBehalfOf: string | null;
+  versionNumber: number | null;
+  /** Packages to uninstall with it (a restore after a failed Studio launch). */
+  removePackages?: string[];
 }
 
 function validatePackages(packages: { name: string; version: string }[]) {
@@ -2002,7 +2552,8 @@ function assertClaimAllows(
   prNumber: number | null,
 ): VetraClaim {
   if (!claim) throw appsError("FORBIDDEN", "Token carries no vetra claim");
-  if (claim.repositoryId !== app.repository_id) {
+  // A Studio product without GitHub has no CI: no claim can match it.
+  if (!app.repository_id || claim.repositoryId !== app.repository_id) {
     throw appsError("FORBIDDEN", "Token was minted for another repository");
   }
   if (kind === "PRODUCTION") {
@@ -2052,17 +2603,18 @@ export async function isPullRequestClosed(
   app: AppRow,
   prNumber: number,
 ): Promise<boolean> {
-  if (!deps.github) return false;
+  const repo = appRepository(app);
+  if (!deps.github || !repo) return false;
   try {
     const state = await deps.github.getPullRequestState(
-      app.installation_id,
-      app.repository_full_name,
+      repo.installationId,
+      repo.fullName,
       prNumber,
     );
     return state !== "open";
   } catch (err) {
     deps.logger.warn(
-      `[vetra-apps] PR state of ${app.repository_full_name}#${prNumber} unavailable: ${String(err)}`,
+      `[vetra-apps] PR state of ${repo.fullName}#${prNumber} unavailable: ${String(err)}`,
     );
     return false;
   }
@@ -2082,6 +2634,8 @@ async function recordSkippedDeployment(
     packages: { name: string; version: string }[];
     imageTag: string | null;
     reason: string;
+    trigger: DeploymentTrigger;
+    onBehalfOf: string | null;
   },
 ): Promise<DeploymentRow> {
   const id = deps.newId();
@@ -2108,6 +2662,9 @@ async function recordSkippedDeployment(
       run_url: req.runUrl,
       error: req.reason,
       github_deployment_id: null,
+      trigger: req.trigger,
+      on_behalf_of: req.onBehalfOf,
+      version_number: null,
       created_at: nowIso,
       updated_at: nowIso,
     })
@@ -2123,7 +2680,13 @@ async function deployChecked(
   app: AppRow,
   input: DeployAppInput,
   prNumber: number | null,
-  actor: { did: string | null; github: string | null; gitRef: string },
+  actor: {
+    did: string | null;
+    github: string | null;
+    gitRef: string;
+    trigger: DeploymentTrigger;
+    onBehalfOf: string | null;
+  },
 ): Promise<DeploymentRow> {
   if (input.kind !== "PRODUCTION" && input.kind !== "PREVIEW") {
     throw appsError("BAD_USER_INPUT", "kind must be PRODUCTION or PREVIEW");
@@ -2139,6 +2702,12 @@ async function deployChecked(
   validatePackages(input.packages);
   if (input.kind === "PREVIEW" && !app.previews_enabled) {
     throw appsError("PREVIEWS_DISABLED", "Previews are disabled for this App");
+  }
+  if (input.kind === "PREVIEW" && !appRepository(app)) {
+    throw appsError(
+      "PREVIEWS_DISABLED",
+      "Previews come from pull requests; this App has no repository",
+    );
   }
   let runUrl = input.runUrl?.trim() || null;
   if (runUrl && !/^https:\/\/github\.com\//.test(runUrl)) runUrl = null;
@@ -2166,6 +2735,8 @@ async function deployChecked(
       })),
       imageTag: image ? `${image.repository}:${image.tag}` : null,
       reason: `pull request #${prNumber} is closed`,
+      trigger: actor.trigger,
+      onBehalfOf: actor.onBehalfOf,
     });
   }
   return performDeploy(deps, app, productionState, {
@@ -2178,6 +2749,9 @@ async function deployChecked(
     actorDid: actor.did,
     packages: input.packages.map((p) => ({ name: p.name, version: p.version })),
     image,
+    trigger: actor.trigger,
+    onBehalfOf: actor.onBehalfOf,
+    versionNumber: null,
   });
 }
 
@@ -2189,10 +2763,13 @@ export async function deployApp(
 ): Promise<DeploymentRow> {
   const app = await loadAppForOwner(deps, caller, input.appId);
   const prNumber = normalizePrNumber(input);
+  const did = ownerDid(caller);
   return deployChecked(deps, app, input, prNumber, {
-    did: `did:pkh:eip155:${caller.chainId}:${caller.address}`,
+    did,
     github: input.actorGithub?.trim() || null,
     gitRef: (input.gitRef ?? "").trim(),
+    trigger: "OWNER",
+    onBehalfOf: did,
   });
 }
 
@@ -2209,6 +2786,8 @@ export async function ciDeployApp(
     did: ci.appDid,
     github: claim.actor ?? (input.actorGithub?.trim() || null),
     gitRef: claim.ref,
+    trigger: "CI",
+    onBehalfOf: `did:pkh:eip155:${ci.chainId}:${ci.address}`,
   });
 }
 
@@ -2242,10 +2821,18 @@ export async function rollbackApp(
     sha: source.sha,
     runUrl: null,
     actorGithub: "rollback",
-    actorDid: `did:pkh:eip155:${caller.chainId}:${caller.address}`,
+    actorDid: ownerDid(caller),
     packages: parsePackages(source.packages),
     image: source.image_tag ? splitImage(source.image_tag) : null,
+    trigger: "OWNER",
+    onBehalfOf: ownerDid(caller),
+    versionNumber: source.version_number ?? null,
   });
+}
+
+/** The did:pkh of a signed-in person (or of the owner an agent key acts for). */
+function ownerDid(caller: Pick<Caller, "chainId" | "address">): string {
+  return `did:pkh:eip155:${caller.chainId}:${caller.address}`;
 }
 
 function splitImage(ref: string): { repository: string; tag: string } {
@@ -2377,6 +2964,10 @@ function contentActions(
   fusionEnvTemplate: FusionEnvInput[],
 ): Action[] {
   const actions: Action[] = [];
+  for (const name of req.removePackages ?? []) {
+    if (state?.packages.some((p) => p.name === name))
+      actions.push(removePackage({ packageName: name }));
+  }
   if (
     req.packages.length > 0 &&
     state?.defaultPackageRegistry &&
@@ -2428,72 +3019,71 @@ function contentActions(
   return actions;
 }
 
-async function performDeploy(
-  deps: AppsDeps,
+interface DeployTarget {
+  envId: string;
+  /** The env's state now; null = a preview created in the same batch. */
+  state: VetraCloudEnvironmentState | null;
+  createActions: Action[];
+  fusionEnvTemplate: FusionEnvInput[];
+}
+
+/** The production env, checked: it exists and is linked to the App as its production env. */
+function assertProductionEnv(
   app: AppRow,
-  productionState: VetraCloudEnvironmentState | null,
-  req: DeployRequest,
-): Promise<DeploymentRow> {
-  const nowIso = deps.now().toISOString();
-  const id = deps.newId();
-  const registry =
-    req.kind === "PRODUCTION"
-      ? deps.cfg.productionRegistry
-      : deps.cfg.previewRegistry;
-
-  let envId: string;
-  let state: VetraCloudEnvironmentState | null;
-  let createActions: Action[] = [];
-  let fusionEnvTemplate: FusionEnvInput[] = [];
-  if (req.kind === "PRODUCTION") {
-    envId = app.production_environment_id;
-    state = productionState;
-    if (!state)
-      throw appsError("NOT_FOUND", "Production environment not found");
-    if (state.app?.appId !== app.id || state.app.role !== "PRODUCTION") {
-      throw appsError(
-        "BAD_USER_INPUT",
-        "Production environment is not linked to this App",
-      );
-    }
-  } else {
-    const ensured = await ensurePreview(
-      deps,
-      app,
-      req.prNumber!,
-      req.gitRef,
-      productionState,
+  state: VetraCloudEnvironmentState | null,
+): VetraCloudEnvironmentState {
+  if (!state) throw appsError("NOT_FOUND", "Production environment not found");
+  if (state.app?.appId !== app.id || state.app.role !== "PRODUCTION") {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Production environment is not linked to this App",
     );
-    envId = ensured.preview.environment_id;
-    createActions = ensured.createActions;
-    fusionEnvTemplate = ensured.fusionEnvTemplate;
-    state = ensured.created ? null : await deps.envs.getState(envId);
   }
+  return state;
+}
 
-  await deps.db
-    .insertInto("app_deployments")
-    .values({
-      id,
-      app_id: app.id,
-      environment_id: envId,
-      kind: req.kind,
-      pr_number: req.prNumber,
-      git_ref: req.gitRef,
-      sha: req.sha,
-      packages: JSON.stringify(req.packages),
-      image_tag: req.image ? `${req.image.repository}:${req.image.tag}` : null,
-      status: "PENDING",
-      actor_did: req.actorDid,
-      actor_github: req.actorGithub,
-      run_url: req.runUrl,
-      error: null,
-      github_deployment_id: null,
-      created_at: nowIso,
-      updated_at: nowIso,
-    })
-    .execute();
-  // A newer deployment of the same env wins.
-  const superseded = await deps.db
+/** One app_deployments row from a request (no write). */
+function deploymentRow(
+  id: string,
+  appId: string,
+  envId: string,
+  req: DeployRequest,
+  status: DeploymentRow["status"],
+  nowIso: string,
+): DeploymentRow {
+  return {
+    id,
+    app_id: appId,
+    environment_id: envId,
+    kind: req.kind,
+    pr_number: req.prNumber,
+    git_ref: req.gitRef,
+    sha: req.sha,
+    packages: JSON.stringify(req.packages),
+    image_tag: req.image ? `${req.image.repository}:${req.image.tag}` : null,
+    status,
+    actor_did: req.actorDid,
+    actor_github: req.actorGithub,
+    run_url: req.runUrl,
+    error: null,
+    github_deployment_id: null,
+    trigger: req.trigger,
+    on_behalf_of: req.onBehalfOf,
+    version_number: req.versionNumber,
+    pre_apply_packages: null,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+}
+
+/** A newer deployment of the same env wins: the env's other pending/under-way rows → SUPERSEDED. */
+async function supersedeOthers(
+  db: Kysely<VetraAppsDB>,
+  envId: string,
+  id: string,
+  nowIso: string,
+): Promise<string[]> {
+  const superseded = await db
     .updateTable("app_deployments")
     .set({ status: "SUPERSEDED", updated_at: nowIso })
     .where("environment_id", "=", envId)
@@ -2501,8 +3091,25 @@ async function performDeploy(
     .where("status", "in", ACTIVE_DEPLOYMENT_STATUSES)
     .returning("id")
     .execute();
-  for (const s of superseded) await notifyChanged(deps, s.id);
+  return superseded.map((r) => r.id);
+}
 
+/**
+ * Bring the env to the deployment's packages + image and approve; the row
+ * goes DEPLOYING, or FAILED with the reason. Returns whether it was applied.
+ */
+async function applyToEnv(
+  deps: AppsDeps,
+  app: AppRow,
+  id: string,
+  target: DeployTarget,
+  req: DeployRequest,
+): Promise<boolean> {
+  const { envId, state, createActions, fusionEnvTemplate } = target;
+  const registry =
+    req.kind === "PRODUCTION"
+      ? deps.cfg.productionRegistry
+      : deps.cfg.previewRegistry;
   try {
     if (state && RELEASED_STATUSES.has(state.status)) {
       throw new Error(`environment is ${state.status}`);
@@ -2529,6 +3136,7 @@ async function performDeploy(
       { status: "DEPLOYING" },
       deps.now().toISOString(),
     );
+    return true;
   } catch (err) {
     // A new org preview whose hand-over never landed leaves no announcement.
     const orgId = app.owner_org_id;
@@ -2549,7 +3157,52 @@ async function performDeploy(
       },
       deps.now().toISOString(),
     );
+    return false;
   }
+}
+
+async function performDeploy(
+  deps: AppsDeps,
+  app: AppRow,
+  productionState: VetraCloudEnvironmentState | null,
+  req: DeployRequest,
+): Promise<DeploymentRow> {
+  const nowIso = deps.now().toISOString();
+  const id = deps.newId();
+
+  let target: DeployTarget;
+  if (req.kind === "PRODUCTION") {
+    target = {
+      envId: app.production_environment_id,
+      state: assertProductionEnv(app, productionState),
+      createActions: [],
+      fusionEnvTemplate: [],
+    };
+  } else {
+    const ensured = await ensurePreview(
+      deps,
+      app,
+      req.prNumber!,
+      req.gitRef,
+      productionState,
+    );
+    const envId = ensured.preview.environment_id;
+    target = {
+      envId,
+      state: ensured.created ? null : await deps.envs.getState(envId),
+      createActions: ensured.createActions,
+      fusionEnvTemplate: ensured.fusionEnvTemplate,
+    };
+  }
+
+  await deps.db
+    .insertInto("app_deployments")
+    .values(deploymentRow(id, app.id, target.envId, req, "PENDING", nowIso))
+    .execute();
+  for (const s of await supersedeOthers(deps.db, target.envId, id, nowIso))
+    await notifyChanged(deps, s);
+
+  await applyToEnv(deps, app, id, target, req);
   if (req.kind === "PREVIEW") {
     await deps.db
       .updateTable("app_previews")
@@ -2560,6 +3213,637 @@ async function performDeploy(
   }
   await notifyChanged(deps, id);
   return (await getDeployment(deps.db, id))!;
+}
+
+// ---------------------------------------------------------------------------
+// Studio agent: launch, roll back, product drive (D20)
+// ---------------------------------------------------------------------------
+
+/** Deployments the watcher applies (recorded PENDING by the Studio-agent path). */
+export const QUEUED_TRIGGERS: DeploymentTrigger[] = [
+  "STUDIO_LAUNCH",
+  "STUDIO_ROLLBACK",
+];
+
+/** actor_github of the deployment that puts the previous version back after a failed Studio launch. */
+export const RESTORE_ACTOR = "restore";
+
+/** Packages a Studio publishes: the product's scope on the stack registry. */
+export const STUDIO_PACKAGE_SCOPE = "@vetra-apps/";
+
+const GIT_TAG = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const DRIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const MAX_VERSION_NUMBER = 1_000_000;
+
+export interface LaunchStudioVersionInput {
+  appId: string;
+  versionNumber: number;
+  sha: string;
+  gitTag: string;
+  packages: { name: string; version: string }[];
+}
+
+/**
+ * The App the Studio's agent acts on: it must be the App of the agent's own
+ * Studio, with the owner's delegation current (verifyStudioBinding). An
+ * unknown App reads as any other App (STUDIO_BINDING). Returns the row with
+ * its ownership reconciled.
+ */
+async function studioAppFor(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  secret: string | null,
+): Promise<AppRow> {
+  if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
+  const app = await getApp(deps.db, appId);
+  if (!app) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  await verifyStudioBinding(deps, caller, secret, app);
+  return (await getApp(deps.db, app.id)) ?? app;
+}
+
+/** The product's production env, ready to take a deployment. */
+async function studioProductionEnv(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<VetraCloudEnvironmentState> {
+  if (app.status !== "ACTIVE")
+    throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
+  const state = assertProductionEnv(
+    app,
+    await deps.envs.getState(app.production_environment_id),
+  );
+  if (RELEASED_STATUSES.has(state.status))
+    throw appsError("BAD_USER_INPUT", `The live app is ${state.status}`);
+  return state;
+}
+
+/**
+ * The launch of (app, version, sha) a retry gets back: one still pending or
+ * under way, or a READY one that is still what runs on the production env
+ * (no later deployment other than FAILED/SUPERSEDED ones). A READY one that
+ * is no longer live (a Go back came after it) is not: the launch is new.
+ */
+async function findStudioLaunch(
+  db: Kysely<VetraAppsDB>,
+  app: AppRow,
+  versionNumber: number,
+  sha: string,
+): Promise<DeploymentRow | null> {
+  const rows = await db
+    .selectFrom("app_deployments")
+    .selectAll()
+    .where("app_id", "=", app.id)
+    .where("trigger", "=", "STUDIO_LAUNCH")
+    .where("version_number", "=", versionNumber)
+    .where("sha", "=", sha)
+    .where("status", "in", ["PENDING", "DEPLOYING", "READY"])
+    .orderBy("created_at", "desc")
+    .orderBy("id", "desc")
+    .execute();
+  const inFlight = rows.find((r) => r.status !== "READY");
+  if (inFlight) return inFlight;
+  const ready = rows[0];
+  if (!ready || ready.environment_id !== app.production_environment_id)
+    return null;
+  const later = await db
+    .selectFrom("app_deployments")
+    .select("id")
+    .where("environment_id", "=", app.production_environment_id)
+    .where("id", "!=", ready.id)
+    .where("created_at", ">=", ready.created_at)
+    .where("status", "not in", ["FAILED", "SUPERSEDED"])
+    .executeTakeFirst();
+  return later ? null : ready;
+}
+
+/**
+ * Record a Studio deployment PENDING on the production env (superseding the
+ * env's pending/under-way ones) and hand it to the watcher. A launch first
+ * marks the App launched (launched_at, kept from the first launch), in the
+ * same transaction and only while the App is not DELETED (X26): the
+ * unlaunched-product sweep never removes an App whose launch is recorded.
+ */
+async function queueStudioDeployment(
+  deps: AppsDeps,
+  app: AppRow,
+  req: DeployRequest,
+): Promise<DeploymentRow> {
+  const nowIso = deps.now().toISOString();
+  const id = deps.newId();
+  const envId = app.production_environment_id;
+  const superseded = await deps.db.transaction().execute(async (trx) => {
+    if (req.trigger === "STUDIO_LAUNCH") {
+      const live = await trx
+        .updateTable("apps")
+        .set({
+          launched_at: sql<string>`coalesce(${sql.ref("launched_at")}, ${nowIso})`,
+        })
+        .where("id", "=", app.id)
+        .where("status", "!=", "DELETED")
+        .returning("id")
+        .executeTakeFirst();
+      if (!live) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+    }
+    await trx
+      .insertInto("app_deployments")
+      .values(deploymentRow(id, app.id, envId, req, "PENDING", nowIso))
+      .execute();
+    return supersedeOthers(trx, envId, id, nowIso);
+  });
+  for (const s of superseded) await notifyChanged(deps, s);
+  await notifyChanged(deps, id);
+  try {
+    deps.onDeploymentQueued?.(id);
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] starting deployment ${id} failed (the watcher retries): ${String(err)}`,
+    );
+  }
+  deps.logger.info(
+    `[vetra-apps] ${req.trigger} of ${app.slug}${req.versionNumber !== null ? ` version ${req.versionNumber}` : ""} recorded (${id})`,
+  );
+  return (await getDeployment(deps.db, id))!;
+}
+
+/**
+ * The Studio's agent puts version `versionNumber` of its own product live
+ * (D20): a PRODUCTION deployment, trigger STUDIO_LAUNCH, actor = the agent's
+ * key, on behalf of the owner. Only recorded here (PENDING, returned at
+ * once); the deployment watcher applies it. Idempotent on (appId,
+ * versionNumber, sha): a retry gets the same deployment while it is pending,
+ * under way or READY; after a FAILED one it is tried again.
+ */
+export async function launchStudioVersion(
+  deps: AppsDeps,
+  caller: Caller,
+  input: LaunchStudioVersionInput,
+  secret: string | null,
+): Promise<DeploymentRow> {
+  const versionNumber = input.versionNumber;
+  if (
+    !Number.isInteger(versionNumber) ||
+    versionNumber < 1 ||
+    versionNumber > MAX_VERSION_NUMBER
+  ) {
+    throw appsError("BAD_USER_INPUT", "versionNumber must be a positive integer");
+  }
+  if (typeof input.sha !== "string" || !SHA.test(input.sha))
+    throw appsError("BAD_USER_INPUT", "sha must be a git commit sha");
+  const gitTag = typeof input.gitTag === "string" ? input.gitTag.trim() : "";
+  if (!GIT_TAG.test(gitTag))
+    throw appsError("BAD_USER_INPUT", "gitTag must be a git tag name");
+  if (!Array.isArray(input.packages) || input.packages.length === 0)
+    throw appsError("BAD_USER_INPUT", "packages must list the product's packages");
+  validatePackages(input.packages);
+  for (const p of input.packages) {
+    if (!p.name.startsWith(STUDIO_PACKAGE_SCOPE)) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        `Package '${p.name}' is not under ${STUDIO_PACKAGE_SCOPE}`,
+      );
+    }
+  }
+
+  const app = await studioAppFor(deps, caller, input.appId, secret);
+  await studioProductionEnv(deps, app);
+  const sha = input.sha.toLowerCase();
+  const existing = await findStudioLaunch(deps.db, app, versionNumber, sha);
+  if (existing) return existing;
+  try {
+    return await queueStudioDeployment(deps, app, {
+      kind: "PRODUCTION",
+      prNumber: null,
+      gitRef: `refs/tags/${gitTag}`,
+      sha,
+      runUrl: null,
+      actorGithub: null,
+      actorDid: caller.appKey,
+      packages: input.packages.map((p) => ({ name: p.name, version: p.version })),
+      image: null,
+      trigger: "STUDIO_LAUNCH",
+      onBehalfOf: ownerDid(caller),
+      versionNumber,
+    });
+  } catch (err) {
+    // A concurrent retry recorded it first: that one is it.
+    if (!isUniqueViolation(err, STUDIO_LAUNCH_KEY_INDEX)) throw err;
+    const made = await findStudioLaunch(deps.db, app, versionNumber, sha);
+    if (!made) throw err;
+    return made;
+  }
+}
+
+/**
+ * The Studio's agent makes a READY production deployment of its own product
+ * live again (D20, "Go back"): a new PRODUCTION deployment with the same
+ * packages, trigger STUDIO_ROLLBACK. Recorded PENDING; the watcher applies
+ * it. Only the env's packages change: no document, version or env is
+ * rewritten or deleted.
+ */
+export async function rollbackStudioVersion(
+  deps: AppsDeps,
+  caller: Caller,
+  deploymentId: string,
+  secret: string | null,
+): Promise<DeploymentRow> {
+  if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
+  const source = await getDeployment(deps.db, deploymentId);
+  // An unknown id reads as another App's: the same refusal.
+  if (!source) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  const app = await studioAppFor(deps, caller, source.app_id, secret);
+  if (
+    source.kind !== "PRODUCTION" ||
+    source.status !== "READY" ||
+    source.environment_id !== app.production_environment_id
+  ) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Only a version that went live can be made live again",
+    );
+  }
+  await studioProductionEnv(deps, app);
+  return queueStudioDeployment(deps, app, {
+    kind: "PRODUCTION",
+    prNumber: null,
+    gitRef: source.git_ref,
+    sha: source.sha,
+    runUrl: null,
+    actorGithub: null,
+    actorDid: caller.appKey,
+    packages: parsePackages(source.packages),
+    image: source.image_tag ? splitImage(source.image_tag) : null,
+    trigger: "STUDIO_ROLLBACK",
+    onBehalfOf: ownerDid(caller),
+    versionNumber: source.version_number ?? null,
+  });
+}
+
+/**
+ * A deployment of the agent's own product (X23). An unknown id is refused
+ * like another App's (STUDIO_BINDING), so nothing tells them apart.
+ */
+export async function studioDeploymentFor(
+  deps: AppsDeps,
+  caller: Caller,
+  deploymentId: string,
+  secret: string | null,
+): Promise<DeploymentRow | null> {
+  if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
+  const d = await getDeployment(deps.db, deploymentId);
+  if (!d) throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  await studioAppFor(deps, caller, d.app_id, secret);
+  return d;
+}
+
+/**
+ * The runtime config with `drive` first among Connect's default drives, or
+ * null when it is already there. A corrupt stored config is replaced.
+ */
+export function withDefaultDrive(
+  raw: string | null | undefined,
+  drive: { url: string; name: string },
+): string | null {
+  const asObject = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v)
+      ? { ...(v as Record<string, unknown>) }
+      : {};
+  let config: Record<string, unknown> = {};
+  if (raw && raw.trim()) {
+    try {
+      config = asObject(JSON.parse(raw));
+    } catch {
+      config = {};
+    }
+  }
+  const connect = asObject(config.connect);
+  const drives = asObject(connect.drives);
+  const list: unknown[] = Array.isArray(drives.defaultDrives)
+    ? drives.defaultDrives
+    : [];
+  if (list.some((d) => asObject(d).url === drive.url)) return null;
+  drives.defaultDrives = [{ url: drive.url, name: drive.name }, ...list];
+  connect.drives = drives;
+  config.connect = connect;
+  return JSON.stringify(config);
+}
+
+/**
+ * Point the production env's Connect at the product drive: the drive on the
+ * env's own Switchboard becomes Connect's first default drive
+ * (runtimeConfig connect.drives.defaultDrives → PH_CONNECT_CONFIG_JSON), so
+ * <slug>.vetra.io opens the product. Idempotent; approved like a deploy.
+ */
+async function pointConnectAtDrive(
+  deps: AppsDeps,
+  app: AppRow,
+  driveId: string,
+): Promise<void> {
+  const envId = app.production_environment_id;
+  await withEnvLock(envId, async () => {
+    const state = await studioProductionEnv(deps, app);
+    const switchboard = envUrls(state).switchboard;
+    if (!switchboard)
+      throw appsError("BAD_USER_INPUT", "The live app has no Switchboard");
+    const config = withDefaultDrive(state.runtimeConfig, {
+      url: `${switchboard}/d/${driveId}`,
+      name: app.name,
+    });
+    if (config === null) return;
+    const after = await deps.envs.execute(envId, [
+      ...(state.status === "STOPPED" ? [wakeEnvironment({})] : []),
+      setRuntimeConfig({ config }),
+    ]);
+    // Approved like a deploy (system action), so the rendered Connect config ships.
+    if (after.status === "CHANGES_PENDING" || after.status === "DRAFT")
+      await deps.envs.execute(envId, [approveChanges({})]);
+    deps.logger.info(
+      `[vetra-apps] Connect of ${app.slug} opens drive ${driveId}`,
+    );
+  });
+}
+
+/**
+ * The Studio's agent records its product's drive (F7b), once: the same id
+ * again is a no-op, another id is refused with PRODUCT_DRIVE_SET. The
+ * production env's Connect is pointed at it (also on a repeat, so a call
+ * that failed half-way completes).
+ */
+export async function setStudioProductDrive(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  driveId: string,
+  secret: string | null,
+): Promise<AppRow> {
+  const id = typeof driveId === "string" ? driveId.trim() : "";
+  if (!DRIVE_ID.test(id)) throw appsError("BAD_USER_INPUT", "Invalid drive id");
+  const app = await studioAppFor(deps, caller, appId, secret);
+  await studioProductionEnv(deps, app);
+  const driveSet = () =>
+    appsError("PRODUCT_DRIVE_SET", "This product already has its drive");
+  if (app.product_drive_id && app.product_drive_id !== id) throw driveSet();
+  if (!app.product_drive_id) {
+    const set = await deps.db
+      .updateTable("apps")
+      .set({ product_drive_id: id, updated_at: deps.now().toISOString() })
+      .where("id", "=", app.id)
+      .where("status", "!=", "DELETED")
+      .where("product_drive_id", "is", null)
+      .returning("id")
+      .executeTakeFirst();
+    if (!set) {
+      const now = await getApp(deps.db, app.id);
+      if (!now || now.status === "DELETED")
+        throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+      if (now.product_drive_id !== id) throw driveSet();
+    } else {
+      deps.logger.info(`[vetra-apps] product drive of ${app.slug}: ${id}`);
+    }
+  }
+  await pointConnectAtDrive(deps, app, id);
+  return (await getApp(deps.db, app.id))!;
+}
+
+/**
+ * The packages an env had before a Studio deployment was applied, from the
+ * JSON list of `name@version` entries (pre_apply_packages): name → version.
+ * A name-only entry (rows recorded before versions were) maps to null: the
+ * package is kept, its version left as it is. Null when nothing was recorded.
+ */
+export function parsePreApplyPackages(
+  raw: string | null | undefined,
+): Map<string, string | null> | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const out = new Map<string, string | null>();
+  for (const entry of parsed) {
+    if (typeof entry !== "string" || !entry) continue;
+    // The version separator is the last "@" that is not a scope's leading one.
+    const at = entry.lastIndexOf("@");
+    if (at > 0) out.set(entry.slice(0, at), entry.slice(at + 1) || null);
+    else out.set(entry, null);
+  }
+  return out;
+}
+
+/** A recorded deployment back as the request it was made from. */
+function requestFromRow(d: DeploymentRow): DeployRequest {
+  return {
+    kind: d.kind,
+    prNumber: d.pr_number,
+    gitRef: d.git_ref,
+    sha: d.sha,
+    runUrl: d.run_url,
+    actorGithub: d.actor_github,
+    actorDid: d.actor_did,
+    packages: parsePackages(d.packages),
+    image: d.image_tag ? splitImage(d.image_tag) : null,
+    trigger: d.trigger ?? "OWNER",
+    onBehalfOf: d.on_behalf_of ?? null,
+    versionNumber: d.version_number ?? null,
+  };
+}
+
+/**
+ * Apply a queued Studio deployment (watcher, or right after it was
+ * recorded). The row is claimed first (PENDING → DEPLOYING, one statement),
+ * so it is applied once whichever replica gets to it. Returns whether this
+ * call claimed it. A deployment that fails while being applied puts the
+ * previous version back (restoreAfterStudioFailure).
+ */
+export async function applyQueuedDeployment(
+  deps: AppsDeps,
+  deploymentId: string,
+): Promise<boolean> {
+  const claimed = await deps.db
+    .updateTable("app_deployments")
+    .set({ status: "DEPLOYING", updated_at: deps.now().toISOString() })
+    .where("id", "=", deploymentId)
+    .where("status", "=", "PENDING")
+    .where("trigger", "in", QUEUED_TRIGGERS)
+    // A restore is applied as it is recorded (performDeploy), never here.
+    .where((eb) =>
+      eb.or([
+        eb("actor_github", "is", null),
+        eb("actor_github", "!=", RESTORE_ACTOR),
+      ]),
+    )
+    .returningAll()
+    .executeTakeFirst();
+  if (!claimed) return false;
+  const app = await getApp(deps.db, claimed.app_id);
+  const envId = claimed.environment_id;
+  let attempted = false;
+  let applied = false;
+  try {
+    if (!app || app.status !== "ACTIVE")
+      throw new Error(`App is ${app?.status ?? "gone"}`);
+    if (!envId || envId !== app.production_environment_id)
+      throw new Error("the environment is no longer the App's production environment");
+    const state = assertProductionEnv(app, await deps.envs.getState(envId));
+    // What the env had installed before this deployment touched it: a
+    // restore removes only what this deployment added on top of that.
+    await deps.db
+      .updateTable("app_deployments")
+      .set({
+        pre_apply_packages: JSON.stringify(
+          state.packages.map((p) => `${p.name}@${p.version}`),
+        ),
+      })
+      .where("id", "=", claimed.id)
+      .execute();
+    attempted = true;
+    applied = await applyToEnv(
+      deps,
+      app,
+      claimed.id,
+      { envId, state, createActions: [], fusionEnvTemplate: [] },
+      requestFromRow(claimed),
+    );
+  } catch (err) {
+    await updateDeployment(
+      deps.db,
+      claimed.id,
+      {
+        status: "FAILED",
+        error: String(err instanceof Error ? err.message : err).slice(0, 1000),
+      },
+      deps.now().toISOString(),
+    );
+  }
+  await notifyChanged(deps, claimed.id);
+  // Nothing reached the env (App gone, env moved): nothing to put back.
+  if (attempted && !applied) {
+    const failed = await getDeployment(deps.db, claimed.id);
+    if (failed) await restoreAfterStudioFailure(deps, failed);
+  }
+  return true;
+}
+
+type Pkg = { name: string; version: string };
+
+/** What a restore installs and removes (see restoreAfterStudioFailure). */
+export function restorePlan(
+  previous: Pkg[],
+  failed: Pkg[],
+  before: Map<string, string | null> | null,
+): { packages: Pkg[]; removePackages: string[] } {
+  const touched = new Set(failed.map((p) => p.name));
+  const packages = new Map<string, string>();
+  for (const p of previous) {
+    if (!before || !touched.has(p.name)) packages.set(p.name, p.version);
+  }
+  const removePackages: string[] = [];
+  if (before) {
+    for (const f of failed) {
+      if (!before.has(f.name)) {
+        removePackages.push(f.name);
+        continue;
+      }
+      // A name-only record: kept, its version left as it is.
+      const version = before.get(f.name);
+      if (version) packages.set(f.name, version);
+    }
+  }
+  return {
+    packages: [...packages].map(([name, version]) => ({ name, version })),
+    removePackages,
+  };
+}
+
+/**
+ * After a Studio launch (or rollback) FAILED once it had been applied: put
+ * the env back on the previous READY production deployment's packages,
+ * once, so it never stays half-applied. The failed row keeps its reason.
+ * The restore is a deployment of its own (trigger STUDIO_ROLLBACK, actor
+ * RESTORE_ACTOR) that the watcher follows; it never restores in turn.
+ * Packages the failed deployment added are removed again. Nothing happens
+ * when a newer deployment of the env exists (it decides what runs), when
+ * there is no earlier version (a first launch), or when the env is gone.
+ */
+export async function restoreAfterStudioFailure(
+  deps: AppsDeps,
+  failed: DeploymentRow,
+): Promise<DeploymentRow | null> {
+  if (
+    failed.status !== "FAILED" ||
+    failed.kind !== "PRODUCTION" ||
+    !failed.trigger ||
+    !QUEUED_TRIGGERS.includes(failed.trigger) ||
+    failed.actor_github === RESTORE_ACTOR ||
+    !failed.environment_id
+  ) {
+    return null;
+  }
+  const envId = failed.environment_id;
+  const newer = await deps.db
+    .selectFrom("app_deployments")
+    .select("id")
+    .where("environment_id", "=", envId)
+    .where("id", "!=", failed.id)
+    .where("created_at", ">=", failed.created_at)
+    .executeTakeFirst();
+  if (newer) return null;
+  const previous = await deps.db
+    .selectFrom("app_deployments")
+    .selectAll()
+    .where("environment_id", "=", envId)
+    .where("kind", "=", "PRODUCTION")
+    .where("status", "=", "READY")
+    .where("created_at", "<", failed.created_at)
+    .orderBy("created_at", "desc")
+    .orderBy("id", "desc")
+    .executeTakeFirst();
+  const app = await getApp(deps.db, failed.app_id);
+  if (!previous || !app || app.status !== "ACTIVE") {
+    deps.logger.info(
+      `[vetra-apps] deployment ${failed.id} failed; no earlier version to put back`,
+    );
+    return null;
+  }
+  const state = await deps.envs.getState(envId);
+  if (
+    envId !== app.production_environment_id ||
+    !state ||
+    RELEASED_STATUSES.has(state.status) ||
+    state.app?.appId !== app.id ||
+    state.app.role !== "PRODUCTION"
+  ) {
+    return null;
+  }
+  // Back to what the env had right before the failed deployment was applied
+  // (pre_apply_packages): a package it changed goes back to its earlier
+  // version, one it added is removed, one it did not touch is left alone —
+  // never uninstalling or downgrading a package that was live (e.g. one a
+  // newer version added and a Go back kept). The previous READY deployment's
+  // other packages are re-applied as before. Nothing recorded → the previous
+  // READY deployment's packages, nothing removed.
+  const { packages, removePackages } = restorePlan(
+    parsePackages(previous.packages),
+    parsePackages(failed.packages),
+    parsePreApplyPackages(failed.pre_apply_packages),
+  );
+  const restore = await performDeploy(deps, app, state, {
+    ...requestFromRow(previous),
+    packages,
+    runUrl: null,
+    actorGithub: RESTORE_ACTOR,
+    actorDid: null,
+    trigger: "STUDIO_ROLLBACK",
+    onBehalfOf: failed.on_behalf_of ?? null,
+    removePackages,
+  });
+  deps.logger.info(
+    `[vetra-apps] deployment ${failed.id} of ${app.slug} failed; putting back ${previous.id}${previous.version_number ? ` (version ${previous.version_number})` : ""} as ${restore.id}`,
+  );
+  return restore;
 }
 
 // ---------------------------------------------------------------------------

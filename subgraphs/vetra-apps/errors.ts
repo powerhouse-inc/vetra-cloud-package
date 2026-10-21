@@ -9,7 +9,27 @@ export type AppsErrorCode =
   | "APP_NOT_ACTIVE"
   | "GITHUB_NOT_CONNECTED"
   | "SERVICE_NOT_CONFIGURED"
+  | StudioLaunchErrorCode
   | GithubSetupErrorCode;
+
+/**
+ * Refusals of the Studio-agent path (D20): STUDIO_BINDING when the Studio may
+ * not act on this product; DELEGATION_* when the owner's permission for the
+ * agent is missing or no longer current (the Studio then asks the owner).
+ */
+export type StudioLaunchErrorCode =
+  | "STUDIO_BINDING"
+  | "DELEGATION_EXPIRED"
+  | "DELEGATION_MISSING"
+  /**
+   * The Studio had no launch secret: one was just written. The Studio's pod
+   * restarts to pick it up; the agent retries after the restart.
+   */
+  | "STUDIO_SECRET_PENDING"
+  /** ensureStudioProduct's adoptEnvironmentId names an env that may not become the product's. */
+  | "ADOPT_NOT_ALLOWED"
+  /** setStudioProductDrive with another drive than the one already recorded. */
+  | "PRODUCT_DRIVE_SET";
 
 /** The GitHub and deploy-setup failures a customer can act on. */
 export type GithubSetupErrorCode =
