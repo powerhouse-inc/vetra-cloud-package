@@ -52,6 +52,8 @@ import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
+import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
+import { environmentConnections } from "../vetra-github-auth/db/installations.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -147,6 +149,14 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         })
       : null;
 
+    // The GitHub connections Studios made the old way (vetra-github-auth's
+    // namespace, read only): a Studio's product carries that repository over
+    // (adoptStudioRepository). Until that subgraph has booted the read fails
+    // and is retried on the next push token request.
+    const githubAuthDb = (await this.relationalDb.createNamespace(
+      "vetra-github-auth",
+    )) as unknown as Kysely<VetraGithubAuthDB>;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -161,6 +171,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
       studioSecrets,
+      studioGithubConnections: (studioEnvironmentId) =>
+        environmentConnections(githubAuthDb, studioEnvironmentId),
       // A product's <slug>.vetra.io must not collide with an env's hosts.
       subdomainTaken: subdomainTakenIn(
         (await this.relationalDb.createNamespace(

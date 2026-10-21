@@ -114,188 +114,32 @@ describe("startGithubDeviceFlow", () => {
   });
 });
 
-describe("connectGithub", () => {
-  it("exchanges the device code, creates the blank repo, and persists the connection when the app is installed", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-
-    const status = await connectGithub(
+describe("connectGithub (retired: GitHub is connected from the product's settings)", () => {
+  it("old repo creation answers with the new path", async () => {
+    const err = await connectGithub(
       { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
       ctx,
-    );
+    ).catch((e: { message: string; extensions: Record<string, unknown> }) => e);
 
-    expect(status.connected).toBe(true);
-    expect(status.connection).toMatchObject({
-      environmentId: ENV,
-      repoFullName: "alice/widget",
-      repoUrl: "https://github.com/alice/widget",
-    });
-    // the user token from the exchange is what creates the blank repo
-    expect(createRepoMock).toHaveBeenCalledWith("ghu_token", "widget");
-    // an all-repositories install already covers the new repo
-    expect(addRepoToInstallationMock).not.toHaveBeenCalled();
-
-    const persisted = await getConnection(db, DID, ENV);
-    expect(persisted).toMatchObject({
-      environmentId: ENV,
-      repoFullName: "alice/widget",
-    });
-  });
-
-  it("throws APP_NOT_INSTALLED before creating anything when the app is not installed", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue(null);
-
-    await expect(
-      connectGithub(
-        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-        ctx,
-      ),
-    ).rejects.toMatchObject({ extensions: { code: "APP_NOT_INSTALLED" } });
-
+    expect(err.extensions.code).toBe("GITHUB_MOVED");
+    expect(err.message).toBe("Connect GitHub from your product's settings");
+    // Nothing is exchanged, created or recorded.
+    expect(exchangeDeviceCodeMock).not.toHaveBeenCalled();
+    expect(findUserInstallationMock).not.toHaveBeenCalled();
     expect(createRepoMock).not.toHaveBeenCalled();
+    expect(findUserRepoMock).not.toHaveBeenCalled();
+    expect(addRepoToInstallationMock).not.toHaveBeenCalled();
     expect(await getConnection(db, DID, ENV)).toBeNull();
   });
 
-  it("adds the new repo to a selected-repositories installation", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "selected",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-    addRepoToInstallationMock.mockResolvedValue();
-
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(addRepoToInstallationMock).toHaveBeenCalledWith(
-      "ghu_token",
-      "55",
-      9001,
-    );
-  });
-
-  it("still connects when adding the repo to the installation fails (push-time check remains)", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "selected",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-    addRepoToInstallationMock.mockRejectedValue(new Error("boom"));
-
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(await getConnection(db, DID, ENV)).toMatchObject({
-      repoFullName: "alice/widget",
-    });
-  });
-
-  const POLLING_CASES: Array<{ exchange: DeviceFlowExchange; code: string }> = [
-    { exchange: { status: "pending" }, code: "AUTHORIZATION_PENDING" },
-    { exchange: { status: "slowDown" }, code: "SLOW_DOWN" },
-    { exchange: { status: "expired" }, code: "DEVICE_CODE_EXPIRED" },
-    { exchange: { status: "denied" }, code: "ACCESS_DENIED" },
-  ];
-
-  it.each(POLLING_CASES)(
-    "surfaces $exchange.status as the matching code and creates nothing",
-    async ({ exchange, code }) => {
-      exchangeDeviceCodeMock.mockResolvedValue(exchange);
-
-      await expect(
-        connectGithub(
-          { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-          ctx,
-        ),
-      ).rejects.toThrow(code);
-
-      expect(createRepoMock).not.toHaveBeenCalled();
-      expect(await getConnection(db, DID, ENV)).toBeNull();
-    },
-  );
-
-  it("maps a name clash to REPO_ALREADY_EXISTS when the user has no matching repo", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
-    findUserRepoMock.mockResolvedValue(null);
-
+  it("an existing connection is left as it is", async () => {
+    await saveConnection(db, DID, ENV, "alice/widget");
     await expect(
       connectGithub(
-        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
+        { deviceCode: "dev_code", repoName: "other", environmentId: ENV },
         ctx,
       ),
-    ).rejects.toThrow("REPO_ALREADY_EXISTS");
-
-    expect(await getConnection(db, DID, ENV)).toBeNull();
-  });
-
-  it("re-binds to the existing repo when the user already has one with that name", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockRejectedValue(new RepoAlreadyExistsError("taken"));
-    findUserRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(status.connection).toMatchObject({ repoFullName: "alice/widget" });
+    ).rejects.toMatchObject({ extensions: { code: "GITHUB_MOVED" } });
     expect(await getConnection(db, DID, ENV)).toMatchObject({
       repoFullName: "alice/widget",
     });
@@ -308,160 +152,6 @@ describe("connectGithub", () => {
         anonCtx,
       ),
     ).rejects.toThrow("UNAUTHENTICATED");
-
-    expect(exchangeDeviceCodeMock).not.toHaveBeenCalled();
-  });
-
-  it("persists the caller's GitHub identity on a successful exchange, even when the app is not installed", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
-    findUserInstallationMock.mockResolvedValue(null);
-
-    await expect(
-      connectGithub(
-        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-        ctx,
-      ),
-    ).rejects.toThrow("APP_NOT_INSTALLED");
-
-    expect(await getIdentity(db, DID)).toMatchObject({
-      githubLogin: "alice",
-      githubUserId: "7",
-    });
-  });
-
-  it("keeps polling through the install wait using the cached token (exchange runs once)", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
-    findUserInstallationMock.mockResolvedValue(null);
-
-    // First poll: authorized but app not installed — device code is consumed,
-    // token cached.
-    await expect(
-      connectGithub(
-        { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-        ctx,
-      ),
-    ).rejects.toThrow("APP_NOT_INSTALLED");
-
-    // User installs; the next poll of the SAME device code must complete
-    // without a second exchange.
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(1);
-    expect(findUserInstallationMock.mock.calls.every((c) => c[0] === "ghu_token")).toBe(true);
-  });
-
-  it("drops the cached token after a successful connect", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-
-    await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    // The cache entry is gone: another call with the same code hits the (now
-    // spent) exchange again.
-    exchangeDeviceCodeMock.mockResolvedValue({ status: "expired" });
-    await expect(
-      connectGithub(
-        { deviceCode: "dev_code", repoName: "again", environmentId: ENV },
-        ctx,
-      ),
-    ).rejects.toThrow("DEVICE_CODE_EXPIRED");
-    expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("ignores an expired cache entry", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
-    findUserInstallationMock.mockResolvedValue(null);
-
-    const realNow = Date.now;
-    const t0 = realNow();
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(t0);
-    try {
-      await expect(
-        connectGithub(
-          { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-          ctx,
-        ),
-      ).rejects.toThrow("APP_NOT_INSTALLED");
-
-      // 21 minutes later the entry is stale → the resolver exchanges again.
-      nowSpy.mockReturnValue(t0 + 21 * 60 * 1000);
-      exchangeDeviceCodeMock.mockResolvedValue({ status: "expired" });
-      await expect(
-        connectGithub(
-          { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-          ctx,
-        ),
-      ).rejects.toThrow("DEVICE_CODE_EXPIRED");
-      expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(2);
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it("still connects when identity capture fails", async () => {
-    exchangeDeviceCodeMock.mockResolvedValue({
-      status: "authorized",
-      accessToken: "ghu_token",
-    });
-    fetchGithubUserMock.mockRejectedValue(new Error("github hiccup"));
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(await getIdentity(db, DID)).toBeNull();
   });
 });
 
@@ -498,32 +188,43 @@ describe("authorizeGithub", () => {
     expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("hands the cached token to connectGithub (authorize → create, one exchange)", async () => {
+  it("still answers when identity capture fails", async () => {
+    exchangeDeviceCodeMock.mockResolvedValue({
+      status: "authorized",
+      accessToken: "ghu_token",
+    });
+    fetchGithubUserMock.mockRejectedValue(new Error("github hiccup"));
+    findUserInstallationMock.mockResolvedValue(null);
+
+    expect(await authorizeGithub({ deviceCode: "dev_code" }, ctx)).toEqual({
+      githubLogin: null,
+      appInstalled: false,
+    });
+    expect(await getIdentity(db, DID)).toBeNull();
+  });
+
+  it("ignores an expired cache entry", async () => {
     exchangeDeviceCodeMock.mockResolvedValue({
       status: "authorized",
       accessToken: "ghu_token",
     });
     fetchGithubUserMock.mockResolvedValue({ login: "alice", id: 7 });
-    findUserInstallationMock.mockResolvedValue({
-      id: "55",
-      repositorySelection: "all",
-    });
+    findUserInstallationMock.mockResolvedValue(null);
 
-    await authorizeGithub({ deviceCode: "dev_code" }, ctx);
-
-    createRepoMock.mockResolvedValue({
-      id: 9001,
-      fullName: "alice/widget",
-      url: "https://github.com/alice/widget",
-    });
-    const status = await connectGithub(
-      { deviceCode: "dev_code", repoName: "widget", environmentId: ENV },
-      ctx,
-    );
-
-    expect(status.connected).toBe(true);
-    expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(1);
-    expect(createRepoMock).toHaveBeenCalledWith("ghu_token", "widget");
+    const t0 = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(t0);
+    try {
+      await authorizeGithub({ deviceCode: "dev_code" }, ctx);
+      // 21 minutes later the entry is stale → the resolver exchanges again.
+      nowSpy.mockReturnValue(t0 + 21 * 60 * 1000);
+      exchangeDeviceCodeMock.mockResolvedValue({ status: "expired" });
+      await expect(
+        authorizeGithub({ deviceCode: "dev_code" }, ctx),
+      ).rejects.toThrow("DEVICE_CODE_EXPIRED");
+      expect(exchangeDeviceCodeMock).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("requires an authenticated caller", async () => {
@@ -622,6 +323,29 @@ describe("myGithubStatus", () => {
 });
 
 describe("getPushToken", () => {
+  it("existing connection keeps pushing until moved", async () => {
+    // A Studio connected before GitHub moved to the product's settings.
+    await saveConnection(db, DID, ENV, "alice/widget");
+    // New connections are refused…
+    await expect(
+      connectGithub(
+        { deviceCode: "dev_code", repoName: "widget-2", environmentId: ENV },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ extensions: { code: "GITHUB_MOVED" } });
+    // …but the existing one still gets push tokens, with no customer action.
+    findRepoInstallationIdMock.mockResolvedValue("123");
+    mintInstallationTokenMock.mockResolvedValue({
+      token: "ghs_token",
+      expiresAt: "2026-01-01T00:00:00Z",
+    });
+    expect(await getPushToken({ environmentId: ENV }, ctx)).toEqual({
+      token: "ghs_token",
+      expiresAt: "2026-01-01T00:00:00Z",
+    });
+    expect(mintInstallationTokenMock).toHaveBeenCalledWith("123", "widget");
+  });
+
   it("resolves the repo's installation and mints a scoped token", async () => {
     await saveConnection(db, DID, ENV, "alice/widget");
     findRepoInstallationIdMock.mockResolvedValue("123");

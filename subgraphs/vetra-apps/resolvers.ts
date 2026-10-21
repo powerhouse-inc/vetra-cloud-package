@@ -33,6 +33,7 @@ import {
   appDeploymentsFor,
   appForOwner,
   appRegistryCredentials,
+  adoptStudioRepository,
   attachStudioRepository,
   clearExternalChanges,
   confirmAppIdentity,
@@ -481,6 +482,22 @@ export function createResolvers(deps: AppsDeps) {
               requireCaller(ctx),
               input,
               studioAuth(ctx),
+            ),
+          ),
+        ),
+      adoptStudioRepository: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "adoptStudioRepository", async () =>
+          mapApp(
+            deps,
+            await adoptStudioRepository(
+              deps,
+              requireCaller(ctx),
+              appId,
+              presentedStudioSecret(ctx),
             ),
           ),
         ),

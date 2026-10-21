@@ -36,6 +36,7 @@ import {
   RepoNameTakenError,
   type GithubDeployApi,
   type GithubRepo,
+  type GithubRepoInstallation,
   type GithubUserTokens,
 } from "./github.js";
 import type { HarborApi } from "./harbor.js";
@@ -172,6 +173,15 @@ export interface AppsDeps {
    * PENDING, to apply it without waiting for the watcher's next pass.
    */
   onDeploymentQueued?: (deploymentId: string) => void;
+  /**
+   * The GitHub connections a Studio made the old way (vetra-github-auth's
+   * `github_installations` rows for that Studio environment), read when its
+   * product carries the repository over (adoptStudioRepository). Absent: no
+   * Studio repository is carried over.
+   */
+  studioGithubConnections?:
+    | ((studioEnvironmentId: string) => Promise<StudioGithubConnection[]>)
+    | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
@@ -1838,6 +1848,158 @@ export async function attachStudioRepository(
   });
 }
 
+/** A GitHub connection a Studio made the old way (vetra-github-auth). */
+export interface StudioGithubConnection {
+  /** Whose connection it is (did:pkh:<network>:<chain>:<address>). */
+  userDid: string;
+  repoFullName: string;
+}
+
+/** The address a did:pkh names, lowercased ("" for any other DID). */
+const didAddress = (did: string) =>
+  did.startsWith("did:pkh:") ? (did.split(":").pop() ?? "").toLowerCase() : "";
+
+/**
+ * The repository the owner's old Studio GitHub connection (vetra-github-auth)
+ * made for this product's Studio, as Vetra Deploy reaches it, or null:
+ * no such connection (only the product owner's own counts), Vetra Deploy is
+ * not installed on that account or does not reach the repository, another
+ * App already uses it, or (an organisation's repository) the owner has not
+ * connected Vetra Deploy there or is no longer an active member. Refusals
+ * and failures are logged and leave the product as it is.
+ */
+async function legacyStudioRepository(
+  deps: AppsDeps,
+  github: GithubDeployApi,
+  app: AppRow,
+): Promise<GithubRepoInstallation | null> {
+  const lookup = deps.studioGithubConnections;
+  if (!lookup || !app.studio_environment_id) return null;
+  const ownerAddress = app.owner_address.toLowerCase();
+  let connection: StudioGithubConnection | undefined;
+  try {
+    connection = (await lookup(app.studio_environment_id)).find(
+      (c) => didAddress(c.userDid) === ownerAddress,
+    );
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] Studio product ${app.slug} (${app.id}): could not read its Studio's GitHub connection: ${String(err)}`,
+    );
+    return null;
+  }
+  if (!connection) return null;
+  const name = connection.repoFullName;
+  try {
+    const found = await github.findRepoInstallation(name);
+    if (!found) {
+      deps.logger.info(
+        `[vetra-apps] Studio product ${app.slug} (${app.id}): Vetra Deploy does not reach ${name} yet; its Studio keeps pushing the old way`,
+      );
+      return null;
+    }
+    const taken = await deps.db
+      .selectFrom("apps")
+      .select("id")
+      .where("repository_id", "=", found.repo.id)
+      .where("status", "!=", "DELETED")
+      .where("id", "!=", app.id)
+      .executeTakeFirst();
+    if (taken) {
+      deps.logger.info(
+        `[vetra-apps] Studio product ${app.slug} (${app.id}): ${found.repo.fullName} is already used by another App; not carried over`,
+      );
+      return null;
+    }
+    if (found.accountType === "Organization")
+      await assertOwnerStillInOrg(
+        deps,
+        github,
+        {
+          ...app,
+          repository_account_login: found.accountLogin,
+          repository_connected_by: app.owner_address,
+        },
+        found.installationId,
+      );
+    return found;
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] Studio product ${app.slug} (${app.id}): could not carry ${name} over: ${String(err)}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Carry a Studio's existing GitHub repository over to its product (spec §8
+ * "One app, not two"): when the product has never had a repository, the
+ * owner's old Studio connection (vetra-github-auth) has one and Vetra Deploy
+ * reaches it, that repository is recorded on the App as
+ * attachStudioRepository records a new one (installation, repository,
+ * account login and type, repository_connected_by = the owner). Nothing is
+ * created, moved or deleted on GitHub. Triggered by the Studio's agent
+ * (D20 binding): explicitly, or by its first push token request
+ * (studioPushToken), so no customer action is needed. Until it is carried
+ * over the Studio keeps pushing with its old connection. Returns the App,
+ * changed or not.
+ */
+export async function adoptStudioRepository(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  secret: string | null,
+): Promise<AppRow> {
+  const app = await studioAppFor(deps, caller, appId, secret);
+  if (!isStudioProduct(app))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "This App is deployed from its own repository; the Studio does not push to it",
+    );
+  return carryStudioRepositoryOver(deps, app);
+}
+
+/** adoptStudioRepository after the binding: the App, with the repository recorded when one was carried over. */
+async function carryStudioRepositoryOver(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<AppRow> {
+  // Once a product has had a repository (even one GitHub took away), the
+  // owner decides from its settings.
+  if (app.repository_id || !deps.github) return app;
+  const github = deps.github;
+  const studioId = app.studio_environment_id!;
+  return withKeyLock(`studio-app:${studioId}`, async () => {
+    const current = (await getApp(deps.db, app.id)) ?? app;
+    if (current.repository_id) return current;
+    const found = await legacyStudioRepository(deps, github, current);
+    if (!found) return current;
+    const recorded = await deps.db
+      .updateTable("apps")
+      .set({
+        installation_id: found.installationId,
+        repository_id: found.repo.id,
+        repository_full_name: found.repo.fullName,
+        repository_account_login: found.accountLogin,
+        repository_account_type: found.accountType,
+        repository_disconnected_at: null,
+        repository_connected_by: current.owner_address,
+        updated_at: deps.now().toISOString(),
+      })
+      .where("id", "=", current.id)
+      // Another replica may have recorded a repository meanwhile.
+      .where("repository_id", "is", null)
+      .returning("id")
+      .executeTakeFirst();
+    const after = (await getApp(deps.db, current.id))!;
+    if (!recorded) return after;
+    deps.logger.info(
+      `[vetra-apps] Studio product ${after.slug} (${after.id}) carried its Studio's repository ${found.repo.fullName} over`,
+    );
+    await mirrorAppRow(deps, after);
+    return after;
+  });
+}
+
 /**
  * Before a push token for an organisation's repository: whoever connected it
  * (repository_connected_by; the App's owner on rows without it) must still be
@@ -1894,12 +2056,14 @@ export async function studioPushToken(
   appId: string,
   secret: string | null,
 ): Promise<StudioPushToken> {
-  const app = await studioAppFor(deps, caller, appId, secret);
-  if (!isStudioProduct(app))
+  const bound = await studioAppFor(deps, caller, appId, secret);
+  if (!isStudioProduct(bound))
     throw appsError(
       "BAD_USER_INPUT",
       "This App is deployed from its own repository; the Studio does not push to it",
     );
+  // The first push token request carries the Studio's old repository over.
+  const app = await carryStudioRepositoryOver(deps, bound);
   const repo = appRepository(app);
   if (!repo || app.repository_disconnected_at) throw notConnected();
   const github = requireGithub(deps);

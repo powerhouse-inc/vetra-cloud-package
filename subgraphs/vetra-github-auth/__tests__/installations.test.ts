@@ -4,6 +4,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import {
   deleteConnection,
+  environmentConnections,
   getConnection,
   saveConnection,
 } from "../db/installations.js";
@@ -107,5 +108,23 @@ describe("deleteConnection", () => {
 
   it("is a no-op when there is nothing to delete", async () => {
     await expect(deleteConnection(db, DID, ENV)).resolves.toBeUndefined();
+  });
+});
+
+describe("environmentConnections", () => {
+  it("lists every caller's connection for one environment", async () => {
+    await saveConnection(db, DID2, ENV, "bob/widget");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    await saveConnection(db, DID, ENV2, "alice/other");
+    const rows = await environmentConnections(db, ENV);
+    const pairs = rows.map((r) => [r.userDid, r.repoFullName]);
+    expect(pairs).toHaveLength(2);
+    expect(pairs).toEqual(
+      expect.arrayContaining([
+        [DID, "alice/widget"],
+        [DID2, "bob/widget"],
+      ]),
+    );
+    expect(await environmentConnections(db, "env-none")).toEqual([]);
   });
 });

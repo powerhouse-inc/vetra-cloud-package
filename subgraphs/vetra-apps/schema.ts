@@ -264,7 +264,9 @@ export const schema: DocumentNode = gql`
     setStudioProductDrive(appId: ID!, driveId: String!): App!
     "The owner keeps a copy of a Studio product's code on GitHub: a private repository in their account or an organisation (no deploy workflow)"
     attachStudioRepository(input: AttachStudioRepositoryInput!): App!
-    "The Studio's agent gets a short-lived push token for its own product's repository (with the launch secret header)"
+    "The Studio's agent carries its Studio's existing GitHub repository (connected before GitHub moved to the product's settings) over to its product, when Vetra Deploy reaches it; nothing is created or moved (with the launch secret header; studioPushToken does this on its own)"
+    adoptStudioRepository(appId: ID!): App!
+    "The Studio's agent gets a short-lived push token for its own product's repository, carrying its Studio's existing repository over first when the product has none (with the launch secret header)"
     studioPushToken(appId: ID!): StudioPushToken!
     "The Studio's agent records the commit it is about to push to its product's repository, so that push is not taken for a change made on GitHub (with the launch secret header)"
     recordStudioMirror(appId: ID!, sha: String!): Boolean!

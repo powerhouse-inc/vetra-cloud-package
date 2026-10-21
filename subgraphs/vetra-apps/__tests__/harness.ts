@@ -29,6 +29,7 @@ import {
   GithubHttpError,
   RepoNameTakenError,
   type GithubDeployApi,
+  type GithubRepoInstallation,
 } from "../github.js";
 import type { HarborApi } from "../harbor.js";
 import type { RenownApi } from "../renown.js";
@@ -238,6 +239,8 @@ export function fakeGithub(): GithubDeployApi & {
   memberships: Map<string, { state: string; role: string } | null>;
   /** `<user token>|<org login>` → that user's membership; wins over `memberships`. */
   membershipsByToken: Map<string, { state: string; role: string } | null>;
+  /** Repository full name → the Vetra Deploy installation that reaches it (absent: none). */
+  repoInstallations: Map<string, GithubRepoInstallation>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -277,12 +280,17 @@ export function fakeGithub(): GithubDeployApi & {
     string,
     { state: string; role: string } | null
   >();
+  const repoInstallations = new Map<string, GithubRepoInstallation>();
   let pushTokenSeq = 0;
   return {
     calls,
     installations,
     memberships,
     membershipsByToken,
+    repoInstallations,
+    findRepoInstallation: rec("findRepoInstallation", (fullName: string) =>
+      repoInstallations.get(fullName) ?? null,
+    ),
     getOrgMembership: rec("getOrgMembership", (token: string, org: string) =>
       membershipsByToken.has(`${token}|${org}`)
         ? membershipsByToken.get(`${token}|${org}`)!

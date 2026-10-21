@@ -90,3 +90,20 @@ export async function deleteConnection(
     .where("environment_id", "=", environmentId)
     .execute();
 }
+
+/**
+ * Every caller's connection for one environment (read by vetra-apps when a
+ * Studio's product carries its repository over; the caller picks whose).
+ */
+export async function environmentConnections(
+  db: Kysely<VetraGithubAuthDB>,
+  environmentId: string,
+): Promise<GithubConnection[]> {
+  const rows = await db
+    .selectFrom("github_installations")
+    .selectAll()
+    .where("environment_id", "=", environmentId)
+    .orderBy("created_at")
+    .execute();
+  return rows.map(toConnection);
+}

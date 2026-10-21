@@ -30,6 +30,14 @@ export type GithubDeploymentState =
   | "error"
   | "inactive";
 
+/** The Vetra Deploy installation that reaches a repository, and that repository. */
+export interface GithubRepoInstallation {
+  installationId: string;
+  accountLogin: string;
+  accountType: string;
+  repo: GithubRepo;
+}
+
 /** GitHub App user-to-server tokens (access tokens expire after 8h). */
 export interface GithubUserTokens {
   accessToken: string;
@@ -162,6 +170,16 @@ export interface GithubDeployApi {
     installationId: string,
     repositoryId: string,
   ): Promise<{ token: string; expiresAt: string }>;
+  /**
+   * The Vetra Deploy installation on a repository's account
+   * (GET /repos/{full}/installation, app JWT) and the repository as that
+   * installation sees it (GET /repos/{full}, installation token). Null when
+   * Vetra Deploy is not installed there or its installation does not reach
+   * the repository (404).
+   */
+  findRepoInstallation(
+    repoFullName: string,
+  ): Promise<GithubRepoInstallation | null>;
   /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
   deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
   /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
@@ -633,6 +651,48 @@ export function createGithubDeployApi(
       if (!data?.token || !data.expires_at)
         throw new GithubHttpError(502, "GitHub returned no installation token");
       return { token: data.token, expiresAt: data.expires_at };
+    },
+
+    async findRepoInstallation(fullName) {
+      const { token: jwt } = await auth({ type: "app" });
+      const found = await call<{
+        id?: number;
+        account?: { login?: string; type?: string } | null;
+      } | null>(
+        jwt,
+        "GET",
+        `/repos/${repoPath(fullName)}/installation`,
+        undefined,
+        [404],
+        "Bearer",
+      );
+      if (found.status === 404 || typeof found.data?.id !== "number")
+        return null;
+      const installationId = String(found.data.id);
+      const token = await installationToken(installationId);
+      const seen = await call<{
+        id?: number;
+        full_name?: string;
+        private?: boolean;
+        default_branch?: string;
+      } | null>(token, "GET", `/repos/${repoPath(fullName)}`, undefined, [404]);
+      if (
+        seen.status === 404 ||
+        typeof seen.data?.id !== "number" ||
+        !seen.data.full_name
+      )
+        return null;
+      return {
+        installationId,
+        accountLogin: found.data.account?.login ?? "",
+        accountType: found.data.account?.type ?? "",
+        repo: {
+          id: String(seen.data.id),
+          fullName: seen.data.full_name,
+          private: seen.data.private ?? true,
+          defaultBranch: seen.data.default_branch ?? "main",
+        },
+      };
     },
 
     async deleteRepoAsUser(userToken, fullName) {
