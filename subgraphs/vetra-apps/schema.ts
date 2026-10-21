@@ -79,7 +79,8 @@ export const schema: DocumentNode = gql`
     ownerOrgId: String
     studioEnvironmentId: String
     status: AppStatus!
-    repository: AppRepository!
+    "The GitHub repository; null for a Studio product without GitHub."
+    repository: AppRepository
     productionBranch: String!
     productionEnvironmentId: String!
     previewsEnabled: Boolean!
@@ -95,6 +96,10 @@ export const schema: DocumentNode = gql`
     productionUrls: AppUrls!
     previews: [AppPreview!]!
     latestDeployment: AppDeployment
+    "The live product's drive (Studio products), set at first launch."
+    productDriveId: String
+    "When the product first went live; null = never launched."
+    launchedAt: String
     createdAt: String!
     updatedAt: String!
   }
@@ -131,6 +136,13 @@ export const schema: DocumentNode = gql`
     "The caller's connected Vetra Deploy installation; the repository is created in its account."
     installationId: String!
     orgId: String
+  }
+
+  input EnsureStudioProductInput {
+    studioEnvironmentId: String!
+    name: String!
+    "An existing environment of the Studio's owner that becomes the product's live environment."
+    adoptEnvironmentId: String
   }
 
   input CreateAppInput {
@@ -170,8 +182,10 @@ export const schema: DocumentNode = gql`
 
   type Query {
     "Personal Apps, or with orgId the organisation's Apps (members only)"
-    myApps(orgId: String): [App!]!
+    myApps(orgId: String, "Also list Studio products without a repository" includeStudioProducts: Boolean): [App!]!
     app(id: ID!): App
+    "The Studio's product App (its agent with the launch secret header, or the owner)"
+    studioProduct(studioEnvironmentId: String!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appDeployment(id: ID!): AppDeployment
     githubDeployAppInfo: GithubDeployAppInfo!
@@ -183,6 +197,8 @@ export const schema: DocumentNode = gql`
     connectGithubDeploy(code: String!): [GithubDeployInstallation!]!
     createApp(input: CreateAppInput!): App!
     createStudioApp(input: CreateStudioAppInput!): App!
+    "The Studio's product App and live environment, created on first call (no GitHub needed)"
+    ensureStudioProduct(input: EnsureStudioProductInput!): App!
     confirmAppIdentity(appId: ID!): App!
     updateApp(appId: ID!, input: UpdateAppInput!): App!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!

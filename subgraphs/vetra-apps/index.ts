@@ -8,7 +8,8 @@ import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
 import { loadAppsConfig, missingConfig } from "./config.js";
-import { createReactorEnvGateway } from "./envs.js";
+import { createReactorEnvGateway, subdomainTakenIn } from "./envs.js";
+import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
@@ -42,6 +43,7 @@ import {
   runDeploymentWatcherOnce,
   runIdentityExpirySweepOnce,
   runPreviewSweepOnce,
+  runUnlaunchedStudioAppSweepOnce,
   SWEEP_INTERVAL_MS,
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
@@ -159,6 +161,12 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
       studioSecrets,
+      // A product's <slug>.vetra.io must not collide with an env's hosts.
+      subdomainTaken: subdomainTakenIn(
+        (await this.relationalDb.createNamespace(
+          "vetra-cloud-environments",
+        )) as unknown as Kysely<EnvironmentsDB>,
+      ),
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,
@@ -249,6 +257,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     every(SWEEP_INTERVAL_MS, "preview sweeper", async () => {
       await runPreviewSweepOnce(deps);
       await runIdentityExpirySweepOnce(deps);
+      await runUnlaunchedStudioAppSweepOnce(deps);
     });
 
     every(DRIFT_INTERVAL_MS, "app document drift", () =>

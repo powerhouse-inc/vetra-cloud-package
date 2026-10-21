@@ -132,3 +132,25 @@ export function parsePackages(
     return [];
   }
 }
+
+export interface AppRepository {
+  installationId: string;
+  repositoryId: string;
+  fullName: string;
+}
+
+/**
+ * The App's GitHub repository, or null for a Studio product without GitHub
+ * (ensureStudioProduct): every GitHub path checks this first.
+ */
+export function appRepository(
+  app: Pick<AppRow, "installation_id" | "repository_id" | "repository_full_name">,
+): AppRepository | null {
+  if (!app.installation_id || !app.repository_id || !app.repository_full_name)
+    return null;
+  return {
+    installationId: app.installation_id,
+    repositoryId: app.repository_id,
+    fullName: app.repository_full_name,
+  };
+}

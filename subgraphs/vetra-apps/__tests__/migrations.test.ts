@@ -6,7 +6,9 @@ import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
   ensureStudioLaunchSecretsTable,
+  ensureStudioProductColumns,
   isConcurrentIndexError,
+  up,
 } from "../db/migrations.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
@@ -165,5 +167,103 @@ describe("ensureStudioLaunchSecretsTable under concurrent boots", () => {
     } finally {
       await root.destroy();
     }
+  });
+});
+
+describe("ensureStudioProductColumns (Task 2.2)", () => {
+  /** The apps table as production has it before this change (repository columns NOT NULL). */
+  const legacyApps = sql`CREATE TABLE "vetra-apps".apps (
+    id varchar(64) PRIMARY KEY,
+    status varchar(32) NOT NULL,
+    installation_id varchar(64) NOT NULL,
+    repository_id varchar(64) NOT NULL,
+    repository_full_name varchar(255) NOT NULL
+  )`;
+
+  it("makes the repository nullable and adds the product columns in the namespace schema; existing rows untouched; idempotent and concurrent-safe", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      await legacyApps.execute(root);
+      const db = root.withSchema("vetra-apps");
+      const github = {
+        id: "a",
+        status: "ACTIVE",
+        installation_id: "77",
+        repository_id: "4242",
+        repository_full_name: "acme/shop",
+      };
+      await db.insertInto("apps").values(github).execute();
+      await expect(
+        db.insertInto("apps").values({ id: "x", status: "ACTIVE" }).execute(),
+      ).rejects.toThrow();
+
+      await ensureStudioProductColumns(db);
+      await Promise.all([1, 2, 3].map(() => ensureStudioProductColumns(db)));
+      await ensureStudioProductColumns(db);
+
+      await db
+        .insertInto("apps")
+        .values({ id: "b", status: "ACTIVE", product_drive_id: "d1", launched_at: "t", adopted_at: null })
+        .execute();
+      expect(await db.selectFrom("apps").selectAll().orderBy("id").execute()).toStrictEqual([
+        { ...github, product_drive_id: null, launched_at: null, adopted_at: null },
+        {
+          id: "b",
+          status: "ACTIVE",
+          installation_id: null,
+          repository_id: null,
+          repository_full_name: null,
+          product_drive_id: "d1",
+          launched_at: "t",
+          adopted_at: null,
+        },
+      ]);
+      const inPublic = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE column_name = 'product_drive_id' AND table_schema = 'public'`.execute(root);
+      expect(inPublic.rows[0].n).toBe(0);
+    } finally {
+      await root.destroy();
+    }
+  });
+
+  it("the whole up() runs twice on a fresh namespace", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await up(db);
+      const cols = await sql<{ column_name: string; is_nullable: string }>`
+        SELECT column_name, is_nullable FROM information_schema.columns
+        WHERE table_schema = 'vetra-apps' AND table_name = 'apps'
+          AND column_name IN ('installation_id', 'repository_id', 'repository_full_name', 'product_drive_id', 'launched_at', 'adopted_at')
+        ORDER BY column_name`.execute(root);
+      expect(cols.rows).toStrictEqual(
+        ["adopted_at", "installation_id", "launched_at", "product_drive_id", "repository_full_name", "repository_id"].map(
+          (column_name) => ({ column_name, is_nullable: "YES" }),
+        ),
+      );
+    } finally {
+      await root.destroy();
+    }
+  });
+
+  it("tolerates a lost race and rethrows anything else", async () => {
+    const failing = (err: unknown) => {
+      const builder: Record<string, unknown> = {};
+      for (const m of ["alterColumn", "addColumn"]) builder[m] = () => builder;
+      builder.execute = () => Promise.reject(err as Error);
+      return { schema: { alterTable: () => builder } } as unknown as Kysely<any>;
+    };
+    for (const c of ["42701", "42P07", "23505"]) {
+      await expect(
+        ensureStudioProductColumns(failing(Object.assign(new Error("dup"), { code: c }))),
+      ).resolves.toBeUndefined();
+    }
+    await expect(
+      ensureStudioProductColumns(failing(Object.assign(new Error("boom"), { code: "42501" }))),
+    ).rejects.toThrow("boom");
   });
 });

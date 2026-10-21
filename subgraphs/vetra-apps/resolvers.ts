@@ -8,7 +8,11 @@ import {
 } from "./auth.js";
 import { appsError, githubErrors } from "./errors.js";
 import { GithubHttpError, GithubUnavailableError } from "./github.js";
-import { rotateStudioLaunchSecret } from "./studio-binding.js";
+import {
+  hasStudioSecretHeader,
+  presentedStudioSecret,
+  rotateStudioLaunchSecret,
+} from "./studio-binding.js";
 
 /**
  * GraphQL is for people (owner / admin). CI workload tokens (bearer with a
@@ -35,6 +39,7 @@ import {
   createStudioApp,
   deleteApp,
   deployApp,
+  ensureStudioProduct,
   githubDeployAppInfo,
   githubDeployRepositories,
   myApps,
@@ -42,14 +47,18 @@ import {
   openAppSetupPullRequest,
   renownAuthorizeUrl,
   rollbackApp,
+  studioProductFor,
   updateApp,
   type AppsDeps,
   type CreateAppInput,
+  type EnsureStudioProductInput,
+  type StudioProductAuth,
   type CreateStudioAppInput,
   type DeployAppInput,
   type UpdateAppInput,
 } from "./service.js";
 import {
+  appRepository,
   latestDeployment,
   listPreviews,
   parsePackages,
@@ -126,7 +135,15 @@ function mapDeployment(deps: AppsDeps, d: DeploymentRow) {
   };
 }
 
+/** The Studio-agent path when the request carries the launch secret header (even empty). */
+function studioAuth(ctx: AppsContext): StudioProductAuth {
+  return hasStudioSecretHeader(ctx)
+    ? { kind: "agent", secret: presentedStudioSecret(ctx) }
+    : { kind: "owner" };
+}
+
 function mapApp(deps: AppsDeps, app: AppRow) {
+  const repo = appRepository(app);
   return {
     id: app.id,
     slug: app.slug,
@@ -135,11 +152,9 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     ownerOrgId: app.owner_org_id ?? null,
     studioEnvironmentId: app.studio_environment_id ?? null,
     status: app.status,
-    repository: {
-      installationId: app.installation_id,
-      repositoryId: app.repository_id,
-      fullName: app.repository_full_name,
-    },
+    repository: repo,
+    productDriveId: app.product_drive_id ?? null,
+    launchedAt: app.launched_at ?? null,
     productionBranch: app.production_branch,
     productionEnvironmentId: app.production_environment_id,
     previewsEnabled: app.previews_enabled,
@@ -159,7 +174,9 @@ function mapApp(deps: AppsDeps, app: AppRow) {
           environmentId: p.environment_id,
           prNumber: p.pr_number,
           gitRef: p.git_ref,
-          prUrl: `https://github.com/${app.repository_full_name}/pull/${p.pr_number}`,
+          prUrl: repo
+            ? `https://github.com/${repo.fullName}/pull/${p.pr_number}`
+            : "",
           lastDeployedAt: p.last_deployed_at,
           status:
             (await latestDeployment(deps.db, app.id, p.environment_id))
@@ -179,11 +196,18 @@ export function createResolvers(deps: AppsDeps) {
     Query: {
       myApps: (
         _: unknown,
-        { orgId }: { orgId?: string | null },
+        {
+          orgId,
+          includeStudioProducts,
+        }: { orgId?: string | null; includeStudioProducts?: boolean | null },
         ctx: AppsContext,
       ) =>
         guard(deps, "myApps", async () =>
-          (await myApps(deps, requireCaller(ctx), orgId)).map((a) =>
+          (
+            await myApps(deps, requireCaller(ctx), orgId, {
+              includeStudioProducts,
+            })
+          ).map((a) =>
             mapApp(deps, a),
           ),
         ),
@@ -206,6 +230,20 @@ export function createResolvers(deps: AppsDeps) {
               return null;
             throw err;
           }
+        }),
+      studioProduct: (
+        _: unknown,
+        { studioEnvironmentId }: { studioEnvironmentId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "studioProduct", async () => {
+          const app = await studioProductFor(
+            deps,
+            requireCaller(ctx),
+            studioEnvironmentId,
+            studioAuth(ctx),
+          );
+          return app ? mapApp(deps, app) : null;
         }),
       appDeployments: (
         _: unknown,
@@ -268,6 +306,22 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "createStudioApp", async () =>
           mapApp(deps, await createStudioApp(deps, requireCaller(ctx), input)),
+        ),
+      ensureStudioProduct: (
+        _: unknown,
+        { input }: { input: EnsureStudioProductInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "ensureStudioProduct", async () =>
+          mapApp(
+            deps,
+            await ensureStudioProduct(
+              deps,
+              requireCaller(ctx),
+              input,
+              studioAuth(ctx),
+            ),
+          ),
         ),
       confirmAppIdentity: (
         _: unknown,

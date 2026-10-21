@@ -1,4 +1,6 @@
 import type { Action } from "document-model";
+import { sql, type Kysely } from "kysely";
+import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import {
   resolveGenericHost,
@@ -165,5 +167,44 @@ export function envUrls(state: VetraCloudEnvironmentState | null): EnvUrls {
     app: url("FUSION", "fusion"),
     connect: url("CONNECT", "connect"),
     switchboard: url("SWITCHBOARD", "switchboard"),
+  };
+}
+
+/**
+ * Whether two generic subdomains may share a host: env hosts are <sub>.vetra.io
+ * (apex) and <sub>-<prefix>.vetra.io, so `a` collides with `b` when they are
+ * equal or one is the other plus "-<prefix>". Conservative on purpose; a
+ * purely numeric rest is not a service prefix, so the "-2" suffixes of
+ * ensureStudioProduct stay free.
+ */
+export function subdomainsCollide(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [long, short] = a.length > b.length ? [a, b] : [b, a];
+  if (!long.startsWith(`${short}-`)) return false;
+  return !/^[0-9]+$/.test(long.slice(short.length + 1));
+}
+
+/** subdomainTaken over the environments read model (namespace "vetra-cloud-environments"). */
+export function subdomainTakenIn(
+  db: Kysely<EnvironmentsDB>,
+): (subdomain: string) => Promise<boolean> {
+  return async (candidate) => {
+    // Query builder (not raw table SQL) so the namespace qualifies the table;
+    // the candidates are narrowed in SQL, decided by subdomainsCollide.
+    const rows = await db
+      .selectFrom("environments")
+      .select("subdomain")
+      .where((eb) =>
+        eb.or([
+          eb("subdomain", "=", candidate),
+          eb("subdomain", "like", `${candidate}-%`),
+          sql<boolean>`${candidate} like ${sql.ref("subdomain")} || '-%'`,
+        ]),
+      )
+      .limit(200)
+      .execute();
+    return rows.some(
+      (r) => !!r.subdomain && subdomainsCollide(candidate, r.subdomain),
+    );
   };
 }

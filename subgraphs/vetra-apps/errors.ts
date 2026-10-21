@@ -20,7 +20,14 @@ export type AppsErrorCode =
 export type StudioLaunchErrorCode =
   | "STUDIO_BINDING"
   | "DELEGATION_EXPIRED"
-  | "DELEGATION_MISSING";
+  | "DELEGATION_MISSING"
+  /**
+   * The Studio had no launch secret: one was just written. The Studio's pod
+   * restarts to pick it up; the agent retries after the restart.
+   */
+  | "STUDIO_SECRET_PENDING"
+  /** ensureStudioProduct's adoptEnvironmentId names an env that may not become the product's. */
+  | "ADOPT_NOT_ALLOWED";
 
 /** The GitHub and deploy-setup failures a customer can act on. */
 export type GithubSetupErrorCode =

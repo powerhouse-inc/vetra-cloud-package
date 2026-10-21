@@ -4,6 +4,8 @@ import { canOperate } from "../../shared/org-access.js";
 import { isStudioState } from "../../shared/studio-package.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { STUDIO_LAUNCH_SECRET_KEY } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { AppsContext, Caller } from "./auth.js";
 import type { VetraAppsDB } from "./db/schema.js";
 import { appsError, notConfigured } from "./errors.js";
@@ -55,6 +57,15 @@ export async function storeLaunchSecretHash(
     .execute();
 }
 
+/**
+ * Whether the request comes through the Studio-agent path: it carries
+ * STUDIO_SECRET_HEADER, even empty (an agent whose Studio has no launch
+ * secret yet sends it empty — see ensureStudioProduct).
+ */
+export function hasStudioSecretHeader(ctx: AppsContext): boolean {
+  return ctx.headers?.[STUDIO_SECRET_HEADER] !== undefined;
+}
+
 /** The secret the request presents in STUDIO_SECRET_HEADER, or null. */
 export function presentedStudioSecret(ctx: AppsContext): string | null {
   const raw = ctx.headers?.[STUDIO_SECRET_HEADER];
@@ -97,7 +108,21 @@ export async function verifyStudioSecret(
   if (!stored || !sameHash(hashLaunchSecret(presentedSecret), stored.secret_hash)) {
     throw bindingError();
   }
+  await assertStudioAgent(deps, caller, studioEnvironmentId);
+}
 
+/**
+ * The checks of verifyStudioSecret that need no secret: the caller is an
+ * agent key, the env is a Studio the caller owns (or operates for its
+ * organisation), and the owner's delegation for the key is current. Returns
+ * the Studio's state. Same refusals as verifyStudioSecret.
+ */
+export async function assertStudioAgent(
+  deps: AppsDeps,
+  caller: Caller,
+  studioEnvironmentId: string,
+): Promise<VetraCloudEnvironmentState> {
+  if (!caller.appKey) throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
   const studio = await deps.envs.getState(studioEnvironmentId);
   if (!studio || !isStudioState(studio)) throw bindingError();
   // The agent acts as the owner, never as a platform admin.
@@ -123,6 +148,93 @@ export async function verifyStudioSecret(
   ) {
     throw appsError("DELEGATION_EXPIRED", DELEGATION_MESSAGE);
   }
+  return studio;
+}
+
+/** Whether the Studio has a launch secret hash recorded. */
+export async function hasLaunchSecret(
+  db: Kysely<VetraAppsDB>,
+  environmentId: string,
+): Promise<boolean> {
+  return !!(await db
+    .selectFrom("studio_launch_secrets")
+    .select("environment_id")
+    .where("environment_id", "=", environmentId)
+    .executeTakeFirst());
+}
+
+/**
+ * Write one launch secret into the tenant through the single-key path
+ * (ensureSecret when absent, setManagedSecret otherwise; F31). The secrets
+ * controller syncs it and Reloader restarts the Studio's pods.
+ */
+async function writeLaunchSecret(
+  secrets: Pick<SecretsService, "ensureSecret" | "setManagedSecret">,
+  tenantId: string,
+  secret: string,
+): Promise<void> {
+  const wrote = await secrets.ensureSecret(
+    tenantId,
+    STUDIO_LAUNCH_SECRET_KEY,
+    () => secret,
+  );
+  if (!wrote) {
+    await secrets.setManagedSecret(tenantId, STUDIO_LAUNCH_SECRET_KEY, secret);
+  }
+}
+
+/**
+ * Give a claimed Studio a launch secret when it has none (controller ruling
+ * X22: existing Studios and Studios made outside the warm pool need no manual
+ * backfill). The hash row is claimed first (insert … on conflict do nothing),
+ * so of two concurrent callers, on any replica, only one writes a secret; if
+ * the tenant write then fails, the claimed row is removed again. Returns true
+ * when a secret was written: the Studio's agent sees it only after its pod
+ * restarts. Never logs the secret.
+ */
+export async function ensureStudioLaunchSecret(
+  deps: AppsDeps,
+  environmentId: string,
+  studio: VetraCloudEnvironmentState,
+): Promise<boolean> {
+  if (await hasLaunchSecret(deps.db, environmentId)) return false;
+  if (!deps.studioSecrets) throw notConfigured("Tenant secrets");
+  if (!studio.genericSubdomain) {
+    throw appsError("BAD_USER_INPUT", "This Studio is not initialised yet");
+  }
+  const tenantId = getTenantId(studio.genericSubdomain, environmentId);
+  const secret = newLaunchSecret();
+  const secretHash = hashLaunchSecret(secret);
+  const claimed = await deps.db
+    .insertInto("studio_launch_secrets")
+    .values({
+      environment_id: environmentId,
+      secret_hash: secretHash,
+      rotated_at: deps.now().toISOString(),
+    })
+    .onConflict((oc) => oc.column("environment_id").doNothing())
+    .returning("environment_id")
+    .executeTakeFirst();
+  if (!claimed) return false;
+  try {
+    await writeLaunchSecret(deps.studioSecrets, tenantId, secret);
+  } catch (err) {
+    await deps.db
+      .deleteFrom("studio_launch_secrets")
+      .where("environment_id", "=", environmentId)
+      .where("secret_hash", "=", secretHash)
+      .execute()
+      .catch((e: unknown) =>
+        deps.logger.error(
+          `[vetra-apps] removing the launch secret claim of Studio ${environmentId} failed: ${String(e)}`,
+        ),
+      );
+    throw err;
+  }
+  deps.logger.info(
+    `[vetra-apps] launch secret provisioned for Studio ${environmentId}; its agent picks it up after the restart`,
+  );
+  return true;
 }
 
 /**
@@ -175,14 +287,7 @@ export async function rotateStudioLaunchSecret(
   const tenantId = getTenantId(studio.genericSubdomain, environmentId);
 
   const secret = newLaunchSecret();
-  const wrote = await deps.studioSecrets.ensureSecret(
-    tenantId,
-    STUDIO_LAUNCH_SECRET_KEY,
-    () => secret,
-  );
-  if (!wrote) {
-    await deps.studioSecrets.setManagedSecret(tenantId, STUDIO_LAUNCH_SECRET_KEY, secret);
-  }
+  await writeLaunchSecret(deps.studioSecrets, tenantId, secret);
   await storeLaunchSecretHash(
     deps.db,
     environmentId,

@@ -1,6 +1,10 @@
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import { terminateEnvironment } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import { withKeyLock } from "../../shared/key-lock.js";
+import { isStudioState } from "../../shared/studio-package.js";
 import { envUrls } from "./envs.js";
 import {
+  appRepository,
   getApp,
   getDeployment,
   parsePackages,
@@ -12,6 +16,7 @@ import {
   deletePreview,
   isPullRequestClosed,
   PREVIEW_COMMENT_MARKER,
+  UNLAUNCHED_STUDIO_APP_DAYS,
   type AppsDeps,
 } from "./service.js";
 import type { GithubDeploymentState } from "./github.js";
@@ -128,6 +133,106 @@ export async function runIdentityExpirySweepOnce(
   return expired.length;
 }
 
+const RELEASED_ENV_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
+
+/**
+ * D8 / F32 — the one automatic removal (Global Constraints' named
+ * exception): a Studio product without GitHub that never went live —
+ * launched_at and product_drive_id null, no env adopted, no deployment
+ * pending, under way or READY — is soft-deleted 14 days after it was made,
+ * and its production env is terminated (the env document is kept). Nothing a
+ * customer saw live is touched: Apps with a repository, adopted envs and
+ * launched products are never selected. The App row is flipped first, under
+ * the same per-Studio lock as ensureStudioProduct, so a launch racing the
+ * sweep keeps its App; an env that fails to terminate is logged and left.
+ */
+export async function runUnlaunchedStudioAppSweepOnce(
+  deps: AppsDeps,
+): Promise<number> {
+  const cutoff = new Date(
+    deps.now().getTime() - UNLAUNCHED_STUDIO_APP_DAYS * 86_400_000,
+  ).toISOString();
+  const candidates = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("status", "!=", "DELETED")
+    .where("studio_environment_id", "is not", null)
+    .where("repository_id", "is", null)
+    .where("launched_at", "is", null)
+    .where("product_drive_id", "is", null)
+    .where("adopted_at", "is", null)
+    .where("created_at", "<", cutoff)
+    .execute();
+  let removed = 0;
+  for (const app of candidates) {
+    try {
+      const done = await withKeyLock(
+        `studio-app:${app.studio_environment_id}`,
+        () => removeUnlaunchedStudioApp(deps, app),
+      );
+      if (done) removed++;
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] unlaunched-product sweep: App ${app.slug}: ${String(err)}`,
+      );
+    }
+  }
+  return removed;
+}
+
+async function removeUnlaunchedStudioApp(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<boolean> {
+  const deployed = await deps.db
+    .selectFrom("app_deployments")
+    .select("id")
+    .where("app_id", "=", app.id)
+    .where("status", "in", ["PENDING", "DEPLOYING", "READY"])
+    .executeTakeFirst();
+  if (deployed) return false;
+  const nowIso = deps.now().toISOString();
+  const gone = await deps.db
+    .updateTable("apps")
+    .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
+    .where("id", "=", app.id)
+    .where("status", "!=", "DELETED")
+    .where("repository_id", "is", null)
+    .where("launched_at", "is", null)
+    .where("product_drive_id", "is", null)
+    .where("adopted_at", "is", null)
+    .returning("id")
+    .executeTakeFirst();
+  if (!gone) return false;
+  await mirrorAppById(deps, app.id);
+  const envId = app.production_environment_id;
+  const env = await deps.envs.getState(envId);
+  let envNote = "env already gone";
+  if (
+    env &&
+    env.app?.appId === app.id &&
+    env.app.role === "PRODUCTION" &&
+    !isStudioState(env) &&
+    !RELEASED_ENV_STATUSES.has(env.status)
+  ) {
+    try {
+      await deps.envs.execute(envId, [terminateEnvironment({})]);
+      envNote = `env ${envId} terminated (document kept)`;
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] unlaunched-product sweep: terminating env ${envId} of App ${app.slug} failed (left running): ${String(err)}`,
+      );
+      envNote = `env ${envId} left running`;
+    }
+  } else if (env) {
+    envNote = `env ${envId} left as it is`;
+  }
+  deps.logger.info(
+    `[vetra-apps] Studio product ${app.slug} (${app.id}) never went live in ${UNLAUNCHED_STUDIO_APP_DAYS} days: App deleted, ${envNote}`,
+  );
+  return true;
+}
+
 /** Delete previews whose last deployment is older than the App's TTL. */
 export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
   const apps = await deps.db
@@ -166,7 +271,7 @@ export async function runPreviewSweepOnce(deps: AppsDeps): Promise<number> {
     }
     // Previews whose PR was closed without us noticing (missed webhook, or a
     // CI run that finished after the close). Unknown state → keep.
-    if (deps.github && app.status !== "DISCONNECTED") {
+    if (deps.github && appRepository(app) && app.status !== "DISCONNECTED") {
       const rest = (
         await deps.db
           .selectFrom("app_previews")
@@ -282,6 +387,9 @@ export async function reportDeploymentToGithub(
   if (!state) return;
   const app = await getApp(deps.db, d.app_id);
   if (!app || app.status === "DISCONNECTED" || app.status === "DELETED") return;
+  // A Studio product without GitHub: nothing to report to.
+  const repo = appRepository(app);
+  if (!repo) return;
   if (d.status === "SUPERSEDED" && !d.github_deployment_id) return;
 
   const envState = d.environment_id
@@ -292,8 +400,8 @@ export async function reportDeploymentToGithub(
   let ghId = d.github_deployment_id;
   if (!ghId) {
     ghId = await github.createDeployment(
-      app.installation_id,
-      app.repository_full_name,
+      repo.installationId,
+      repo.fullName,
       {
         ref: d.sha,
         environment,
@@ -308,8 +416,8 @@ export async function reportDeploymentToGithub(
       .execute();
   }
   await github.createDeploymentStatus(
-    app.installation_id,
-    app.repository_full_name,
+    repo.installationId,
+    repo.fullName,
     ghId,
     {
       state,
@@ -321,8 +429,8 @@ export async function reportDeploymentToGithub(
   );
   if (d.kind === "PREVIEW" && d.pr_number && d.status !== "SUPERSEDED") {
     await github.upsertPrComment(
-      app.installation_id,
-      app.repository_full_name,
+      repo.installationId,
+      repo.fullName,
       d.pr_number,
       PREVIEW_COMMENT_MARKER,
       previewCommentBody(app, d, urls, deps.cfg.vetraAppUrl),
@@ -342,7 +450,13 @@ export async function reportPreviewRemovedToGithub(
   reason: string,
 ) {
   const github = deps.github;
-  if (!github || app.status === "DISCONNECTED" || app.status === "DELETED")
+  const repo = appRepository(app);
+  if (
+    !github ||
+    !repo ||
+    app.status === "DISCONNECTED" ||
+    app.status === "DELETED"
+  )
     return;
   const body = [
     PREVIEW_COMMENT_MARKER,
@@ -353,8 +467,8 @@ export async function reportPreviewRemovedToGithub(
     `[${app.name} on Vetra](${deps.cfg.vetraAppUrl}/user/apps/${app.id})`,
   ].join("\n");
   await github.upsertPrComment(
-    app.installation_id,
-    app.repository_full_name,
+    repo.installationId,
+    repo.fullName,
     preview.pr_number,
     PREVIEW_COMMENT_MARKER,
     body,

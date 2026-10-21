@@ -4,8 +4,10 @@ import type { Action } from "document-model";
 import {
   addPackage,
   approveChanges,
+  clearAppLink,
   enableService,
   initialize,
+  setApexService,
   setAppLink,
   setDefaultPackageRegistry,
   setFusionConfig,
@@ -39,7 +41,16 @@ import {
   isOrgMember,
 } from "../../shared/org-access.js";
 import { withEnvLock, withKeyLock } from "../../shared/key-lock.js";
-import { isStudioAgentPackage } from "../../shared/studio-package.js";
+import { isStudioAgentPackage, isStudioState } from "../../shared/studio-package.js";
+import {
+  assertStudioAgent,
+  DELEGATION_MESSAGE,
+  ensureStudioLaunchSecret,
+  hasLaunchSecret,
+  STUDIO_BINDING_MESSAGE,
+  verifyStudioBinding,
+  verifyStudioSecret,
+} from "./studio-binding.js";
 import {
   expectOrgHandover,
   withdrawOrgHandover,
@@ -59,6 +70,7 @@ import { appsError, githubErrors, notConfigured } from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   ACTIVE_DEPLOYMENT_STATUSES,
+  appRepository,
   getApp,
   getAppByIdentity,
   getDeployment,
@@ -135,6 +147,12 @@ export interface AppsDeps {
    * (rotateStudioLaunchSecret). Null/absent: OpenBao is not configured.
    */
   studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
+  /**
+   * Whether a generic subdomain would collide with an existing env's hosts
+   * (ensureStudioProduct puts a product at <slug>.vetra.io). Absent: only the
+   * reserved names and the Apps' own slugs are avoided.
+   */
+  subdomainTaken?: ((subdomain: string) => Promise<boolean>) | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
@@ -286,6 +304,12 @@ async function authorizeCi(
 // ---------------------------------------------------------------------------
 // GitHub connection
 // ---------------------------------------------------------------------------
+
+function requireRepository(app: AppRow) {
+  const repo = appRepository(app);
+  if (!repo) throw appsError("BAD_USER_INPUT", "This App has no repository");
+  return repo;
+}
 
 function requireGithub(deps: AppsDeps): GithubDeployApi {
   if (!deps.github || !deps.cfg.github)
@@ -497,7 +521,25 @@ export async function githubDeployRepositories(
  * Personal Apps (owner_org_id IS NULL), or with `orgId` the organisation's
  * Apps (members and admins only; Apps Renown lists for it are adopted first).
  */
+/**
+ * The caller's Apps (or an organisation's). Studio products without a
+ * repository are listed only with `includeStudioProducts`: Apps pages that
+ * predate them read `repository` as always present (vetra.io adds the flag
+ * when it handles them, Task 4.6).
+ */
 export async function myApps(
+  deps: AppsDeps,
+  caller: Caller,
+  orgId?: string | null,
+  opts: { includeStudioProducts?: boolean | null } = {},
+): Promise<AppRow[]> {
+  const apps = await listMyApps(deps, caller, orgId);
+  return opts.includeStudioProducts
+    ? apps
+    : apps.filter((a) => appRepository(a) !== null);
+}
+
+async function listMyApps(
   deps: AppsDeps,
   caller: Caller,
   orgId?: string | null,
@@ -745,7 +787,7 @@ export async function createApp(
     const cleanedUp = await undoFailedCreate(
       deps,
       harbor,
-      deps.renown!,
+      deps.renown,
       did,
       made,
     );
@@ -1080,6 +1122,469 @@ async function createStudioAppLocked(
   return created;
 }
 
+// ---------------------------------------------------------------------------
+// Studio products without GitHub (Task 2.2)
+// ---------------------------------------------------------------------------
+
+export interface EnsureStudioProductInput {
+  studioEnvironmentId: string;
+  name: string;
+  /**
+   * An existing env of the Studio's owner that becomes the product's
+   * production env instead of a new one (§6.6: an env set up before versions).
+   */
+  adoptEnvironmentId?: string | null;
+}
+
+/**
+ * How the request authenticates: the owner in person, or the Studio's agent
+ * (it sent STUDIO_SECRET_HEADER; `secret` is null when the header was empty).
+ */
+export type StudioProductAuth =
+  | { kind: "owner" }
+  | { kind: "agent"; secret: string | null };
+
+export const STUDIO_SECRET_PENDING_MESSAGE =
+  "This Studio is getting ready to publish. Try again after it restarts.";
+
+/** identity_did of a Studio product made by its owner, until its agent first calls (no caller can present it). */
+export const STUDIO_PRODUCT_IDENTITY_PREFIX = "vetra-studio-product:";
+
+/** Days a Studio product may stay never launched before the sweep removes it (D8, F32). */
+export const UNLAUNCHED_STUDIO_APP_DAYS = 14;
+
+/**
+ * Generic subdomains a product may never take: platform hosts under
+ * vetra.io. A product named after one gets the next suffix.
+ */
+const RESERVED_SUBDOMAINS = new Set([
+  "admin", "alertmanager", "api", "app", "apps", "argocd", "assets", "auth",
+  "blog", "cdn", "connect", "cr", "dev", "docs", "ftp", "git", "github",
+  "grafana", "harbor", "help", "id", "keycloak", "login", "mail", "minio",
+  "monitoring", "mx", "ns1", "ns2", "openbao", "prometheus", "registry",
+  "renown", "renown-staging", "s3", "smtp", "sso", "staging", "static",
+  "status", "studio", "support", "switchboard", "vault", "vetra", "www",
+]);
+
+/** The live (not DELETED) App made from this Studio, or null. */
+async function liveStudioApp(
+  deps: AppsDeps,
+  studioId: string,
+): Promise<AppRow | null> {
+  const row = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("studio_environment_id", "=", studioId)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  return row ? normalizeApp(row) : null;
+}
+
+/**
+ * The Studio the request may act for, by path. Agent: the launch secret
+ * binding (verifyStudioSecret, F8); a Studio without a launch secret gets one
+ * now (X22) and the call is refused with STUDIO_SECRET_PENDING, to be retried
+ * once the Studio has restarted with it. Owner: no App identity, and the
+ * caller owns (or, for an organisation, operates) the Studio.
+ */
+async function authorizeStudio(
+  deps: AppsDeps,
+  caller: Caller,
+  studioId: string,
+  auth: StudioProductAuth,
+): Promise<VetraCloudEnvironmentState> {
+  if (auth.kind === "agent") {
+    if (!caller.appKey)
+      throw appsError("DELEGATION_MISSING", DELEGATION_MESSAGE);
+    if (!(await hasLaunchSecret(deps.db, studioId))) {
+      const studio = await assertStudioAgent(deps, caller, studioId);
+      await ensureStudioLaunchSecret(deps, studioId, studio);
+      throw appsError("STUDIO_SECRET_PENDING", STUDIO_SECRET_PENDING_MESSAGE);
+    }
+    await verifyStudioSecret(deps, caller, auth.secret, studioId);
+    return (await deps.envs.getState(studioId))!;
+  }
+  await assertNotWorkload(deps, caller);
+  const studio = await deps.envs.getState(studioId);
+  if (!studio || !isStudioState(studio))
+    throw appsError("BAD_USER_INPUT", "Not a Vetra Studio");
+  const mayUse = await canOperate(
+    deps.orgs ?? null,
+    { address: caller.address, isAdmin: false },
+    {
+      owner: studio.owner ?? null,
+      ownerOrgId: studio.ownerOrgId ?? null,
+      appDid: null,
+    },
+  );
+  if (!mayUse) throw appsError("FORBIDDEN", "You do not own this Studio");
+  return studio;
+}
+
+/**
+ * The Studio's existing App, checked for the caller: the agent must still act
+ * for it (verifyStudioBinding's App check), the owner as for any App. A
+ * product without GitHub is bound to the agent's current key (identity_did),
+ * so the owner-only paths go on refusing it (assertNotWorkload).
+ */
+async function existingStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  app: AppRow,
+  auth: StudioProductAuth,
+): Promise<AppRow> {
+  if (auth.kind === "owner") return loadAppForOwner(deps, caller, app.id);
+  const synced = await syncAppOrg(deps, app);
+  if (
+    !(await canOperate(
+      deps.orgs ?? null,
+      callerAccess({ ...caller, isAdmin: false }),
+      appResource(synced),
+    ))
+  ) {
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  }
+  return bindAgentIdentity(deps, caller, synced);
+}
+
+/** Point a product without GitHub at the agent's key (no-op when it already is, or for a GitHub App). */
+async function bindAgentIdentity(
+  deps: AppsDeps,
+  caller: Caller,
+  app: AppRow,
+): Promise<AppRow> {
+  const key = caller.appKey!;
+  if (appRepository(app) || app.identity_did === key) return app;
+  const other = await getAppByIdentity(deps.db, key);
+  if (other && other.id !== app.id && other.status !== "DELETED")
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
+  await deps.db
+    .updateTable("apps")
+    .set({ identity_did: key, updated_at: deps.now().toISOString() })
+    .where("id", "=", app.id)
+    .execute();
+  deps.logger.info(
+    `[vetra-apps] Studio product ${app.slug} (${app.id}) bound to its agent's key`,
+  );
+  const bound = (await getApp(deps.db, app.id))!;
+  await mirrorAppRow(deps, bound);
+  return bound;
+}
+
+/**
+ * The owner path also gives the Studio its launch secret when it has none
+ * (X22), so its agent can launch after the restart. Best effort: the agent's
+ * own first call provisions it otherwise.
+ */
+async function ensureLaunchSecretQuietly(
+  deps: AppsDeps,
+  studioId: string,
+  studio: VetraCloudEnvironmentState,
+): Promise<void> {
+  try {
+    await ensureStudioLaunchSecret(deps, studioId, studio);
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] launch secret for Studio ${studioId} not provisioned (retried by its agent): ${String(err instanceof Error ? err.message : err)}`,
+    );
+  }
+}
+
+/**
+ * A Studio's product: its App, without a repository, and a production env at
+ * <slug>.vetra.io with Connect at the apex (or an adopted env of the same
+ * owner). Idempotent per Studio: an existing live App is returned as it is
+ * (its name and address never change here, D19); the partial unique index
+ * apps_studio_env_live guards it across replicas. Callable by the Studio's
+ * agent (launch secret binding) and by the owner. The App is ACTIVE at once:
+ * there is no CI identity to confirm. Its identity_did is the agent's key, so
+ * the owner-only paths refuse the agent (assertNotWorkload). No Harbor robot
+ * and no Renown workload identity are made; the Harbor project is reserved
+ * as for every App. Everything made is undone when a step fails.
+ */
+export async function ensureStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  input: EnsureStudioProductInput,
+  auth: StudioProductAuth,
+): Promise<AppRow> {
+  const studioId = input.studioEnvironmentId.trim();
+  if (!studioId)
+    throw appsError("BAD_USER_INPUT", "studioEnvironmentId is required");
+  const name = input.name.trim();
+  if (!name || name.length > 100)
+    throw appsError("BAD_USER_INPUT", "Name must be 1-100 characters");
+  const studio = await authorizeStudio(deps, caller, studioId, auth);
+  if (RELEASED_STATUSES.has(studio.status))
+    throw appsError("BAD_USER_INPUT", "Studio is terminated");
+
+  const ensured = await withKeyLock(`studio-app:${studioId}`, async () => {
+    const existing = await liveStudioApp(deps, studioId);
+    if (existing) return existingStudioProduct(deps, caller, existing, auth);
+    try {
+      return await createStudioProduct(deps, caller, {
+        studioId,
+        studio,
+        name,
+        adoptEnvironmentId: input.adoptEnvironmentId?.trim() || null,
+        identityDid:
+          auth.kind === "agent"
+            ? caller.appKey!
+            : `${STUDIO_PRODUCT_IDENTITY_PREFIX}${studioId}`,
+      });
+    } catch (err) {
+      // Another replica made this Studio's App meanwhile: that one is it.
+      if (!isUniqueViolation(err, STUDIO_APP_INDEX)) throw err;
+      const made = await liveStudioApp(deps, studioId);
+      if (!made) throw err;
+      return existingStudioProduct(deps, caller, made, auth);
+    }
+  });
+  if (auth.kind === "owner")
+    await ensureLaunchSecretQuietly(deps, studioId, studio);
+  return ensured;
+}
+
+/** The env named by adoptEnvironmentId, when it may become the product's production env (F28). */
+async function adoptableEnv(
+  deps: AppsDeps,
+  studioId: string,
+  studio: VetraCloudEnvironmentState,
+  envId: string,
+): Promise<VetraCloudEnvironmentState> {
+  const refuse = (why: string) =>
+    appsError("ADOPT_NOT_ALLOWED", `This environment cannot become the product's: ${why}`);
+  if (envId === studioId) throw refuse("it is the Studio itself");
+  const state = await deps.envs.getState(envId);
+  if (!state) throw refuse("it does not exist");
+  if (isStudioState(state)) throw refuse("it is a Studio");
+  if (RELEASED_STATUSES.has(state.status)) throw refuse("it is terminated");
+  const studioOrg = studio.ownerOrgId ?? null;
+  const envOrg = state.ownerOrgId ?? null;
+  const sameOwner =
+    studioOrg !== null
+      ? envOrg === studioOrg
+      : envOrg === null &&
+        !!state.owner &&
+        state.owner.toLowerCase() === (studio.owner ?? "").toLowerCase();
+  if (!sameOwner) throw refuse("it belongs to someone else");
+  // Never another App's env: linked to a live App, or recorded as one's
+  // production or preview env.
+  if (state.app?.appId) {
+    const linked = await getApp(deps.db, state.app.appId);
+    if (linked && linked.status !== "DELETED")
+      throw refuse("it belongs to another App");
+  }
+  const usedAsProduction = await deps.db
+    .selectFrom("apps")
+    .select("id")
+    .where("production_environment_id", "=", envId)
+    .where("status", "!=", "DELETED")
+    .executeTakeFirst();
+  const usedAsPreview = await deps.db
+    .selectFrom("app_previews")
+    .select("app_id")
+    .where("environment_id", "=", envId)
+    .executeTakeFirst();
+  if (usedAsProduction || usedAsPreview)
+    throw refuse("it belongs to another App");
+  return state;
+}
+
+/** Slug + Harbor project app-<slug> for a product; a new env's subdomain is the slug, so it must be free too. */
+async function reserveProductSlug(
+  deps: AppsDeps,
+  harbor: HarborApi,
+  name: string,
+  made: CreateMade,
+  checkSubdomain: boolean,
+): Promise<string> {
+  const conflicts = new Set<string>(RESERVED_SUBDOMAINS);
+  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS * 3; attempt++) {
+    const candidate = await uniqueSlug(deps, name, conflicts);
+    if (
+      checkSubdomain &&
+      deps.subdomainTaken &&
+      (await deps.subdomainTaken(candidate))
+    ) {
+      conflicts.add(candidate);
+      continue;
+    }
+    if (await harbor.createProject(`app-${candidate}`)) {
+      made.project = `app-${candidate}`;
+      return candidate;
+    }
+    conflicts.add(candidate);
+  }
+  throw appsError(
+    "BAD_USER_INPUT",
+    "Could not reserve an address for this name; pick another name",
+  );
+}
+
+async function createStudioProduct(
+  deps: AppsDeps,
+  caller: Caller,
+  ctx: {
+    studioId: string;
+    studio: VetraCloudEnvironmentState;
+    name: string;
+    adoptEnvironmentId: string | null;
+    identityDid: string;
+  },
+): Promise<AppRow> {
+  const { studioId, studio, name, adoptEnvironmentId, identityDid } = ctx;
+  if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
+  const harbor = deps.harbor;
+  // An organisation's Studio makes the organisation's App; the env is handed
+  // over with an announced move.
+  const orgId = studio.ownerOrgId ?? null;
+  if (orgId && !deps.orgHandoverDb)
+    throw notConfigured("The organisation hand-over store");
+  const ownerAddress = orgId
+    ? (studio.owner ?? caller.address).toLowerCase()
+    : caller.address;
+  const adopted = adoptEnvironmentId
+    ? await adoptableEnv(deps, studioId, studio, adoptEnvironmentId)
+    : null;
+
+  const made: CreateMade = {
+    project: null,
+    robotId: null,
+    appId: null,
+    announced: null,
+    repo: null,
+    envId: null,
+  };
+  let linkedAdopted = false;
+  let step = "reserving the address";
+  let slug = "";
+  let envId = "";
+  const appId = deps.newId();
+  try {
+    slug = await reserveProductSlug(deps, harbor, name, made, !adopted);
+    const harborProject = made.project!;
+    step = "creating the production environment";
+    if (adopted) {
+      envId = adoptEnvironmentId!;
+    } else {
+      envId = await deps.envs.create();
+      made.envId = envId;
+    }
+    // The row goes in before the env actions (see createApp).
+    step = "recording the App";
+    const nowIso = deps.now().toISOString();
+    await deps.db
+      .insertInto("apps")
+      .values({
+        id: appId,
+        slug,
+        name,
+        owner_address: ownerAddress,
+        owner_chain_id: caller.chainId,
+        status: "ACTIVE",
+        installation_id: null,
+        repository_id: null,
+        repository_full_name: null,
+        production_branch: STUDIO_PRODUCTION_BRANCH,
+        production_environment_id: envId,
+        // The Studio's own preview is the preview (spec §6.4).
+        previews_enabled: false,
+        preview_limit: DEFAULT_PREVIEW_LIMIT,
+        preview_ttl_days: DEFAULT_PREVIEW_TTL_DAYS,
+        harbor_project: harborProject,
+        harbor_robot_name: "",
+        harbor_robot_id: null,
+        harbor_robot_secret_enc: "",
+        identity_did: identityDid,
+        identity_expires_at: null,
+        owner_org_id: orgId,
+        studio_environment_id: studioId,
+        product_drive_id: null,
+        launched_at: null,
+        adopted_at: adopted ? nowIso : null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .execute();
+    made.appId = appId;
+    step = "provisioning the production environment";
+    linkedAdopted = !!adopted;
+    await provisionProductionEnv(
+      deps,
+      caller,
+      {
+        envId,
+        appId,
+        name,
+        harborProject,
+        productionBranch: STUDIO_PRODUCTION_BRANCH,
+        orgId,
+        attach: adopted ? { state: adopted } : null,
+        subdomain: slug,
+        ownerAddress,
+        connectAtApex: true,
+      },
+      made,
+    );
+  } catch (err) {
+    // An adopted env is never deleted: only the link made here is taken back.
+    if (linkedAdopted) {
+      await deps.envs
+        .execute(envId, [clearAppLink({})])
+        .catch((e: unknown) =>
+          deps.logger.error(
+            `[vetra-apps] unlinking adopted env ${envId} after a failed ensureStudioProduct failed: ${String(e)}`,
+          ),
+        );
+    }
+    const cleanedUp = await undoFailedCreate(deps, harbor, null, null, made);
+    if (err instanceof GraphQLError || isUniqueViolation(err, STUDIO_APP_INDEX))
+      throw err;
+    deps.logger.error(
+      `[vetra-apps] ensureStudioProduct failed while ${step}: ${String(err)}${cleanedUp ? "" : " (cleanup incomplete)"}`,
+    );
+    throw githubErrors.deploySetupFailed({ repoRolledBack: false, cleanedUp });
+  }
+  deps.logger.info(
+    `[vetra-apps] created Studio product ${slug} (${appId}), studio ${studioId}, env ${envId}${adopted ? " (adopted)" : ""}`,
+  );
+  const created = (await getApp(deps.db, appId))!;
+  await mirrorAppRow(deps, created);
+  return created;
+}
+
+/**
+ * The Studio's live App, or null: for its agent (launch secret binding) or
+ * for whoever may view the App.
+ */
+export async function studioProductFor(
+  deps: AppsDeps,
+  caller: Caller,
+  studioEnvironmentId: string,
+  auth: StudioProductAuth,
+): Promise<AppRow | null> {
+  const studioId = studioEnvironmentId.trim();
+  if (!studioId) return null;
+  if (auth.kind === "agent") {
+    await verifyStudioSecret(deps, caller, auth.secret, studioId);
+    const app = await liveStudioApp(deps, studioId);
+    if (!app) return null;
+    await verifyStudioBinding(deps, caller, auth.secret, app);
+    return app;
+  }
+  await assertNotWorkload(deps, caller);
+  const app = await liveStudioApp(deps, studioId);
+  if (!app) return null;
+  try {
+    return await loadAppForOwner(deps, caller, app.id, { need: "view" });
+  } catch (err) {
+    if (err instanceof GraphQLError && err.extensions.code === "FORBIDDEN")
+      return null;
+    throw err;
+  }
+}
+
 /**
  * The checks before anything is made: workload refusal, name, org role and
  * the Harbor/Renown/encryption/hand-over configuration. Returns the trimmed
@@ -1213,6 +1718,28 @@ interface ProvisionInput {
   orgId: string | null;
   /** The existing env being attached (null: a new env is initialised). */
   attach: { state: VetraCloudEnvironmentState } | null;
+  /** genericSubdomain of a new env (default: generated from its id). */
+  subdomain?: string;
+  /** Owner of a new env (default: the caller). */
+  ownerAddress?: string;
+  /** A Studio product: Switchboard and Connect enabled, Connect at the apex. */
+  connectAtApex?: boolean;
+}
+
+/** What makes an env serve a Studio product: Switchboard + Connect, Connect at the apex. */
+function productServiceActions(state: VetraCloudEnvironmentState | null): Action[] {
+  const actions: Action[] = [];
+  for (const [type, prefix] of [
+    ["SWITCHBOARD", "switchboard"],
+    ["CONNECT", "connect"],
+  ] as const) {
+    const svc = state?.services.find((s) => s.type === type);
+    if (!svc?.enabled)
+      actions.push(enableService({ type, prefix: svc?.prefix || prefix }));
+  }
+  if (state?.apexService !== "CONNECT")
+    actions.push(setApexService({ type: "CONNECT" }));
+  return actions;
 }
 
 /**
@@ -1254,21 +1781,26 @@ async function provisionProductionEnv(
     const wasReady = attach.state.status === "READY";
     // The link widens the FUSION allowlist, so it re-renders; re-approve only
     // a settled env (never ship an owner's unapproved pending edits).
-    await dispatch([link, ...handOver]);
+    await dispatch([
+      link,
+      ...handOver,
+      ...(input.connectAtApex ? productServiceActions(attach.state) : []),
+    ]);
     if (wasReady) await deps.envs.execute(input.envId, [approveChanges({})]);
   } else {
     await dispatch([
       setLabel({ label: input.name }),
       initialize({
-        genericSubdomain: deps.generateSubdomain(input.envId),
+        genericSubdomain: input.subdomain ?? deps.generateSubdomain(input.envId),
         genericBaseDomain: "vetra.io",
         defaultPackageRegistry: deps.cfg.productionRegistry,
       }),
-      setOwner({ address: caller.address }),
+      setOwner({ address: input.ownerAddress ?? caller.address }),
       ...handOver,
       link,
       enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
       enableService({ type: "CONNECT", prefix: "connect" }),
+      ...(input.connectAtApex ? [setApexService({ type: "CONNECT" })] : []),
     ]);
     await deps.envs.execute(input.envId, [approveChanges({})]);
   }
@@ -1415,7 +1947,7 @@ function createFailure(
 async function undoFailedCreate(
   deps: AppsDeps,
   harbor: HarborApi,
-  renown: RenownApi,
+  renown: RenownApi | null,
   did: string | null,
   made: CreateMade,
 ): Promise<boolean> {
@@ -1454,7 +1986,7 @@ async function undoFailedCreate(
     if (!(await undoStudioRepo(deps, deps.github, made.repo)))
       cleanedUp = false;
   }
-  if (did !== null)
+  if (did !== null && renown)
     await step("deleting the identity", async () => {
       if (!(await identityInUse(deps, did)))
         await renown.deleteWorkloadIdentity(did);
@@ -1526,6 +2058,9 @@ export async function confirmAppIdentity(
   appId: string,
 ) {
   const app = await loadAppForOwner(deps, caller, appId);
+  // A Studio product without GitHub has no CI workload identity to confirm:
+  // its identity is the Studio agent's key, checked on every agent call.
+  if (!appRepository(app)) return app;
   if (!deps.renown) throw notConfigured("Renown workload identities");
   const delegation = await deps.renown.getDelegation({
     address: app.owner_org_id ? caller.address : app.owner_address,
@@ -1616,6 +2151,8 @@ export async function updateApp(
   ) {
     const branch = input.productionBranch.trim();
     assertBranch(branch);
+    if (!appRepository(app))
+      throw appsError("BAD_USER_INPUT", "This App has no repository");
     // Renown decides which ref may mint production tokens: keep it in sync first.
     if (!deps.renown) throw notConfigured("Renown workload identities");
     await deps.renown.updateWorkloadIdentity(app.identity_did, {
@@ -1730,11 +2267,15 @@ export async function deleteApp(
     if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
     await deps.harbor.deleteRobot(app.harbor_robot_id);
   }
-  if (!deps.renown) throw notConfigured("Renown workload identities");
-  try {
-    await deps.renown.deleteWorkloadIdentity(app.identity_did);
-  } catch (err) {
-    if (!/NOT_FOUND/.test(String(err))) throw err;
+  // A Studio product without GitHub registered no workload identity (its
+  // identity is the Studio agent's key): nothing to delete at Renown.
+  if (appRepository(app)) {
+    if (!deps.renown) throw notConfigured("Renown workload identities");
+    try {
+      await deps.renown.deleteWorkloadIdentity(app.identity_did);
+    } catch (err) {
+      if (!/NOT_FOUND/.test(String(err))) throw err;
+    }
   }
   const nowIso = deps.now().toISOString();
   await deps.db
@@ -1801,15 +2342,16 @@ export async function openAppSetupPullRequest(
   appId: string,
 ): Promise<string> {
   const app = await loadAppForOwner(deps, caller, appId);
+  const repository = requireRepository(app);
   const github = requireGithub(deps);
   const repo = await detectRepoToolchain(
     github,
-    app.installation_id,
-    app.repository_full_name,
+    repository.installationId,
+    repository.fullName,
   );
   return github.openPullRequestWithFile(
-    app.installation_id,
-    app.repository_full_name,
+    repository.installationId,
+    repository.fullName,
     {
       branch: "vetra/setup",
       path: ".github/workflows/vetra.yml",
@@ -1834,6 +2376,8 @@ function registryCredentials(deps: AppsDeps, app: AppRow) {
   if (!deps.cfg.encryptionKey) throw notConfigured("VETRA_APPS_ENCRYPTION_KEY");
   if (app.status === "DISCONNECTED")
     throw appsError("APP_NOT_ACTIVE", "App is disconnected");
+  if (!app.harbor_robot_secret_enc)
+    throw appsError("BAD_USER_INPUT", "This App has no registry robot");
   return {
     registry: HARBOR_HOST,
     project: app.harbor_project,
@@ -2008,7 +2552,8 @@ function assertClaimAllows(
   prNumber: number | null,
 ): VetraClaim {
   if (!claim) throw appsError("FORBIDDEN", "Token carries no vetra claim");
-  if (claim.repositoryId !== app.repository_id) {
+  // A Studio product without GitHub has no CI: no claim can match it.
+  if (!app.repository_id || claim.repositoryId !== app.repository_id) {
     throw appsError("FORBIDDEN", "Token was minted for another repository");
   }
   if (kind === "PRODUCTION") {
@@ -2058,17 +2603,18 @@ export async function isPullRequestClosed(
   app: AppRow,
   prNumber: number,
 ): Promise<boolean> {
-  if (!deps.github) return false;
+  const repo = appRepository(app);
+  if (!deps.github || !repo) return false;
   try {
     const state = await deps.github.getPullRequestState(
-      app.installation_id,
-      app.repository_full_name,
+      repo.installationId,
+      repo.fullName,
       prNumber,
     );
     return state !== "open";
   } catch (err) {
     deps.logger.warn(
-      `[vetra-apps] PR state of ${app.repository_full_name}#${prNumber} unavailable: ${String(err)}`,
+      `[vetra-apps] PR state of ${repo.fullName}#${prNumber} unavailable: ${String(err)}`,
     );
     return false;
   }
@@ -2145,6 +2691,12 @@ async function deployChecked(
   validatePackages(input.packages);
   if (input.kind === "PREVIEW" && !app.previews_enabled) {
     throw appsError("PREVIEWS_DISABLED", "Previews are disabled for this App");
+  }
+  if (input.kind === "PREVIEW" && !appRepository(app)) {
+    throw appsError(
+      "PREVIEWS_DISABLED",
+      "Previews come from pull requests; this App has no repository",
+    );
   }
   let runUrl = input.runUrl?.trim() || null;
   if (runUrl && !/^https:\/\/github\.com\//.test(runUrl)) runUrl = null;

@@ -119,6 +119,53 @@ export async function up(db: Kysely<any>): Promise<void> {
   await addConnectionTokenColumns(db);
   await ensureAppsStudioColumn(db);
   await ensureStudioLaunchSecretsTable(db);
+  await ensureStudioProductColumns(db);
+}
+
+/**
+ * Studio products without GitHub (Task 2.2): the repository columns become
+ * nullable (an App made by ensureStudioProduct has no repository until one is
+ * connected), plus the product drive id, the first-launch time and the
+ * adoption time of a pre-existing env. Additive and idempotent (DROP NOT NULL
+ * on a nullable column is a no-op; ADD COLUMN IF NOT EXISTS); schema builder
+ * only, so it lands in the namespace schema. Existing rows are untouched.
+ */
+export async function ensureStudioProductColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  const tolerate = (err: unknown) => {
+    // Two boots racing on the same ALTER: the loser sees a duplicate.
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  for (const column of [
+    "installation_id",
+    "repository_id",
+    "repository_full_name",
+  ]) {
+    try {
+      await db.schema
+        .alterTable("apps")
+        .alterColumn(column, (c) => c.dropNotNull())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  for (const column of ["product_drive_id", "launched_at", "adopted_at"]) {
+    try {
+      await db.schema
+        .alterTable("apps")
+        .addColumn(column, "text", (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+}
+
+/** Postgres 42701 (duplicate column). */
+function isDuplicateColumnError(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "42701";
 }
 
 /**

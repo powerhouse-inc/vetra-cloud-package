@@ -22,9 +22,10 @@ export interface AppsTable {
   owner_address: string;
   owner_chain_id: number;
   status: AppStatus;
-  installation_id: string;
-  repository_id: string;
-  repository_full_name: string;
+  /** GitHub repository of the App; all three null for a Studio product without GitHub (ensureStudioProduct). */
+  installation_id: string | null;
+  repository_id: string | null;
+  repository_full_name: string | null;
   production_branch: string;
   production_environment_id: string;
   previews_enabled: boolean;
@@ -46,6 +47,12 @@ export interface AppsTable {
   org_disputed?: boolean | null;
   /** The Vetra Studio env the App was created from (null: an imported repo). One live App per Studio. */
   studio_environment_id: string | null;
+  /** The live product's drive (D21), set once at first launch; null before. */
+  product_drive_id?: string | null;
+  /** When the product first went live (a version launched); null = never launched. */
+  launched_at?: string | null;
+  /** When an existing env of the owner was adopted as production (§6.6); never swept. */
+  adopted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
