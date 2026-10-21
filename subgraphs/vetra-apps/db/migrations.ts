@@ -118,6 +118,25 @@ export async function up(db: Kysely<any>): Promise<void> {
     .execute();
   await addConnectionTokenColumns(db);
   await ensureAppsStudioColumn(db);
+  await ensureStudioLaunchSecretsTable(db);
+}
+
+/**
+ * sha256 of each Studio's launch secret (D20), keyed by the Studio env. The
+ * secret itself lives only in the Studio's tenant secrets. Also run by the
+ * studio pool (subgraph boot order is not fixed). Additive and idempotent;
+ * schema builder only, so it lands in the namespace schema.
+ */
+export async function ensureStudioLaunchSecretsTable(
+  db: Kysely<any>,
+): Promise<void> {
+  await db.schema
+    .createTable("studio_launch_secrets")
+    .ifNotExists()
+    .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
+    .addColumn("secret_hash", "varchar(64)", (c) => c.notNull())
+    .addColumn("rotated_at", "varchar(64)", (c) => c.notNull())
+    .execute();
 }
 
 async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
@@ -140,6 +159,7 @@ async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "studio_launch_secrets",
     "github_deploy_connections",
     "app_deployments",
     "app_previews",

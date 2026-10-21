@@ -45,6 +45,7 @@ import {
   withdrawOrgHandover,
 } from "../vetra-cloud-observability/env-protection.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
+import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import {
   adoptOrgApps,
   adoptPersonApps,
@@ -129,6 +130,11 @@ export interface AppsDeps {
    * are served from the table either way in this step.
    */
   docs?: AppDocStore | null;
+  /**
+   * The single-key path of the secrets service, for a Studio's launch secret
+   * (rotateStudioLaunchSecret). Null/absent: OpenBao is not configured.
+   */
+  studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */

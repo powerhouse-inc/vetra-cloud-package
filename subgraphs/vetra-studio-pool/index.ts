@@ -27,8 +27,11 @@ import {
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import {
   createSecretsService,
+  ROTATABLE_MANAGED_KEYS,
   type SecretsService,
 } from "../vetra-cloud-secrets/services/secrets-service.js";
+import { ensureStudioLaunchSecretsTable } from "../vetra-apps/db/migrations.js";
+import { storeLaunchSecretHash } from "../vetra-apps/studio-binding.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
@@ -88,6 +91,9 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     const appsDb = (await this.relationalDb.createNamespace(
       "vetra-apps",
     )) as unknown as Kysely<VetraAppsDB>;
+    // The launch-secret hashes live in vetra-apps; ensured here too because
+    // subgraph boot order is not fixed.
+    await ensureStudioLaunchSecretsTable(appsDb as Kysely<any>);
     const studioAccess = createStudioAccessDeps({
       client: this.reactorClient as never,
       licensingDb,
@@ -166,11 +172,23 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
             if (!state) return null;
             return { owner: state.owner ?? null, ownerOrgId: state.ownerOrgId ?? null, state };
           },
+          storeLaunchSecretHash: (environmentId, secretHash) =>
+            storeLaunchSecretHash(appsDb, environmentId, secretHash, new Date().toISOString()),
+          // Managed keys (the launch secret) go through the replace's managed
+          // entries: the plain entries refuse them, as the user paths do.
           replaceTenantConfig: (tenantId, state, entries) =>
-            secretsService.replaceTenantConfig(tenantId, [
-              ...tenantConfigEntries(state),
-              ...entries.map((e) => ({ key: e.key, value: e.value, secret: e.secret ?? true })),
-            ]),
+            secretsService.replaceTenantConfig(
+              tenantId,
+              [
+                ...tenantConfigEntries(state),
+                ...entries
+                  .filter((e) => !ROTATABLE_MANAGED_KEYS.has(e.key))
+                  .map((e) => ({ key: e.key, value: e.value, secret: e.secret ?? true })),
+              ],
+              entries
+                .filter((e) => ROTATABLE_MANAGED_KEYS.has(e.key))
+                .map((e) => ({ key: e.key, value: e.value })),
+            ),
           handOver: async (documentId, address) => {
             if (perm) await protectForOwner(perm, documentId, address);
           },
@@ -205,6 +223,14 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
         const id = event.context?.childId;
         if (!id) return;
         void this.reconcileDeletedEnvironment(envDb, id, secretsService);
+        // Its launch-secret hash goes with it.
+        void appsDb
+          .deleteFrom("studio_launch_secrets")
+          .where("environment_id", "=", id)
+          .execute()
+          .catch((e: unknown) =>
+            console.warn(`[studio-pool] launch-secret cleanup for deleted env ${id} failed: ${e instanceof Error ? e.name : "error"}`),
+          );
         // A deleted Studio's key goes at once; the vetra-llm sweeper is the backstop.
         void broker
           .releaseVetraKey(id)

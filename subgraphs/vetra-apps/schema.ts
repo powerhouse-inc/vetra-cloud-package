@@ -190,5 +190,7 @@ export const schema: DocumentNode = gql`
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!
     deployApp(input: DeployAppInput!): AppDeployment!
     rollbackApp(deploymentId: ID!): AppDeployment!
+    "Admin: give a claimed Studio a new launch secret (writes only that key; backfills Studios without one)"
+    rotateStudioLaunchSecret(environmentId: String!): Boolean!
   }
 `;

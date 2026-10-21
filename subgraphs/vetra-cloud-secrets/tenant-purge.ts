@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { SecretsDB } from "./db/schema.js";
-import { MANAGED_SECRET_KEYS, purgeTenantRows } from "./services/secrets-service.js";
+import { PURGE_KEPT_KEYS, purgeTenantRows } from "./services/secrets-service.js";
 import { rowTenantId } from "../../processors/vetra-cloud-environment/cleanup.js";
 import type { DB as EnvProjection } from "../../processors/vetra-cloud-environment/schema.js";
 
@@ -81,7 +81,8 @@ export async function purgeOrphanTenantRows(args: OrphanPurgeArgs): Promise<Orph
   const done = await secretsDb.selectFrom("tenant_orphan_purges").select("token").executeTakeFirst();
   if (done) return { outcome: "ALREADY_DONE", orphans: [], token: done.token };
 
-  const managed = [...MANAGED_SECRET_KEYS];
+  // What a purge would delete: everything but the keys it keeps.
+  const managed = [...PURGE_KEPT_KEYS];
   const stored = new Set<string>();
   for (const r of await secretsDb.selectFrom("tenant_env_vars").select("tenantId").distinct().execute()) {
     stored.add(r.tenantId);

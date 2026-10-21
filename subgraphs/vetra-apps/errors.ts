@@ -9,7 +9,18 @@ export type AppsErrorCode =
   | "APP_NOT_ACTIVE"
   | "GITHUB_NOT_CONNECTED"
   | "SERVICE_NOT_CONFIGURED"
+  | StudioLaunchErrorCode
   | GithubSetupErrorCode;
+
+/**
+ * Refusals of the Studio-agent path (D20): STUDIO_BINDING when the Studio may
+ * not act on this product; DELEGATION_* when the owner's permission for the
+ * agent is missing or no longer current (the Studio then asks the owner).
+ */
+export type StudioLaunchErrorCode =
+  | "STUDIO_BINDING"
+  | "DELEGATION_EXPIRED"
+  | "DELEGATION_MISSING";
 
 /** The GitHub and deploy-setup failures a customer can act on. */
 export type GithubSetupErrorCode =

@@ -94,8 +94,16 @@ export interface GithubDeployConnectionsTable {
   refresh_token_expires_at: string | null;
 }
 
+/** One row per Studio env: the sha256 (hex) of its launch secret, never the secret. */
+export interface StudioLaunchSecretsTable {
+  environment_id: string;
+  secret_hash: string;
+  rotated_at: string;
+}
+
 export interface VetraAppsDB {
   apps: AppsTable;
+  studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
   app_deployments: AppDeploymentsTable;
   github_deploy_connections: GithubDeployConnectionsTable;

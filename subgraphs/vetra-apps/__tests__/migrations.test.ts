@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
+  ensureStudioLaunchSecretsTable,
   isConcurrentIndexError,
 } from "../db/migrations.js";
 
@@ -98,5 +99,37 @@ describe("isConcurrentIndexError", () => {
     expect(isConcurrentIndexError({ code: "42601" })).toBe(false);
     expect(isConcurrentIndexError(new Error("boom"))).toBe(false);
     expect(isConcurrentIndexError(null)).toBe(false);
+  });
+});
+
+describe("ensureStudioLaunchSecretsTable", () => {
+  it("creates the table in the namespace schema, additively and idempotently", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await ensureStudioLaunchSecretsTable(db);
+      await db
+        .insertInto("studio_launch_secrets")
+        .values({ environment_id: "s1", secret_hash: "a".repeat(64), rotated_at: "t" })
+        .execute();
+      await ensureStudioLaunchSecretsTable(db);
+      expect(
+        await db.selectFrom("studio_launch_secrets").select("environment_id").execute(),
+      ).toStrictEqual([{ environment_id: "s1" }]);
+      const inPublic = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM information_schema.tables
+        WHERE table_name = 'studio_launch_secrets' AND table_schema = 'public'`.execute(root);
+      expect(inPublic.rows[0].n).toBe(0);
+      // One row per Studio.
+      await expect(
+        db
+          .insertInto("studio_launch_secrets")
+          .values({ environment_id: "s1", secret_hash: "b".repeat(64), rotated_at: "t" })
+          .execute(),
+      ).rejects.toThrow();
+    } finally {
+      await root.destroy();
+    }
   });
 });

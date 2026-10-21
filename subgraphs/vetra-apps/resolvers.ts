@@ -8,6 +8,7 @@ import {
 } from "./auth.js";
 import { appsError, githubErrors } from "./errors.js";
 import { GithubHttpError, GithubUnavailableError } from "./github.js";
+import { rotateStudioLaunchSecret } from "./studio-binding.js";
 
 /**
  * GraphQL is for people (owner / admin). CI workload tokens (bearer with a
@@ -332,6 +333,14 @@ export function createResolvers(deps: AppsDeps) {
             deps,
             await rollbackApp(deps, requireCaller(ctx), deploymentId),
           ),
+        ),
+      rotateStudioLaunchSecret: (
+        _: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rotateStudioLaunchSecret", () =>
+          rotateStudioLaunchSecret(deps, requireCaller(ctx), environmentId),
         ),
     },
   };

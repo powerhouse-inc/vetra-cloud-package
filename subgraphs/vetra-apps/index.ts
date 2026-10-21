@@ -47,6 +47,9 @@ import {
 } from "./watcher.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
+import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
+import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -125,6 +128,23 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       "vetra-cloud-observability",
     )) as unknown as Kysely<ObservabilityDB>;
 
+    // A Studio's launch secret is written through the tenant secrets
+    // (OpenBao transit); without OpenBao the rotation answers
+    // SERVICE_NOT_CONFIGURED.
+    const openbaoAddr = process.env.OPENBAO_ADDR;
+    const studioSecrets = openbaoAddr
+      ? createSecretsService({
+          db: (await this.relationalDb.createNamespace(
+            "vetra-cloud-secrets",
+          )) as unknown as Kysely<SecretsDB>,
+          transit: new OpenBaoTransitClient({
+            addr: openbaoAddr,
+            role: process.env.OPENBAO_TRANSIT_ROLE ?? "vetra-secrets",
+            keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
+          }),
+        })
+      : null;
+
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -138,6 +158,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
+      studioSecrets,
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,

@@ -2,6 +2,11 @@ import { randomBytes } from "node:crypto";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import { STUDIO_KEY_SECRET_NAMES } from "../vetra-licensing/subscriptions-resolvers.js";
 import { MODEL_FALLBACKS_VAR, MODEL_VAR, OPENROUTER_KEY_SECRET } from "../vetra-llm/broker.js";
+import {
+  hashLaunchSecret,
+  newLaunchSecret,
+  STUDIO_LAUNCH_SECRET_KEY,
+} from "../vetra-apps/studio-binding.js";
 import type { ClaimDb } from "./pool-db.js";
 
 const SECRET_RETRIES = 3;
@@ -49,13 +54,20 @@ export interface ClaimDeps {
    * gone. `entries` carry the model key and model, the legacy key names,
    * `ADMINS` (so the claimant is the embedded switchboard's admin without a
    * gitops re-render) and the session-export secret; the model entries
-   * include VETRA_MODEL_FALLBACKS.
+   * include VETRA_MODEL_FALLBACKS. The Studio's launch secret
+   * (VETRA_STUDIO_LAUNCH_SECRET, a managed key) rides the same write.
    */
   replaceTenantConfig: (
     tenantId: string,
     state: VetraCloudEnvironmentState,
     entries: TenantEntry[],
   ) => Promise<void>;
+  /**
+   * Record the sha256 of the Studio's launch secret (vetra-apps
+   * studio_launch_secrets, replacing any earlier row for the env). The
+   * secret itself is only in `entries`.
+   */
+  storeLaunchSecretHash: (environmentId: string, secretHash: string) => Promise<void>;
   /**
    * Move the document's reactor-api protection to the new owner and revoke
    * every other grant (env-protection.ts protectForOwner).
@@ -155,6 +167,15 @@ export async function claimWarmEnvironment(
     const llm = await d.grantLlmKey(env.id, did);
     granted = llm !== null;
     const anthropic = await d.legacyAnthropicKey(did);
+    // 3b. The launch secret binding this Studio's agent to its own product
+    //     (D20). The hash is stored first: a secret the cloud cannot check
+    //     would only make launches fail.
+    const launchSecret = newLaunchSecret();
+    await withRetry(
+      () => d.storeLaunchSecretHash(env.id, hashLaunchSecret(launchSecret)),
+      SECRET_RETRIES,
+      sleep,
+    );
     // 4. Everything in ONE batched write — a single pg_notify → one
     //    secrets-controller reconcile → ONE Reloader bounce of the agent pod.
     //    Retried as a whole for transient failures.
@@ -178,6 +199,7 @@ export async function claimWarmEnvironment(
       // Per-env random secret gating vetra-cli's session-export endpoints
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },
+      { key: STUDIO_LAUNCH_SECRET_KEY, value: launchSecret },
     ];
     // Everything not declared by the document is dropped in the same write,
     // so nothing planted before the claim survives into the user's studio.
