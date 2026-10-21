@@ -236,6 +236,8 @@ export function fakeGithub(): GithubDeployApi & {
   }[];
   /** Org login → the caller's membership (absent: active admin; null: not a member). */
   memberships: Map<string, { state: string; role: string } | null>;
+  /** `<user token>|<org login>` → that user's membership; wins over `memberships`. */
+  membershipsByToken: Map<string, { state: string; role: string } | null>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -271,15 +273,22 @@ export function fakeGithub(): GithubDeployApi & {
     },
   ];
   const memberships = new Map<string, { state: string; role: string } | null>();
+  const membershipsByToken = new Map<
+    string,
+    { state: string; role: string } | null
+  >();
   let pushTokenSeq = 0;
   return {
     calls,
     installations,
     memberships,
-    getOrgMembership: rec("getOrgMembership", (_token: string, org: string) =>
-      memberships.has(org)
-        ? memberships.get(org)!
-        : { state: "active", role: "admin" },
+    membershipsByToken,
+    getOrgMembership: rec("getOrgMembership", (token: string, org: string) =>
+      membershipsByToken.has(`${token}|${org}`)
+        ? membershipsByToken.get(`${token}|${org}`)!
+        : memberships.has(org)
+          ? memberships.get(org)!
+          : { state: "active", role: "admin" },
     ),
     createRepoPushToken: rec("createRepoPushToken", () => ({
       token: `ghs_push_${++pushTokenSeq}`,
@@ -333,7 +342,8 @@ export function fakeGithub(): GithubDeployApi & {
     exchangeOAuthCode: rec("exchangeOAuthCode", (code: string) => {
       if (code === "bad") throw new Error("bad_verification_code");
       return {
-        accessToken: "user-token",
+        // "as:<token>": the user token this code grants (another GitHub user).
+        accessToken: code.startsWith("as:") ? code.slice(3) : "user-token",
         expiresInSec: 8 * 3600,
         refreshToken: "refresh-1",
         refreshTokenExpiresInSec: 184 * 86400,

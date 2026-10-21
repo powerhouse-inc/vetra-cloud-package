@@ -217,7 +217,8 @@ export async function ensureStudioProductColumns(
 
 /**
  * Studio products on GitHub (Task 4.1): the account the repository was made
- * in (login + type) and when GitHub took it away. Additive and idempotent.
+ * in (login + type), who connected it, and when GitHub took it away.
+ * Additive and idempotent.
  */
 export async function ensureStudioRepositoryColumns(
   db: Kysely<any>,
@@ -226,6 +227,7 @@ export async function ensureStudioRepositoryColumns(
     "repository_account_login",
     "repository_account_type",
     "repository_disconnected_at",
+    "repository_connected_by",
   ]) {
     try {
       await db.schema

@@ -541,10 +541,11 @@ export async function githubDeployRepositories(
  * Apps (members and admins only; Apps Renown lists for it are adopted first).
  */
 /**
- * The caller's Apps (or an organisation's). Studio products without a
- * repository are listed only with `includeStudioProducts`: Apps pages that
- * predate them read `repository` as always present (vetra.io adds the flag
- * when it handles them, Task 4.6).
+ * The caller's Apps (or an organisation's). Studio products, with or
+ * without a GitHub repository, are listed only with `includeStudioProducts`:
+ * Apps pages that predate them read `repository` as always present and treat
+ * every App as deployed by its CI (vetra.io adds the flag when it handles
+ * them, Task 4.6).
  */
 export async function myApps(
   deps: AppsDeps,
@@ -1780,6 +1781,7 @@ export async function attachStudioRepository(
           repository_account_login: account.login,
           repository_account_type: account.type,
           repository_disconnected_at: null,
+          repository_connected_by: caller.address,
           updated_at: deps.now().toISOString(),
         })
         .where("id", "=", app.id)
@@ -1831,8 +1833,10 @@ export async function attachStudioRepository(
 }
 
 /**
- * Before a push token for an organisation's repository: the App's owner must
- * still be an active member of it (with the owner's GitHub user token). A
+ * Before a push token for an organisation's repository: whoever connected it
+ * (repository_connected_by; the App's owner on rows without it) must still be
+ * an active member of it, checked with their GitHub user token for the
+ * repository's installation. A
  * 403 that names no policy means the app may not read memberships: GitHub's
  * own checks then decide, logged at warn.
  */
@@ -1846,7 +1850,7 @@ async function assertOwnerStillInOrg(
   const userToken = await userTokenFor(
     deps,
     {
-      address: app.owner_address,
+      address: app.repository_connected_by ?? app.owner_address,
       chainId: app.owner_chain_id,
       appKey: null,
       isAdmin: false,
@@ -1861,7 +1865,7 @@ async function assertOwnerStillInOrg(
     if (!isRefusal(err, 403))
       throw classifyGithubError(err, org) ?? err;
     deps.logger.warn(
-      `[vetra-apps] push token for App ${app.slug} (${app.id}): GitHub did not let Vetra read the owner's membership of ${org}; left to GitHub`,
+      `[vetra-apps] push token for App ${app.slug} (${app.id}): GitHub did not let Vetra read the connecting user's membership of ${org}; left to GitHub`,
     );
     return;
   }

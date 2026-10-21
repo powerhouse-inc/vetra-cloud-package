@@ -63,6 +63,8 @@ export interface AppsTable {
   repository_account_login?: string | null;
   /** "User" or "Organization" (GitHub's account type) of repository_account_login. */
   repository_account_type?: string | null;
+  /** Address whose GitHub connection made the Studio product's repository (push tokens re-check its org membership). */
+  repository_connected_by?: string | null;
   /** When GitHub took a Studio product's repository away (uninstalled / removed); the product stays ACTIVE. */
   repository_disconnected_at?: string | null;
   created_at: string;

@@ -228,7 +228,7 @@ export const schema: DocumentNode = gql`
 
   type Query {
     "Personal Apps, or with orgId the organisation's Apps (members only)"
-    myApps(orgId: String, "Also list Studio products without a repository" includeStudioProducts: Boolean): [App!]!
+    myApps(orgId: String, "Also list Studio products (with or without a GitHub repository); without it only Apps deployed by their own CI" includeStudioProducts: Boolean): [App!]!
     app(id: ID!): App
     "The Studio's product App (its agent with the launch secret header, or the owner)"
     studioProduct(studioEnvironmentId: String!): App

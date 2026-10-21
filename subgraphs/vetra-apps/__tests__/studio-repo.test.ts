@@ -9,6 +9,7 @@ vi.mock("@octokit/auth-app", () => ({
 import {
   addPackage,
   approveChanges,
+  setOwnerOrg,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { Caller } from "../auth.js";
 import { createCiRoutes, type CiTokenVerifier } from "../ci.js";
@@ -37,6 +38,9 @@ import { reportDeploymentToGithub } from "../watcher.js";
 import { handleGithubWebhook } from "../webhook.js";
 import {
   INSTALLATION,
+  MEMBER,
+  member,
+  ORG,
   makeHarness,
   OWNER,
   owner,
@@ -408,6 +412,19 @@ describe("attachStudioRepository (D14)", () => {
       },
     );
     expect(await code(viaGraphql)).toBe("FORBIDDEN");
+    expect(h.github.calls.createRepoAsUser).toBeUndefined();
+  });
+
+  it("the key of a deleted App stays refused", async () => {
+    const first = await seedProduct();
+    await deleteApp(h.deps, owner, first.app.id, false);
+    const p = await seedProduct("Second Shop", otherAgent);
+    await connectGithubDeploy(h.deps, owner, "code");
+    expect(
+      await code(
+        attachStudioRepository(h.deps, agent, { appId: p.app.id, installationId: PERSONAL }),
+      ),
+    ).toBe("FORBIDDEN");
     expect(h.github.calls.createRepoAsUser).toBeUndefined();
   });
 
@@ -825,6 +842,81 @@ describe("studioPushToken (D20 binding)", () => {
       installationId: INSTALLATION,
     });
     expect(await code(studioPushToken(h.deps, agent, legacy.id, secret))).toBe("BAD_USER_INPUT");
+    expect(h.github.calls.createRepoPushToken).toBeUndefined();
+  });
+
+  it("an org repository connected by a member is checked with that member's GitHub connection", async () => {
+    // An organisation's Studio: the owner and a member both publish for it.
+    h.orgs.join(ORG, OWNER, "PUBLISHER", "ALL");
+    h.orgs.join(ORG, MEMBER, "PUBLISHER", "ALL");
+    const studioId = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(studioId, [
+      addPackage({
+        packageName: "vetra",
+        version: "0.0.1-dev.27",
+        registry: "https://registry.dev.vetra.io",
+      }),
+      approveChanges({}),
+      setOwnerOrg({ ownerOrgId: ORG, operators: [OWNER, MEMBER] }),
+    ]);
+    const secret = randomBytes(32).toString("hex");
+    await storeLaunchSecretHash(h.db, studioId, hashLaunchSecret(secret), "2026-10-20T00:00:00.000Z");
+    const product = await ensureStudioProduct(
+      h.deps,
+      agent,
+      { studioEnvironmentId: studioId, name: "Team Shop" },
+      { kind: "agent", secret },
+    );
+    expect(product.owner_org_id).toBe(ORG);
+    // Only the member connected GitHub (the owner has no connection at all).
+    await connectGithubDeploy(h.deps, member, "as:member-token");
+    const attached = await attachStudioRepository(h.deps, member, {
+      appId: product.id,
+      installationId: ORG_INSTALLATION,
+    });
+    expect(attached.repository_connected_by).toBe(MEMBER);
+    expect(attached.owner_address).toBe(OWNER);
+
+    expect((await studioPushToken(h.deps, agent, product.id, secret)).token).toMatch(/^ghs_push_/);
+    const checked = h.github.calls.getOrgMembership!.at(-1)!;
+    expect(checked).toStrictEqual(["member-token", ORG_LOGIN]);
+
+    // The member left the GitHub organisation.
+    h.github.membershipsByToken.set(`member-token|${ORG_LOGIN}`, null);
+    expect(await failure(studioPushToken(h.deps, agent, product.id, secret))).toStrictEqual({
+      code: "INSUFFICIENT_PERMISSION",
+      message: `Install Vetra on ${ORG_LOGIN} or choose your personal account`,
+    });
+  });
+
+  it("minting for an org repository: a named policy is ORG_POLICY, a lapsed GitHub authorization is not connected", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, {
+      appId: p.app.id,
+      installationId: ORG_INSTALLATION,
+    });
+    const membershipRead = h.github.getOrgMembership;
+    h.github.getOrgMembership = async () => {
+      throw new GithubHttpError(403, "SAML", [
+        "Resource protected by organization SAML enforcement.",
+      ]);
+    };
+    expect(await failure(studioPushToken(h.deps, agent, p.app.id, p.secret))).toStrictEqual({
+      code: "ORG_POLICY",
+      message: `Ask an owner of ${ORG_LOGIN} to allow Vetra, or choose your personal account`,
+    });
+    h.github.getOrgMembership = membershipRead;
+
+    const past = "2026-01-01T00:00:00.000Z";
+    await h.db
+      .updateTable("github_deploy_connections")
+      .set({ user_token_expires_at: past, refresh_token_expires_at: past })
+      .where("owner_address", "=", OWNER)
+      .execute();
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED",
+    );
     expect(h.github.calls.createRepoPushToken).toBeUndefined();
   });
 });
