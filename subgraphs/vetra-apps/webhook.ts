@@ -179,5 +179,60 @@ export async function handleGithubWebhook(
     return { status: 200, body: { disconnectedApps: count } };
   }
 
+  if (input.event === "push") {
+    return { status: 200, body: { flaggedApps: await flagOutsidePush(deps, payload) } };
+  }
+
   return { status: 204 };
+}
+
+const NULL_SHA = /^0+$/;
+
+/**
+ * A push to a Studio product's production branch made outside the Studio
+ * (D15): its head sha goes to `apps.external_changes_sha`, and the Studio
+ * offers to bring it in; nothing is launched. Ignored: other branches and
+ * tags, a deleted branch, Apps deployed by their own CI, a repository GitHub
+ * took away, and the Studio's own mirror pushes. Matching rule: a push is
+ * the Studio's own when its head (`after`) equals a sha the agent recorded
+ * with recordStudioMirror — the App's `mirror_sha` or the `mirror_sha` of
+ * any of its deployments. Only the head counts: a push that carries the
+ * Studio's commits under someone else's head is flagged. Returns how many
+ * Apps were flagged.
+ */
+async function flagOutsidePush(deps: AppsDeps, payload: Payload): Promise<number> {
+  const repositoryId = idOf(pick(payload, "repository.id"));
+  const installationId = idOf(pick(payload, "installation.id"));
+  const ref = typeof payload.ref === "string" ? payload.ref : "";
+  const after =
+    typeof payload.after === "string" ? payload.after.toLowerCase() : "";
+  if (!repositoryId || !after || NULL_SHA.test(after) || payload.deleted === true)
+    return 0;
+  let flagged = 0;
+  for (const app of await appsByRepository(deps, repositoryId)) {
+    if (!isStudioProduct(app) || app.repository_disconnected_at) continue;
+    if (installationId && app.installation_id !== installationId) continue;
+    if (ref !== `refs/heads/${app.production_branch}`) continue;
+    if (app.mirror_sha === after) continue;
+    const own = await deps.db
+      .selectFrom("app_deployments")
+      .select("id")
+      .where("app_id", "=", app.id)
+      .where("mirror_sha", "=", after)
+      .executeTakeFirst();
+    if (own) continue;
+    await deps.db
+      .updateTable("apps")
+      .set({
+        external_changes_sha: after,
+        updated_at: deps.now().toISOString(),
+      })
+      .where("id", "=", app.id)
+      .execute();
+    deps.logger.info(
+      `[vetra-apps] ${app.slug}: ${app.production_branch} changed on GitHub (${after.slice(0, 12)}); the Studio can bring it in`,
+    );
+    flagged++;
+  }
+  return flagged;
 }

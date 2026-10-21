@@ -130,6 +130,8 @@ export const schema: DocumentNode = gql`
     productDriveId: String
     "When the product first went live; null = never launched."
     launchedAt: String
+    "Head commit of the latest push to the production branch made outside the Studio (Studio products); null when none or brought in."
+    externalChangesSha: String
     createdAt: String!
     updatedAt: String!
   }
@@ -264,6 +266,10 @@ export const schema: DocumentNode = gql`
     attachStudioRepository(input: AttachStudioRepositoryInput!): App!
     "The Studio's agent gets a short-lived push token for its own product's repository (with the launch secret header)"
     studioPushToken(appId: ID!): StudioPushToken!
+    "The Studio's agent records the commit it is about to push to its product's repository, so that push is not taken for a change made on GitHub (with the launch secret header)"
+    recordStudioMirror(appId: ID!, sha: String!): Boolean!
+    "The Studio's agent brought the changes made on GitHub into its product (with the launch secret header)"
+    clearExternalChanges(appId: ID!): Boolean!
     "Admin: give a claimed Studio a new launch secret (writes only that key; backfills Studios without one)"
     rotateStudioLaunchSecret(environmentId: String!): Boolean!
   }

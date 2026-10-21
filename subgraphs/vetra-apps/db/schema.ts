@@ -67,6 +67,10 @@ export interface AppsTable {
   repository_connected_by?: string | null;
   /** When GitHub took a Studio product's repository away (uninstalled / removed); the product stays ACTIVE. */
   repository_disconnected_at?: string | null;
+  /** Head sha of the latest push to the production branch made outside the Studio (D15); null = none / brought in. */
+  external_changes_sha?: string | null;
+  /** The sha the Studio's agent last announced it is mirroring (recordStudioMirror), kept for products with no deployment yet. */
+  mirror_sha?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +109,8 @@ export interface AppDeploymentsTable {
   version_number?: number | null;
   /** JSON package names the env had right before a Studio deployment was applied. */
   pre_apply_packages?: string | null;
+  /** The sha the Studio mirrored to GitHub while this was the latest production deployment (recordStudioMirror). */
+  mirror_sha?: string | null;
   created_at: string;
   updated_at: string;
 }

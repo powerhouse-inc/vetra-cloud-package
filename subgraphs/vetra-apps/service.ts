@@ -1927,6 +1927,81 @@ export async function studioPushToken(
   };
 }
 
+/** A full git commit sha (SHA-1 or SHA-256 repositories), as a push names it. */
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+/**
+ * The Studio's agent announces the commit it is about to push to GitHub
+ * (D15, called before the push): the push webhook then knows it as the
+ * Studio's own. Stored on the App's latest PRODUCTION deployment
+ * (`app_deployments.mirror_sha`) and on the App (`apps.mirror_sha`, for a
+ * product that has not launched yet). D20 binding via studioAppFor.
+ */
+export async function recordStudioMirror(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  sha: string,
+  secret: string | null,
+): Promise<boolean> {
+  if (typeof sha !== "string" || !FULL_SHA.test(sha))
+    throw appsError("BAD_USER_INPUT", "sha must be a full git commit sha");
+  const app = await studioAppFor(deps, caller, appId, secret);
+  if (!isStudioProduct(app))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "This App is deployed from its own repository; the Studio does not push to it",
+    );
+  const mirror = sha.toLowerCase();
+  const nowIso = deps.now().toISOString();
+  await deps.db.transaction().execute(async (trx) => {
+    const latest = await trx
+      .selectFrom("app_deployments")
+      .select("id")
+      .where("app_id", "=", app.id)
+      .where("kind", "=", "PRODUCTION")
+      .orderBy("created_at", "desc")
+      .orderBy("id", "desc")
+      .executeTakeFirst();
+    if (latest)
+      await trx
+        .updateTable("app_deployments")
+        .set({ mirror_sha: mirror })
+        .where("id", "=", latest.id)
+        .execute();
+    await trx
+      .updateTable("apps")
+      .set({ mirror_sha: mirror, updated_at: nowIso })
+      .where("id", "=", app.id)
+      .execute();
+  });
+  return true;
+}
+
+/**
+ * The Studio's agent brought the changes made on GitHub in (they are in what
+ * it pushed): `apps.external_changes_sha` is cleared. D20 binding.
+ */
+export async function clearExternalChanges(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  secret: string | null,
+): Promise<boolean> {
+  const app = await studioAppFor(deps, caller, appId, secret);
+  if (app.external_changes_sha) {
+    await deps.db
+      .updateTable("apps")
+      .set({ external_changes_sha: null, updated_at: deps.now().toISOString() })
+      .where("id", "=", app.id)
+      .execute();
+    deps.logger.info(
+      `[vetra-apps] changes made on GitHub brought into ${app.slug}`,
+    );
+  }
+  return true;
+}
+
 /**
  * The checks before anything is made: workload refusal, name, org role and
  * the Harbor/Renown/encryption/hand-over configuration. Returns the trimmed
@@ -3430,6 +3505,7 @@ function deploymentRow(
     on_behalf_of: req.onBehalfOf,
     version_number: req.versionNumber,
     pre_apply_packages: null,
+    mirror_sha: null,
     created_at: nowIso,
     updated_at: nowIso,
   };

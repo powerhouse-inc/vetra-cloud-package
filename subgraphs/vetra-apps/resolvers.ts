@@ -34,6 +34,7 @@ import {
   appForOwner,
   appRegistryCredentials,
   attachStudioRepository,
+  clearExternalChanges,
   confirmAppIdentity,
   connectGithubDeploy,
   createApp,
@@ -43,6 +44,7 @@ import {
   ensureStudioProduct,
   githubDeployAppInfo,
   launchStudioVersion,
+  recordStudioMirror,
   rollbackStudioVersion,
   setStudioProductDrive,
   studioDeploymentFor,
@@ -173,6 +175,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
       : null,
     productDriveId: app.product_drive_id ?? null,
     launchedAt: app.launched_at ?? null,
+    externalChangesSha: app.external_changes_sha ?? null,
     productionBranch: app.production_branch,
     productionEnvironmentId: app.production_environment_id,
     previewsEnabled: app.previews_enabled,
@@ -488,6 +491,33 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "studioPushToken", () =>
           studioPushToken(
+            deps,
+            requireCaller(ctx),
+            appId,
+            presentedStudioSecret(ctx),
+          ),
+        ),
+      recordStudioMirror: (
+        _: unknown,
+        { appId, sha }: { appId: string; sha: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "recordStudioMirror", () =>
+          recordStudioMirror(
+            deps,
+            requireCaller(ctx),
+            appId,
+            sha,
+            presentedStudioSecret(ctx),
+          ),
+        ),
+      clearExternalChanges: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "clearExternalChanges", () =>
+          clearExternalChanges(
             deps,
             requireCaller(ctx),
             appId,
