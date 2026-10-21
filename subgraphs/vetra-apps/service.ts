@@ -555,7 +555,7 @@ export async function myApps(
   const apps = await listMyApps(deps, caller, orgId);
   return opts.includeStudioProducts
     ? apps
-    : apps.filter((a) => appRepository(a) !== null);
+    : apps.filter((a) => hasCiIdentity(a));
 }
 
 async function listMyApps(
@@ -1677,7 +1677,16 @@ export async function attachStudioRepository(
   deps: AppsDeps,
   caller: Caller,
   input: AttachStudioRepositoryInput,
+  auth: StudioProductAuth = { kind: "owner" },
 ): Promise<AppRow> {
+  // The owner in person: never through the Studio-agent path (any key that
+  // presents the launch secret header), never with a key an App is bound to
+  // (loadAppForOwner → assertNotWorkload, DELETED Apps' keys included).
+  if (auth.kind === "agent")
+    throw appsError(
+      "FORBIDDEN",
+      "Only you can connect GitHub, from your browser",
+    );
   const github = requireGithub(deps);
   const found = await loadAppForOwner(deps, caller, input.appId);
   if (!isStudioProduct(found))
@@ -1762,7 +1771,7 @@ export async function attachStudioRepository(
         made.repo!.inInstallation = true;
       }
       step = "recording the repository";
-      await deps.db
+      const recorded = await deps.db
         .updateTable("apps")
         .set({
           installation_id: installationId,
@@ -1774,7 +1783,23 @@ export async function attachStudioRepository(
           updated_at: deps.now().toISOString(),
         })
         .where("id", "=", app.id)
-        .execute();
+        // Another replica may have recorded a repository meanwhile.
+        .where((eb) =>
+          eb.or([
+            eb("repository_id", "is", null),
+            eb("repository_disconnected_at", "is not", null),
+          ]),
+        )
+        .returning("id")
+        .executeTakeFirst();
+      if (!recorded) {
+        const winner = (await getApp(deps.db, app.id))!;
+        // Never deleted (repositories are never removed automatically).
+        deps.logger.info(
+          `[vetra-apps] Studio product ${app.slug} (${app.id}) was connected to ${winner.repository_full_name ?? "a repository"} meanwhile; ${repo.fullName} is not used`,
+        );
+        return winner;
+      }
     } catch (err) {
       const cleanedUp = made.repo
         ? await undoStudioRepo(deps, github, made.repo)
@@ -1806,6 +1831,45 @@ export async function attachStudioRepository(
 }
 
 /**
+ * Before a push token for an organisation's repository: the App's owner must
+ * still be an active member of it (with the owner's GitHub user token). A
+ * 403 that names no policy means the app may not read memberships: GitHub's
+ * own checks then decide, logged at warn.
+ */
+async function assertOwnerStillInOrg(
+  deps: AppsDeps,
+  github: GithubDeployApi,
+  app: AppRow,
+  installationId: string,
+): Promise<void> {
+  const org = app.repository_account_login ?? "";
+  const userToken = await userTokenFor(
+    deps,
+    {
+      address: app.owner_address,
+      chainId: app.owner_chain_id,
+      appKey: null,
+      isAdmin: false,
+    },
+    installationId,
+  );
+  let membership: { state: string; role: string } | null;
+  try {
+    membership = await github.getOrgMembership(userToken, org);
+  } catch (err) {
+    if (namesOrgPolicy(err)) throw githubErrors.studioOrgPolicy(org);
+    if (!isRefusal(err, 403))
+      throw classifyGithubError(err, org) ?? err;
+    deps.logger.warn(
+      `[vetra-apps] push token for App ${app.slug} (${app.id}): GitHub did not let Vetra read the owner's membership of ${org}; left to GitHub`,
+    );
+    return;
+  }
+  if (membership?.state !== "active")
+    throw githubErrors.studioOrgNotInstalled(org);
+}
+
+/**
  * A short-lived token the Studio's agent pushes its product's code with
  * (D20 binding: verifyStudioSecret + verifyStudioBinding through
  * studioAppFor). An installation token limited to the App's one repository
@@ -1821,9 +1885,16 @@ export async function studioPushToken(
   secret: string | null,
 ): Promise<StudioPushToken> {
   const app = await studioAppFor(deps, caller, appId, secret);
+  if (!isStudioProduct(app))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "This App is deployed from its own repository; the Studio does not push to it",
+    );
   const repo = appRepository(app);
   if (!repo || app.repository_disconnected_at) throw notConnected();
   const github = requireGithub(deps);
+  if (app.repository_account_type === "Organization")
+    await assertOwnerStillInOrg(deps, github, app, repo.installationId);
   let minted: { token: string; expiresAt: string };
   try {
     minted = await github.createRepoPushToken(

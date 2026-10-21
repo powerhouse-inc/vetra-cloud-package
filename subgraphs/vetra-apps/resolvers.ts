@@ -473,7 +473,12 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "attachStudioRepository", async () =>
           mapApp(
             deps,
-            await attachStudioRepository(deps, requireCaller(ctx), input),
+            await attachStudioRepository(
+              deps,
+              requireCaller(ctx),
+              input,
+              studioAuth(ctx),
+            ),
           ),
         ),
       studioPushToken: (

@@ -11,15 +11,20 @@ import {
   approveChanges,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { Caller } from "../auth.js";
-import { createGithubDeployApi } from "../github.js";
+import { createCiRoutes, type CiTokenVerifier } from "../ci.js";
+import { createGithubDeployApi, GithubHttpError } from "../github.js";
 import { getApp, type AppRow } from "../repo.js";
 import { createResolvers } from "../resolvers.js";
 import {
   attachStudioRepository,
   confirmAppIdentity,
   connectGithubDeploy,
+  createStudioApp,
+  deleteApp,
   ensureStudioProduct,
+  myApps,
   openAppSetupPullRequest,
+  updateApp,
   launchStudioVersion,
   studioPushToken,
 } from "../service.js";
@@ -28,8 +33,16 @@ import {
   STUDIO_SECRET_HEADER,
   storeLaunchSecretHash,
 } from "../studio-binding.js";
+import { reportDeploymentToGithub } from "../watcher.js";
 import { handleGithubWebhook } from "../webhook.js";
-import { makeHarness, OWNER, owner, testConfig, type Harness } from "./harness.js";
+import {
+  INSTALLATION,
+  makeHarness,
+  OWNER,
+  owner,
+  testConfig,
+  type Harness,
+} from "./harness.js";
 
 const AGENT_KEY = "did:key:zDnaeStudioAgent";
 const OTHER_AGENT_KEY = "did:key:zDnaeOtherStudioAgent";
@@ -341,7 +354,7 @@ describe("attachStudioRepository (D14)", () => {
     expect(h.github.calls.createRepoAsUser).toBeUndefined();
   });
 
-  it("only the owner in person may connect: the agent, strangers and other people's installations are refused", async () => {
+  it("the product's bound agent key, strangers and installations the owner never connected are refused", async () => {
     const p = await seedProduct();
     await connectGithubDeploy(h.deps, owner, "code");
     expect(
@@ -367,6 +380,64 @@ describe("attachStudioRepository (D14)", () => {
       ),
     ).toBe("GITHUB_NOT_CONNECTED");
     expect(h.github.calls.createRepoAsUser).toBeUndefined();
+  });
+
+  it("a request through the Studio-agent path is refused, even with a key not bound to any App", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    const unbound: Caller = { ...agent, appKey: "did:key:zDnaeNotBoundYet" };
+    expect(
+      await code(
+        attachStudioRepository(
+          h.deps,
+          unbound,
+          { appId: p.app.id, installationId: PERSONAL },
+          { kind: "agent", secret: p.secret },
+        ),
+      ),
+    ).toBe("FORBIDDEN");
+    const resolvers = createResolvers(h.deps);
+    const viaGraphql = (
+      resolvers.Mutation.attachStudioRepository as (...a: unknown[]) => Promise<unknown>
+    )(
+      null,
+      { input: { appId: p.app.id, installationId: PERSONAL } },
+      {
+        user: { address: OWNER, chainId: 1, networkId: "eip155", appKey: "did:key:zDnaeNotBoundYet" },
+        headers: { [STUDIO_SECRET_HEADER]: "" },
+      },
+    );
+    expect(await code(viaGraphql)).toBe("FORBIDDEN");
+    expect(h.github.calls.createRepoAsUser).toBeUndefined();
+  });
+
+  it("a replica that recorded a repository first wins; the second repository is kept, never deleted", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    const create = h.github.createRepoAsUser;
+    h.github.createRepoAsUser = async (...args) => {
+      const made = await create(...args);
+      // Another replica recorded its repository meanwhile.
+      await h.db
+        .updateTable("apps")
+        .set({
+          installation_id: PERSONAL,
+          repository_id: "7777",
+          repository_full_name: "frank/winner",
+        })
+        .where("id", "=", p.app.id)
+        .execute();
+      return made;
+    };
+    const app = await attachStudioRepository(h.deps, owner, {
+      appId: p.app.id,
+      installationId: PERSONAL,
+    });
+    expect(app.repository_full_name).toBe("frank/winner");
+    expect(h.github.calls.deleteRepo).toBeUndefined();
+    expect(h.github.calls.deleteRepoAsUser).toBeUndefined();
+    const info = (h.deps.logger.info as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(JSON.stringify(info)).toContain(`frank/${p.app.slug}`);
   });
 
   it("a product already on GitHub is not given a second repository", async () => {
@@ -456,6 +527,136 @@ describe("a Studio product on GitHub stays a Studio product (D15)", () => {
     // No Renown workload identity to confirm.
     expect((await confirmAppIdentity(h.deps, owner, p.app.id)).status).toBe("ACTIVE");
     expect(h.renown.registered).toHaveLength(0);
+  });
+});
+
+describe("a Studio product on GitHub never deploys through CI", () => {
+  const routesFor = (appDid: string, repositoryId: string) => {
+    const verify: CiTokenVerifier = async (token) =>
+      token === "expired"
+        ? { identityExpired: { appDid, address: OWNER } }
+        : {
+            address: OWNER,
+            chainId: 1,
+            appDid,
+            claim: {
+              repositoryId,
+              refClass: "PRODUCTION",
+              ref: "refs/heads/main",
+              eventName: "push",
+              sha: "abcdef1234567",
+            } as never,
+          };
+    return createCiRoutes(h.deps, verify);
+  };
+  const post = (path: string, body: unknown, token = "good") =>
+    new Request(`https://switchboard.vetra.io/api/x/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+  const deployBody = (appId: string) => ({
+    appId,
+    kind: "PRODUCTION",
+    gitRef: "refs/heads/main",
+    sha: "abcdef1234567",
+    packages: [{ name: "@vetra-apps/my-shop", version: "0.1.0" }],
+  });
+
+  it("a token of the agent's key is refused on every CI route and cannot expire the product", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    const attached = await attachStudioRepository(h.deps, owner, {
+      appId: p.app.id,
+      installationId: PERSONAL,
+    });
+    const routes = routesFor(AGENT_KEY, attached.repository_id!);
+
+    const deploy = await routes.deploy(post("apps/ci/deploy", deployBody(p.app.id)));
+    expect(deploy.status).toBe(403);
+    expect(await deploy.json()).toMatchObject({ error: "FORBIDDEN" });
+    const artifacts = await routes.artifacts(
+      post("apps/ci/artifacts", {
+        appId: p.app.id,
+        kind: "PACKAGE",
+        name: "@vetra-apps/my-shop",
+        version: "0.1.0",
+        reference: "@vetra-apps/my-shop@0.1.0",
+      }),
+    );
+    expect(artifacts.status).toBe(403);
+    const creds = await routes.registryCredentials(
+      post("apps/ci/registry-credentials", { appId: p.app.id }),
+    );
+    expect(creds.status).toBe(403);
+
+    const expired = await routes.deploy(post("apps/ci/deploy", deployBody(p.app.id), "expired"));
+    expect(expired.status).toBe(401);
+    expect((await getApp(h.db, p.app.id))!.status).toBe("ACTIVE");
+    expect(await h.db.selectFrom("app_deployments").select("id").execute()).toHaveLength(0);
+  });
+
+  it("an App made by createStudioApp (with CI) deploys through CI as before", async () => {
+    const studio = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(studio, [
+      addPackage({
+        packageName: "vetra",
+        version: "0.0.1-dev.27",
+        registry: "https://registry.dev.vetra.io",
+      }),
+      approveChanges({}),
+    ]);
+    await connectGithubDeploy(h.deps, owner, "code");
+    const legacy = await createStudioApp(h.deps, owner, {
+      name: "Legacy Shop",
+      studioEnvironmentId: studio,
+      installationId: INSTALLATION,
+    });
+    const active = await confirmAppIdentity(h.deps, owner, legacy.id);
+    expect(active.status).toBe("ACTIVE");
+    h.envs.setStatus(active.production_environment_id, "READY");
+    const routes = routesFor(active.identity_did, active.repository_id!);
+    const deploy = await routes.deploy(post("apps/ci/deploy", deployBody(active.id)));
+    expect(deploy.status).toBe(200);
+    const creds = await routes.registryCredentials(
+      post("apps/ci/registry-credentials", { appId: active.id }),
+    );
+    expect(creds.status).toBe(200);
+  });
+
+  it("no branch change, no Renown identity delete, no GitHub deployment reports, not on old Apps pages", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, { appId: p.app.id, installationId: PERSONAL });
+
+    expect(await code(updateApp(h.deps, owner, p.app.id, { productionBranch: "dev" }))).toBe(
+      "BAD_USER_INPUT",
+    );
+    expect(h.renown.updated).toHaveLength(0);
+
+    expect((await myApps(h.deps, owner)).map((a) => a.id)).not.toContain(p.app.id);
+    expect(
+      (await myApps(h.deps, owner, null, { includeStudioProducts: true })).map((a) => a.id),
+    ).toContain(p.app.id);
+
+    const d = await launchStudioVersion(
+      h.deps,
+      agent,
+      {
+        appId: p.app.id,
+        versionNumber: 1,
+        sha: "1111111aaaaaaa",
+        gitTag: "v1",
+        packages: [{ name: "@vetra-apps/my-shop", version: "0.1.0" }],
+      },
+      p.secret,
+    );
+    await reportDeploymentToGithub(h.deps, d.id);
+    expect(h.github.calls.createDeployment).toBeUndefined();
+    expect(h.github.calls.createDeploymentStatus).toBeUndefined();
+
+    expect(await deleteApp(h.deps, owner, p.app.id, false)).toBe(true);
+    expect(h.renown.deleted).toHaveLength(0);
   });
 });
 
@@ -554,5 +755,76 @@ describe("studioPushToken (D20 binding)", () => {
     );
     expect(t.token).toMatch(/^ghs_push_/);
     expect(t.remoteUrl).toBe(`https://github.com/frank/${p.app.slug}.git`);
+  });
+
+  it("GitHub refusing the token (403/404/422) reads as not connected", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, { appId: p.app.id, installationId: PERSONAL });
+    for (const status of [403, 404, 422]) {
+      h.github.createRepoPushToken = async () => {
+        throw new GithubHttpError(status, "refused");
+      };
+      expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+        "GITHUB_NOT_CONNECTED",
+      );
+    }
+  });
+
+  it("an organisation repository needs the owner to still be an active member", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, {
+      appId: p.app.id,
+      installationId: ORG_INSTALLATION,
+    });
+    expect((await studioPushToken(h.deps, agent, p.app.id, p.secret)).token).toMatch(/^ghs_push_/);
+
+    h.github.memberships.set(ORG_LOGIN, null);
+    expect(await failure(studioPushToken(h.deps, agent, p.app.id, p.secret))).toStrictEqual({
+      code: "INSUFFICIENT_PERMISSION",
+      message: `Install Vetra on ${ORG_LOGIN} or choose your personal account`,
+    });
+    h.github.memberships.set(ORG_LOGIN, { state: "pending", role: "member" });
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "INSUFFICIENT_PERMISSION",
+    );
+
+    // The app may not read memberships: GitHub's own checks decide; logged without secrets.
+    h.github.getOrgMembership = async () => {
+      throw new GithubHttpError(403, "Resource not accessible by integration", [
+        "Resource not accessible by integration",
+      ]);
+    };
+    const t = await studioPushToken(h.deps, agent, p.app.id, p.secret);
+    expect(t.token).toMatch(/^ghs_push_/);
+    const warn = JSON.stringify(
+      (h.deps.logger.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls,
+    );
+    expect(warn).toContain("membership");
+    expect(warn).not.toContain("ghs_");
+    expect(warn).not.toContain("user-token");
+  });
+
+  it("an App deployed by its own CI gets no Studio push token", async () => {
+    const studio = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(studio, [
+      addPackage({
+        packageName: "vetra",
+        version: "0.0.1-dev.27",
+        registry: "https://registry.dev.vetra.io",
+      }),
+      approveChanges({}),
+    ]);
+    const secret = randomBytes(32).toString("hex");
+    await storeLaunchSecretHash(h.db, studio, hashLaunchSecret(secret), "2026-10-20T00:00:00.000Z");
+    await connectGithubDeploy(h.deps, owner, "code");
+    const legacy = await createStudioApp(h.deps, owner, {
+      name: "Legacy Shop",
+      studioEnvironmentId: studio,
+      installationId: INSTALLATION,
+    });
+    expect(await code(studioPushToken(h.deps, agent, legacy.id, secret))).toBe("BAD_USER_INPUT");
+    expect(h.github.calls.createRepoPushToken).toBeUndefined();
   });
 });
