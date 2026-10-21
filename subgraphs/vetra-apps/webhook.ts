@@ -193,7 +193,8 @@ const NULL_SHA = /^0+$/;
  * (D15): its head sha goes to `apps.external_changes_sha`, and the Studio
  * offers to bring it in; nothing is launched. Ignored: other branches and
  * tags, a deleted branch, Apps deployed by their own CI, a repository GitHub
- * took away, and the Studio's own mirror pushes. Matching rule: a push is
+ * took away, a delivery without (or from another) installation, and the
+ * Studio's own mirror pushes. Matching rule: a push is
  * the Studio's own when its head (`after`) equals a sha the agent recorded
  * with recordStudioMirror — the App's `mirror_sha` or the `mirror_sha` of
  * any of its deployments. Only the head counts: a push that carries the
@@ -211,7 +212,7 @@ async function flagOutsidePush(deps: AppsDeps, payload: Payload): Promise<number
   let flagged = 0;
   for (const app of await appsByRepository(deps, repositoryId)) {
     if (!isStudioProduct(app) || app.repository_disconnected_at) continue;
-    if (installationId && app.installation_id !== installationId) continue;
+    if (app.installation_id !== installationId) continue;
     if (ref !== `refs/heads/${app.production_branch}`) continue;
     if (app.mirror_sha === after) continue;
     const own = await deps.db

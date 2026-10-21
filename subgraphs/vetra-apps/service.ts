@@ -963,6 +963,7 @@ async function createStudioRepo(
   repoName: string,
   productName: string,
   made: Pick<CreateMade, "repo">,
+  autoInit: boolean,
 ): Promise<GithubRepo> {
   const { userToken, account, installationId, repositorySelection } = ctx;
   const repo = await github.createRepoAsUser(
@@ -973,6 +974,7 @@ async function createStudioRepo(
       0,
       350,
     ),
+    { autoInit },
   );
   // An all-repositories installation covers the new repo at once; a
   // selected one only once it is added.
@@ -1065,6 +1067,8 @@ async function createStudioAppLocked(
           slug,
           name,
           made,
+          // The workflow is committed onto GitHub's initial commit.
+          true,
         );
       } catch (err) {
         // Other GitHub refusals are mapped below, after the undo.
@@ -1760,6 +1764,8 @@ export async function attachStudioRepository(
             repoName,
             app.name,
             made,
+            // Empty: the Studio's first mirror push fast-forwards (no README commit).
+            false,
           );
         } catch (err) {
           if (!(err instanceof RepoNameTakenError)) throw err;

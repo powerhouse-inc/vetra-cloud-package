@@ -5,12 +5,14 @@ import {
   approveChanges,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { Caller } from "../auth.js";
+import { createGithubDeployApi } from "../github.js";
 import { getApp, latestDeployment, type AppRow } from "../repo.js";
 import { createResolvers } from "../resolvers.js";
 import {
   attachStudioRepository,
   clearExternalChanges,
   connectGithubDeploy,
+  createStudioApp,
   ensureStudioProduct,
   launchStudioVersion,
   recordStudioMirror,
@@ -22,6 +24,7 @@ import {
 } from "../studio-binding.js";
 import { handleGithubWebhook } from "../webhook.js";
 import {
+  INSTALLATION,
   makeHarness,
   OWNER,
   owner,
@@ -111,7 +114,13 @@ async function launch(p: Product, versionNumber: number, sha: string) {
 
 function pushBody(
   app: Pick<AppRow, "repository_id" | "installation_id">,
-  over: { ref?: string; after?: string; deleted?: boolean; commits?: string[] } = {},
+  over: {
+    ref?: string;
+    after?: string;
+    deleted?: boolean;
+    commits?: string[];
+    installation?: boolean;
+  } = {},
 ): string {
   const after = over.after ?? THEIRS;
   const commits = over.commits ?? (after === ZERO ? [] : [after]);
@@ -125,7 +134,9 @@ function pushBody(
     commits: commits.map((id) => ({ id, message: "edit on GitHub" })),
     head_commit: commits.length ? { id: after } : null,
     repository: { id: Number(app.repository_id), full_name: "frank/my-shop" },
-    installation: { id: Number(app.installation_id) },
+    ...(over.installation === false
+      ? {}
+      : { installation: { id: Number(app.installation_id) } }),
     pusher: { name: "someone" },
   });
 }
@@ -235,6 +246,27 @@ describe("push webhook (D15, edits made on GitHub)", () => {
     expect(await externalSha(p.app.id)).toBeNull();
   });
 
+  it("ignores a deleted push, a delivery without installation, an unrelated repository and a repository GitHub took away", async () => {
+    const p = await seedProductOnGithub();
+    for (const body of [
+      // `deleted: true` wins even when GitHub sends a non-zero after.
+      pushBody(p.app, { deleted: true }),
+      pushBody(p.app, { installation: false }),
+      pushBody({ ...p.app, repository_id: "123456789" }),
+    ]) {
+      expect((await push(body)).body).toStrictEqual({ flaggedApps: 0 });
+    }
+    expect(await externalSha(p.app.id)).toBeNull();
+
+    await h.db
+      .updateTable("apps")
+      .set({ repository_disconnected_at: h.clock.now.toISOString() })
+      .where("id", "=", p.app.id)
+      .execute();
+    expect((await push(pushBody(p.app))).body).toStrictEqual({ flaggedApps: 0 });
+    expect(await externalSha(p.app.id)).toBeNull();
+  });
+
   it("recordStudioMirror and clearExternalChanges take only the product's own agent", async () => {
     const p = await seedProductOnGithub();
     const other = await seedProductOnGithub(otherAgent, "Other Shop");
@@ -257,5 +289,57 @@ describe("push webhook (D15, edits made on GitHub)", () => {
     expect(await externalSha(p.app.id)).toBe(OURS);
     expect(await clearExternalChanges(h.deps, agent, p.app.id, p.secret)).toBe(true);
     expect(await externalSha(p.app.id)).toBeNull();
+  });
+});
+
+describe("Studio product repositories start empty (the first mirror push fast-forwards)", () => {
+  /** createRepoAsUser through the real client; returns the request bodies GitHub got. */
+  function recordRepoCreation(): unknown[] {
+    const bodies: unknown[] = [];
+    let seq = 0;
+    const api = createGithubDeployApi(
+      { appId: "1", slug: "vetra-deploy", clientId: "cid", clientSecret: "cs", privateKey: "k" },
+      (async (url: string, init: RequestInit = {}) => {
+        const body = JSON.parse(String(init.body)) as { name: string };
+        bodies.push(body);
+        const owner = url.includes("/orgs/") ? "acme" : "frank";
+        return Response.json(
+          {
+            id: 7000 + ++seq,
+            full_name: `${owner}/${body.name}`,
+            private: true,
+            default_branch: "main",
+          },
+          { status: 201 },
+        );
+      }) as unknown as typeof fetch,
+    );
+    h.github.createRepoAsUser = api.createRepoAsUser.bind(api);
+    return bodies;
+  }
+
+  it("attachStudioRepository asks GitHub for no initial commit; createStudioApp keeps it", async () => {
+    const bodies = recordRepoCreation();
+    await seedProductOnGithub();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ private: true, auto_init: false });
+
+    // The legacy createStudioApp commits its workflow onto the initial commit.
+    const studio = await h.envs.seedStandalone(OWNER);
+    await h.envs.execute(studio, [
+      addPackage({
+        packageName: "vetra",
+        version: "0.0.1-dev.27",
+        registry: "https://registry.dev.vetra.io",
+      }),
+      approveChanges({}),
+    ]);
+    await createStudioApp(h.deps, owner, {
+      name: "Legacy Shop",
+      studioEnvironmentId: studio,
+      installationId: INSTALLATION,
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toMatchObject({ private: true, auto_init: true });
   });
 });

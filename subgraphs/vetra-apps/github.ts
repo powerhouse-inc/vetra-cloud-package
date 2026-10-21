@@ -113,7 +113,9 @@ export interface GithubDeployApi {
     },
   ): Promise<string>;
   /**
-   * Create a private repo (auto_init) with the USER's token in `account`:
+   * Create a private repo with the USER's token in `account` (with GitHub's
+   * initial README commit unless `options.autoInit` is false — a Studio
+   * product's repository starts empty so its first mirror push fast-forwards):
    * POST /orgs/{login}/repos for an Organization, POST /user/repos otherwise.
    * GitHub itself refuses (403, GithubHttpError) when the user may not create
    * repositories there. Throws RepoNameTakenError on 422 "already exists",
@@ -127,6 +129,7 @@ export interface GithubDeployApi {
     account: { login: string; type: string },
     name: string,
     description: string,
+    options?: { autoInit?: boolean },
   ): Promise<GithubRepo>;
   /**
    * Add a repository to a selected-repositories installation with the user's
@@ -528,7 +531,7 @@ export function createGithubDeployApi(
       return String(data.id);
     },
 
-    async createRepoAsUser(userToken, account, name, description) {
+    async createRepoAsUser(userToken, account, name, description, options) {
       const path =
         account.type === "Organization"
           ? `/orgs/${encodeURIComponent(account.login)}/repos`
@@ -542,7 +545,12 @@ export function createGithubDeployApi(
         userToken,
         "POST",
         path,
-        { name, description, private: true, auto_init: true },
+        {
+          name,
+          description,
+          private: true,
+          auto_init: options?.autoInit ?? true,
+        },
         [422],
       );
       if (r.status === 422) {
