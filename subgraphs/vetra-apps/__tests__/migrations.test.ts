@@ -6,6 +6,7 @@ import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
   ensureDeploymentTriggerColumns,
+  ensureExternalChangesColumns,
   ensureStudioLaunchSecretsTable,
   ensureStudioProductColumns,
   isConcurrentIndexError,
@@ -388,6 +389,30 @@ describe("the first launch key definition (READY included) is replaced", () => {
       await expect(db.insertInto("app_deployments").values(row("dup", "DEPLOYING")).execute()).rejects.toMatchObject({
         code: "23505",
       });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("ensureExternalChangesColumns (Task 4.2)", () => {
+  it("adds the push columns in the namespace schema; existing rows untouched; idempotent and concurrent-safe", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      await sql`CREATE TABLE "vetra-apps".apps (id varchar(64) PRIMARY KEY)`.execute(root);
+      await sql`CREATE TABLE "vetra-apps".app_deployments (id varchar(64) PRIMARY KEY)`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await db.insertInto("apps").values({ id: "a" }).execute();
+      await db.insertInto("app_deployments").values({ id: "d" }).execute();
+      await Promise.all([1, 2, 3].map(() => ensureExternalChangesColumns(db)));
+      await ensureExternalChangesColumns(db);
+      expect(
+        await db.selectFrom("apps").select(["id", "external_changes_sha", "mirror_sha"]).execute(),
+      ).toStrictEqual([{ id: "a", external_changes_sha: null, mirror_sha: null }]);
+      expect(
+        await db.selectFrom("app_deployments").select(["id", "mirror_sha"]).execute(),
+      ).toStrictEqual([{ id: "d", mirror_sha: null }]);
     } finally {
       await root.destroy();
     }

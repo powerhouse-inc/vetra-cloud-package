@@ -121,6 +121,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureStudioLaunchSecretsTable(db);
   await ensureStudioProductColumns(db);
   await ensureDeploymentTriggerColumns(db);
+  await ensureStudioRepositoryColumns(db);
+  await ensureExternalChangesColumns(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -210,6 +212,55 @@ export async function ensureStudioProductColumns(
         .execute();
     } catch (err) {
       tolerate(err);
+    }
+  }
+}
+
+/**
+ * Studio products on GitHub (Task 4.1): the account the repository was made
+ * in (login + type), who connected it, and when GitHub took it away.
+ * Additive and idempotent.
+ */
+export async function ensureStudioRepositoryColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const column of [
+    "repository_account_login",
+    "repository_account_type",
+    "repository_disconnected_at",
+    "repository_connected_by",
+  ]) {
+    try {
+      await db.schema
+        .alterTable("apps")
+        .addColumn(column, "text", (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+    }
+  }
+}
+
+/**
+ * Pushes made on GitHub (Task 4.2, D15): `apps.external_changes_sha`, the
+ * Studio's own mirror shas (`apps.mirror_sha`, `app_deployments.mirror_sha`).
+ * Additive and idempotent.
+ */
+export async function ensureExternalChangesColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [table, column] of [
+    ["apps", "external_changes_sha"],
+    ["apps", "mirror_sha"],
+    ["app_deployments", "mirror_sha"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable(table)
+        .addColumn(column, "text", (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
     }
   }
 }

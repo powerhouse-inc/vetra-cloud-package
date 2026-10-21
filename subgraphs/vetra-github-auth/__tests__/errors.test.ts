@@ -11,7 +11,11 @@ import {
   RepoAlreadyExistsError,
   RepoNameInvalidError,
 } from "../github-app.js";
-import { clearDeviceTokenCache, createResolvers } from "../resolvers.js";
+import {
+  clearDeviceTokenCache,
+  createResolvers,
+  githubFailure,
+} from "../resolvers.js";
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -83,7 +87,7 @@ describe("timeouts on the connect path", () => {
   });
 });
 
-describe("connectGithub error codes", () => {
+describe("GitHub failure codes", () => {
   let db: Kysely<VetraGithubAuthDB>;
   let logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
   const ctx = {
@@ -102,40 +106,19 @@ describe("connectGithub error codes", () => {
     await db.destroy();
   });
 
-  /**
-   * GitHub's answers in call order: the device-code exchange (github.com),
-   * the installation list, then repo creation (`create`).
-   */
-  async function connect(create: () => Response) {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/login/oauth/access_token"))
-        return json(200, { access_token: "ghu_secret_token" });
-      if (url.endsWith("/user/installations"))
-        return json(200, {
-          installations: [{ id: 55, repository_selection: "all" }],
-        });
-      if (url.endsWith("/user/repos")) return create();
-      if (url.endsWith("/user")) return json(200, { login: "alice", id: 1 });
-      return json(404, { message: "Not Found" });
-    });
-    vi.stubEnv("GITHUB_APP_CLIENT_ID", "cid");
-    const resolvers = createResolvers(db, logger);
-    try {
-      await resolvers.VetraGithubAuthMutations.connectGithub(
-        null,
-        { deviceCode: "dc", repoName: "widget", environmentId: "env-1" },
-        ctx,
-      );
-    } catch (err) {
-      return err as { message: string; extensions: Record<string, unknown> };
-    } finally {
-      vi.unstubAllEnvs();
-    }
-    throw new Error("expected a failure");
+  /** The customer-facing error for GitHub's answer to a repository creation. */
+  async function mapped(create: () => Response) {
+    fetchMock.mockImplementation(async () => create());
+    const err = await createRepo("ghu_secret_token", "widget").catch(
+      (e: unknown) => e,
+    );
+    const failure = githubFailure(err);
+    if (!failure) throw new Error(`not a GitHub failure: ${String(err)}`);
+    return failure;
   }
 
   it("REPO_NAME_INVALID with GitHub's reason", async () => {
-    const err = await connect(() =>
+    const err = await mapped(() =>
       json(422, { errors: [{ message: "name is invalid" }] }),
     );
     expect(err.extensions.code).toBe("REPO_NAME_INVALID");
@@ -151,14 +134,14 @@ describe("connectGithub error codes", () => {
     [502, { message: "Bad Gateway" }, "GITHUB_UNAVAILABLE"],
     [429, { message: "Too Many Requests" }, "GITHUB_UNAVAILABLE"],
     [403, { message: "API rate limit exceeded for user ID 1." }, "GITHUB_UNAVAILABLE"],
-  ])("maps a %i on repo creation (%j) to %s", async (status, body, code) => {
-    const err = await connect(() => json(status, body));
+  ])("maps a %i (%j) to %s", async (status, body, code) => {
+    const err = await mapped(() => json(status, body));
     expect(err.extensions.code).toBe(code);
     expect(err.message).not.toBe(code);
   });
 
   it("a 403 with x-ratelimit-remaining: 0 is GITHUB_UNAVAILABLE", async () => {
-    const err = await connect(
+    const err = await mapped(
       () =>
         new Response(JSON.stringify({ message: "Forbidden" }), {
           status: 403,
@@ -172,7 +155,6 @@ describe("connectGithub error codes", () => {
     fetchMock.mockImplementation(async () => json(403, { message: "Forbidden" }));
     const err = await createRepo("ghu", "privacy-policy").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GithubApiError);
-    const { githubFailure } = await import("../resolvers.js");
     expect(githubFailure(err)?.extensions.code).toBe("INSUFFICIENT_PERMISSION");
     // Names in the message (an org "saml-labs" in the path) are never read as a policy.
     expect(
@@ -192,23 +174,23 @@ describe("connectGithub error codes", () => {
     ).catch((e: { extensions: Record<string, unknown> }) => e);
     vi.unstubAllEnvs();
     expect(err.extensions.code).toBe("GITHUB_UNAVAILABLE");
+    expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
-  it("logs an unexpected failure at error level with the step, never the token", async () => {
-    const err = await connect(() => {
-      throw new TypeError("socket hang up in a strange place");
-    });
-    // A network failure is GitHub being unavailable, not a 500.
-    expect(err.extensions.code).toBe("GITHUB_UNAVAILABLE");
-    // A failure we cannot classify is an internal error, logged at error.
-    await db.schema.dropTable("github_installations").ifExists().execute();
-    const err2 = await connect(() =>
-      json(201, { id: 1, full_name: "alice/widget", html_url: "https://github.com/alice/widget" }),
-    );
-    expect(err2.extensions.code).toBe("INTERNAL_SERVER_ERROR");
+  it("logs an unexpected failure at error level with the step", async () => {
+    vi.stubEnv("GITHUB_APP_CLIENT_ID", "");
+    const resolvers = createResolvers(db, logger);
+    const err = await resolvers.VetraGithubAuthMutations.startGithubDeviceFlow(
+      null,
+      {},
+      ctx,
+    ).catch((e: { extensions: Record<string, unknown> }) => e);
+    vi.unstubAllEnvs();
+    expect(err.extensions.code).toBe("INTERNAL_SERVER_ERROR");
     const logged = logger.error.mock.calls.map((c) => String(c[0]));
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toMatch(/connectGithub failed while saving the connection/);
-    expect(logged.join("\n")).not.toContain("ghu_secret_token");
+    expect(logged[0]).toMatch(
+      /startGithubDeviceFlow failed while starting the device flow/,
+    );
   });
 });

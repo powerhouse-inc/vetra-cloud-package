@@ -4,10 +4,12 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import {
   deleteConnection,
+  environmentConnections,
   getConnection,
   saveConnection,
 } from "../db/installations.js";
 import type { VetraGithubAuthDB } from "../db/schema.js";
+import { saveIdentity } from "../db/identities.js";
 
 let db: Kysely<VetraGithubAuthDB>;
 
@@ -107,5 +109,25 @@ describe("deleteConnection", () => {
 
   it("is a no-op when there is nothing to delete", async () => {
     await expect(deleteConnection(db, DID, ENV)).resolves.toBeUndefined();
+  });
+});
+
+describe("environmentConnections", () => {
+  it("lists every caller's connection for one environment", async () => {
+    await saveConnection(db, DID2, ENV, "bob/widget");
+    await saveConnection(db, DID, ENV, "alice/widget");
+    await saveConnection(db, DID, ENV2, "alice/other");
+    // Only alice's GitHub identity was captured.
+    await saveIdentity(db, DID, "alice", "7");
+    const rows = await environmentConnections(db, ENV);
+    const triples = rows.map((r) => [r.userDid, r.repoFullName, r.githubLogin]);
+    expect(triples).toHaveLength(2);
+    expect(triples).toEqual(
+      expect.arrayContaining([
+        [DID, "alice/widget", "alice"],
+        [DID2, "bob/widget", null],
+      ]),
+    );
+    expect(await environmentConnections(db, "env-none")).toEqual([]);
   });
 });

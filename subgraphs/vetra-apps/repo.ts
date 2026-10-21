@@ -161,3 +161,28 @@ export function appRepository(
     fullName: app.repository_full_name,
   };
 }
+
+/**
+ * A Studio product (ensureStudioProduct): no Harbor robot and no CI workload
+ * identity — its identity is the Studio agent's key, with or without a
+ * GitHub repository (D15: Studio products are never deployed by CI).
+ */
+export function isStudioProduct(
+  app: Pick<AppRow, "studio_environment_id" | "harbor_robot_name">,
+): boolean {
+  return !!app.studio_environment_id && app.harbor_robot_name === "";
+}
+
+/** Whether the App deploys through CI: a repository and a CI workload identity. */
+export function hasCiIdentity(
+  app: Pick<
+    AppRow,
+    | "installation_id"
+    | "repository_id"
+    | "repository_full_name"
+    | "studio_environment_id"
+    | "harbor_robot_name"
+  >,
+): boolean {
+  return appRepository(app) !== null && !isStudioProduct(app);
+}

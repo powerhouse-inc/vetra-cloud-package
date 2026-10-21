@@ -33,6 +33,9 @@ import {
   appDeploymentsFor,
   appForOwner,
   appRegistryCredentials,
+  adoptStudioRepository,
+  attachStudioRepository,
+  clearExternalChanges,
   confirmAppIdentity,
   connectGithubDeploy,
   createApp,
@@ -42,9 +45,12 @@ import {
   ensureStudioProduct,
   githubDeployAppInfo,
   launchStudioVersion,
+  recordStudioMirror,
   rollbackStudioVersion,
   setStudioProductDrive,
   studioDeploymentFor,
+  studioPushToken,
+  type AttachStudioRepositoryInput,
   type LaunchStudioVersionInput,
   githubDeployRepositories,
   myApps,
@@ -160,9 +166,17 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     ownerOrgId: app.owner_org_id ?? null,
     studioEnvironmentId: app.studio_environment_id ?? null,
     status: app.status,
-    repository: repo,
+    repository: repo
+      ? {
+          ...repo,
+          accountLogin: app.repository_account_login ?? null,
+          accountType: app.repository_account_type ?? null,
+          disconnectedAt: app.repository_disconnected_at ?? null,
+        }
+      : null,
     productDriveId: app.product_drive_id ?? null,
     launchedAt: app.launched_at ?? null,
+    externalChangesSha: app.external_changes_sha ?? null,
     productionBranch: app.production_branch,
     productionEnvironmentId: app.production_environment_id,
     previewsEnabled: app.previews_enabled,
@@ -453,6 +467,78 @@ export function createResolvers(deps: AppsDeps) {
               driveId,
               presentedStudioSecret(ctx),
             ),
+          ),
+        ),
+      attachStudioRepository: (
+        _: unknown,
+        { input }: { input: AttachStudioRepositoryInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "attachStudioRepository", async () =>
+          mapApp(
+            deps,
+            await attachStudioRepository(
+              deps,
+              requireCaller(ctx),
+              input,
+              studioAuth(ctx),
+            ),
+          ),
+        ),
+      adoptStudioRepository: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "adoptStudioRepository", async () =>
+          mapApp(
+            deps,
+            await adoptStudioRepository(
+              deps,
+              requireCaller(ctx),
+              appId,
+              presentedStudioSecret(ctx),
+            ),
+          ),
+        ),
+      studioPushToken: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "studioPushToken", () =>
+          studioPushToken(
+            deps,
+            requireCaller(ctx),
+            appId,
+            presentedStudioSecret(ctx),
+          ),
+        ),
+      recordStudioMirror: (
+        _: unknown,
+        { appId, sha }: { appId: string; sha: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "recordStudioMirror", () =>
+          recordStudioMirror(
+            deps,
+            requireCaller(ctx),
+            appId,
+            sha,
+            presentedStudioSecret(ctx),
+          ),
+        ),
+      clearExternalChanges: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "clearExternalChanges", () =>
+          clearExternalChanges(
+            deps,
+            requireCaller(ctx),
+            appId,
+            presentedStudioSecret(ctx),
           ),
         ),
       rotateStudioLaunchSecret: (

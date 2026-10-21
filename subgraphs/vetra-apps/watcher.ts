@@ -7,6 +7,7 @@ import {
   appRepository,
   getApp,
   getDeployment,
+  isStudioProduct,
   parsePackages,
   type AppRow,
   type DeploymentRow,
@@ -423,8 +424,9 @@ export async function reportDeploymentToGithub(
   if (!state) return;
   const app = await getApp(deps.db, d.app_id);
   if (!app || app.status === "DISCONNECTED" || app.status === "DELETED") return;
-  // A Studio product without GitHub: nothing to report to.
-  const repo = appRepository(app);
+  // A Studio product: nothing to report to. Its repository (if any) is a
+  // mirror the Studio pushes after the launch (D15), so the sha is not there yet.
+  const repo = isStudioProduct(app) ? null : appRepository(app);
   if (!repo) return;
   if (d.status === "SUPERSEDED" && !d.github_deployment_id) return;
 

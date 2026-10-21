@@ -1,26 +1,18 @@
 import { GraphQLError } from "graphql";
 import { type Kysely } from "kysely";
 import type { VetraGithubAuthDB } from "./db/schema.js";
-import {
-  getConnection,
-  saveConnection,
-  type GithubConnection,
-} from "./db/installations.js";
+import { getConnection, type GithubConnection } from "./db/installations.js";
 import { getIdentity, saveIdentity } from "./db/identities.js";
 import {
-  addRepoToInstallation,
-  createRepo,
   exchangeDeviceCode,
   fetchGithubUser,
   findRepoInstallationId,
   findUserAccountInstallation,
   findUserInstallation,
-  findUserRepo,
   GithubApiError,
   mintInstallationToken,
   ORG_POLICY_TEXT,
   ReinstallRequiredError,
-  RepoAlreadyExistsError,
   RepoNameInvalidError,
   startDeviceFlow,
   type DeviceFlowStart,
@@ -37,6 +29,9 @@ function ghError(
 ): GraphQLError {
   return new GraphQLError(message, { extensions: { ...extensions, code } });
 }
+
+/** The answer to the retired repository creation (connectGithub). */
+export const GITHUB_MOVED_MESSAGE = "Connect GitHub from your product's settings";
 
 /** Where failures are logged (production logs at warn and above). */
 export type GithubAuthLogger = {
@@ -337,66 +332,19 @@ export function createResolvers(
         }
       },
 
+      /**
+       * Retired: GitHub is connected from the product's settings now (one
+       * app, not two). Nothing is exchanged, created or recorded; existing
+       * connections keep getting push tokens (getPushToken) until the
+       * Studio's product carries their repository over.
+       */
       connectGithub: async (
         _p: unknown,
-        {
-          deviceCode,
-          repoName,
-          environmentId,
-        }: { deviceCode: string; repoName: string; environmentId: string },
+        _a: unknown,
         ctx: AuthContext,
-      ): Promise<ConnectionStatusView> => {
-        const did = requireDid(ctx);
-        let step = "authorizing with GitHub";
-        try {
-          const userAccessToken = await resolveDeviceToken(did, deviceCode);
-
-          // A user token can only act on what the app's installation can
-          // access, so repo creation is impossible until the app is installed
-          // somewhere the user can see. Surface that as a machine code, not a 500.
-          step = "looking up the GitHub app installation";
-          const installation = await findUserInstallation(userAccessToken);
-          if (!installation) throw ghError("APP_NOT_INSTALLED");
-
-          step = "creating the GitHub repository";
-          let repo;
-          try {
-            repo = await createRepo(userAccessToken, repoName);
-          } catch (error) {
-            if (!(error instanceof RepoAlreadyExistsError)) throw error;
-            step = "looking up the existing repository";
-            const existing = await findUserRepo(userAccessToken, repoName);
-            if (!existing) throw ghError("REPO_ALREADY_EXISTS");
-            repo = existing;
-          }
-
-          // Selected-repositories installs don't include the new repo; add it
-          // so push tokens resolve. Best-effort: push-time APP_NOT_INSTALLED
-          // remains the enforcement if this fails.
-          if (installation.repositorySelection === "selected") {
-            await addRepoToInstallation(
-              userAccessToken,
-              installation.id,
-              repo.id,
-            ).catch((error: unknown) =>
-              logger.warn(
-                `[vetra-github-auth] adding ${repo.fullName} to installation ${installation.id} failed: ${String(error)}`,
-              ),
-            );
-          }
-
-          step = "saving the connection";
-          const connection = await saveConnection(
-            db,
-            did,
-            environmentId,
-            repo.fullName,
-          );
-          deviceTokenCache.delete(deviceCode);
-          return toStatus(connection);
-        } catch (error) {
-          throw failure("connectGithub", step, error);
-        }
+      ): Promise<never> => {
+        requireDid(ctx);
+        throw ghError("GITHUB_MOVED", GITHUB_MOVED_MESSAGE);
       },
     },
   };

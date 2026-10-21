@@ -104,29 +104,18 @@ export const schema: DocumentNode = gql`
     token is cached in memory, ~20 min), captures the caller's identity link,
     and reports whether the app is installed for them. Poll until it stops
     throwing AUTHORIZATION_PENDING; then, while appInstalled is false, keep
-    polling — the install check runs fresh each time. Call connectGithub with
-    the SAME deviceCode afterwards to create the repo. Errors:
+    polling — the install check runs fresh each time. Errors:
     AUTHORIZATION_PENDING, SLOW_DOWN, DEVICE_CODE_EXPIRED, ACCESS_DENIED,
     UNAUTHENTICATED.
     """
     authorizeGithub(deviceCode: String!): GithubAuthorization!
     """
-    Complete onboarding for the authenticated caller from a deviceCode obtained
-    via startGithubDeviceFlow, binding the result to environmentId (one repo per
-    environment). The backend exchanges the code for a user access token
-    server-side (never exposed to the client or stored) and creates a blank
-    private repo in the caller's account. The app MUST already be installed on
-    the caller's account: a user token can only act on what the installation can
-    access, so repo creation 403s without one. For selected-repositories
-    installs the new repo is added to the installation automatically. Poll until
-    it returns connected. On APP_NOT_INSTALLED, KEEP polling with the same
-    deviceCode: the backend briefly holds the exchanged token in memory
-    (~20 min, never exposed) and completes the connect on the first poll after
-    the installation appears.
-    Errors: AUTHORIZATION_PENDING or SLOW_DOWN while the user has not authorized
-    yet (keep polling); DEVICE_CODE_EXPIRED if the code timed out; ACCESS_DENIED
-    if the user declined; APP_NOT_INSTALLED if the app is not installed on the
-    caller's account; REPO_ALREADY_EXISTS if the name is taken; UNAUTHENTICATED
+    Retired: GitHub is connected from the product's settings (vetra-apps
+    attachStudioRepository). Always answers GITHUB_MOVED "Connect GitHub from
+    your product's settings"; nothing is exchanged, created or recorded.
+    Connections made before keep working: getPushToken still mints for them
+    until the Studio's product carries their repository over
+    (vetra-apps adoptStudioRepository). Errors: GITHUB_MOVED; UNAUTHENTICATED
     if no caller.
     """
     connectGithub(

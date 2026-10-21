@@ -30,6 +30,14 @@ export type GithubDeploymentState =
   | "error"
   | "inactive";
 
+/** The Vetra Deploy installation that reaches a repository, and that repository. */
+export interface GithubRepoInstallation {
+  installationId: string;
+  accountLogin: string;
+  accountType: string;
+  repo: GithubRepo;
+}
+
 /** GitHub App user-to-server tokens (access tokens expire after 8h). */
 export interface GithubUserTokens {
   accessToken: string;
@@ -113,7 +121,9 @@ export interface GithubDeployApi {
     },
   ): Promise<string>;
   /**
-   * Create a private repo (auto_init) with the USER's token in `account`:
+   * Create a private repo with the USER's token in `account` (with GitHub's
+   * initial README commit unless `options.autoInit` is false — a Studio
+   * product's repository starts empty so its first mirror push fast-forwards):
    * POST /orgs/{login}/repos for an Organization, POST /user/repos otherwise.
    * GitHub itself refuses (403, GithubHttpError) when the user may not create
    * repositories there. Throws RepoNameTakenError on 422 "already exists",
@@ -127,6 +137,7 @@ export interface GithubDeployApi {
     account: { login: string; type: string },
     name: string,
     description: string,
+    options?: { autoInit?: boolean },
   ): Promise<GithubRepo>;
   /**
    * Add a repository to a selected-repositories installation with the user's
@@ -141,6 +152,44 @@ export interface GithubDeployApi {
   getInstallationRepositorySelection(
     installationId: string,
   ): Promise<"all" | "selected">;
+  /**
+   * The user's membership of organisation `org` (GET
+   * /user/memberships/orgs/{org}, user token); null when GitHub answers 404
+   * (not a member, or the organisation hides itself from the user).
+   */
+  getOrgMembership(
+    userToken: string,
+    org: string,
+  ): Promise<{ state: string; role: string } | null>;
+  /**
+   * An installation token limited to one repository with contents:write only
+   * (POST /app/installations/{id}/access_tokens, app JWT). GitHub issues it
+   * for one hour. Never log the token.
+   */
+  createRepoPushToken(
+    installationId: string,
+    repositoryId: string,
+  ): Promise<{ token: string; expiresAt: string }>;
+  /**
+   * The Vetra Deploy installation on a repository's account
+   * (GET /repos/{full}/installation, app JWT) and the repository as that
+   * installation sees it (GET /repos/{full}, installation token). Null when
+   * Vetra Deploy is not installed there or its installation does not reach
+   * the repository (404).
+   */
+  findRepoInstallation(
+    repoFullName: string,
+  ): Promise<GithubRepoInstallation | null>;
+  /**
+   * The head commit of `branch` (GET /repos/{full}/git/ref/heads/{branch},
+   * installation token); null when the branch doesn't exist or the
+   * repository is empty (404/409).
+   */
+  getBranchHead(
+    installationId: string,
+    repoFullName: string,
+    branch: string,
+  ): Promise<string | null>;
   /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
   deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
   /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
@@ -510,7 +559,7 @@ export function createGithubDeployApi(
       return String(data.id);
     },
 
-    async createRepoAsUser(userToken, account, name, description) {
+    async createRepoAsUser(userToken, account, name, description, options) {
       const path =
         account.type === "Organization"
           ? `/orgs/${encodeURIComponent(account.login)}/repos`
@@ -524,7 +573,12 @@ export function createGithubDeployApi(
         userToken,
         "POST",
         path,
-        { name, description, private: true, auto_init: true },
+        {
+          name,
+          description,
+          private: true,
+          auto_init: options?.autoInit ?? true,
+        },
         [422],
       );
       if (r.status === 422) {
@@ -577,6 +631,91 @@ export function createGithubDeployApi(
           `GitHub installation ${installationId}: unknown repository_selection ${String(selection)}`,
         );
       return selection;
+    },
+
+    async getOrgMembership(userToken, org) {
+      const r = await call<{ state?: string; role?: string } | null>(
+        userToken,
+        "GET",
+        `/user/memberships/orgs/${encodeURIComponent(org)}`,
+        undefined,
+        [404],
+      );
+      if (r.status === 404) return null;
+      return { state: r.data?.state ?? "", role: r.data?.role ?? "" };
+    },
+
+    async createRepoPushToken(installationId, repositoryId) {
+      const { token: jwt } = await auth({ type: "app" });
+      const id = Number(repositoryId);
+      if (!Number.isSafeInteger(id))
+        throw new GithubHttpError(400, "invalid repository id");
+      const { data } = await call<{ token?: string; expires_at?: string } | null>(
+        jwt,
+        "POST",
+        `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+        { repository_ids: [id], permissions: { contents: "write" } },
+        [],
+        "Bearer",
+      );
+      if (!data?.token || !data.expires_at)
+        throw new GithubHttpError(502, "GitHub returned no installation token");
+      return { token: data.token, expiresAt: data.expires_at };
+    },
+
+    async getBranchHead(installationId, fullName, branch) {
+      const token = await installationToken(installationId);
+      const r = await call<{ object?: { sha?: string } } | null>(
+        token,
+        "GET",
+        `/repos/${repoPath(fullName)}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+        undefined,
+        [404, 409],
+      );
+      if (r.status === 404 || r.status === 409) return null;
+      return r.data?.object?.sha ?? null;
+    },
+
+    async findRepoInstallation(fullName) {
+      const { token: jwt } = await auth({ type: "app" });
+      const found = await call<{
+        id?: number;
+        account?: { login?: string; type?: string } | null;
+      } | null>(
+        jwt,
+        "GET",
+        `/repos/${repoPath(fullName)}/installation`,
+        undefined,
+        [404],
+        "Bearer",
+      );
+      if (found.status === 404 || typeof found.data?.id !== "number")
+        return null;
+      const installationId = String(found.data.id);
+      const token = await installationToken(installationId);
+      const seen = await call<{
+        id?: number;
+        full_name?: string;
+        private?: boolean;
+        default_branch?: string;
+      } | null>(token, "GET", `/repos/${repoPath(fullName)}`, undefined, [404]);
+      if (
+        seen.status === 404 ||
+        typeof seen.data?.id !== "number" ||
+        !seen.data.full_name
+      )
+        return null;
+      return {
+        installationId,
+        accountLogin: found.data.account?.login ?? "",
+        accountType: found.data.account?.type ?? "",
+        repo: {
+          id: String(seen.data.id),
+          fullName: seen.data.full_name,
+          private: seen.data.private ?? true,
+          defaultBranch: seen.data.default_branch ?? "main",
+        },
+      };
     },
 
     async deleteRepoAsUser(userToken, fullName) {
