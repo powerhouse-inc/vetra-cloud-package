@@ -73,7 +73,12 @@ import {
   syncApps,
 } from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
-import { appsError, githubErrors, notConfigured } from "./errors.js";
+import {
+  appsError,
+  githubErrors,
+  notConfigured,
+  ORG_POLICY_TEXT,
+} from "./errors.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   ACTIVE_DEPLOYMENT_STATUSES,
@@ -82,6 +87,8 @@ import {
   getAppByIdentity,
   getDeployment,
   getPreview,
+  hasCiIdentity,
+  isStudioProduct,
   listPreviews,
   normalizeApp,
   parsePackages,
@@ -292,7 +299,7 @@ async function authorizeCi(
   const found = await getApp(deps.db, appId);
   if (!found || found.status === "DELETED")
     throw appsError("NOT_FOUND", "App not found");
-  if (ci.appDid !== found.identity_did) {
+  if (ci.appDid !== found.identity_did || !hasCiIdentity(found)) {
     throw appsError("FORBIDDEN", "Token was not issued by this App's identity");
   }
   const app = await syncAppOrg(deps, found);
@@ -937,6 +944,60 @@ export async function createStudioApp(
   );
 }
 
+/**
+ * One attempt at a Studio product's repository: private, `repoName` in
+ * `account`, described as "<name> — built with Vetra Studio", created with
+ * the user's token. `made.repo` is set as soon as GitHub made it, so the
+ * caller's undo removes it when a check here (or a later step) fails.
+ * RepoNameTakenError is passed on for the caller to take the next suffix.
+ */
+async function createStudioRepo(
+  github: GithubDeployApi,
+  ctx: {
+    userToken: string;
+    account: { login: string; type: string };
+    installationId: string;
+    repositorySelection: "all" | "selected";
+  },
+  repoName: string,
+  productName: string,
+  made: Pick<CreateMade, "repo">,
+): Promise<GithubRepo> {
+  const { userToken, account, installationId, repositorySelection } = ctx;
+  const repo = await github.createRepoAsUser(
+    userToken,
+    account,
+    repoName,
+    `${productName.replace(CONTROL_CHARS, " ")} — built with Vetra Studio`.slice(
+      0,
+      350,
+    ),
+  );
+  // An all-repositories installation covers the new repo at once; a
+  // selected one only once it is added.
+  made.repo = {
+    id: repo.id,
+    fullName: repo.fullName,
+    installationId,
+    userToken,
+    inInstallation: repositorySelection === "all",
+  };
+  if (repo.private !== true)
+    throw new Error(`${repo.fullName} was created as a public repository`);
+  // /user/repos creates under the token's own user: it must be the
+  // connected personal account.
+  const repoOwner = repo.fullName.split("/")[0] ?? "";
+  if (
+    account.type === "User" &&
+    repoOwner.toLowerCase() !== account.login.toLowerCase()
+  )
+    throw appsError(
+      "FORBIDDEN",
+      `GitHub created the repository under ${repoOwner}, not ${account.login}; connect GitHub as ${account.login}`,
+    );
+  return repo;
+}
+
 async function createStudioAppLocked(
   deps: AppsDeps,
   caller: Caller,
@@ -997,39 +1058,13 @@ async function createStudioAppLocked(
       slug = await reserveSlugAndProject(deps, harbor, name, made, conflicts);
       step = "creating the GitHub repository";
       try {
-        repo = await github.createRepoAsUser(
-          userToken,
-          account,
+        repo = await createStudioRepo(
+          github,
+          { userToken, account, installationId, repositorySelection },
           slug,
-          `${name.replace(CONTROL_CHARS, " ")} — built with Vetra Studio`.slice(
-            0,
-            350,
-          ),
+          name,
+          made,
         );
-        // An all-repositories installation covers the new repo at once; a
-        // selected one only once it is added below.
-        made.repo = {
-          id: repo.id,
-          fullName: repo.fullName,
-          installationId,
-          userToken,
-          inInstallation: repositorySelection === "all",
-        };
-        if (repo.private !== true)
-          throw new Error(
-            `${repo.fullName} was created as a public repository`,
-          );
-        // /user/repos creates under the token's own user: it must be the
-        // connected personal account.
-        const repoOwner = repo.fullName.split("/")[0] ?? "";
-        if (
-          account.type === "User" &&
-          repoOwner.toLowerCase() !== account.login.toLowerCase()
-        )
-          throw appsError(
-            "FORBIDDEN",
-            `GitHub created the repository under ${repoOwner}, not ${account.login}; connect GitHub as ${account.login}`,
-          );
       } catch (err) {
         // Other GitHub refusals are mapped below, after the undo.
         if (!(err instanceof RepoNameTakenError)) throw err;
@@ -1266,7 +1301,9 @@ async function bindAgentIdentity(
   app: AppRow,
 ): Promise<AppRow> {
   const key = caller.appKey!;
-  if (appRepository(app) || app.identity_did === key) return app;
+  // A Studio product follows its agent's key, on GitHub or not (D15: it has
+  // no CI identity); an App deployed by CI keeps its workload identity.
+  if (!isStudioProduct(app) || app.identity_did === key) return app;
   const other = await getAppByIdentity(deps.db, key);
   if (other && other.id !== app.id && other.status !== "DELETED")
     throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
@@ -1577,6 +1614,242 @@ export async function studioProductFor(
       return null;
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Studio products on GitHub (Task 4.1, D14/D15)
+// ---------------------------------------------------------------------------
+
+export interface AttachStudioRepositoryInput {
+  appId: string;
+  /** One of the caller's connected Vetra Deploy installations: its account gets the repository. */
+  installationId: string;
+  /** The repository name wanted (slugified); default: the product's slug. */
+  name?: string | null;
+}
+
+/** GitHub hands out installation tokens for one hour; the reported expiry never says more. */
+export const STUDIO_PUSH_TOKEN_MAX_MS = 3_600_000;
+
+export interface StudioPushToken {
+  token: string;
+  expiresAt: string;
+  remoteUrl: string;
+}
+
+const isRefusal = (err: unknown, status: number) =>
+  err instanceof GithubHttpError && err.status === status && !err.rateLimited;
+const namesOrgPolicy = (err: unknown) =>
+  err instanceof GithubHttpError &&
+  !err.rateLimited &&
+  err.reasons.some((r) => ORG_POLICY_TEXT.test(r));
+
+/**
+ * The customer's words for a refusal in an organisation account (spec §8):
+ * a policy (named by GitHub, or repository creation kept to owners, which
+ * GitHub answers 403 to an active member) → ORG_POLICY; Vetra not installed
+ * there or the caller not a member (404) → INSUFFICIENT_PERMISSION. Null:
+ * not an organisation refusal.
+ */
+function orgRefusal(err: unknown, org: string): GraphQLError | null {
+  if (namesOrgPolicy(err) || isRefusal(err, 403))
+    return githubErrors.studioOrgPolicy(org);
+  if (isRefusal(err, 404)) return githubErrors.studioOrgNotInstalled(org);
+  return null;
+}
+
+/**
+ * Keep a copy of a Studio product's code on GitHub (D14): a private
+ * repository named after the product's slug (or `name`; taken → -2, -3, …),
+ * described "<name> — built with Vetra Studio", in the account of one of the
+ * caller's connected installations — their own account or an organisation.
+ * The owner in person only (the agent's key is refused as every App
+ * identity). For an organisation, the caller must be an active member right
+ * now and Vetra installed there; GitHub itself decides whether members may
+ * create repositories. No deploy workflow, repository variable or CI identity
+ * is made (D15): the Studio launches the product, the repository is its
+ * mirror. The App stays its owner's; the account login and type are
+ * recorded. A product whose repository GitHub took away may connect again
+ * (a new repository; the old one is never deleted). Nothing else about the
+ * product changes, and a refusal leaves it as it was.
+ */
+export async function attachStudioRepository(
+  deps: AppsDeps,
+  caller: Caller,
+  input: AttachStudioRepositoryInput,
+): Promise<AppRow> {
+  const github = requireGithub(deps);
+  const found = await loadAppForOwner(deps, caller, input.appId);
+  if (!isStudioProduct(found))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Only a Studio product connects GitHub this way",
+    );
+  const installationId = input.installationId.trim();
+  const connection = await deps.db
+    .selectFrom("github_deploy_connections")
+    .select(["account_login", "account_type"])
+    .where("owner_address", "=", caller.address)
+    .where("installation_id", "=", installationId)
+    .executeTakeFirst();
+  if (!connection) throw notConnected();
+  const account = {
+    login: connection.account_login,
+    type: connection.account_type,
+  };
+  const inOrg = account.type === "Organization";
+  const repoBase = slugify(input.name?.trim() || found.slug);
+  const userToken = await userTokenFor(deps, caller, installationId);
+
+  if (inOrg) {
+    let membership: { state: string; role: string } | null | undefined;
+    try {
+      membership = await github.getOrgMembership(userToken, account.login);
+    } catch (err) {
+      if (namesOrgPolicy(err)) throw githubErrors.studioOrgPolicy(account.login);
+      // The app may not read memberships: GitHub decides at creation.
+      if (!isRefusal(err, 403))
+        throw classifyGithubError(err, account.login) ?? err;
+      membership = undefined;
+    }
+    if (membership === null || (membership && membership.state !== "active"))
+      throw githubErrors.studioOrgNotInstalled(account.login);
+  }
+
+  let repositorySelection: "all" | "selected";
+  try {
+    repositorySelection =
+      await github.getInstallationRepositorySelection(installationId);
+  } catch (err) {
+    // 404: Vetra is no longer installed on that account.
+    if (isRefusal(err, 404))
+      throw inOrg
+        ? githubErrors.studioOrgNotInstalled(account.login)
+        : notConnected();
+    throw classifyGithubError(err, account.login) ?? err;
+  }
+
+  const studioId = found.studio_environment_id!;
+  return withKeyLock(`studio-app:${studioId}`, async () => {
+    const app = (await getApp(deps.db, found.id))!;
+    if (appRepository(app) && !app.repository_disconnected_at)
+      throw appsError(
+        "BAD_USER_INPUT",
+        "This product's code is already on GitHub",
+      );
+    const made: Pick<CreateMade, "repo"> = { repo: null };
+    let step = "creating the GitHub repository";
+    try {
+      let repo: GithubRepo | null = null;
+      for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS && !repo; attempt++) {
+        const repoName = attempt === 0 ? repoBase : `${repoBase}-${attempt + 1}`;
+        try {
+          repo = await createStudioRepo(
+            github,
+            { userToken, account, installationId, repositorySelection },
+            repoName,
+            app.name,
+            made,
+          );
+        } catch (err) {
+          if (!(err instanceof RepoNameTakenError)) throw err;
+        }
+      }
+      if (!repo) throw githubErrors.repoExists();
+      if (repositorySelection === "selected") {
+        step = "adding the repository to the GitHub app installation";
+        await github.addRepoToInstallation(userToken, installationId, repo.id);
+        made.repo!.inInstallation = true;
+      }
+      step = "recording the repository";
+      await deps.db
+        .updateTable("apps")
+        .set({
+          installation_id: installationId,
+          repository_id: repo.id,
+          repository_full_name: repo.fullName,
+          repository_account_login: account.login,
+          repository_account_type: account.type,
+          repository_disconnected_at: null,
+          updated_at: deps.now().toISOString(),
+        })
+        .where("id", "=", app.id)
+        .execute();
+    } catch (err) {
+      const cleanedUp = made.repo
+        ? await undoStudioRepo(deps, github, made.repo)
+        : true;
+      if (err instanceof GraphQLError) throw err;
+      const refusal = inOrg ? orgRefusal(err, account.login) : null;
+      if (refusal) {
+        deps.logger.warn(
+          `[vetra-apps] attachStudioRepository refused in ${account.login} while ${step}: ${String(err)}`,
+        );
+        throw refusal;
+      }
+      throw createFailure(
+        deps,
+        "attachStudioRepository",
+        step,
+        account.login,
+        err,
+        { repoRolledBack: made.repo !== null, cleanedUp },
+      );
+    }
+    deps.logger.info(
+      `[vetra-apps] Studio product ${app.slug} (${app.id}) keeps its code in ${made.repo!.fullName}`,
+    );
+    const attached = (await getApp(deps.db, app.id))!;
+    await mirrorAppRow(deps, attached);
+    return attached;
+  });
+}
+
+/**
+ * A short-lived token the Studio's agent pushes its product's code with
+ * (D20 binding: verifyStudioSecret + verifyStudioBinding through
+ * studioAppFor). An installation token limited to the App's one repository
+ * with contents:write; GitHub issues it for an hour, and the reported expiry
+ * never says more. Another Studio, the owner's browser or a wrong secret get
+ * STUDIO_BINDING; a product without (or no longer with) a repository
+ * GITHUB_NOT_CONNECTED. The token is never logged.
+ */
+export async function studioPushToken(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  secret: string | null,
+): Promise<StudioPushToken> {
+  const app = await studioAppFor(deps, caller, appId, secret);
+  const repo = appRepository(app);
+  if (!repo || app.repository_disconnected_at) throw notConnected();
+  const github = requireGithub(deps);
+  let minted: { token: string; expiresAt: string };
+  try {
+    minted = await github.createRepoPushToken(
+      repo.installationId,
+      repo.repositoryId,
+    );
+  } catch (err) {
+    // The installation is gone or no longer covers the repository.
+    if (isRefusal(err, 403) || isRefusal(err, 404) || isRefusal(err, 422)) {
+      deps.logger.warn(
+        `[vetra-apps] no push token for App ${app.slug} (${app.id}): GitHub refused (${(err as GithubHttpError).status})`,
+      );
+      throw notConnected();
+    }
+    throw classifyGithubError(err, repo.fullName.split("/")[0] ?? "") ?? err;
+  }
+  const cap = deps.now().getTime() + STUDIO_PUSH_TOKEN_MAX_MS;
+  const given = Date.parse(minted.expiresAt);
+  const expiresAt = new Date(
+    Number.isNaN(given) ? cap : Math.min(given, cap),
+  ).toISOString();
+  return {
+    token: minted.token,
+    expiresAt,
+    remoteUrl: `https://github.com/${repo.fullName}.git`,
+  };
 }
 
 /**
@@ -2054,7 +2327,7 @@ export async function confirmAppIdentity(
   const app = await loadAppForOwner(deps, caller, appId);
   // A Studio product without GitHub has no CI workload identity to confirm:
   // its identity is the Studio agent's key, checked on every agent call.
-  if (!appRepository(app)) return app;
+  if (!hasCiIdentity(app)) return app;
   if (!deps.renown) throw notConfigured("Renown workload identities");
   const delegation = await deps.renown.getDelegation({
     address: app.owner_org_id ? caller.address : app.owner_address,
@@ -2145,8 +2418,13 @@ export async function updateApp(
   ) {
     const branch = input.productionBranch.trim();
     assertBranch(branch);
-    if (!appRepository(app))
-      throw appsError("BAD_USER_INPUT", "This App has no repository");
+    if (!hasCiIdentity(app))
+      throw appsError(
+        "BAD_USER_INPUT",
+        appRepository(app)
+          ? "A Studio product launches from its Studio, not from a branch"
+          : "This App has no repository",
+      );
     // Renown decides which ref may mint production tokens: keep it in sync first.
     if (!deps.renown) throw notConfigured("Renown workload identities");
     await deps.renown.updateWorkloadIdentity(app.identity_did, {
@@ -2261,9 +2539,9 @@ export async function deleteApp(
     if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
     await deps.harbor.deleteRobot(app.harbor_robot_id);
   }
-  // A Studio product without GitHub registered no workload identity (its
-  // identity is the Studio agent's key): nothing to delete at Renown.
-  if (appRepository(app)) {
+  // A Studio product registered no workload identity (its identity is the
+  // Studio agent's key, on GitHub or not): nothing to delete at Renown.
+  if (hasCiIdentity(app)) {
     if (!deps.renown) throw notConfigured("Renown workload identities");
     try {
       await deps.renown.deleteWorkloadIdentity(app.identity_did);
@@ -2337,6 +2615,12 @@ export async function openAppSetupPullRequest(
 ): Promise<string> {
   const app = await loadAppForOwner(deps, caller, appId);
   const repository = requireRepository(app);
+  // D15: no deploy workflow for a Studio product; its Studio launches it.
+  if (isStudioProduct(app))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "A Studio product launches from its Studio; it needs no deploy workflow",
+    );
   const github = requireGithub(deps);
   const repo = await detectRepoToolchain(
     github,

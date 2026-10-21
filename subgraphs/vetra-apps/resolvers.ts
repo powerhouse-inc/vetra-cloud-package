@@ -33,6 +33,7 @@ import {
   appDeploymentsFor,
   appForOwner,
   appRegistryCredentials,
+  attachStudioRepository,
   confirmAppIdentity,
   connectGithubDeploy,
   createApp,
@@ -45,6 +46,8 @@ import {
   rollbackStudioVersion,
   setStudioProductDrive,
   studioDeploymentFor,
+  studioPushToken,
+  type AttachStudioRepositoryInput,
   type LaunchStudioVersionInput,
   githubDeployRepositories,
   myApps,
@@ -160,7 +163,14 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     ownerOrgId: app.owner_org_id ?? null,
     studioEnvironmentId: app.studio_environment_id ?? null,
     status: app.status,
-    repository: repo,
+    repository: repo
+      ? {
+          ...repo,
+          accountLogin: app.repository_account_login ?? null,
+          accountType: app.repository_account_type ?? null,
+          disconnectedAt: app.repository_disconnected_at ?? null,
+        }
+      : null,
     productDriveId: app.product_drive_id ?? null,
     launchedAt: app.launched_at ?? null,
     productionBranch: app.production_branch,
@@ -453,6 +463,30 @@ export function createResolvers(deps: AppsDeps) {
               driveId,
               presentedStudioSecret(ctx),
             ),
+          ),
+        ),
+      attachStudioRepository: (
+        _: unknown,
+        { input }: { input: AttachStudioRepositoryInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "attachStudioRepository", async () =>
+          mapApp(
+            deps,
+            await attachStudioRepository(deps, requireCaller(ctx), input),
+          ),
+        ),
+      studioPushToken: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "studioPushToken", () =>
+          studioPushToken(
+            deps,
+            requireCaller(ctx),
+            appId,
+            presentedStudioSecret(ctx),
           ),
         ),
       rotateStudioLaunchSecret: (

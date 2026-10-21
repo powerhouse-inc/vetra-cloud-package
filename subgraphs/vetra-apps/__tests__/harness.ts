@@ -227,6 +227,15 @@ export function fakeGithub(): GithubDeployApi & {
   userDeleteMissing: { value: boolean };
   /** Every recorded call name, in call order. */
   order: string[];
+  /** What listUserInstallations answers (any app; the Vetra Deploy app is 1001). */
+  installations: {
+    installationId: string;
+    appId: string;
+    accountLogin: string;
+    accountType: string;
+  }[];
+  /** Org login → the caller's membership (absent: active admin; null: not a member). */
+  memberships: Map<string, { state: string; role: string } | null>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -247,8 +256,35 @@ export function fakeGithub(): GithubDeployApi & {
   const addRepoFailures: number[] = [];
   const repoOwnerOverride = { login: null as string | null };
   const userDeleteMissing = { value: false };
+  const installations = [
+    {
+      installationId: INSTALLATION,
+      appId: "1001",
+      accountLogin: "acme",
+      accountType: "Organization",
+    },
+    {
+      installationId: "99",
+      appId: "5555",
+      accountLogin: "other-app",
+      accountType: "User",
+    },
+  ];
+  const memberships = new Map<string, { state: string; role: string } | null>();
+  let pushTokenSeq = 0;
   return {
     calls,
+    installations,
+    memberships,
+    getOrgMembership: rec("getOrgMembership", (_token: string, org: string) =>
+      memberships.has(org)
+        ? memberships.get(org)!
+        : { state: "active", role: "admin" },
+    ),
+    createRepoPushToken: rec("createRepoPushToken", () => ({
+      token: `ghs_push_${++pushTokenSeq}`,
+      expiresAt: "2026-10-02T13:00:00.000Z",
+    })),
     order,
     files,
     takenRepoNames,
@@ -313,18 +349,7 @@ export function fakeGithub(): GithubDeployApi & {
       };
     }),
     listUserInstallations: rec("listUserInstallations", () => [
-      {
-        installationId: INSTALLATION,
-        appId: "1001",
-        accountLogin: "acme",
-        accountType: "Organization",
-      },
-      {
-        installationId: "99",
-        appId: "5555",
-        accountLogin: "other-app",
-        accountType: "User",
-      },
+      ...installations,
     ]),
     // What the USER can see in the installation (not every installation repo).
     listUserInstallationRepos: rec("listUserInstallationRepos", () => [

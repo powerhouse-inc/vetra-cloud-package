@@ -114,9 +114,11 @@ async function markIdentityExpired(
     .selectAll()
     .where("identity_did", "=", appDid)
     .where("status", "=", "ACTIVE")
-    // Only CI identities (Apps with a repository); a Studio product's
-    // identity is its agent's key, which never deploys through CI.
+    // Only CI identities (Apps with a repository and a Harbor robot); a
+    // Studio product's identity is its agent's key, on GitHub or not, and
+    // never deploys through CI.
     .where("repository_id", "is not", null)
+    .where("harbor_robot_name", "!=", "")
     .where((eb) =>
       eb.or([
         eb("identity_expires_at", "is", null),

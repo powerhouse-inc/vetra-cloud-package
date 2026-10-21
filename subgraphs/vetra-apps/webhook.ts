@@ -1,5 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { normalizeApp, getPreview, type AppRow } from "./repo.js";
+import {
+  normalizeApp,
+  getPreview,
+  isStudioProduct,
+  type AppRow,
+} from "./repo.js";
 import {
   deletePreview,
   deletePreviewsOfApp,
@@ -59,6 +64,23 @@ async function disconnect(
   reason: string,
 ): Promise<void> {
   for (const app of apps) {
+    // A Studio product's repository is only its mirror: losing it never stops
+    // the product (spec §8). The Studio sees it and may connect again.
+    if (isStudioProduct(app)) {
+      await deps.db
+        .updateTable("apps")
+        .set({
+          repository_disconnected_at: deps.now().toISOString(),
+          updated_at: deps.now().toISOString(),
+        })
+        .where("id", "=", app.id)
+        .execute();
+      await mirrorAppById(deps, app.id);
+      deps.logger.info(
+        `[vetra-apps] Studio product ${app.slug} lost its GitHub repository (${reason}); it stays live`,
+      );
+      continue;
+    }
     await deps.db
       .updateTable("apps")
       .set({ status: "DISCONNECTED", updated_at: deps.now().toISOString() })

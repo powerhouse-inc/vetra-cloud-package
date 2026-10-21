@@ -141,6 +141,24 @@ export interface GithubDeployApi {
   getInstallationRepositorySelection(
     installationId: string,
   ): Promise<"all" | "selected">;
+  /**
+   * The user's membership of organisation `org` (GET
+   * /user/memberships/orgs/{org}, user token); null when GitHub answers 404
+   * (not a member, or the organisation hides itself from the user).
+   */
+  getOrgMembership(
+    userToken: string,
+    org: string,
+  ): Promise<{ state: string; role: string } | null>;
+  /**
+   * An installation token limited to one repository with contents:write only
+   * (POST /app/installations/{id}/access_tokens, app JWT). GitHub issues it
+   * for one hour. Never log the token.
+   */
+  createRepoPushToken(
+    installationId: string,
+    repositoryId: string,
+  ): Promise<{ token: string; expiresAt: string }>;
   /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
   deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
   /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
@@ -577,6 +595,36 @@ export function createGithubDeployApi(
           `GitHub installation ${installationId}: unknown repository_selection ${String(selection)}`,
         );
       return selection;
+    },
+
+    async getOrgMembership(userToken, org) {
+      const r = await call<{ state?: string; role?: string } | null>(
+        userToken,
+        "GET",
+        `/user/memberships/orgs/${encodeURIComponent(org)}`,
+        undefined,
+        [404],
+      );
+      if (r.status === 404) return null;
+      return { state: r.data?.state ?? "", role: r.data?.role ?? "" };
+    },
+
+    async createRepoPushToken(installationId, repositoryId) {
+      const { token: jwt } = await auth({ type: "app" });
+      const id = Number(repositoryId);
+      if (!Number.isSafeInteger(id))
+        throw new GithubHttpError(400, "invalid repository id");
+      const { data } = await call<{ token?: string; expires_at?: string } | null>(
+        jwt,
+        "POST",
+        `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+        { repository_ids: [id], permissions: { contents: "write" } },
+        [],
+        "Bearer",
+      );
+      if (!data?.token || !data.expires_at)
+        throw new GithubHttpError(502, "GitHub returned no installation token");
+      return { token: data.token, expiresAt: data.expires_at };
     },
 
     async deleteRepoAsUser(userToken, fullName) {

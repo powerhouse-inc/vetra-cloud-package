@@ -35,6 +35,22 @@ export const schema: DocumentNode = gql`
     installationId: String!
     repositoryId: String!
     fullName: String!
+    "GitHub account the repository is in (Studio products, attachStudioRepository); null when not recorded."
+    accountLogin: String
+    "GitHub's account type of accountLogin (User or Organization); null when not recorded."
+    accountType: String
+    "When GitHub took the repository away (a Studio product stays live); null while connected."
+    disconnectedAt: String
+  }
+
+  "A short-lived credential to push a Studio product's code to its repository."
+  type StudioPushToken {
+    "Installation token limited to the App's repository (contents: write)."
+    token: String!
+    "At most one hour after it was issued."
+    expiresAt: String!
+    "HTTPS URL of the repository, without credentials."
+    remoteUrl: String!
   }
 
   type AppUrls {
@@ -152,6 +168,14 @@ export const schema: DocumentNode = gql`
     orgId: String
   }
 
+  input AttachStudioRepositoryInput {
+    appId: ID!
+    "One of the caller's connected Vetra Deploy installations; the repository is created in its account (personal or organisation)."
+    installationId: String!
+    "Repository name wanted (default: the product's slug; a taken name gets a suffix)."
+    name: String
+  }
+
   input EnsureStudioProductInput {
     studioEnvironmentId: String!
     name: String!
@@ -236,6 +260,10 @@ export const schema: DocumentNode = gql`
     rollbackStudioVersion(deploymentId: ID!): AppDeployment!
     "The Studio's agent records its product's drive (once) and opens the live Connect on it"
     setStudioProductDrive(appId: ID!, driveId: String!): App!
+    "The owner keeps a copy of a Studio product's code on GitHub: a private repository in their account or an organisation (no deploy workflow)"
+    attachStudioRepository(input: AttachStudioRepositoryInput!): App!
+    "The Studio's agent gets a short-lived push token for its own product's repository (with the launch secret header)"
+    studioPushToken(appId: ID!): StudioPushToken!
     "Admin: give a claimed Studio a new launch secret (writes only that key; backfills Studios without one)"
     rotateStudioLaunchSecret(environmentId: String!): Boolean!
   }

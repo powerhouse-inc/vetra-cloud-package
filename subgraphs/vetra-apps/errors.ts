@@ -78,6 +78,18 @@ export const githubErrors = {
       "ORG_POLICY",
       `A policy of the ${account} organisation on GitHub does not allow this. Ask an owner of the organisation to allow it, then try again.`,
     ),
+  /** Connecting a Studio product to an organisation the policy of which does not allow it (spec §8). */
+  studioOrgPolicy: (org: string) =>
+    appsError(
+      "ORG_POLICY",
+      `Ask an owner of ${org} to allow Vetra, or choose your personal account`,
+    ),
+  /** Vetra is not installed on the organisation, or the caller is not (or no longer) a member of it. */
+  studioOrgNotInstalled: (org: string) =>
+    appsError(
+      "INSUFFICIENT_PERMISSION",
+      `Install Vetra on ${org} or choose your personal account`,
+    ),
   notConnected: () =>
     appsError(
       "GITHUB_NOT_CONNECTED",
