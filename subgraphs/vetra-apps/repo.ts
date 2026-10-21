@@ -1,4 +1,4 @@
-import type { Kysely, Selectable } from "kysely";
+import { sql, type Kysely, type Selectable } from "kysely";
 import type {
   AppDeploymentStatus,
   AppDeploymentsTable,
@@ -33,6 +33,11 @@ export async function getApp(
   return row ? normalizeApp(row) : null;
 }
 
+/**
+ * The App of an identity. A live App wins over DELETED ones: a Studio
+ * product swept or deleted keeps its row, and its successor is bound to the
+ * same agent key.
+ */
 export async function getAppByIdentity(
   db: Kysely<VetraAppsDB>,
   did: string,
@@ -41,6 +46,8 @@ export async function getAppByIdentity(
     .selectFrom("apps")
     .selectAll()
     .where("identity_did", "=", did)
+    .orderBy(sql`(${sql.ref("status")} = 'DELETED')`)
+    .orderBy("created_at", "desc")
     .executeTakeFirst();
   return row ? normalizeApp(row) : null;
 }

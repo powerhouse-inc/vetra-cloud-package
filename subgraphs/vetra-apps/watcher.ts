@@ -139,7 +139,7 @@ const RELEASED_ENV_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
  * D8 / F32 — the one automatic removal (Global Constraints' named
  * exception): a Studio product without GitHub that never went live —
  * launched_at and product_drive_id null, no env adopted, no deployment
- * pending, under way or READY — is soft-deleted 14 days after it was made,
+ * other than FAILED ones — is soft-deleted 14 days after it was made,
  * and its production env is terminated (the env document is kept). Nothing a
  * customer saw live is touched: Apps with a repository, adopted envs and
  * launched products are never selected. The App row is flipped first, under
@@ -180,18 +180,14 @@ export async function runUnlaunchedStudioAppSweepOnce(
   return removed;
 }
 
-async function removeUnlaunchedStudioApp(
+export async function removeUnlaunchedStudioApp(
   deps: AppsDeps,
   app: AppRow,
 ): Promise<boolean> {
-  const deployed = await deps.db
-    .selectFrom("app_deployments")
-    .select("id")
-    .where("app_id", "=", app.id)
-    .where("status", "in", ["PENDING", "DEPLOYING", "READY"])
-    .executeTakeFirst();
-  if (deployed) return false;
   const nowIso = deps.now().toISOString();
+  // One statement: the conditions are re-checked with the deletion, so a
+  // launch whose deployment row (any status but FAILED) or launch marker
+  // landed after the selection keeps its App.
   const gone = await deps.db
     .updateTable("apps")
     .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
@@ -201,6 +197,17 @@ async function removeUnlaunchedStudioApp(
     .where("launched_at", "is", null)
     .where("product_drive_id", "is", null)
     .where("adopted_at", "is", null)
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("app_deployments")
+            .select("app_deployments.id")
+            .whereRef("app_deployments.app_id", "=", "apps.id")
+            .where("app_deployments.status", "!=", "FAILED"),
+        ),
+      ),
+    )
     .returning("id")
     .executeTakeFirst();
   if (!gone) return false;

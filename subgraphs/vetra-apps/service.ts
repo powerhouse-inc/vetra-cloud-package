@@ -1272,25 +1272,6 @@ async function bindAgentIdentity(
 }
 
 /**
- * The owner path also gives the Studio its launch secret when it has none
- * (X22), so its agent can launch after the restart. Best effort: the agent's
- * own first call provisions it otherwise.
- */
-async function ensureLaunchSecretQuietly(
-  deps: AppsDeps,
-  studioId: string,
-  studio: VetraCloudEnvironmentState,
-): Promise<void> {
-  try {
-    await ensureStudioLaunchSecret(deps, studioId, studio);
-  } catch (err) {
-    deps.logger.warn(
-      `[vetra-apps] launch secret for Studio ${studioId} not provisioned (retried by its agent): ${String(err instanceof Error ? err.message : err)}`,
-    );
-  }
-}
-
-/**
  * A Studio's product: its App, without a repository, and a production env at
  * <slug>.vetra.io with Connect at the apex (or an adopted env of the same
  * owner). Idempotent per Studio: an existing live App is returned as it is
@@ -1318,7 +1299,7 @@ export async function ensureStudioProduct(
   if (RELEASED_STATUSES.has(studio.status))
     throw appsError("BAD_USER_INPUT", "Studio is terminated");
 
-  const ensured = await withKeyLock(`studio-app:${studioId}`, async () => {
+  return withKeyLock(`studio-app:${studioId}`, async () => {
     const existing = await liveStudioApp(deps, studioId);
     if (existing) return existingStudioProduct(deps, caller, existing, auth);
     try {
@@ -1340,9 +1321,6 @@ export async function ensureStudioProduct(
       return existingStudioProduct(deps, caller, made, auth);
     }
   });
-  if (auth.kind === "owner")
-    await ensureLaunchSecretQuietly(deps, studioId, studio);
-  return ensured;
 }
 
 /** The env named by adoptEnvironmentId, when it may become the product's production env (F28). */
@@ -1434,6 +1412,10 @@ async function createStudioProduct(
   },
 ): Promise<AppRow> {
   const { studioId, studio, name, adoptEnvironmentId, identityDid } = ctx;
+  // An agent key already bound to another live App never gets a second one.
+  const holder = await getAppByIdentity(deps.db, identityDid);
+  if (holder && holder.status !== "DELETED")
+    throw appsError("STUDIO_BINDING", STUDIO_BINDING_MESSAGE);
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   const harbor = deps.harbor;
   // An organisation's Studio makes the organisation's App; the env is handed

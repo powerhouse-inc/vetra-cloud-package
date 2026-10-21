@@ -7,6 +7,7 @@ import { up } from "./db/migrations.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
+import { getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
 import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
@@ -403,13 +404,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // license_environments; nothing here touches app_user_environments.
     const machineDeps: ResolverDeps = {
       auth: {
+        // A live App wins over a DELETED one of the same identity.
         findAppByIdentityDid: (did) =>
-          appsDb
-            .selectFrom("apps")
-            .select(["id", "status"])
-            .where("identity_did", "=", did)
-            .executeTakeFirst()
-            .then((r) => r ?? null),
+          getAppByIdentity(appsDb, did).then((r) =>
+            r ? { id: r.id, status: r.status } : null,
+          ),
       },
       apps: appReads,
       licences: reads,

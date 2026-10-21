@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
-import { Kysely } from "kysely";
+import { Kysely, sql } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   addPackage,
@@ -18,7 +18,9 @@ import {
 } from "../../vetra-cloud-secrets/services/secrets-service.js";
 import type { Caller } from "../auth.js";
 import { envUrls, subdomainsCollide } from "../envs.js";
-import { getApp, type AppRow } from "../repo.js";
+import { getApp, getAppByIdentity, type AppRow } from "../repo.js";
+import { resolveCallerApp } from "../../vetra-licensing/auth.js";
+import { up } from "../db/migrations.js";
 import { createResolvers } from "../resolvers.js";
 import {
   appForOwner,
@@ -47,6 +49,7 @@ import {
   reportPreviewRemovedToGithub,
   runDeploymentWatcherOnce,
   runPreviewSweepOnce,
+  removeUnlaunchedStudioApp,
   runUnlaunchedStudioAppSweepOnce,
 } from "../watcher.js";
 import {
@@ -423,19 +426,51 @@ describe("ensureStudioProduct on the Studio-agent path (D20)", () => {
     expect(await code(ensure(input, agent, agentAuth(null)))).toBe("STUDIO_SECRET_PENDING");
   });
 
-  it("the owner's call also gives the Studio its launch secret", async () => {
+  it("only the agent path provisions the secret: the owner's call never restarts the Studio", async () => {
     const studio = await seedStudio({ secret: false });
+    const ensureSpy = vi.spyOn(secrets, "ensureSecret");
     await ensure({ studioEnvironmentId: studio.id, name: "My Shop" });
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(await tenantLaunchSecret(studio.id)).toBeUndefined();
+    // The agent provisions it, then after the restart gets the owner's App, bound to its key.
+    const input = { studioEnvironmentId: studio.id, name: "My Shop" };
+    expect(await code(ensure(input, agent, agentAuth(null)))).toBe("STUDIO_SECRET_PENDING");
     const secret = (await tenantLaunchSecret(studio.id))!;
-    expect(secret).toMatch(/^[0-9a-f]{64}$/);
-    // The agent, after the restart, gets the owner's App, bound to its key.
-    const app = await ensure({ studioEnvironmentId: studio.id, name: "My Shop" }, agent, agentAuth(secret));
+    const app = await ensure(input, agent, agentAuth(secret));
     expect(app.identity_did).toBe(AGENT_KEY);
     expectNotLogged(secret);
-    // Without OpenBao the owner still gets the App (the agent provisions later).
-    const other = await seedStudio({ secret: false });
-    h.deps.studioSecrets = null;
-    expect(await code(ensure({ studioEnvironmentId: other.id, name: "Other" }))).toBe("OK");
+  });
+
+  it("an agent key bound to a live App gets no second one; after a sweep the successor owns the key", async () => {
+    const first = await seedStudio();
+    const old = await ensure({ studioEnvironmentId: first.id, name: "Old" }, agent, agentAuth(first.secret));
+    // The same key on another Studio of the owner: refused while the first App is live.
+    const second = await seedStudio();
+    expect(
+      await code(ensure({ studioEnvironmentId: second.id, name: "New" }, agent, agentAuth(second.secret))),
+    ).toBe("STUDIO_BINDING");
+
+    h.clock.now = new Date(h.clock.now.getTime() + 15 * DAY);
+    expect(await runUnlaunchedStudioAppSweepOnce(h.deps)).toBe(1);
+    const successor = await ensure(
+      { studioEnvironmentId: first.id, name: "Old" },
+      agent,
+      agentAuth(first.secret),
+    );
+    expect(successor.id).not.toBe(old.id);
+    expect(successor.identity_did).toBe(AGENT_KEY);
+    // Every identity lookup resolves the live App, not the DELETED one.
+    expect((await getAppByIdentity(h.db, AGENT_KEY))!.id).toBe(successor.id);
+    const licensing = await resolveCallerApp(
+      {
+        findAppByIdentityDid: (did) =>
+          getAppByIdentity(h.db, did).then((r) => (r ? { id: r.id, status: r.status } : null)),
+      },
+      { user: { address: OWNER, chainId: 1, networkId: "eip155", appKey: AGENT_KEY } },
+    );
+    expect(licensing).toStrictEqual({ appId: successor.id });
+    // The owner-only paths still refuse the agent.
+    expect(await code(appForOwner(h.deps, agent, successor.id))).toBe("FORBIDDEN");
   });
 });
 
@@ -536,6 +571,65 @@ describe("unlaunched Studio products (D8, F32)", () => {
     const again = await ensure({ studioEnvironmentId: idle.studio_environment_id!, name: "Idle" });
     expect(again.id).not.toBe(idle.id);
     expect(again.slug).toBe("idle-2");
+  });
+
+  it("a deployment that lands between selection and deletion keeps the App (any status but FAILED)", async () => {
+    for (const status of ["PENDING", "DEPLOYING", "READY", "SUPERSEDED"] as const) {
+      const s = await seedStudio();
+      const app = await ensure({ studioEnvironmentId: s.id, name: `Racing ${status}` });
+      // The sweep selected the row; then a launch inserts its deployment.
+      const selected = (await getApp(h.db, app.id))!;
+      await h.db
+        .insertInto("app_deployments")
+        .values({
+          id: `dep-${status}`, app_id: app.id, environment_id: app.production_environment_id,
+          kind: "PRODUCTION", pr_number: null, git_ref: "refs/heads/main", sha: "abcdef1234567",
+          packages: "[]", image_tag: null, status, actor_did: null, actor_github: null, run_url: null,
+          error: null, github_deployment_id: null, created_at: "t", updated_at: "t",
+        })
+        .execute();
+      expect(await removeUnlaunchedStudioApp(h.deps, selected)).toBe(false);
+      expect((await getApp(h.db, app.id))!.status).toBe("ACTIVE");
+      expect((await h.envs.getState(app.production_environment_id))!.status).not.toBe("TERMINATING");
+    }
+    // A launch marker set after the selection protects too.
+    const s = await seedStudio();
+    const app = await ensure({ studioEnvironmentId: s.id, name: "Marked" });
+    const selected = (await getApp(h.db, app.id))!;
+    await h.db.updateTable("apps").set({ launched_at: "t" }).where("id", "=", app.id).execute();
+    expect(await removeUnlaunchedStudioApp(h.deps, selected)).toBe(false);
+  });
+
+  it("the conditional deletion works in the namespace schema", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const ns = root.withSchema("vetra-apps");
+      await up(ns);
+      const s = await seedStudio();
+      const app = await ensure({ studioEnvironmentId: s.id, name: "Namespaced" });
+      const row = (await getApp(h.db, app.id))!;
+      await ns.insertInto("apps").values(row).execute();
+      await ns.insertInto("apps").values({ ...row, id: "other", slug: "other", studio_environment_id: "s2" }).execute();
+      await ns
+        .insertInto("app_deployments")
+        .values({
+          id: "d1", app_id: "other", environment_id: null, kind: "PRODUCTION", pr_number: null,
+          git_ref: "refs/heads/main", sha: "abcdef1234567", packages: "[]", image_tag: null,
+          status: "READY", actor_did: null, actor_github: null, run_url: null, error: null,
+          github_deployment_id: null, created_at: "t", updated_at: "t",
+        })
+        .execute();
+      const nsDeps = { ...h.deps, db: ns, docs: null };
+      expect(await removeUnlaunchedStudioApp(nsDeps, row)).toBe(true);
+      expect(await removeUnlaunchedStudioApp(nsDeps, { ...row, id: "other" })).toBe(false);
+      const statusOf = async (id: string) =>
+        (await ns.selectFrom("apps").select("status").where("id", "=", id).executeTakeFirstOrThrow()).status;
+      expect(await statusOf(row.id)).toBe("DELETED");
+      expect(await statusOf("other")).toBe("ACTIVE");
+    } finally {
+      await root.destroy();
+    }
   });
 
   it("a failed READY-less deployment does not count as launched; a FAILED one does not protect", async () => {
