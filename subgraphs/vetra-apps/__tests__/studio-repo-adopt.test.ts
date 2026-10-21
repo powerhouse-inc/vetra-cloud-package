@@ -388,6 +388,55 @@ describe("adoptStudioRepository (existing Studio GitHub connections carried over
     nothingMadeOrMoved();
   });
 
+  it("says why there is no push token: never connected, disconnected or refused", async () => {
+    const reason = (p: Promise<unknown>) =>
+      p.then(
+        () => "OK",
+        (e: { extensions?: { code?: string; reason?: string } }) =>
+          `${e.extensions?.code}/${e.extensions?.reason}`,
+      );
+    const p = await seedProduct();
+    expect(await reason(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED/NEVER_CONNECTED",
+    );
+
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, { appId: p.app.id, installationId: PERSONAL });
+    const createRepoPushToken = h.github.createRepoPushToken;
+    h.github.createRepoPushToken = async () => {
+      throw new GithubHttpError(404, "gone");
+    };
+    expect(await reason(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED/TOKEN_REFUSED",
+    );
+    h.github.createRepoPushToken = createRepoPushToken;
+
+    await h.db
+      .updateTable("apps")
+      .set({ repository_disconnected_at: "2026-10-03T00:00:00.000Z" })
+      .where("id", "=", p.app.id)
+      .execute();
+    // An old connection doesn't bring a disconnected product back.
+    connectedTheOldWay(p);
+    expect(await reason(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED/DISCONNECTED",
+    );
+  });
+
+  it("an organisation member whose GitHub sign-in lapsed reads as refused, not never connected", async () => {
+    const p = await seedProduct();
+    await connectGithubDeploy(h.deps, owner, "code");
+    await attachStudioRepository(h.deps, owner, { appId: p.app.id, installationId: ORG_INSTALLATION });
+    await h.db.deleteFrom("github_deploy_connections").execute();
+    const err = await studioPushToken(h.deps, agent, p.app.id, p.secret).catch(
+      (e: { extensions?: Record<string, unknown> }) => e,
+    );
+    expect((err as { extensions: Record<string, unknown> }).extensions).toMatchObject({
+      code: "GITHUB_NOT_CONNECTED",
+      reason: "TOKEN_REFUSED",
+    });
+  });
+
   it("a legacy CI App is not a Studio product", async () => {
     const p = await seedProduct();
     await h.db.updateTable("apps").set({ harbor_robot_name: "robot$x" }).where("id", "=", p.app.id).execute();

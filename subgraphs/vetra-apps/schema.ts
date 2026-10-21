@@ -266,7 +266,7 @@ export const schema: DocumentNode = gql`
     attachStudioRepository(input: AttachStudioRepositoryInput!): App!
     "The Studio's agent carries its Studio's existing GitHub repository (connected before GitHub moved to the product's settings) over to its product, when Vetra Deploy reaches it; nothing is created or moved (with the launch secret header; studioPushToken does this on its own)"
     adoptStudioRepository(appId: ID!): App!
-    "The Studio's agent gets a short-lived push token for its own product's repository, carrying its Studio's existing repository over first when the product has none (with the launch secret header)"
+    "The Studio's agent gets a short-lived push token for its own product's repository, carrying its Studio's existing repository over first when the product has none (with the launch secret header). GITHUB_NOT_CONNECTED carries extensions.reason: NEVER_CONNECTED (never had a repository), DISCONNECTED (GitHub took it away) or TOKEN_REFUSED (no token given for the recorded one)"
     studioPushToken(appId: ID!): StudioPushToken!
     "The Studio's agent records the commit it is about to push to its product's repository, so that push is not taken for a change made on GitHub (with the launch secret header)"
     recordStudioMirror(appId: ID!, sha: String!): Boolean!

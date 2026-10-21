@@ -90,10 +90,17 @@ export const githubErrors = {
       "INSUFFICIENT_PERMISSION",
       `Install Vetra on ${org} or choose your personal account`,
     ),
-  notConnected: () =>
+  /**
+   * `reason` (studioPushToken, in extensions.reason): NEVER_CONNECTED — the
+   * product never had a repository (the Studio may push with its earlier
+   * connection); DISCONNECTED — GitHub took it away; TOKEN_REFUSED — the
+   * repository is recorded but no token was given.
+   */
+  notConnected: (reason?: "NEVER_CONNECTED" | "DISCONNECTED" | "TOKEN_REFUSED") =>
     appsError(
       "GITHUB_NOT_CONNECTED",
       "Your GitHub connection has expired or was removed. Reconnect GitHub, then try again.",
+      reason ? { reason } : {},
     ),
   unavailable: () =>
     appsError(

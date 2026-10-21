@@ -2105,11 +2105,27 @@ export async function studioPushToken(
   // The first push token request carries the Studio's old repository over.
   const { app, minted: carried } = await carryStudioRepositoryOver(deps, bound);
   const repo = appRepository(app);
-  if (!repo || app.repository_disconnected_at) throw notConnected();
+  if (!repo)
+    throw githubErrors.notConnected(
+      app.repository_disconnected_at ? "DISCONNECTED" : "NEVER_CONNECTED",
+    );
+  if (app.repository_disconnected_at)
+    throw githubErrors.notConnected("DISCONNECTED");
   const github = requireGithub(deps);
   // Just carried over: membership was checked and the token minted then.
-  if (!carried && app.repository_account_type === "Organization")
-    await assertOwnerStillInOrg(deps, github, app, repo.installationId);
+  if (!carried && app.repository_account_type === "Organization") {
+    try {
+      await assertOwnerStillInOrg(deps, github, app, repo.installationId);
+    } catch (err) {
+      // The connecting person's GitHub sign-in lapsed: the repository is still there.
+      if (
+        err instanceof GraphQLError &&
+        err.extensions.code === "GITHUB_NOT_CONNECTED"
+      )
+        throw githubErrors.notConnected("TOKEN_REFUSED");
+      throw err;
+    }
+  }
   let minted: { token: string; expiresAt: string };
   try {
     minted =
@@ -2121,7 +2137,7 @@ export async function studioPushToken(
       deps.logger.warn(
         `[vetra-apps] no push token for App ${app.slug} (${app.id}): GitHub refused (${(err as GithubHttpError).status})`,
       );
-      throw notConnected();
+      throw githubErrors.notConnected("TOKEN_REFUSED");
     }
     throw classifyGithubError(err, repo.fullName.split("/")[0] ?? "") ?? err;
   }
