@@ -130,13 +130,19 @@ export async function up(db: Kysely<any>): Promise<void> {
 export async function ensureStudioLaunchSecretsTable(
   db: Kysely<any>,
 ): Promise<void> {
-  await db.schema
-    .createTable("studio_launch_secrets")
-    .ifNotExists()
-    .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
-    .addColumn("secret_hash", "varchar(64)", (c) => c.notNull())
-    .addColumn("rotated_at", "varchar(64)", (c) => c.notNull())
-    .execute();
+  try {
+    await db.schema
+      .createTable("studio_launch_secrets")
+      .ifNotExists()
+      .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
+      .addColumn("secret_hash", "varchar(64)", (c) => c.notNull())
+      .addColumn("rotated_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    // Two boots (vetra-apps and the studio pool, or two replicas) racing on
+    // CREATE TABLE IF NOT EXISTS: the loser sees 42P07/23505; the table is there.
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
 
 async function addConnectionTokenColumns(db: Kysely<any>): Promise<void> {

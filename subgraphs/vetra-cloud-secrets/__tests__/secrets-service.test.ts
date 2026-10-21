@@ -354,6 +354,20 @@ describe("Studio launch secret (a rotatable managed key)", () => {
     ).rejects.toBeInstanceOf(ManagedSecretKeyError);
   });
 
+  it("replaceTenantConfig takes the last of duplicate managed entries", async () => {
+    const a = randomBytes(32).toString("hex");
+    const b = randomBytes(32).toString("hex");
+    await service.replaceTenantConfig(
+      "t",
+      [],
+      [
+        { key: STUDIO_LAUNCH_SECRET_KEY, value: a },
+        { key: STUDIO_LAUNCH_SECRET_KEY, value: b },
+      ],
+    );
+    expect(await keysOf("t")).toStrictEqual([[STUDIO_LAUNCH_SECRET_KEY, `vault:v1:t:${b}`]]);
+  });
+
   it("goes with the tenant on a purge (the workflows master key stays)", async () => {
     await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
     await service.ensureSecret("t", STUDIO_LAUNCH_SECRET_KEY, () => randomBytes(32).toString("hex"));

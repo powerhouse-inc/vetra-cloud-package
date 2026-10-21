@@ -375,7 +375,12 @@ export function createSecretsService({
       });
     },
 
-    async replaceTenantConfig(tenantId, entries, managed = []) {
+    async replaceTenantConfig(tenantId, entries, managedEntries = []) {
+      // Last one wins per key: a duplicate would make the upsert below
+      // affect the same row twice.
+      const managed = [
+        ...new Map(managedEntries.map((m) => [m.key, m.value] as const)),
+      ].map(([key, value]) => ({ key, value }));
       for (const m of managed) assertRotatable(m.key, m.value);
       const usable = new Map<string, { value: string; secret: boolean }>();
       for (const e of entries) {

@@ -133,3 +133,37 @@ describe("ensureStudioLaunchSecretsTable", () => {
     }
   });
 });
+
+describe("ensureStudioLaunchSecretsTable under concurrent boots", () => {
+  /** A db whose CREATE TABLE fails with `err` (as the loser of a boot race sees). */
+  const failingDb = (err: unknown) => {
+    const builder: Record<string, unknown> = {};
+    for (const m of ["ifNotExists", "addColumn"]) builder[m] = () => builder;
+    builder.execute = () => Promise.reject(err);
+    return { schema: { createTable: () => builder } } as unknown as Kysely<any>;
+  };
+
+  it("tolerates a lost race (23505 / 42P07) and rethrows anything else", async () => {
+    await expect(
+      ensureStudioLaunchSecretsTable(failingDb(Object.assign(new Error("dup"), { code: "23505" }))),
+    ).resolves.toBeUndefined();
+    await expect(
+      ensureStudioLaunchSecretsTable(failingDb(Object.assign(new Error("dup"), { code: "42P07" }))),
+    ).resolves.toBeUndefined();
+    await expect(
+      ensureStudioLaunchSecretsTable(failingDb(Object.assign(new Error("boom"), { code: "42501" }))),
+    ).rejects.toThrow("boom");
+  });
+
+  it("parallel creates in one database all succeed", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await Promise.all([1, 2, 3].map(() => ensureStudioLaunchSecretsTable(db)));
+      expect(await db.selectFrom("studio_launch_secrets").selectAll().execute()).toStrictEqual([]);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
