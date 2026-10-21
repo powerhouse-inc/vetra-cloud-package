@@ -1853,6 +1853,8 @@ export interface StudioGithubConnection {
   /** Whose connection it is (did:pkh:<network>:<chain>:<address>). */
   userDid: string;
   repoFullName: string;
+  /** That person's GitHub login, from the identity link (null: never captured). */
+  githubLogin: string | null;
 }
 
 /** The address a did:pkh names, lowercased ("" for any other DID). */
@@ -1864,7 +1866,8 @@ const didAddress = (did: string) =>
  * made for this product's Studio, as Vetra Deploy reaches it, or null:
  * no such connection (only the product owner's own counts), Vetra Deploy is
  * not installed on that account or does not reach the repository, another
- * App already uses it, or (an organisation's repository) the owner has not
+ * App already uses it, a personal account is not the owner's own GitHub
+ * login (vetra-github-auth's identity link), or (an organisation's repository) the owner has not
  * connected Vetra Deploy there or is no longer an active member. Refusals
  * and failures are logged and leave the product as it is.
  */
@@ -1907,6 +1910,17 @@ async function legacyStudioRepository(
     if (taken) {
       deps.logger.info(
         `[vetra-apps] Studio product ${app.slug} (${app.id}): ${found.repo.fullName} is already used by another App; not carried over`,
+      );
+      return null;
+    }
+    // A personal account must be the owner's own GitHub account.
+    if (
+      found.accountType !== "Organization" &&
+      (!connection.githubLogin ||
+        connection.githubLogin.toLowerCase() !== found.accountLogin.toLowerCase())
+    ) {
+      deps.logger.info(
+        `[vetra-apps] Studio product ${app.slug} (${app.id}): ${found.repo.fullName} is not in its owner's own GitHub account; not carried over`,
       );
       return null;
     }
@@ -1955,24 +1969,49 @@ export async function adoptStudioRepository(
       "BAD_USER_INPUT",
       "This App is deployed from its own repository; the Studio does not push to it",
     );
-  return carryStudioRepositoryOver(deps, app);
+  return (await carryStudioRepositoryOver(deps, app)).app;
 }
 
-/** adoptStudioRepository after the binding: the App, with the repository recorded when one was carried over. */
+/** What carrying over gave: the App, and the push token minted for its new repository (when carried over now). */
+interface CarriedOver {
+  app: AppRow;
+  minted: { token: string; expiresAt: string } | null;
+}
+
+/**
+ * adoptStudioRepository after the binding. A repository is recorded only
+ * once a push token for it was minted (a refusal leaves the Studio on its
+ * earlier connection, not disconnected) and GitHub's main was read: commits
+ * already there are recorded as changes made on GitHub
+ * (`external_changes_sha`), so the Studio offers Bring them in instead of
+ * failing every push.
+ */
 async function carryStudioRepositoryOver(
   deps: AppsDeps,
   app: AppRow,
-): Promise<AppRow> {
+): Promise<CarriedOver> {
   // Once a product has had a repository (even one GitHub took away), the
   // owner decides from its settings.
-  if (app.repository_id || !deps.github) return app;
+  if (app.repository_id || !deps.github) return { app, minted: null };
   const github = deps.github;
   const studioId = app.studio_environment_id!;
   return withKeyLock(`studio-app:${studioId}`, async () => {
     const current = (await getApp(deps.db, app.id)) ?? app;
-    if (current.repository_id) return current;
+    const unchanged = { app: current, minted: null };
+    if (current.repository_id) return unchanged;
     const found = await legacyStudioRepository(deps, github, current);
-    if (!found) return current;
+    if (!found) return unchanged;
+    let minted: { token: string; expiresAt: string };
+    let head: string | null;
+    try {
+      minted = await github.createRepoPushToken(found.installationId, found.repo.id);
+      head = await github.getBranchHead(found.installationId, found.repo.fullName, "main");
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] Studio product ${current.slug} (${current.id}): could not carry ${found.repo.fullName} over: ${String(err)}`,
+      );
+      return unchanged;
+    }
     const recorded = await deps.db
       .updateTable("apps")
       .set({
@@ -1983,6 +2022,7 @@ async function carryStudioRepositoryOver(
         repository_account_type: found.accountType,
         repository_disconnected_at: null,
         repository_connected_by: current.owner_address,
+        external_changes_sha: head ? head.toLowerCase() : null,
         updated_at: deps.now().toISOString(),
       })
       .where("id", "=", current.id)
@@ -1991,12 +2031,12 @@ async function carryStudioRepositoryOver(
       .returning("id")
       .executeTakeFirst();
     const after = (await getApp(deps.db, current.id))!;
-    if (!recorded) return after;
+    if (!recorded) return { app: after, minted: null };
     deps.logger.info(
-      `[vetra-apps] Studio product ${after.slug} (${after.id}) carried its Studio's repository ${found.repo.fullName} over`,
+      `[vetra-apps] Studio product ${after.slug} (${after.id}) carried its Studio's repository ${found.repo.fullName} over${head ? ` (main at ${head.slice(0, 12)})` : ""}`,
     );
     await mirrorAppRow(deps, after);
-    return after;
+    return { app: after, minted };
   });
 }
 
@@ -2063,18 +2103,18 @@ export async function studioPushToken(
       "This App is deployed from its own repository; the Studio does not push to it",
     );
   // The first push token request carries the Studio's old repository over.
-  const app = await carryStudioRepositoryOver(deps, bound);
+  const { app, minted: carried } = await carryStudioRepositoryOver(deps, bound);
   const repo = appRepository(app);
   if (!repo || app.repository_disconnected_at) throw notConnected();
   const github = requireGithub(deps);
-  if (app.repository_account_type === "Organization")
+  // Just carried over: membership was checked and the token minted then.
+  if (!carried && app.repository_account_type === "Organization")
     await assertOwnerStillInOrg(deps, github, app, repo.installationId);
   let minted: { token: string; expiresAt: string };
   try {
-    minted = await github.createRepoPushToken(
-      repo.installationId,
-      repo.repositoryId,
-    );
+    minted =
+      carried ??
+      (await github.createRepoPushToken(repo.installationId, repo.repositoryId));
   } catch (err) {
     // The installation is gone or no longer covers the repository.
     if (isRefusal(err, 403) || isRefusal(err, 404) || isRefusal(err, 422)) {

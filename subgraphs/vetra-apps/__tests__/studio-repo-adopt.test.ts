@@ -110,7 +110,7 @@ function connectedTheOldWay(
   },
   repoFullName = OLD_REPO,
 ) {
-  legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName }]);
+  legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName, githubLogin: "frank" }]);
   h.github.repoInstallations.set(repoFullName, {
     ...where,
     repo: { id: OLD_REPO_ID, fullName: repoFullName, private: true, defaultBranch: "main" },
@@ -142,6 +142,8 @@ describe("adoptStudioRepository (existing Studio GitHub connections carried over
       repository_account_type: "User",
       repository_disconnected_at: null,
       repository_connected_by: OWNER,
+      // GitHub's main was empty: nothing to bring in.
+      external_changes_sha: null,
     });
     // Still a Studio product (no CI identity, no Harbor robot).
     expect(app.harbor_robot_name).toBe("");
@@ -152,9 +154,63 @@ describe("adoptStudioRepository (existing Studio GitHub connections carried over
     const again = await adoptStudioRepository(h.deps, agent, p.app.id, p.secret);
     expect(again.repository_full_name).toBe(OLD_REPO);
     expect(h.github.calls.findRepoInstallation).toHaveLength(1);
+    expect(h.github.calls.createRepoPushToken).toHaveLength(1);
     expect((h.deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n")).toContain(
       OLD_REPO,
     );
+  });
+
+  it("commits already on GitHub show as changes made there", async () => {
+    const p = await seedProduct();
+    connectedTheOldWay(p);
+    const head = "AB".repeat(20);
+    h.github.branchHeads.set(OLD_REPO, head);
+    await studioPushToken(h.deps, agent, p.app.id, p.secret);
+    expect(h.github.calls.getBranchHead).toStrictEqual([[PERSONAL, OLD_REPO, "main"]]);
+    expect((await getApp(h.db, p.app.id))!.external_changes_sha).toBe(head.toLowerCase());
+  });
+
+  it("is not carried over when GitHub's main can't be read or no push token is given", async () => {
+    const p = await seedProduct();
+    connectedTheOldWay(p);
+    h.github.branchHeads.set(OLD_REPO, "error");
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED",
+    );
+    expect((await getApp(h.db, p.app.id))!.repository_id).toBeNull();
+
+    // A refused token leaves the Studio on its earlier connection (not disconnected).
+    h.github.branchHeads.delete(OLD_REPO);
+    h.github.createRepoPushToken = async () => {
+      throw new GithubHttpError(403, "refused");
+    };
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED",
+    );
+    expect(await code(adoptStudioRepository(h.deps, agent, p.app.id, p.secret))).toBe("OK");
+    const app = (await getApp(h.db, p.app.id))!;
+    expect(app.repository_id).toBeNull();
+    expect(app.repository_disconnected_at).toBeNull();
+  });
+
+  it("a personal repository is carried over only into the owner's own GitHub account", async () => {
+    const p = await seedProduct();
+    connectedTheOldWay(p);
+    // GitHub says the account is someone else's than the owner's GitHub identity.
+    legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName: OLD_REPO, githubLogin: "mallory" }]);
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED",
+    );
+    // No identity recorded: can't tell.
+    legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName: OLD_REPO, githubLogin: null }]);
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
+      "GITHUB_NOT_CONNECTED",
+    );
+    expect((await getApp(h.db, p.app.id))!.repository_id).toBeNull();
+    expect(h.github.calls.createRepoPushToken ?? []).toHaveLength(0);
+    // Same login, other case: the owner's.
+    legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName: OLD_REPO, githubLogin: "Frank" }]);
+    expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe("OK");
   });
 
   it("is served over GraphQL to the agent with the launch secret header", async () => {
@@ -205,14 +261,16 @@ describe("adoptStudioRepository (existing Studio GitHub connections carried over
     expect(h.github.calls.findRepoInstallation ?? []).toHaveLength(0);
 
     // Someone else's connection for this Studio is not the owner's.
-    legacy.set(p.studioId, [{ userDid: `did:pkh:eip155:1:${STRANGER}`, repoFullName: OLD_REPO }]);
+    legacy.set(p.studioId, [
+      { userDid: `did:pkh:eip155:1:${STRANGER}`, repoFullName: OLD_REPO, githubLogin: "frank" },
+    ]);
     expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
       "GITHUB_NOT_CONNECTED",
     );
     expect(h.github.calls.findRepoInstallation ?? []).toHaveLength(0);
 
     // The owner's connection, but Vetra Deploy is not installed there / does not reach the repository.
-    legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName: OLD_REPO }]);
+    legacy.set(p.studioId, [{ userDid: OWNER_DID, repoFullName: OLD_REPO, githubLogin: "frank" }]);
     expect(await code(studioPushToken(h.deps, agent, p.app.id, p.secret))).toBe(
       "GITHUB_NOT_CONNECTED",
     );
@@ -366,6 +424,21 @@ describe("GitHub client: findRepoInstallation", () => {
       repo: { id: "7001", fullName: "frank/my-shop-studio", private: true, defaultBranch: "main" },
     });
     expect(calls.map((c) => c.auth)).toStrictEqual(["Bearer ghs_app_jwt", "token ghs_inst_88"]);
+  });
+
+  it("reads a branch head with the installation token; an empty repository has none", async () => {
+    const { api, calls } = client({
+      "GET /repos/frank/shop/git/ref/heads/main": () =>
+        Response.json({ ref: "refs/heads/main", object: { sha: "c".repeat(40), type: "commit" } }),
+    });
+    expect(await api.getBranchHead("88", "frank/shop", "main")).toBe("c".repeat(40));
+    expect(calls[0].auth).toBe("token ghs_inst_88");
+    expect(await client({}).api.getBranchHead("88", "frank/shop", "main")).toBeNull();
+    const empty = client({
+      "GET /repos/frank/shop/git/ref/heads/main": () =>
+        Response.json({ message: "Git Repository is empty." }, { status: 409 }),
+    });
+    expect(await empty.api.getBranchHead("88", "frank/shop", "main")).toBeNull();
   });
 
   it("is null when Vetra Deploy is not installed there or does not reach the repository", async () => {

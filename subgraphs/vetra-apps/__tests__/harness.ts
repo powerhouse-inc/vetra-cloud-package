@@ -241,6 +241,8 @@ export function fakeGithub(): GithubDeployApi & {
   membershipsByToken: Map<string, { state: string; role: string } | null>;
   /** Repository full name → the Vetra Deploy installation that reaches it (absent: none). */
   repoInstallations: Map<string, GithubRepoInstallation>;
+  /** Repository full name → its main head ("error": GitHub fails; absent: empty repository). */
+  branchHeads: Map<string, string>;
 } {
   const prStates = new Map<number, "open" | "closed" | "error">();
   const files = new Map<string, string>();
@@ -281,6 +283,7 @@ export function fakeGithub(): GithubDeployApi & {
     { state: string; role: string } | null
   >();
   const repoInstallations = new Map<string, GithubRepoInstallation>();
+  const branchHeads = new Map<string, string>();
   let pushTokenSeq = 0;
   return {
     calls,
@@ -288,6 +291,12 @@ export function fakeGithub(): GithubDeployApi & {
     memberships,
     membershipsByToken,
     repoInstallations,
+    branchHeads,
+    getBranchHead: rec("getBranchHead", (_i: string, fullName: string) => {
+      const head = branchHeads.get(fullName);
+      if (head === "error") throw new GithubHttpError(502, "Bad Gateway");
+      return head ?? null;
+    }),
     findRepoInstallation: rec("findRepoInstallation", (fullName: string) =>
       repoInstallations.get(fullName) ?? null,
     ),

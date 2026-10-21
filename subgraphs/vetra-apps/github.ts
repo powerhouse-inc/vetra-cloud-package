@@ -180,6 +180,16 @@ export interface GithubDeployApi {
   findRepoInstallation(
     repoFullName: string,
   ): Promise<GithubRepoInstallation | null>;
+  /**
+   * The head commit of `branch` (GET /repos/{full}/git/ref/heads/{branch},
+   * installation token); null when the branch doesn't exist or the
+   * repository is empty (404/409).
+   */
+  getBranchHead(
+    installationId: string,
+    repoFullName: string,
+    branch: string,
+  ): Promise<string | null>;
   /** DELETE /repos/{full} with the installation token; true = deleted, false = 404 (gone or not reachable). */
   deleteRepo(installationId: string, repoFullName: string): Promise<boolean>;
   /** DELETE /repos/{full} with the user's token; true = deleted, false = 404 (gone or not reachable). */
@@ -651,6 +661,19 @@ export function createGithubDeployApi(
       if (!data?.token || !data.expires_at)
         throw new GithubHttpError(502, "GitHub returned no installation token");
       return { token: data.token, expiresAt: data.expires_at };
+    },
+
+    async getBranchHead(installationId, fullName, branch) {
+      const token = await installationToken(installationId);
+      const r = await call<{ object?: { sha?: string } } | null>(
+        token,
+        "GET",
+        `/repos/${repoPath(fullName)}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+        undefined,
+        [404, 409],
+      );
+      if (r.status === 404 || r.status === 409) return null;
+      return r.data?.object?.sha ?? null;
     },
 
     async findRepoInstallation(fullName) {

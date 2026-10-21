@@ -91,19 +91,33 @@ export async function deleteConnection(
     .execute();
 }
 
+/** A connection with its caller's GitHub login (null: no identity captured). */
+export type EnvironmentConnection = GithubConnection & { githubLogin: string | null };
+
 /**
- * Every caller's connection for one environment (read by vetra-apps when a
- * Studio's product carries its repository over; the caller picks whose).
+ * Every caller's connection for one environment, with the caller's GitHub
+ * login from the identity link (read by vetra-apps when a Studio's product
+ * carries its repository over; the caller picks whose).
  */
 export async function environmentConnections(
   db: Kysely<VetraGithubAuthDB>,
   environmentId: string,
-): Promise<GithubConnection[]> {
+): Promise<EnvironmentConnection[]> {
   const rows = await db
-    .selectFrom("github_installations")
-    .selectAll()
-    .where("environment_id", "=", environmentId)
-    .orderBy("created_at")
+    .selectFrom("github_installations as c")
+    .leftJoin("github_identities as i", "i.user_did", "c.user_did")
+    .select([
+      "c.user_did",
+      "c.environment_id",
+      "c.repo_full_name",
+      "c.created_at",
+      "i.github_login",
+    ])
+    .where("c.environment_id", "=", environmentId)
+    .orderBy("c.created_at")
     .execute();
-  return rows.map(toConnection);
+  return rows.map((row) => ({
+    ...toConnection(row),
+    githubLogin: row.github_login ?? null,
+  }));
 }

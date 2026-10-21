@@ -9,6 +9,7 @@ import {
   saveConnection,
 } from "../db/installations.js";
 import type { VetraGithubAuthDB } from "../db/schema.js";
+import { saveIdentity } from "../db/identities.js";
 
 let db: Kysely<VetraGithubAuthDB>;
 
@@ -116,13 +117,15 @@ describe("environmentConnections", () => {
     await saveConnection(db, DID2, ENV, "bob/widget");
     await saveConnection(db, DID, ENV, "alice/widget");
     await saveConnection(db, DID, ENV2, "alice/other");
+    // Only alice's GitHub identity was captured.
+    await saveIdentity(db, DID, "alice", "7");
     const rows = await environmentConnections(db, ENV);
-    const pairs = rows.map((r) => [r.userDid, r.repoFullName]);
-    expect(pairs).toHaveLength(2);
-    expect(pairs).toEqual(
+    const triples = rows.map((r) => [r.userDid, r.repoFullName, r.githubLogin]);
+    expect(triples).toHaveLength(2);
+    expect(triples).toEqual(
       expect.arrayContaining([
-        [DID, "alice/widget"],
-        [DID2, "bob/widget"],
+        [DID, "alice/widget", "alice"],
+        [DID2, "bob/widget", null],
       ]),
     );
     expect(await environmentConnections(db, "env-none")).toEqual([]);
