@@ -3605,17 +3605,32 @@ export async function setStudioProductDrive(
   return (await getApp(deps.db, app.id))!;
 }
 
-/** A JSON list of package names, or null when absent or unreadable. */
-function parsePackageNames(raw: string | null | undefined): string[] | null {
+/**
+ * The packages an env had before a Studio deployment was applied, from the
+ * JSON list of `name@version` entries (pre_apply_packages): name → version.
+ * A name-only entry (rows recorded before versions were) maps to null: the
+ * package is kept, its version left as it is. Null when nothing was recorded.
+ */
+export function parsePreApplyPackages(
+  raw: string | null | undefined,
+): Map<string, string | null> | null {
   if (!raw) return null;
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((n): n is string => typeof n === "string")
-      : null;
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
+  if (!Array.isArray(parsed)) return null;
+  const out = new Map<string, string | null>();
+  for (const entry of parsed) {
+    if (typeof entry !== "string" || !entry) continue;
+    // The version separator is the last "@" that is not a scope's leading one.
+    const at = entry.lastIndexOf("@");
+    if (at > 0) out.set(entry.slice(0, at), entry.slice(at + 1) || null);
+    else out.set(entry, null);
+  }
+  return out;
 }
 
 /** A recorded deployment back as the request it was made from. */
@@ -3678,7 +3693,9 @@ export async function applyQueuedDeployment(
     await deps.db
       .updateTable("app_deployments")
       .set({
-        pre_apply_packages: JSON.stringify(state.packages.map((p) => p.name)),
+        pre_apply_packages: JSON.stringify(
+          state.packages.map((p) => `${p.name}@${p.version}`),
+        ),
       })
       .where("id", "=", claimed.id)
       .execute();
@@ -3708,6 +3725,37 @@ export async function applyQueuedDeployment(
     if (failed) await restoreAfterStudioFailure(deps, failed);
   }
   return true;
+}
+
+type Pkg = { name: string; version: string };
+
+/** What a restore installs and removes (see restoreAfterStudioFailure). */
+export function restorePlan(
+  previous: Pkg[],
+  failed: Pkg[],
+  before: Map<string, string | null> | null,
+): { packages: Pkg[]; removePackages: string[] } {
+  const touched = new Set(failed.map((p) => p.name));
+  const packages = new Map<string, string>();
+  for (const p of previous) {
+    if (!before || !touched.has(p.name)) packages.set(p.name, p.version);
+  }
+  const removePackages: string[] = [];
+  if (before) {
+    for (const f of failed) {
+      if (!before.has(f.name)) {
+        removePackages.push(f.name);
+        continue;
+      }
+      // A name-only record: kept, its version left as it is.
+      const version = before.get(f.name);
+      if (version) packages.set(f.name, version);
+    }
+  }
+  return {
+    packages: [...packages].map(([name, version]) => ({ name, version })),
+    removePackages,
+  };
 }
 
 /**
@@ -3770,26 +3818,27 @@ export async function restoreAfterStudioFailure(
   ) {
     return null;
   }
-  // Only what the failed deployment added on top of what the env had
-  // installed before it was applied (never a package that was live, e.g.
-  // one a newer version added and a Go back kept). Unknown → remove nothing.
-  const before = parsePackageNames(failed.pre_apply_packages);
-  const keep = new Set([
-    ...parsePackages(previous.packages).map((p) => p.name),
-    ...(before ?? []),
-  ]);
+  // Back to what the env had right before the failed deployment was applied
+  // (pre_apply_packages): a package it changed goes back to its earlier
+  // version, one it added is removed, one it did not touch is left alone —
+  // never uninstalling or downgrading a package that was live (e.g. one a
+  // newer version added and a Go back kept). The previous READY deployment's
+  // other packages are re-applied as before. Nothing recorded → the previous
+  // READY deployment's packages, nothing removed.
+  const { packages, removePackages } = restorePlan(
+    parsePackages(previous.packages),
+    parsePackages(failed.packages),
+    parsePreApplyPackages(failed.pre_apply_packages),
+  );
   const restore = await performDeploy(deps, app, state, {
     ...requestFromRow(previous),
+    packages,
     runUrl: null,
     actorGithub: RESTORE_ACTOR,
     actorDid: null,
     trigger: "STUDIO_ROLLBACK",
     onBehalfOf: failed.on_behalf_of ?? null,
-    removePackages: before
-      ? parsePackages(failed.packages)
-          .map((p) => p.name)
-          .filter((name) => !keep.has(name))
-      : [],
+    removePackages,
   });
   deps.logger.info(
     `[vetra-apps] deployment ${failed.id} of ${app.slug} failed; putting back ${previous.id}${previous.version_number ? ` (version ${previous.version_number})` : ""} as ${restore.id}`,

@@ -325,7 +325,19 @@ describe("ensureDeploymentTriggerColumns (Task 2.3)", () => {
         return builder;
       };
       return {
-        schema: { alterTable: () => make(columnErr), createIndex: () => make(indexErr) },
+        schema: {
+          alterTable: () => make(columnErr),
+          createIndex: () => make(indexErr),
+          dropIndex: () => ({
+            ifExists: () => ({ compile: () => ({ sql: 'drop index if exists "x"' }), execute: () => Promise.resolve() }),
+          }),
+        },
+        // The stale-index probe finds nothing.
+        getExecutor: () => ({
+          transformQuery: (n: unknown) => n,
+          compileQuery: () => ({ sql: "", parameters: [], query: {} }),
+          executeQuery: () => Promise.resolve({ rows: [] }),
+        }),
       } as unknown as Kysely<any>;
     };
     const pgError = (code: string) => Object.assign(new Error(code === "42501" ? "boom" : "dup"), { code });
@@ -337,5 +349,47 @@ describe("ensureDeploymentTriggerColumns (Task 2.3)", () => {
     }
     await expect(ensureDeploymentTriggerColumns(failing(pgError("42501"), null))).rejects.toThrow("boom");
     await expect(ensureDeploymentTriggerColumns(failing(null, pgError("42501")))).rejects.toThrow("boom");
+  });
+});
+
+describe("the first launch key definition (READY included) is replaced", () => {
+  it("drops the stale index in the namespace only and recreates it in-flight only; concurrent boots are fine", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      // The definition 2d97524 created, as a dev database may have it.
+      await sql`DROP INDEX "vetra-apps".app_deployments_studio_launch_key`.execute(root);
+      await sql`CREATE UNIQUE INDEX app_deployments_studio_launch_key ON "vetra-apps".app_deployments (app_id, version_number, sha)
+        WHERE trigger = 'STUDIO_LAUNCH' AND status IN ('PENDING', 'DEPLOYING', 'READY')`.execute(root);
+      // A same-named index in another schema is not ours.
+      await sql`CREATE TABLE public.app_deployments (app_id text, version_number int, sha text, trigger text, status text)`.execute(root);
+      await sql`CREATE UNIQUE INDEX app_deployments_studio_launch_key ON public.app_deployments (app_id, version_number, sha)
+        WHERE status IN ('READY')`.execute(root);
+
+      await Promise.all([1, 2, 3].map(() => up(db)));
+      await up(db);
+
+      const defs = await sql<{ schemaname: string; indexdef: string }>`
+        SELECT schemaname, indexdef FROM pg_indexes
+        WHERE indexname = 'app_deployments_studio_launch_key' ORDER BY schemaname`.execute(root);
+      expect(defs.rows.map((r) => r.schemaname)).toStrictEqual(["public", "vetra-apps"]);
+      expect(defs.rows[0].indexdef).toContain("'READY'");
+      expect(defs.rows[1].indexdef).not.toContain("'READY'");
+
+      // Launching a version again after a Go back: a READY row no longer blocks it.
+      const row = (id: string, status: string) => ({
+        id, app_id: "a", environment_id: "e", kind: "PRODUCTION", git_ref: "refs/tags/v2", sha: "s",
+        packages: "[]", status, trigger: "STUDIO_LAUNCH", version_number: 2, created_at: "t", updated_at: "t",
+      });
+      await db.insertInto("app_deployments").values(row("ready", "READY")).execute();
+      await db.insertInto("app_deployments").values(row("again", "PENDING")).execute();
+      await expect(db.insertInto("app_deployments").values(row("dup", "DEPLOYING")).execute()).rejects.toMatchObject({
+        code: "23505",
+      });
+    } finally {
+      await root.destroy();
+    }
   });
 });

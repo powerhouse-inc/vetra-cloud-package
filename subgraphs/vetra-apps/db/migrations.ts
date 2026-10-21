@@ -157,6 +157,7 @@ export async function ensureDeploymentTriggerColumns(
       if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
     }
   }
+  await dropStaleLaunchKeyIndex(db);
   try {
     await db.schema
       .createIndex(STUDIO_LAUNCH_KEY_INDEX)
@@ -211,6 +212,29 @@ export async function ensureStudioProductColumns(
       tolerate(err);
     }
   }
+}
+
+/**
+ * The first definition of the launch key (never released) also covered READY
+ * rows, which blocks launching a version again after a Go back. When the
+ * namespace has that definition, drop it so up() recreates it with the
+ * in-flight predicate. The schema is the one the namespaced builder
+ * qualifies with (current_schema() when unqualified). Concurrent boots:
+ * DROP … IF EXISTS, and the recreate tolerates a lost race.
+ */
+export async function dropStaleLaunchKeyIndex(db: Kysely<any>): Promise<void> {
+  const drop = db.schema.dropIndex(STUDIO_LAUNCH_KEY_INDEX).ifExists();
+  const qualified = /^drop index if exists "((?:[^"]|"")+)"\./i.exec(
+    drop.compile().sql,
+  );
+  const schema = qualified ? qualified[1].replace(/""/g, '"') : null;
+  const found = await sql<{ indexdef: string }>`
+    SELECT indexdef FROM pg_indexes
+    WHERE indexname = ${STUDIO_LAUNCH_KEY_INDEX}
+      AND schemaname = coalesce(${schema}::text, current_schema())`.execute(db);
+  const def = found.rows[0]?.indexdef;
+  if (!def || !def.includes("'READY'")) return;
+  await drop.execute();
 }
 
 /** Postgres 42701 (duplicate column). */

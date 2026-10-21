@@ -14,6 +14,8 @@ import {
   ensureStudioProduct,
   launchStudioVersion,
   rollbackApp,
+  parsePreApplyPackages,
+  restorePlan,
   rollbackStudioVersion,
   RESTORE_ACTOR,
   setStudioProductDrive,
@@ -543,8 +545,8 @@ describe("fix round 1", () => {
     ]));
     await runDeploymentWatcherOnce(h.deps);
     expect(JSON.parse((await getDeployment(h.db, v3.id))!.pre_apply_packages!)).toStrictEqual([
-      "@vetra-apps/my-shop",
-      "@vetra-apps/my-shop-b",
+      "@vetra-apps/my-shop@0.1.0",
+      "@vetra-apps/my-shop-b@0.1.0",
     ]);
     h.envs.setStatus(p.envId, "DEPLOYMENt_FAILED");
     await runDeploymentWatcherOnce(h.deps);
@@ -579,5 +581,54 @@ describe("fix round 1", () => {
     expect(await getDeployment(h.db, v2.id)).toMatchObject({ status: "FAILED", error: "App is DISCONNECTED" });
     expect(h.envs.executed.length).toBe(before);
     expect(await h.db.selectFrom("app_deployments").select("id").where("actor_github", "=", RESTORE_ACTOR).execute()).toHaveLength(0);
+  });
+});
+
+describe("fix round 2", () => {
+  it("a failed launch that changed a kept package puts its earlier version back", async () => {
+    const p = await seedProduct();
+    const A1 = { name: "@vetra-apps/my-shop", version: "1.0.0" };
+    const B1 = { name: "@vetra-apps/my-shop-b", version: "1.0.0" };
+    const v1 = await launchToReady(p, launchInput(p, 1, SHA1, [A1]));
+    await launchToReady(p, launchInput(p, 2, SHA2, [A1, B1]));
+    await rollbackStudioVersion(h.deps, agent, v1.id, p.secret);
+    await runDeploymentWatcherOnce(h.deps);
+    h.envs.setStatus(p.envId, "READY");
+    await runDeploymentWatcherOnce(h.deps);
+    expect(await envPackages(p.envId)).toStrictEqual(["@vetra-apps/my-shop-b@1.0.0", "@vetra-apps/my-shop@1.0.0"]);
+
+    const v3 = await launch(p, launchInput(p, 3, "3333333ccccccc", [A1, { ...B1, version: "3.0.0" }]));
+    await runDeploymentWatcherOnce(h.deps);
+    expect(JSON.parse((await getDeployment(h.db, v3.id))!.pre_apply_packages!)).toStrictEqual([
+      "@vetra-apps/my-shop@1.0.0",
+      "@vetra-apps/my-shop-b@1.0.0",
+    ]);
+    expect(await envPackages(p.envId)).toContain("@vetra-apps/my-shop-b@3.0.0");
+    h.envs.setStatus(p.envId, "DEPLOYMENt_FAILED");
+    await runDeploymentWatcherOnce(h.deps);
+    expect((await getDeployment(h.db, v3.id))!.status).toBe("FAILED");
+    // B back on 1.0.0 (not 3.0.0, not removed); A untouched.
+    expect(await envPackages(p.envId)).toStrictEqual(["@vetra-apps/my-shop-b@1.0.0", "@vetra-apps/my-shop@1.0.0"]);
+    const restore = await h.db.selectFrom("app_deployments").selectAll().where("actor_github", "=", RESTORE_ACTOR).executeTakeFirstOrThrow();
+    h.envs.setStatus(p.envId, "READY");
+    await runDeploymentWatcherOnce(h.deps);
+    expect((await getDeployment(h.db, restore.id))!.status).toBe("READY");
+  });
+
+  it("pre-apply records: name@version, and name-only ones (older rows) keep the package as it is", () => {
+    expect(parsePreApplyPackages(null)).toBeNull();
+    expect(parsePreApplyPackages("not json")).toBeNull();
+    expect(parsePreApplyPackages(JSON.stringify(["@s/a@1.0.0", "@s/b", "c@2", 7]))).toStrictEqual(
+      new Map([["@s/a", "1.0.0"], ["@s/b", null], ["c", "2"]]),
+    );
+    const prev = [{ name: "a", version: "1" }, { name: "z", version: "9" }];
+    const failed = [{ name: "a", version: "2" }, { name: "b", version: "3" }, { name: "n", version: "4" }];
+    // Recorded: a back to its earlier version, b (added) removed, n (name-only) left alone, z re-applied.
+    expect(restorePlan(prev, failed, new Map([["a", "1.5"], ["n", null]]))).toStrictEqual({
+      packages: [{ name: "z", version: "9" }, { name: "a", version: "1.5" }],
+      removePackages: ["b"],
+    });
+    // Nothing recorded: the previous READY deployment's packages, nothing removed.
+    expect(restorePlan(prev, failed, null)).toStrictEqual({ packages: prev, removePackages: [] });
   });
 });
