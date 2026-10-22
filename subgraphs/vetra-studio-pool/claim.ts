@@ -104,6 +104,9 @@ export async function claimWarmEnvironment(
       // Per-env random secret gating vetra-cli's session-export endpoints
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },
+      // Signs attachment download targets: the reactor refuses filesystem
+      // attachments without it (uploads show "couldn't be added").
+      { key: "PH_ATTACHMENT_URL_SIGNING_SECRET", value: randomBytes(32).toString("hex") },
     ];
     await withRetry(() => d.setSecrets(env.tenantId!, secretEntries), SECRET_RETRIES, sleep);
     // 4. Transfer ownership LAST (system action — env was created owner-null).

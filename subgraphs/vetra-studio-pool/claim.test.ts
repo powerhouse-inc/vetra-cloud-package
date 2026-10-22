@@ -94,7 +94,12 @@ describe("claimWarmEnvironment", () => {
     expect(
       entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value,
     ).toMatch(/^[0-9a-f]{64}$/);
-    expect(entries).toHaveLength(5);
+    // Per-env attachment URL signing secret: without it the reactor refuses
+    // filesystem attachment targets (idea-screen file uploads fail).
+    expect(
+      entries.find((e) => e.key === "PH_ATTACHMENT_URL_SIGNING_SECRET")?.value,
+    ).toMatch(/^[0-9a-f]{64}$/);
+    expect(entries).toHaveLength(6);
   });
 
   it("injects the secrets BEFORE transferring ownership (setOwner)", async () => {
