@@ -97,8 +97,11 @@ describe("claimWarmEnvironment", () => {
     for (const name of LEGACY_NAMES) expect(entries).toContainEqual({ key: name, value: "sk-ant-real" });
     expect(entries).toContainEqual({ key: "ADMINS", value: "0xcaller" });
     expect(entries.find((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
+    // Per-env attachment URL signing secret: without it the reactor refuses
+    // filesystem attachment targets (idea-screen file uploads fail).
+    expect(entries.find((e) => e.key === "PH_ATTACHMENT_URL_SIGNING_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
     expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
-    expect(entries).toHaveLength(9);
+    expect(entries).toHaveLength(10);
   });
 
   it("claim writes the launch secret in the same batched write", async () => {
@@ -167,6 +170,7 @@ describe("claimWarmEnvironment", () => {
     const [, , entries] = d.replaceTenantConfig.mock.calls[0];
     expect(entries.map((e) => e.key).sort()).toStrictEqual([
       "ADMINS",
+      "PH_ATTACHMENT_URL_SIGNING_SECRET",
       "VETRA_SESSION_EXPORT_SECRET",
       "VETRA_STUDIO_LAUNCH_SECRET",
     ]);

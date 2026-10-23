@@ -200,6 +200,9 @@ export async function claimWarmEnvironment(
       // (admin-side debugging). Rides this same batched write — no extra bounce.
       { key: "VETRA_SESSION_EXPORT_SECRET", value: randomBytes(32).toString("hex") },
       { key: STUDIO_LAUNCH_SECRET_KEY, value: launchSecret },
+      // Signs attachment download targets: the reactor refuses filesystem
+      // attachments without it (uploads show "couldn't be added").
+      { key: "PH_ATTACHMENT_URL_SIGNING_SECRET", value: randomBytes(32).toString("hex") },
     ];
     // Everything not declared by the document is dropped in the same write,
     // so nothing planted before the claim survives into the user's studio.
