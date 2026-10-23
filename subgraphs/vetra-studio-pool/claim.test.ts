@@ -106,7 +106,7 @@ describe("claimWarmEnvironment", () => {
     // filesystem attachment targets (idea-screen file uploads fail).
     expect(entries.find((e) => e.key === "PH_ATTACHMENT_URL_SIGNING_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
     expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
-    expect(entries).toHaveLength(11);
+    expect(entries).toHaveLength(12);
     expect(entries).toContainEqual({ key: "CI", value: "true", secret: false });
   });
 
@@ -177,6 +177,7 @@ describe("claimWarmEnvironment", () => {
     expect(entries.map((e) => e.key).sort()).toStrictEqual([
       "ADMINS",
       "CI",
+      "npm_config_node_linker",
       "PH_ATTACHMENT_URL_SIGNING_SECRET",
       "VETRA_SESSION_EXPORT_SECRET",
       "VETRA_STUDIO_LAUNCH_SECRET",

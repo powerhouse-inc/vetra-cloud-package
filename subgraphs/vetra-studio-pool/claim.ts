@@ -178,6 +178,8 @@ export async function provisionClaimedEnv(
       { key: "ADMINS", value: addr },
       // Non-interactive pnpm: ph init must be able to purge a stale node_modules.
       { key: "CI", value: "true", secret: false },
+      // Plain node_modules tree: Vite cannot serve modules from pnpm's store links.
+      { key: "npm_config_node_linker", value: "hoisted", secret: false },
       // Warm envs created before this was configured lack it in their document,
       // and the replace drops anything undeclared — so re-state it here.
       ...(d.cfg.renownUrl?.trim()
