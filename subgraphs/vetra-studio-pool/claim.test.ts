@@ -177,10 +177,10 @@ describe("claimWarmEnvironment", () => {
     expect(entries.map((e) => e.key).sort()).toStrictEqual([
       "ADMINS",
       "CI",
-      "npm_config_node_linker",
       "PH_ATTACHMENT_URL_SIGNING_SECRET",
       "VETRA_SESSION_EXPORT_SECRET",
       "VETRA_STUDIO_LAUNCH_SECRET",
+      "npm_config_node_linker",
     ]);
     expect(d.releaseLlmKey).not.toHaveBeenCalled();
   });
