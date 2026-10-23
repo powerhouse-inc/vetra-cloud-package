@@ -250,8 +250,15 @@ jobs:
       - name: Create git tag
         if: needs.prepare.outputs.dry_run != 'true'
         run: |
-          git tag "v${{ steps.version.outputs.new_version }}"
-          git push origin "v${{ steps.version.outputs.new_version }}"
+          TAG="v${{ steps.version.outputs.new_version }}"
+          # The tag may already exist: versions can be re-bumped, and a rerun
+          # must not fail after the registry publish already succeeded.
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "$TAG already exists on the remote; leaving it"
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
 
   # ==========================================================================
   # Test suite.
