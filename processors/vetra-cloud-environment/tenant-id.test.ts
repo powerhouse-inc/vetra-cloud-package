@@ -12,6 +12,12 @@ describe("getTenantId", () => {
     expect(id).toMatch(RFC1123);
   });
 
+  it("strips characters that are invalid in a namespace or Application name", () => {
+    const id = getTenantId("dao-treasury", "dIxU_XWyp5uoEwfTU1C-K0W2eYOHpqYdLZtUZ_JwUyw");
+    expect(id).toBe("dao-treasury-dixuxwyp");
+    expect(id).toMatch(RFC1123);
+  });
+
   it("keeps existing uuid-based tenant ids unchanged", () => {
     expect(
       getTenantId("noble-fox-31bf9f74", "31bf9f74-1111-2222-3333-444455556666"),

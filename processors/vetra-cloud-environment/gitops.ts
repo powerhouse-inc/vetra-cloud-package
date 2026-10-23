@@ -178,10 +178,10 @@ export function getTenantId(
   subdomain: string,
   documentId: string,
 ): string {
-  // Lowercased: the id is a namespace / ArgoCD Application name (RFC 1123), and
-  // newer document ids are mixed-case (e.g. "8tgXdfJj…"), which made the
-  // ApplicationSet reject the app so the env never deployed.
-  const shortId = documentId.replace(/-/g, "").slice(0, 8).toLowerCase();
+  // DNS-1123 safe: the id is a namespace / ArgoCD Application name. Newer
+  // document ids are mixed-case and may contain "_" (e.g. "dIxU_XWyp…"), which
+  // made the ApplicationSet reject the app so the env never deployed.
+  const shortId = documentId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
   return `${subdomain}-${shortId}`;
 }
 
