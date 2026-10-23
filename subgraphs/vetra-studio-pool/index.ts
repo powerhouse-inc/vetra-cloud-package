@@ -6,7 +6,7 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { loadPoolConfig } from "./config.js";
 import { makeClaimDb, makeKeeperDb } from "./pool-db.js";
-import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
+import { claimColdEnvironment, claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 import { createStudioEnvironmentDoc, type ReactorLike } from "./create-env.js";
 import { PoolKeeper } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
@@ -147,9 +147,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     const deleteEnv = (documentId: string) =>
       this.reactorClient.deleteDocument(documentId).then(() => undefined);
 
-    const claim = (did: string) =>
-      claimWarmEnvironment(
-        {
+    const claimDeps = {
           claimDb,
           hasStudioAccess: async (d) => (await studioLlmBudgetForDid(studioAccess, d)).allowed,
           grantLlmKey: async (environmentId, d) => {
@@ -196,9 +194,27 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
           cfg: { version: cfg.version, renownUrl: cfg.renownUrl },
           nowIso: () => new Date().toISOString(),
           logger: console,
+    };
+
+    // Warm claim first; a pool miss creates a fresh Studio and provisions it
+    // in the same request, so the cold path is never left unowned/unconfigured.
+    const claim = async (did: string) => {
+      const warm = await claimWarmEnvironment(claimDeps, did);
+      if (warm) return warm;
+      return claimColdEnvironment(
+        {
+          ...claimDeps,
+          createEnv: () =>
+            createStudioEnvironmentDoc(reactor, {
+              version: cfg.version,
+              sizeName: cfg.sizeName,
+              registry: cfg.registry,
+              switchboardUrl: cfg.switchboardUrl,
+            }),
         },
         did,
       );
+    };
 
     this.resolvers = createResolvers({ claim, version: cfg.version });
 

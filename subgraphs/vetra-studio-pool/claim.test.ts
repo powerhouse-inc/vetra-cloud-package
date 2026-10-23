@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
-import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
+import { claimColdEnvironment, claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 
 const LEGACY_NAMES = ["ANTHROPIC_API_KEY", "VETRA_ANTHROPIC_API_KEY", "VETRA_CLI_ANTHROPIC_API_KEY"];
 
@@ -351,5 +351,39 @@ describe("claimWarmEnvironment", () => {
     expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
     // Secrets are injected first now, so the batch DID run before the owner step.
     expect(d.replaceTenantConfig).toHaveBeenCalled();
+  });
+});
+
+describe("claimColdEnvironment", () => {
+  const created = {
+    documentId: "doc-cold",
+    subdomain: "cold-mole-bbbb2222",
+    tenantId: "cold-mole-bbbb2222-bbbb2222",
+  };
+
+  it("creates a Studio and provisions it exactly like a warm claim", async () => {
+    const d = deps({ createEnv: vi.fn(async () => created) });
+    const res = await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xC0LD");
+    expect(d.createEnv).toHaveBeenCalledTimes(1);
+    expect(d.grantLlmKey).toHaveBeenCalledWith("doc-cold", "did:pkh:eip155:1:0xC0LD");
+    const entries = d.replaceTenantConfig.mock.calls[0][2] as SecretEntry[];
+    expect(entries).toContainEqual({ key: "ADMINS", value: "0xc0ld" });
+    expect(entries.some((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")).toBe(true);
+    expect(d.setOwner).toHaveBeenCalledWith("doc-cold", "0xc0ld");
+    expect(res).toEqual(created);
+  });
+
+  it("creates nothing without a usable licence", async () => {
+    const d = deps({ hasStudioAccess: vi.fn(async () => false), createEnv: vi.fn(async () => created) });
+    expect(await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.createEnv).not.toHaveBeenCalled();
+    expect(d.grantLlmKey).not.toHaveBeenCalled();
+  });
+
+  it("deletes a created env that cannot be read back", async () => {
+    const d = deps({ createEnv: vi.fn(async () => created), readEnv: vi.fn(async () => null) });
+    expect(await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xC0LD")).toBeNull();
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-cold");
+    expect(d.setOwner).not.toHaveBeenCalled();
   });
 });
