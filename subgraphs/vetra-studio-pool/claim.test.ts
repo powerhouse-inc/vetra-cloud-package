@@ -106,7 +106,8 @@ describe("claimWarmEnvironment", () => {
     // filesystem attachment targets (idea-screen file uploads fail).
     expect(entries.find((e) => e.key === "PH_ATTACHMENT_URL_SIGNING_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
     expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
-    expect(entries).toHaveLength(10);
+    expect(entries).toHaveLength(11);
+    expect(entries).toContainEqual({ key: "CI", value: "true", secret: false });
   });
 
   it("claim writes the launch secret in the same batched write", async () => {
@@ -175,6 +176,7 @@ describe("claimWarmEnvironment", () => {
     const [, , entries] = d.replaceTenantConfig.mock.calls[0];
     expect(entries.map((e) => e.key).sort()).toStrictEqual([
       "ADMINS",
+      "CI",
       "PH_ATTACHMENT_URL_SIGNING_SECRET",
       "VETRA_SESSION_EXPORT_SECRET",
       "VETRA_STUDIO_LAUNCH_SECRET",

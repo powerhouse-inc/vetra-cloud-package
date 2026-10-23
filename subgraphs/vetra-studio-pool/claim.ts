@@ -176,6 +176,8 @@ export async function provisionClaimedEnv(
         : []),
       ...(anthropic ? STUDIO_KEY_SECRET_NAMES.map((key) => ({ key, value: anthropic })) : []),
       { key: "ADMINS", value: addr },
+      // Non-interactive pnpm: ph init must be able to purge a stale node_modules.
+      { key: "CI", value: "true", secret: false },
       // Warm envs created before this was configured lack it in their document,
       // and the replace drops anything undeclared — so re-state it here.
       ...(d.cfg.renownUrl?.trim()

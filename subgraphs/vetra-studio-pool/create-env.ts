@@ -75,6 +75,9 @@ export async function createStudioEnvironmentDoc(
         package: { registry: cfg.registry, name: STUDIO_AGENT_PACKAGE, version: cfg.version },
         env: [
           { name: "VETRA_OBSERVABILITY_CONSENT", value: "granted", isSecret: false },
+          // pnpm runs without a TTY inside the agent: without CI it aborts when it
+          // must purge a stale node_modules (ph init into an existing project).
+          { name: "CI", value: "true", isSecret: false },
           // The env's own document id, so the agent (and the studio's Deploy
           // view via studio.config.json) can scope GitHub connections to it.
           { name: "VETRA_ENVIRONMENT_ID", value: documentId, isSecret: false },
