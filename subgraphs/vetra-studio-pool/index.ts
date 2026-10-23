@@ -6,7 +6,12 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { loadPoolConfig } from "./config.js";
 import { makeClaimDb, makeKeeperDb } from "./pool-db.js";
-import { claimColdEnvironment, claimWarmEnvironment, legacyKeyFor } from "./claim.js";
+import {
+  claimColdEnvironment,
+  claimWarmEnvironment,
+  legacyKeyFor,
+  type ClaimDeps,
+} from "./claim.js";
 import { createStudioEnvironmentDoc, type ReactorLike } from "./create-env.js";
 import { PoolKeeper } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
@@ -147,7 +152,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
     const deleteEnv = (documentId: string) =>
       this.reactorClient.deleteDocument(documentId).then(() => undefined);
 
-    const claimDeps = {
+    const claimDeps: ClaimDeps = {
           claimDb,
           hasStudioAccess: async (d) => (await studioLlmBudgetForDid(studioAccess, d)).allowed,
           grantLlmKey: async (environmentId, d) => {

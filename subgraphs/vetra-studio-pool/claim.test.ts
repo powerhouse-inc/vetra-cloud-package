@@ -41,6 +41,11 @@ function deps(over: Partial<any> = {}) {
     readEnv: vi.fn(async (_id: string) => ({ owner: null, ownerOrgId: null, state: WARM_STATE })),
     handOver: vi.fn(async (_id: string, _addr: string) => {}),
     deleteEnv: vi.fn(async () => {}),
+    createEnv: vi.fn(async () => ({
+      documentId: "doc-cold",
+      subdomain: "cold-mole-bbbb2222",
+      tenantId: "cold-mole-bbbb2222-bbbb2222",
+    })),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
     sleep: vi.fn(async () => {}), // no real delay in tests
