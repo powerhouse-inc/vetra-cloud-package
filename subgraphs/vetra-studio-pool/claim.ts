@@ -116,53 +116,38 @@ async function withRetry(
   throw lastErr;
 }
 
+/** An env document that is about to be handed to a caller. */
+export interface ProvidableEnv {
+  id: string;
+  tenantId: string;
+  subdomain: string | null;
+  state: VetraCloudEnvironmentState;
+}
+
 /**
- * Atomically claim one warm env for the caller `did` (a `did:pkh:...`), give it
- * its model key, and transfer ownership (system SET_OWNER on the owner-null
- * env). The gate is the studio licence, not a key: a licence without an LLM
- * budget still gets a Studio, which serves in connect-a-model mode. Returns
- * null when the caller has no usable licence or the pool is empty (frontend
- * then cold-falls-back).
+ * Everything a claimant's Studio needs, in one batched secret write:
+ * the model key + model, the legacy Anthropic key names, `ADMINS`, the
+ * Renown URL, the session-export secret, the launch secret and the
+ * attachment signing secret. Ownership moves last.
+ *
+ * Shared by the warm claim and the cold-create path — a Studio created while
+ * the pool was empty must be configured exactly like a claimed warm one,
+ * otherwise the deploy/claim split leaves it without `ADMINS`, key or launch
+ * config (the "model couldn't be connected yet" Studio).
  *
  * Self-healing: transient secret writes are retried; on ANY post-assign failure
  * the minted key is released and the half-claimed env deleted, so a failed
  * claim leaks nothing (the keeper refills, the sweeper backstops the key).
  */
-export async function claimWarmEnvironment(
+export async function provisionClaimedEnv(
   d: ClaimDeps,
+  env: ProvidableEnv,
+  addr: string,
   did: string,
 ): Promise<ClaimResult | null> {
-  const addr = (did.split(":").pop() ?? did).toLowerCase();
   const sleep = d.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-
-  // 1. No usable studio licence → don't consume an env.
-  if (!(await d.hasStudioAccess(did))) {
-    d.logger.info(`[studio-pool] claim: no usable studio licence for ${addr}`);
-    return null;
-  }
-
-  // 2. Atomic assign (only a READY, AVAILABLE, current-version env).
-  const env = await d.claimDb.claimOneAvailable(addr, d.cfg.version, d.nowIso());
-  if (!env || !env.tenantId) {
-    d.logger.info(`[studio-pool] claim: pool empty for ${addr}`);
-    return null;
-  }
-
   let granted = false;
   try {
-    // 2b. The document is the truth: a warm env is owner-null and personal.
-    //     One that someone owns already (signed on it before the claim) is
-    //     compromised: delete it, never hand it out (caller falls back cold).
-    const doc = await d.readEnv(env.id);
-    if (!doc || doc.owner || doc.ownerOrgId) {
-      d.logger.warn(
-        `[studio-pool] claim: ${env.id} is not an unowned warm env (owner=${doc?.owner ?? "?"}, org=${doc?.ownerOrgId ?? "-"}); deleting`,
-      );
-      await d.deleteEnv(env.id).catch((e) =>
-        d.logger.warn(`[studio-pool] cleanup delete failed for ${env.id}: ${String(e)}`),
-      );
-      return null;
-    }
     // 3. The model key for this env, from the licence's budget.
     const llm = await d.grantLlmKey(env.id, did);
     granted = llm !== null;
@@ -191,6 +176,10 @@ export async function claimWarmEnvironment(
         : []),
       ...(anthropic ? STUDIO_KEY_SECRET_NAMES.map((key) => ({ key, value: anthropic })) : []),
       { key: "ADMINS", value: addr },
+      // Non-interactive pnpm: ph init must be able to purge a stale node_modules.
+      { key: "CI", value: "true", secret: false },
+      // Plain node_modules tree: Vite cannot serve modules from pnpm's store links.
+      { key: "npm_config_node_linker", value: "hoisted", secret: false },
       // Warm envs created before this was configured lack it in their document,
       // and the replace drops anything undeclared — so re-state it here.
       ...(d.cfg.renownUrl?.trim()
@@ -207,7 +196,7 @@ export async function claimWarmEnvironment(
     // Everything not declared by the document is dropped in the same write,
     // so nothing planted before the claim survives into the user's studio.
     await withRetry(
-      () => d.replaceTenantConfig(env.tenantId!, doc.state, entries),
+      () => d.replaceTenantConfig(env.tenantId, env.state, entries),
       SECRET_RETRIES,
       sleep,
     );
@@ -231,7 +220,7 @@ export async function claimWarmEnvironment(
     };
   } catch (err) {
     // Half-claimed → release the key and delete the env so nothing leaks; the
-    // keeper refills. Caller gets null → cold-falls-back.
+    // keeper refills.
     d.logger.warn(
       `[studio-pool] claim post-assign failed for ${env.id}; deleting: ${err instanceof Error ? err.name : "error"}`,
     );
@@ -247,4 +236,101 @@ export async function claimWarmEnvironment(
     );
     return null;
   }
+}
+
+/**
+ * Atomically claim one warm env for the caller `did` (a `did:pkh:...`), give it
+ * its model key, and transfer ownership (system SET_OWNER on the owner-null
+ * env). The gate is the studio licence, not a key: a licence without an LLM
+ * budget still gets a Studio, which serves in connect-a-model mode. Returns
+ * null when the caller has no usable licence or the pool is empty (the caller
+ * then falls back to `claimColdEnvironment`).
+ */
+export async function claimWarmEnvironment(
+  d: ClaimDeps,
+  did: string,
+): Promise<ClaimResult | null> {
+  const addr = (did.split(":").pop() ?? did).toLowerCase();
+
+  // 1. No usable studio licence → don't consume an env.
+  if (!(await d.hasStudioAccess(did))) {
+    d.logger.info(`[studio-pool] claim: no usable studio licence for ${addr}`);
+    return null;
+  }
+
+  // 2. Atomic assign (only a READY, AVAILABLE, current-version env).
+  const env = await d.claimDb.claimOneAvailable(addr, d.cfg.version, d.nowIso());
+  if (!env || !env.tenantId) {
+    d.logger.info(`[studio-pool] claim: pool empty for ${addr}`);
+    return null;
+  }
+
+  // 2b. The document is the truth: a warm env is owner-null and personal.
+  //     One that someone owns already (signed on it before the claim) is
+  //     compromised: delete it, never hand it out.
+  const doc = await d.readEnv(env.id);
+  if (!doc || doc.owner || doc.ownerOrgId) {
+    d.logger.warn(
+      `[studio-pool] claim: ${env.id} is not an unowned warm env (owner=${doc?.owner ?? "?"}, org=${doc?.ownerOrgId ?? "-"}); deleting`,
+    );
+    await d.deleteEnv(env.id).catch((e) =>
+      d.logger.warn(`[studio-pool] cleanup delete failed for ${env.id}: ${String(e)}`),
+    );
+    return null;
+  }
+
+  return provisionClaimedEnv(
+    d,
+    { id: env.id, tenantId: env.tenantId, subdomain: env.subdomain, state: doc.state },
+    addr,
+    did,
+  );
+}
+
+export interface ColdClaimDeps extends ClaimDeps {
+  /** Create one ownerless studio env document (the same builder the keeper uses). */
+  createEnv: () => Promise<ClaimResult>;
+}
+
+/**
+ * Pool empty: create a fresh Studio for the caller and provision it exactly
+ * like a warm claim (owner, `ADMINS`, model key, launch/session/attachment
+ * secrets) in the same request. Without this the deploy path and the claim
+ * path are split and a cold Studio comes up unowned and unconfigured.
+ *
+ * Returns null when the caller has no usable licence, or when the env cannot
+ * be read back or provisioned (the half-created env is deleted).
+ */
+export async function claimColdEnvironment(
+  d: ColdClaimDeps,
+  did: string,
+): Promise<ClaimResult | null> {
+  const addr = (did.split(":").pop() ?? did).toLowerCase();
+  if (!(await d.hasStudioAccess(did))) {
+    d.logger.info(`[studio-pool] cold claim: no usable studio licence for ${addr}`);
+    return null;
+  }
+  const created = await d.createEnv();
+  const doc = await d.readEnv(created.documentId);
+  if (!doc) {
+    d.logger.warn(
+      `[studio-pool] cold claim: created ${created.documentId} but could not read it back; deleting`,
+    );
+    await d.deleteEnv(created.documentId).catch((e) =>
+      d.logger.warn(`[studio-pool] cleanup delete failed for ${created.documentId}: ${String(e)}`),
+    );
+    return null;
+  }
+  d.logger.info(`[studio-pool] cold claim: created ${created.documentId} for ${addr}`);
+  return provisionClaimedEnv(
+    d,
+    {
+      id: created.documentId,
+      tenantId: created.tenantId,
+      subdomain: created.subdomain,
+      state: doc.state,
+    },
+    addr,
+    did,
+  );
 }

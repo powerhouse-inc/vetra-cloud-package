@@ -37,6 +37,19 @@ type VetraCloudEnvironmentState {
   studioInstanceId: OID
   fusion: VetraCloudFusionConfig
   app: VetraCloudAppLink
+  backupSchedule: BackupSchedule
+}
+
+type BackupSchedule {
+  enabled: Boolean!
+  cadence: BackupCadence!
+  retention: Int!
+}
+
+enum BackupCadence {
+  HOURLY
+  DAILY
+  WEEKLY
 }
 
 enum AutoUpdateChannel {
@@ -214,6 +227,12 @@ input SetAppLinkInput {
 
 input ClearAppLinkInput {
   _placeholder: String
+}
+
+input SetBackupScheduleInput {
+  enabled: Boolean!
+  cadence: BackupCadence!
+  retention: Int!
 }
 
 # services

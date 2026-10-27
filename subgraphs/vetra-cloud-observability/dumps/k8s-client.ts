@@ -1,4 +1,5 @@
 import type { V1Job } from "@kubernetes/client-node";
+import type { RestoreK8s } from "./restore.js";
 
 /**
  * Minimal Kubernetes surface used by the dumps feature. Defined as an
@@ -144,6 +145,54 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
           dumpId: j.metadata?.labels?.["vetra.io/dump-id"] ?? "",
         }))
         .filter((j) => j.name && j.dumpId);
+    },
+  };
+}
+
+/**
+ * Production {@link RestoreK8s}: the dump client's Job calls plus the
+ * Deployment scaling and pod counting the restore flow needs. RBAC:
+ * `apps/deployments: get, list, patch` and `pods: list` cluster-wide.
+ */
+export async function createDefaultRestoreK8s(dumps: DumpsK8sClient): Promise<RestoreK8s> {
+  const { KubeConfig, AppsV1Api, CoreV1Api, PatchStrategy, setHeaderOptions } = await import(
+    "@kubernetes/client-node"
+  );
+  const kc = new KubeConfig();
+  kc.loadFromCluster();
+  const apps = kc.makeApiClient(AppsV1Api);
+  const core = kc.makeApiClient(CoreV1Api);
+
+  return {
+    createJob: (ns, job) => dumps.createJob(ns, job),
+    readJobStatus: (ns, name) => dumps.readJobStatus(ns, name),
+    readPodLogsForJob: (ns, name) => dumps.readPodLogsForJob(ns, name),
+    async readDeploymentReplicas(namespace, labelSelector) {
+      const res = await apps.listNamespacedDeployment({ namespace, labelSelector });
+      return Object.fromEntries(
+        res.items
+          .filter((d) => d.metadata?.name)
+          .map((d) => [d.metadata!.name!, d.spec?.replicas ?? 1]),
+      );
+    },
+    async scaleDeployment(namespace, name, replicas) {
+      await apps.patchNamespacedDeployment(
+        { namespace, name, body: { spec: { replicas } } },
+        setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+      );
+    },
+    async countPods(namespace, labelSelector) {
+      const res = await core.listNamespacedPod({ namespace, labelSelector });
+      return res.items.filter(
+        (p) => p.status?.phase !== "Succeeded" && p.status?.phase !== "Failed",
+      ).length;
+    },
+    async deploymentsReady(namespace, replicas) {
+      for (const [name, want] of Object.entries(replicas)) {
+        const d = await apps.readNamespacedDeployment({ namespace, name });
+        if ((d.status?.readyReplicas ?? 0) < want) return false;
+      }
+      return true;
     },
   };
 }

@@ -10,6 +10,7 @@ import { createRestartResolver } from "../restart.js";
 import { createPackageRegistryResolver } from "../package-registry.js";
 import { createDumpResolvers } from "../dumps/resolvers.js";
 import { DumpsRepo } from "../dumps/repo.js";
+import { RestoresRepo } from "../dumps/restore-repo.js";
 import type { OrgSyncDeps } from "../org-sync.js";
 import { SYSTEM_ONLY_OPERATIONS } from "../env-protection.js";
 import { createReactorPermissions } from "./reactor-permissions.js";
@@ -218,10 +219,12 @@ describe("owner checks on org environments", () => {
   it("dumps: org OWNER/ADMIN only (full-scope publishers refused), no platform-admin bypass, fail closed on outage", async () => {
     const deps = {
       repo: new DumpsRepo(db),
+      restores: new RestoresRepo(db),
       envDb,
       createJob: vi.fn(async () => "job"),
       deleteJob: vi.fn(async () => undefined),
       presign: vi.fn(async () => "https://signed"),
+      deleteObject: vi.fn(async () => undefined),
       image: "img",
       bucket: "b",
       s3Endpoint: "https://s3",

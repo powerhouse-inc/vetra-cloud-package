@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
-import { claimWarmEnvironment, legacyKeyFor } from "./claim.js";
+import { claimColdEnvironment, claimWarmEnvironment, legacyKeyFor } from "./claim.js";
 
 const LEGACY_NAMES = ["ANTHROPIC_API_KEY", "VETRA_ANTHROPIC_API_KEY", "VETRA_CLI_ANTHROPIC_API_KEY"];
 
@@ -41,6 +41,11 @@ function deps(over: Partial<any> = {}) {
     readEnv: vi.fn(async (_id: string) => ({ owner: null, ownerOrgId: null, state: WARM_STATE })),
     handOver: vi.fn(async (_id: string, _addr: string) => {}),
     deleteEnv: vi.fn(async () => {}),
+    createEnv: vi.fn(async () => ({
+      documentId: "doc-cold",
+      subdomain: "cold-mole-bbbb2222",
+      tenantId: "cold-mole-bbbb2222-bbbb2222",
+    })),
     cfg: { version: "0.0.1-dev.19" },
     nowIso: () => "2026-06-15T00:00:00Z",
     sleep: vi.fn(async () => {}), // no real delay in tests
@@ -101,7 +106,8 @@ describe("claimWarmEnvironment", () => {
     // filesystem attachment targets (idea-screen file uploads fail).
     expect(entries.find((e) => e.key === "PH_ATTACHMENT_URL_SIGNING_SECRET")?.value).toMatch(/^[0-9a-f]{64}$/);
     expect(entries).toContainEqual({ key: "VETRA_MODEL_FALLBACKS", value: "openai/gpt-5", secret: false });
-    expect(entries).toHaveLength(10);
+    expect(entries).toHaveLength(12);
+    expect(entries).toContainEqual({ key: "CI", value: "true", secret: false });
   });
 
   it("claim writes the launch secret in the same batched write", async () => {
@@ -170,9 +176,11 @@ describe("claimWarmEnvironment", () => {
     const [, , entries] = d.replaceTenantConfig.mock.calls[0];
     expect(entries.map((e) => e.key).sort()).toStrictEqual([
       "ADMINS",
+      "CI",
       "PH_ATTACHMENT_URL_SIGNING_SECRET",
       "VETRA_SESSION_EXPORT_SECRET",
       "VETRA_STUDIO_LAUNCH_SECRET",
+      "npm_config_node_linker",
     ]);
     expect(d.releaseLlmKey).not.toHaveBeenCalled();
   });
@@ -351,5 +359,39 @@ describe("claimWarmEnvironment", () => {
     expect(d.deleteEnv).toHaveBeenCalledWith("doc-1");
     // Secrets are injected first now, so the batch DID run before the owner step.
     expect(d.replaceTenantConfig).toHaveBeenCalled();
+  });
+});
+
+describe("claimColdEnvironment", () => {
+  const created = {
+    documentId: "doc-cold",
+    subdomain: "cold-mole-bbbb2222",
+    tenantId: "cold-mole-bbbb2222-bbbb2222",
+  };
+
+  it("creates a Studio and provisions it exactly like a warm claim", async () => {
+    const d = deps({ createEnv: vi.fn(async () => created) });
+    const res = await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xC0LD");
+    expect(d.createEnv).toHaveBeenCalledTimes(1);
+    expect(d.grantLlmKey).toHaveBeenCalledWith("doc-cold", "did:pkh:eip155:1:0xC0LD");
+    const entries = d.replaceTenantConfig.mock.calls[0][2] as SecretEntry[];
+    expect(entries).toContainEqual({ key: "ADMINS", value: "0xc0ld" });
+    expect(entries.some((e) => e.key === "VETRA_SESSION_EXPORT_SECRET")).toBe(true);
+    expect(d.setOwner).toHaveBeenCalledWith("doc-cold", "0xc0ld");
+    expect(res).toEqual(created);
+  });
+
+  it("creates nothing without a usable licence", async () => {
+    const d = deps({ hasStudioAccess: vi.fn(async () => false), createEnv: vi.fn(async () => created) });
+    expect(await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xCaller")).toBeNull();
+    expect(d.createEnv).not.toHaveBeenCalled();
+    expect(d.grantLlmKey).not.toHaveBeenCalled();
+  });
+
+  it("deletes a created env that cannot be read back", async () => {
+    const d = deps({ createEnv: vi.fn(async () => created), readEnv: vi.fn(async () => null) });
+    expect(await claimColdEnvironment(d as never, "did:pkh:eip155:1:0xC0LD")).toBeNull();
+    expect(d.deleteEnv).toHaveBeenCalledWith("doc-cold");
+    expect(d.setOwner).not.toHaveBeenCalled();
   });
 });

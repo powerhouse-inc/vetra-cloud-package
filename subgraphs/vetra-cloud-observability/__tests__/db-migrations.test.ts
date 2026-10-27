@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { Kysely } from "kysely";
+import { Kysely, sql } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up, down } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
@@ -170,6 +170,7 @@ describe("db migrations", () => {
         startedAt: null,
         completedAt: null,
         expiresAt: "2026-05-08T10:00:00Z",
+        source: "MANUAL",
       })
       .execute();
 
@@ -180,5 +181,16 @@ describe("db migrations", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("PENDING");
     expect(rows[0].tenantId).toBe("tenant-1");
+  });
+
+  it("defaults database_dumps.source to MANUAL for rows written without it", async () => {
+    await sql`insert into database_dumps (id, "documentId", "tenantId", "requestedBy", status, "requestedAt", "expiresAt") values ('legacy', 'd', 't', '0x', 'READY', '2026-05-01T00:00:00Z', '2026-05-02T00:00:00Z')`.execute(db);
+    await up(db); // re-running must not throw
+    const row = await db
+      .selectFrom("database_dumps")
+      .select(["source"])
+      .where("id", "=", "legacy")
+      .executeTakeFirstOrThrow();
+    expect(row.source).toBe("MANUAL");
   });
 });

@@ -37,6 +37,12 @@ export interface Environments {
    */
   studioInstanceId: string | null;
   /**
+   * JSON of doc state's `backupSchedule` ({ enabled, cadence, retention }).
+   * NULL = no schedule set; the observability backup scheduler applies its
+   * default (daily, keep 7).
+   */
+  backupSchedule: string | null;
+  /**
    * JSON of doc state's `fusion` ({ image, env, autoUpdate, autoUpdateTagPattern })
    * or NULL. Read by the observability subgraph's FUSION auto-update poller.
    */

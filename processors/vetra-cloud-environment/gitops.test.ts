@@ -75,6 +75,7 @@ function envState(
     autoUpdateChannel: null,
     runtimeConfig: null,
     studioInstanceId: null,
+    backupSchedule: null,
     app: null,
     ...overrides,
   };

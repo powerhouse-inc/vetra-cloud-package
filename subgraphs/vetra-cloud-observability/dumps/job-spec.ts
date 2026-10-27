@@ -113,3 +113,85 @@ export function buildDumpJob(input: BuildDumpJobInput): V1Job {
     },
   };
 }
+
+export type BuildRestoreJobInput = Omit<BuildDumpJobInput, "dumpId"> & {
+  restoreId: string;
+  /** The dump to restore; its file is `${tenantNs}/${dumpId}.dump`. */
+  dumpId: string;
+};
+
+/**
+ * Shell run by the restore Job. One `psql --single-transaction` with
+ * ON_ERROR_STOP, so the database is either fully restored or untouched:
+ *
+ * 1. `DROP OWNED BY CURRENT_USER CASCADE` removes everything the app role
+ *    owns — including tables in `public`, which on PG15+ belongs to
+ *    `pg_database_owner` and would survive a schema-level drop — so objects
+ *    created after the dump don't linger into a mixed state.
+ * 2. The dump's SQL, minus EXTENSION entries: extensions are owned by the
+ *    superuser, survive step 1, and the app role can't recreate or comment
+ *    on them.
+ */
+export const RESTORE_SCRIPT = [
+  "set -eu -o pipefail",
+  's5cmd --endpoint-url "$S3_ENDPOINT" cp "s3://$S3_BUCKET/$S3_KEY" /tmp/restore.dump',
+  "pg_restore -l /tmp/restore.dump | grep -v -E ' EXTENSION | COMMENT - EXTENSION ' > /tmp/restore.list",
+  "{ echo 'DROP OWNED BY CURRENT_USER CASCADE;'; pg_restore --no-owner --no-acl -L /tmp/restore.list -f - /tmp/restore.dump; }" +
+    " | psql -X -q -v ON_ERROR_STOP=1 --single-transaction",
+  'echo "restore complete"',
+].join("\n");
+
+/**
+ * Builds the one-shot Job that restores a dump into the tenant database.
+ * Same image, credentials and knobs as the dump Job, but:
+ * - connects to the CNPG primary (`<ns>-pg-rw`), never the PgBouncer
+ *   pooler: tenants run it in transaction mode, which drops the session
+ *   state (`search_path` etc.) a restore script depends on;
+ * - labelled `vetra.io/kind=restore` + `vetra.io/restore-id` and NOT
+ *   `vetra.io/dump-id`, so the dump watcher never mistakes it for a dump.
+ */
+export function buildRestoreJob(input: BuildRestoreJobInput): V1Job {
+  const { restoreId, tenantNs } = input;
+  const dumpJob = buildDumpJob(input);
+  const dumpPod = dumpJob.spec!.template.spec!;
+  const dumpContainer = dumpPod.containers[0];
+  const labels = {
+    "app.kubernetes.io/managed-by": MANAGED_BY,
+    "vetra.io/kind": "restore",
+    "vetra.io/restore-id": restoreId,
+  };
+  const env = (dumpContainer.env ?? []).map((e) =>
+    e.name === "PGHOST"
+      ? { name: "PGHOST", value: `${tenantNs}-pg-rw.${tenantNs}.svc.cluster.local` }
+      : e,
+  );
+
+  return {
+    apiVersion: "batch/v1",
+    kind: "Job",
+    metadata: { name: `pgrestore-${restoreId}`, namespace: tenantNs, labels },
+    spec: {
+      ttlSecondsAfterFinished: dumpJob.spec!.ttlSecondsAfterFinished,
+      backoffLimit: 0,
+      activeDeadlineSeconds: dumpJob.spec!.activeDeadlineSeconds,
+      template: {
+        metadata: { labels },
+        spec: {
+          restartPolicy: "Never",
+          serviceAccountName: dumpPod.serviceAccountName,
+          imagePullSecrets: dumpPod.imagePullSecrets,
+          containers: [
+            {
+              name: "pgrestore",
+              image: dumpContainer.image,
+              command: ["/bin/sh", "-c"],
+              args: [RESTORE_SCRIPT],
+              env,
+              resources: dumpContainer.resources,
+            },
+          ],
+        },
+      },
+    },
+  };
+}
