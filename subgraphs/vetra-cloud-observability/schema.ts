@@ -435,6 +435,6 @@ export const schema: DocumentNode = gql`
   enum ArgoHealthStatus { HEALTHY, DEGRADED, PROGRESSING, MISSING, UNKNOWN }
   enum PodPhase { RUNNING, PENDING, SUCCEEDED, FAILED, UNKNOWN }
   enum EventType { NORMAL, WARNING }
-  enum TenantService { CONNECT, SWITCHBOARD, CLINT }
+  enum TenantService { CONNECT, SWITCHBOARD, CLINT, FUSION }
   enum MetricRange { ONE_MIN, FIVE_MIN, FIFTEEN_MIN, ONE_HOUR, SIX_HOURS, TWENTY_FOUR_HOURS }
 `;
