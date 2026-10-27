@@ -82,11 +82,18 @@ export const schema: DocumentNode = gql`
     On-demand pg_dump exports of the env's Postgres, newest first
     (capped at 20). Personal envs: owner only. Organisation envs: an
     OWNER or ADMIN of the owning organisation. No platform-admin bypass.
-    Each entry has a 24h-TTL file on S3;
+    Kept per source by count (manual 5, scheduled per schedule, safety 3),
+    at most 30 days;
     \`downloadUrl\` is a 15-min presigned URL minted on every read,
     only present when status=READY and the file hasn't expired.
     """
     environmentDumps(tenantId: String!): [DatabaseDump!]!
+
+    """
+    The env's most recent database restores (newest first, up to 10).
+    Same access rule as environmentDumps.
+    """
+    environmentRestores(tenantId: String!): [DatabaseRestore!]!
   }
 
   """Grouping of runtime-announced endpoints under a single agent (= service prefix)."""
@@ -215,6 +222,16 @@ export const schema: DocumentNode = gql`
     cancelEnvironmentDump(dumpId: ID!): DatabaseDump!
 
     """
+    Restore a READY dump into the environment it was taken from. Takes a
+    PRE_RESTORE safety dump first, then stops the Switchboard, replaces
+    the whole database in one transaction and starts it again. Poll
+    environmentRestores for progress. Raises DUMP_NOT_FOUND,
+    UNAUTHENTICATED, FORBIDDEN, ENV_NOT_READY, DUMP_NOT_READY,
+    DUMP_EXPIRED, RESTORE_IN_PROGRESS or DUMP_IN_PROGRESS.
+    """
+    restoreEnvironmentDump(dumpId: ID!): DatabaseRestore!
+
+    """
     Owner, covering org publisher, or admin. Trigger a rolling restart of one of an environment's
     Deployments by stamping the standard rollout-restart annotation on its
     pod template. 'service' selects CONNECT/SWITCHBOARD; for CLINT pass the
@@ -280,6 +297,21 @@ export const schema: DocumentNode = gql`
     """Presigned 15-min download URL. Null unless status=READY and not expired."""
     downloadUrl: String
     source: DumpSource!
+  }
+
+  enum DatabaseRestoreStatus { SAFETY_DUMP, STOPPING, RESTORING, STARTING, SUCCEEDED, FAILED }
+
+  type DatabaseRestore {
+    id: ID!
+    """The dump being restored."""
+    dumpId: ID!
+    """PRE_RESTORE dump of the data that was replaced."""
+    safetyDumpId: ID!
+    status: DatabaseRestoreStatus!
+    """Why the restore failed; the database is unchanged unless noted."""
+    errorMessage: String
+    requestedAt: String!
+    completedAt: String
   }
 
   type ClintRuntimeEndpoint {

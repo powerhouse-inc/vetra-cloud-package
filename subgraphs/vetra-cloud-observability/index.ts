@@ -23,6 +23,7 @@ import { DumpsRepo } from "./dumps/repo.js";
 import { S3Helper } from "./dumps/s3.js";
 import {
   createDefaultDumpsK8sClient,
+  createDefaultRestoreK8s,
   type DumpsK8sClient,
 } from "./dumps/k8s-client.js";
 import {
@@ -37,6 +38,10 @@ import {
   type BackupEnvRow,
 } from "./dumps/backup-schedule-runner.js";
 import { createDumpAndJob } from "./dumps/service.js";
+import { RestoresRepo } from "./dumps/restore-repo.js";
+import { advanceRestore, type RestoreK8s } from "./dumps/restore.js";
+import { buildRestoreJob } from "./dumps/job-spec.js";
+import { applyRetention, RETENTION } from "./dumps/retention.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
@@ -78,6 +83,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private dumpJobWatcher: ReturnType<typeof setInterval> | null = null;
   private dumpRowPruner: ReturnType<typeof setInterval> | null = null;
   private backupScheduler: ReturnType<typeof setInterval> | null = null;
+  private restoreAdvancer: ReturnType<typeof setInterval> | null = null;
   private dumpsK8s: DumpsK8sClient | null = null;
   private dumpsRepo: DumpsRepo | null = null;
   private dumpsS3: S3Helper | null = null;
@@ -214,6 +220,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
       this.startDumpJobWatcher();
       this.startDumpRowPruner();
+      void this.startRestoreAdvancer(dumpDeps);
       if (process.env.VETRA_BACKUP_SCHEDULER_ENABLED !== "false") {
         this.startBackupScheduler(dumpDeps, envDb);
         console.info("[observability] Backup scheduler started (60s tick)");
@@ -367,6 +374,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       clearInterval(this.backupScheduler);
       this.backupScheduler = null;
     }
+    if (this.restoreAdvancer) {
+      clearInterval(this.restoreAdvancer);
+      this.restoreAdvancer = null;
+    }
     this.clintPullWorker?.stop();
     this.clintPullWorker = null;
   }
@@ -390,6 +401,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     }
 
     const repo = new DumpsRepo(db);
+    const restores = new RestoresRepo(db);
     let k8s: DumpsK8sClient;
     try {
       k8s = await createDefaultDumpsK8sClient();
@@ -416,6 +428,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
 
     return {
       repo,
+      restores,
       envDb,
       createJob: (ns, body) => k8s.createJob(ns, body),
       deleteJob: (ns, name) => k8s.deleteJob(ns, name),
@@ -538,7 +551,13 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           .select(["id", "tenantId", "status", "appRole", "services", "backupSchedule"])
           .where("status", "=", "READY")
           .execute()) as BackupEnvRow[];
-        const envs = rows.flatMap((r) => toBackupEnvSnapshot(r) ?? []);
+        const restoring = new Set(
+          (await dumpDeps.restores.listActive()).map((r) => r.tenantId),
+        );
+        const envs = rows.flatMap((r) => {
+          const env = toBackupEnvSnapshot(r);
+          return env && !restoring.has(env.tenantId) ? [env] : [];
+        });
         const { fired, deleted } = await runBackupScheduleTick(
           envs,
           {
@@ -563,6 +582,70 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       }
     };
     this.backupScheduler = setInterval(() => void tick(), 60 * 1000);
+  }
+
+  /**
+   * Advances every active restore by one step each 10s tick (see
+   * `dumps/restore.ts`). State lives in `database_restores`, so a restart
+   * resumes in-flight restores, including scaling a stopped Switchboard back.
+   */
+  private async startRestoreAdvancer(dumpDeps: DumpResolverDeps) {
+    let k8s: RestoreK8s;
+    try {
+      k8s = await createDefaultRestoreK8s(this.dumpsK8s!);
+    } catch (err) {
+      console.warn("[restore-advancer] kubernetes client init failed — restores disabled:", err);
+      return;
+    }
+    let running = false;
+    const tick = async () => {
+      if (running) return;
+      running = true;
+      try {
+        for (const row of await dumpDeps.restores.listActive()) {
+          try {
+            await advanceRestore(
+              row,
+              {
+                restores: dumpDeps.restores,
+                dumps: dumpDeps.repo,
+                k8s,
+                buildJob: (r) =>
+                  buildRestoreJob({
+                    restoreId: r.id,
+                    dumpId: r.dumpId,
+                    tenantNs: r.tenantId,
+                    image: dumpDeps.image,
+                    bucket: dumpDeps.bucket,
+                    s3Endpoint: dumpDeps.s3Endpoint,
+                    s3AccessKey: dumpDeps.s3AccessKey,
+                    s3SecretKey: dumpDeps.s3SecretKey,
+                  }),
+                onFinished: async (r) => {
+                  console.info(`[restore-advancer] ${r.tenantId} restore ${r.id}: ${r.status}`);
+                  await applyRetention(
+                    dumpDeps.repo,
+                    dumpDeps.deleteObject,
+                    r.tenantId,
+                    "PRE_RESTORE",
+                    RETENTION.PRE_RESTORE,
+                  );
+                },
+              },
+              new Date(),
+            );
+          } catch (err) {
+            console.warn(`[restore-advancer] ${row.tenantId} restore ${row.id}:`, err);
+          }
+        }
+      } catch (err) {
+        console.warn("[restore-advancer] tick error:", err);
+      } finally {
+        running = false;
+      }
+    };
+    this.restoreAdvancer = setInterval(() => void tick(), 10 * 1000);
+    console.info("[observability] Restore advancer started (10s tick)");
   }
 
   private startDumpRowPruner() {

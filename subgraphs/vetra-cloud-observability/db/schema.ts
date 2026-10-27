@@ -133,6 +133,41 @@ export interface DatabaseDumps {
   source: DumpSource;
 }
 
+export type RestoreStatus =
+  | "SAFETY_DUMP"
+  | "STOPPING"
+  | "RESTORING"
+  | "STARTING"
+  | "SUCCEEDED"
+  | "FAILED";
+
+/**
+ * Owner-triggered database restores, advanced one step per tick by the
+ * restore advancer (`dumps/restore.ts`): safety dump → stop Switchboard →
+ * restore Job → start Switchboard. `replicas` remembers what to scale back
+ * to, so a subgraph restart mid-restore still brings the env back up.
+ */
+export interface DatabaseRestores {
+  id: string;
+  documentId: string;
+  tenantId: string;
+  /** The dump being restored. */
+  dumpId: string;
+  /** PRE_RESTORE dump of the data being replaced. */
+  safetyDumpId: string;
+  status: RestoreStatus;
+  jobName: string | null;
+  /** JSON `{ [deploymentName]: replicas }` captured before scaling to 0. */
+  replicas: string | null;
+  /** Set when the restore failed; kept through STARTING to decide the outcome. */
+  errorMessage: string | null;
+  requestedBy: string;
+  requestedAt: string;
+  /** Last status change; drives the per-step timeouts. */
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 /** Cached studio product identity from the BrandSheet, pulled by the
  * clint-pull-worker so /user/products survives studio hibernation. */
 export interface StudioBrand {
@@ -152,6 +187,7 @@ export interface ObservabilityDB {
   release_history: ReleaseHistory;
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
+  database_restores: DatabaseRestores;
   studio_brand: StudioBrand;
   /** Document permissions Vetra granted for organisation access (revoked only by Vetra). */
   org_document_grants: {

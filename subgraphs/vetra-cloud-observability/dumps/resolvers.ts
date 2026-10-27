@@ -5,7 +5,8 @@ import { authorizeDump } from "./auth.js";
 import { OWNER_ONLY_ACCESS, type EnvAccess } from "../env-access.js";
 import { applyRetention, RETENTION } from "./retention.js";
 import { createDumpAndJob } from "./service.js";
-import type { DatabaseDumps } from "../db/schema.js";
+import type { DatabaseDumps, DatabaseRestores } from "../db/schema.js";
+import type { RestoresRepo } from "./restore-repo.js";
 
 type Caller = { user?: { address: string } };
 
@@ -15,6 +16,7 @@ type EnvRow = {
   owner: string | null;
   ownerOrgId: string | null;
   appId: string | null;
+  status: string | null;
 };
 
 async function loadEnv(
@@ -23,7 +25,7 @@ async function loadEnv(
 ): Promise<EnvRow | null> {
   const row = (await envDb
     .selectFrom("environments")
-    .select(["id", "tenantId", "owner", "ownerOrgId", "appId"])
+    .select(["id", "tenantId", "owner", "ownerOrgId", "appId", "status"])
     .where("tenantId", "=", tenantId)
     .executeTakeFirst()) as EnvRow | undefined;
   return row ?? null;
@@ -44,8 +46,21 @@ function toGraphql(row: DatabaseDumps, presignedUrl: string | null) {
   };
 }
 
+function restoreToGraphql(row: DatabaseRestores) {
+  return {
+    id: row.id,
+    dumpId: row.dumpId,
+    safetyDumpId: row.safetyDumpId,
+    status: row.status,
+    errorMessage: row.errorMessage,
+    requestedAt: row.requestedAt,
+    completedAt: row.completedAt,
+  };
+}
+
 export type DumpResolverDeps = {
   repo: DumpsRepo;
+  restores: RestoresRepo;
   envDb: Kysely<any>;
   /** Creates the k8s Job. Returns the assigned name. */
   createJob: (namespace: string, body: V1Job) => Promise<string>;
@@ -68,6 +83,7 @@ export type DumpResolverDeps = {
 export function createDumpResolvers(deps: DumpResolverDeps) {
   const {
     repo,
+    restores,
     envDb,
     createJob,
     deleteJob,
@@ -104,6 +120,15 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
           }),
         );
       },
+      environmentRestores: async (
+        _p: unknown,
+        args: { tenantId: string },
+        ctx: Caller,
+      ) => {
+        const env = await loadEnv(envDb, args.tenantId);
+        await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
+        return (await restores.listByTenant(args.tenantId)).map(restoreToGraphql);
+      },
     },
     Mutation: {
       requestEnvironmentDump: async (
@@ -116,6 +141,9 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         // authorizeDump already throws ENV_NOT_FOUND for a missing env;
         // the explicit check narrows the type for repo.create.
         if (!env) throw new Error("ENV_NOT_FOUND");
+        if (await restores.activeForTenant(args.tenantId)) {
+          throw new Error("RESTORE_IN_PROGRESS");
+        }
 
         const dump = await createDumpAndJob(
           { repo, createJob, image, bucket, s3Endpoint, s3AccessKey, s3SecretKey },
@@ -159,6 +187,51 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
 
         const updated = await repo.getById(row.id);
         return toGraphql(updated ?? row, null);
+      },
+      /**
+       * Starts a tracked restore of a READY dump into its own environment:
+       * a PRE_RESTORE safety dump first, then the restore advancer
+       * (`restore.ts`) stops the Switchboard, runs the restore Job and
+       * starts it again. No target parameter, so a dump can only ever be
+       * restored into the environment it was taken from.
+       */
+      restoreEnvironmentDump: async (
+        _p: unknown,
+        args: { dumpId: string },
+        ctx: Caller,
+      ) => {
+        const dump = await repo.getById(args.dumpId);
+        if (!dump) throw new Error("DUMP_NOT_FOUND");
+        const env = await loadEnv(envDb, dump.tenantId);
+        await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
+        if (!env) throw new Error("ENV_NOT_FOUND");
+        if (env.status !== "READY") throw new Error("ENV_NOT_READY");
+        if (dump.status !== "READY" || !dump.s3Key) throw new Error("DUMP_NOT_READY");
+        if (new Date(dump.expiresAt).getTime() < Date.now()) throw new Error("DUMP_EXPIRED");
+        if (await restores.activeForTenant(dump.tenantId)) {
+          throw new Error("RESTORE_IN_PROGRESS");
+        }
+
+        // Throws DUMP_IN_PROGRESS when any dump is in flight for the tenant,
+        // which also serialises double-clicked restores.
+        const safety = await createDumpAndJob(
+          { repo, createJob, image, bucket, s3Endpoint, s3AccessKey, s3SecretKey },
+          {
+            documentId: env.id,
+            tenantId: dump.tenantId,
+            requestedBy: ctx.user!.address,
+            source: "PRE_RESTORE",
+          },
+        );
+        const restore = await restores.create({
+          documentId: env.id,
+          tenantId: dump.tenantId,
+          dumpId: dump.id,
+          safetyDumpId: safety.id,
+          requestedBy: ctx.user!.address,
+          now: new Date(),
+        });
+        return restoreToGraphql(restore);
       },
     },
   };

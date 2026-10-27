@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
 import { DumpsRepo } from "../dumps/repo.js";
+import { RestoresRepo } from "../dumps/restore-repo.js";
 import {
   createDumpResolvers,
   type DumpResolverDeps,
@@ -14,13 +15,14 @@ const TENANT = "tenant-1";
 
 let db: Kysely<ObservabilityDB>;
 let repo: DumpsRepo;
+let restores: RestoresRepo;
 let createJob: Mock<DumpResolverDeps["createJob"]>;
 let deleteJob: Mock<DumpResolverDeps["deleteJob"]>;
 let presign: Mock<DumpResolverDeps["presign"]>;
 let deleteObject: Mock<DumpResolverDeps["deleteObject"]>;
 let deps: DumpResolverDeps;
 
-function envDbStub(envOwner: string | null) {
+function envDbStub(envOwner: string | null, status = "READY") {
   return {
     selectFrom: () => ({
       select: () => ({
@@ -28,7 +30,7 @@ function envDbStub(envOwner: string | null) {
           executeTakeFirst: async () =>
             envOwner === null
               ? undefined
-              : { id: "doc-1", tenantId: TENANT, owner: envOwner },
+              : { id: "doc-1", tenantId: TENANT, owner: envOwner, status },
         }),
       }),
     }),
@@ -40,6 +42,7 @@ beforeEach(async () => {
   db = new Kysely<ObservabilityDB>({ dialect: new PGliteDialect(pglite) });
   await up(db);
   repo = new DumpsRepo(db);
+  restores = new RestoresRepo(db);
 
   createJob = vi.fn(async () => "pgdump-abc");
   deleteJob = vi.fn(async () => undefined);
@@ -48,6 +51,7 @@ beforeEach(async () => {
 
   deps = {
     repo,
+    restores,
     envDb: envDbStub("0xAbC") as never,
     createJob,
     deleteJob,
@@ -296,5 +300,99 @@ describe("cancelEnvironmentDump", () => {
         { user: { address: "0xabc" } },
       ),
     ).rejects.toThrow("DUMP_NOT_FOUND");
+  });
+});
+
+describe("restoreEnvironmentDump", () => {
+  const owner = { user: { address: "0xabc" } };
+
+  async function readyDump(source: "MANUAL" | "SCHEDULED" = "MANUAL") {
+    const d = await repo.create({ documentId: "doc-1", tenantId: TENANT, requestedBy: "0xabc", now: new Date(), source });
+    await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 1, new Date());
+    return d;
+  }
+
+  it("starts a tracked restore with a PRE_RESTORE safety dump", async () => {
+    const target = await readyDump("SCHEDULED");
+    const resolvers = createDumpResolvers(deps);
+    const restore = await resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner);
+    expect(restore.status).toBe("SAFETY_DUMP");
+    expect(restore.dumpId).toBe(target.id);
+    const safety = await repo.getById(restore.safetyDumpId);
+    expect(safety?.source).toBe("PRE_RESTORE");
+    expect(safety?.requestedBy).toBe("0xabc");
+    expect(createJob).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unauthenticated", {}, "UNAUTHENTICATED"],
+    ["a non-owner", { user: { address: "0xdef" } }, "FORBIDDEN"],
+  ])("rejects %s", async (_l, ctx, code) => {
+    const target = await readyDump();
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, ctx)).rejects.toThrow(code);
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown dump", async () => {
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: "nope" }, owner)).rejects.toThrow("DUMP_NOT_FOUND");
+  });
+
+  it("rejects a dump that isn't READY", async () => {
+    const d = await repo.create({ documentId: "doc-1", tenantId: TENANT, requestedBy: "0xabc", now: new Date() });
+    await repo.markFailed(d.id, "x", new Date());
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: d.id }, owner)).rejects.toThrow("DUMP_NOT_READY");
+  });
+
+  it("rejects an expired dump", async () => {
+    const d = await repo.create({ documentId: "doc-1", tenantId: TENANT, requestedBy: "0xabc", now: new Date("2026-01-01T00:00:00Z") });
+    await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 1, new Date("2026-01-01T00:00:00Z"));
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: d.id }, owner)).rejects.toThrow("DUMP_EXPIRED");
+  });
+
+  it("rejects when the environment isn't running", async () => {
+    const target = await readyDump();
+    deps = { ...deps, envDb: envDbStub("0xAbC", "STOPPED") as never };
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner)).rejects.toThrow("ENV_NOT_READY");
+  });
+
+  it("rejects a second restore while one is active", async () => {
+    const target = await readyDump();
+    const resolvers = createDumpResolvers(deps);
+    const first = await resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner);
+    await repo.markReady(first.safetyDumpId, `${TENANT}/s.dump`, 1, new Date());
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner)).rejects.toThrow("RESTORE_IN_PROGRESS");
+  });
+
+  it("rejects while another dump is in flight, without stopping anything", async () => {
+    const target = await readyDump();
+    await repo.create({ documentId: "doc-1", tenantId: TENANT, requestedBy: "scheduler", now: new Date(), source: "SCHEDULED" });
+    const resolvers = createDumpResolvers(deps);
+    await expect(resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner)).rejects.toThrow("DUMP_IN_PROGRESS");
+    expect(await restores.activeForTenant(TENANT)).toBeNull();
+  });
+
+  it("blocks manual dumps while a restore is active", async () => {
+    const target = await readyDump();
+    const resolvers = createDumpResolvers(deps);
+    const r = await resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner);
+    await repo.markReady(r.safetyDumpId, `${TENANT}/s.dump`, 1, new Date());
+    await expect(resolvers.Mutation.requestEnvironmentDump(null, { tenantId: TENANT }, owner)).rejects.toThrow("RESTORE_IN_PROGRESS");
+  });
+
+  it("lists the tenant's restores for the owner only", async () => {
+    const target = await readyDump();
+    const resolvers = createDumpResolvers(deps);
+    await resolvers.Mutation.restoreEnvironmentDump(null, { dumpId: target.id }, owner);
+    const list = await resolvers.Query.environmentRestores(null, { tenantId: TENANT }, owner);
+    expect(list).toHaveLength(1);
+    expect(list[0].status).toBe("SAFETY_DUMP");
+    await expect(
+      resolvers.Query.environmentRestores(null, { tenantId: TENANT }, { user: { address: "0xdef" } }),
+    ).rejects.toThrow("FORBIDDEN");
   });
 });
