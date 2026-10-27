@@ -263,6 +263,9 @@ export const schema: DocumentNode = gql`
 
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }
 
+  """Why a dump exists: owner request, backup schedule, or a restore's safety copy."""
+  enum DumpSource { MANUAL, SCHEDULED, PRE_RESTORE }
+
   type DatabaseDump {
     id: ID!
     status: DatabaseDumpStatus!
@@ -276,6 +279,7 @@ export const schema: DocumentNode = gql`
     errorMessage: String
     """Presigned 15-min download URL. Null unless status=READY and not expired."""
     downloadUrl: String
+    source: DumpSource!
   }
 
   type ClintRuntimeEndpoint {

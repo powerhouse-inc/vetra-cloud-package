@@ -17,6 +17,7 @@ let repo: DumpsRepo;
 let createJob: Mock<DumpResolverDeps["createJob"]>;
 let deleteJob: Mock<DumpResolverDeps["deleteJob"]>;
 let presign: Mock<DumpResolverDeps["presign"]>;
+let deleteObject: Mock<DumpResolverDeps["deleteObject"]>;
 let deps: DumpResolverDeps;
 
 function envDbStub(envOwner: string | null) {
@@ -43,6 +44,7 @@ beforeEach(async () => {
   createJob = vi.fn(async () => "pgdump-abc");
   deleteJob = vi.fn(async () => undefined);
   presign = vi.fn(async () => "https://signed.example/dump");
+  deleteObject = vi.fn(async () => undefined);
 
   deps = {
     repo,
@@ -50,6 +52,7 @@ beforeEach(async () => {
     createJob,
     deleteJob,
     presign,
+    deleteObject,
     image: "img:1",
     bucket: "powerhouse-env-dumps",
     s3Endpoint: "https://s3",
@@ -60,6 +63,25 @@ beforeEach(async () => {
 afterEach(async () => db.destroy());
 
 describe("requestEnvironmentDump", () => {
+  it("keeps only the newest 5 manual dumps", async () => {
+    const resolvers = createDumpResolvers(deps);
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const d = await resolvers.Mutation.requestEnvironmentDump(
+        null,
+        { tenantId: TENANT },
+        { user: { address: "0xabc" } },
+      );
+      ids.push(d.id);
+      await repo.markReady(d.id, `${TENANT}/${d.id}.dump`, 1, new Date());
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const left = (await repo.listBySource(TENANT, "MANUAL")).map((r) => r.id);
+    expect(left).toHaveLength(5);
+    expect(left).not.toContain(ids[0]);
+    expect(deleteObject).toHaveBeenCalledWith(`${TENANT}/${ids[0]}.dump`);
+  });
+
   it("creates a PENDING dump as the owner", async () => {
     const resolvers = createDumpResolvers(deps);
     const dump = await resolvers.Mutation.requestEnvironmentDump(
@@ -68,6 +90,7 @@ describe("requestEnvironmentDump", () => {
       { user: { address: "0xabc" } },
     );
     expect(dump.status).toBe("PENDING");
+    expect(dump.source).toBe("MANUAL");
     expect(createJob).toHaveBeenCalledTimes(1);
     expect(createJob.mock.calls[0][0]).toBe(TENANT);
   });

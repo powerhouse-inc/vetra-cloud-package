@@ -3,7 +3,8 @@ import type { V1Job } from "@kubernetes/client-node";
 import type { DumpsRepo } from "./repo.js";
 import { authorizeDump } from "./auth.js";
 import { OWNER_ONLY_ACCESS, type EnvAccess } from "../env-access.js";
-import { buildDumpJob } from "./job-spec.js";
+import { applyRetention, RETENTION } from "./retention.js";
+import { createDumpAndJob } from "./service.js";
 import type { DatabaseDumps } from "../db/schema.js";
 
 type Caller = { user?: { address: string } };
@@ -39,6 +40,7 @@ function toGraphql(row: DatabaseDumps, presignedUrl: string | null) {
     sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
     errorMessage: row.errorMessage,
     downloadUrl: presignedUrl,
+    source: row.source,
   };
 }
 
@@ -51,6 +53,8 @@ export type DumpResolverDeps = {
   deleteJob: (namespace: string, name: string) => Promise<void>;
   /** Mints a presigned download URL for the given s3 key. */
   presign: (s3Key: string) => Promise<string>;
+  /** Deletes a dump file; used by retention. */
+  deleteObject: (s3Key: string) => Promise<void>;
   image: string;
   bucket: string;
   s3Endpoint: string;
@@ -68,6 +72,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
     createJob,
     deleteJob,
     presign,
+    deleteObject,
     image,
     bucket,
     s3Endpoint,
@@ -112,30 +117,16 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         // the explicit check narrows the type for repo.create.
         if (!env) throw new Error("ENV_NOT_FOUND");
 
-        const dump = await repo.create({
-          documentId: env.id,
-          tenantId: args.tenantId,
-          requestedBy: ctx.user!.address,
-          now: new Date(),
-        });
-
-        const job = buildDumpJob({
-          dumpId: dump.id,
-          tenantNs: args.tenantId,
-          image,
-          bucket,
-          s3Endpoint,
-          s3AccessKey,
-          s3SecretKey,
-        });
-        try {
-          const jobName = await createJob(args.tenantId, job);
-          await repo.setJobName(dump.id, jobName || `pgdump-${dump.id}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "createJob failed";
-          await repo.markFailed(dump.id, msg, new Date());
-          throw err;
-        }
+        const dump = await createDumpAndJob(
+          { repo, createJob, image, bucket, s3Endpoint, s3AccessKey, s3SecretKey },
+          {
+            documentId: env.id,
+            tenantId: args.tenantId,
+            requestedBy: ctx.user!.address,
+            source: "MANUAL",
+          },
+        );
+        await applyRetention(repo, deleteObject, args.tenantId, "MANUAL", RETENTION.MANUAL);
 
         return toGraphql(dump, null);
       },

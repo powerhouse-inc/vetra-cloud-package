@@ -404,6 +404,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       createJob: (ns, body) => k8s.createJob(ns, body),
       deleteJob: (ns, name) => k8s.deleteJob(ns, name),
       presign: (key) => s3.presignDownload(key),
+      deleteObject: (key) => s3.deleteObject(key),
       image:
         process.env.VETRA_DUMPS_IMAGE ??
         "cr.vetra.io/powerhouse-inc-powerhouse/pgdump-uploader:1.0.0",
@@ -508,8 +509,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       const repo = this.dumpsRepo;
       if (!repo) return;
       try {
-        const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-        const removed = await repo.pruneOlderThan(cutoff);
+        const removed = await repo.pruneExpired(new Date());
         if (removed > 0) {
           console.info(`[dump-row-pruner] pruned ${removed} row(s)`);
         }

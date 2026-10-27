@@ -1,5 +1,6 @@
 import {
   S3Client,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
@@ -55,5 +56,10 @@ export class S3Helper {
     } catch {
       return null;
     }
+  }
+
+  /** Deletes one object. S3 DeleteObject is idempotent: a missing key succeeds. */
+  async deleteObject(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 }

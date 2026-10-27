@@ -222,6 +222,7 @@ describe("owner checks on org environments", () => {
       createJob: vi.fn(async () => "job"),
       deleteJob: vi.fn(async () => undefined),
       presign: vi.fn(async () => "https://signed"),
+      deleteObject: vi.fn(async () => undefined),
       image: "img",
       bucket: "b",
       s3Endpoint: "https://s3",

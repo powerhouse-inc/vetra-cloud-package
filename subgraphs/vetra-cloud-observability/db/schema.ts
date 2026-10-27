@@ -106,9 +106,13 @@ export interface ClintRuntimeEndpoint {
   lastSeen: string;
 }
 
+/** Why a dump exists: owner click, the backup scheduler, or a restore's safety copy. */
+export type DumpSource = "MANUAL" | "SCHEDULED" | "PRE_RESTORE";
+
 /**
- * On-demand pg_dump exports of a tenant env's Postgres. Files have a
- * 24h TTL on S3 (bucket lifecycle); rows are pruned after 7 days. See
+ * pg_dump exports of a tenant env's Postgres. Kept per source by count
+ * (`dumps/retention.ts`) with a 30-day ceiling (`expiresAt`, mirrored by
+ * the bucket lifecycle); rows are pruned a day after they expire. See
  * `docs/superpowers/specs/2026-05-07-environment-database-dump-design.md`
  * in vetra.to for the full design.
  */
@@ -126,6 +130,7 @@ export interface DatabaseDumps {
   startedAt: string | null;
   completedAt: string | null;
   expiresAt: string;
+  source: DumpSource;
 }
 
 /** Cached studio product identity from the BrandSheet, pulled by the

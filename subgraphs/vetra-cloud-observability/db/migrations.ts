@@ -142,6 +142,18 @@ export async function up(db: Kysely<any>): Promise<void> {
     .columns(["tenantId", "requestedAt"])
     .execute();
 
+  // Dump source (MANUAL | SCHEDULED | PRE_RESTORE). Pre-existing rows were
+  // all owner-requested, so the default backfills them as MANUAL.
+  try {
+    await db.schema
+      .alterTable("database_dumps")
+      .addColumn("source", "varchar(32)", (col) => col.notNull().defaultTo("MANUAL"))
+      .execute();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/already exists|duplicate column/i.test(msg)) throw err;
+  }
+
   // Cached studio product identity (BrandSheet name/maxim/concept), pulled from
   // each awake studio's switchboard by the clint-pull-worker so /user/products
   // shows the real name even when the studio is hibernated.
