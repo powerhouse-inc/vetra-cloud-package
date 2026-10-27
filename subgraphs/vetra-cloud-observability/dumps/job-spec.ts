@@ -151,35 +151,43 @@ export const RESTORE_SCRIPT = [
  *   `vetra.io/dump-id`, so the dump watcher never mistakes it for a dump.
  */
 export function buildRestoreJob(input: BuildRestoreJobInput): V1Job {
-  const { restoreId, dumpId, tenantNs } = input;
-  const dumpJob = buildDumpJob({ ...input, dumpId });
+  const { restoreId, tenantNs } = input;
+  const dumpJob = buildDumpJob(input);
+  const dumpPod = dumpJob.spec!.template.spec!;
+  const dumpContainer = dumpPod.containers[0];
   const labels = {
     "app.kubernetes.io/managed-by": MANAGED_BY,
     "vetra.io/kind": "restore",
     "vetra.io/restore-id": restoreId,
   };
-  const container = dumpJob.spec!.template.spec!.containers[0];
-  const env = (container.env ?? []).map((e) =>
+  const env = (dumpContainer.env ?? []).map((e) =>
     e.name === "PGHOST"
       ? { name: "PGHOST", value: `${tenantNs}-pg-rw.${tenantNs}.svc.cluster.local` }
       : e,
   );
+
   return {
-    ...dumpJob,
+    apiVersion: "batch/v1",
+    kind: "Job",
     metadata: { name: `pgrestore-${restoreId}`, namespace: tenantNs, labels },
     spec: {
-      ...dumpJob.spec!,
+      ttlSecondsAfterFinished: dumpJob.spec!.ttlSecondsAfterFinished,
+      backoffLimit: 0,
+      activeDeadlineSeconds: dumpJob.spec!.activeDeadlineSeconds,
       template: {
         metadata: { labels },
         spec: {
-          ...dumpJob.spec!.template.spec!,
+          restartPolicy: "Never",
+          serviceAccountName: dumpPod.serviceAccountName,
+          imagePullSecrets: dumpPod.imagePullSecrets,
           containers: [
             {
-              ...container,
               name: "pgrestore",
+              image: dumpContainer.image,
               command: ["/bin/sh", "-c"],
               args: [RESTORE_SCRIPT],
               env,
+              resources: dumpContainer.resources,
             },
           ],
         },
