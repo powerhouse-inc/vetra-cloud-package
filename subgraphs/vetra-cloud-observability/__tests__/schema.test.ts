@@ -1,4 +1,4 @@
-import { buildASTSchema, printSchema } from "graphql";
+import { buildASTSchema, getVariableValues, parse, printSchema, validate, type OperationDefinitionNode } from "graphql";
 import { schema } from "../schema.js";
 
 describe("GraphQL schema", () => {
@@ -37,6 +37,19 @@ describe("GraphQL schema", () => {
     expect(built.getType("EventType")).toBeDefined();
     expect(built.getType("TenantService")).toBeDefined();
     expect(built.getType("MetricRange")).toBeDefined();
+  });
+
+  // vetra.io sends `$apexService: TenantService`; a FUSION apex (a FUSION
+  // service served at the custom domain itself) must pass input coercion.
+  it("accepts FUSION as a setCustomDomain apexService", () => {
+    const built = buildASTSchema(schema);
+    const doc = parse(
+      `mutation($apexService: TenantService) { setCustomDomain(documentId: "d", enabled: true, domain: "a.vetra.io", apexService: $apexService) { __typename } }`,
+    );
+    expect(validate(built, doc)).toEqual([]);
+    const op = doc.definitions[0] as OperationDefinitionNode;
+    const { errors } = getVariableValues(built, op.variableDefinitions ?? [], { apexService: "FUSION" });
+    expect(errors).toBeUndefined();
   });
 
   it("has all expected types", () => {
