@@ -30,6 +30,13 @@ import {
   type RestartResolverDeps,
 } from "./restart.js";
 import { reconcileJob } from "./dumps/watcher.js";
+import {
+  MAX_SCHEDULED_IN_FLIGHT,
+  runBackupScheduleTick,
+  toBackupEnvSnapshot,
+  type BackupEnvRow,
+} from "./dumps/backup-schedule-runner.js";
+import { createDumpAndJob } from "./dumps/service.js";
 import type { DumpResolverDeps } from "./dumps/resolvers.js";
 import type { ObservabilityDB } from "./db/schema.js";
 import { coreServicesReady } from "./readiness.js";
@@ -70,6 +77,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private clintPullWorker: ClintPullWorker | null = null;
   private dumpJobWatcher: ReturnType<typeof setInterval> | null = null;
   private dumpRowPruner: ReturnType<typeof setInterval> | null = null;
+  private backupScheduler: ReturnType<typeof setInterval> | null = null;
   private dumpsK8s: DumpsK8sClient | null = null;
   private dumpsRepo: DumpsRepo | null = null;
   private dumpsS3: S3Helper | null = null;
@@ -206,6 +214,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (dumpDeps && process.env.VETRA_DUMPS_WATCHER_ENABLED !== "false") {
       this.startDumpJobWatcher();
       this.startDumpRowPruner();
+      if (process.env.VETRA_BACKUP_SCHEDULER_ENABLED !== "false") {
+        this.startBackupScheduler(dumpDeps, envDb);
+        console.info("[observability] Backup scheduler started (60s tick)");
+      }
       console.info("[observability] DumpJobWatcher started (10s tick)");
     } else {
       console.info(
@@ -350,6 +362,10 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     if (this.dumpRowPruner) {
       clearInterval(this.dumpRowPruner);
       this.dumpRowPruner = null;
+    }
+    if (this.backupScheduler) {
+      clearInterval(this.backupScheduler);
+      this.backupScheduler = null;
     }
     this.clintPullWorker?.stop();
     this.clintPullWorker = null;
@@ -504,6 +520,51 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    *  itself expires at 24h via bucket lifecycle; we keep the row
    *  visible for a week so users see "expired" history rather than
    *  silently disappearing dumps. */
+  /**
+   * Fires scheduled dumps per environment schedule (default: daily, keep 7)
+   * and applies scheduled-dump retention. Schedules come from the
+   * processor's environments read model, so a tick is one query, not a
+   * document fetch per env. Re-entrancy guarded: a slow tick is skipped,
+   * never overlapped.
+   */
+  private startBackupScheduler(dumpDeps: DumpResolverDeps, envDb: Kysely<any>) {
+    let running = false;
+    const tick = async () => {
+      if (running) return;
+      running = true;
+      try {
+        const rows = (await envDb
+          .selectFrom("environments")
+          .select(["id", "tenantId", "status", "appRole", "services", "backupSchedule"])
+          .where("status", "=", "READY")
+          .execute()) as BackupEnvRow[];
+        const envs = rows.flatMap((r) => toBackupEnvSnapshot(r) ?? []);
+        const { fired, deleted } = await runBackupScheduleTick(
+          envs,
+          {
+            repo: dumpDeps.repo,
+            fire: (input) => createDumpAndJob(dumpDeps, input),
+            deleteObject: dumpDeps.deleteObject,
+            maxInFlight: MAX_SCHEDULED_IN_FLIGHT,
+            onError: (env, err) =>
+              console.warn(`[backup-scheduler] ${env.tenantId}:`, err),
+          },
+          new Date(),
+        );
+        if (fired.length > 0 || deleted.length > 0) {
+          console.info(
+            `[backup-scheduler] fired ${fired.length}, retention deleted ${deleted.length}`,
+          );
+        }
+      } catch (err) {
+        console.warn("[backup-scheduler] tick error:", err);
+      } finally {
+        running = false;
+      }
+    };
+    this.backupScheduler = setInterval(() => void tick(), 60 * 1000);
+  }
+
   private startDumpRowPruner() {
     const tick = async () => {
       const repo = this.dumpsRepo;
