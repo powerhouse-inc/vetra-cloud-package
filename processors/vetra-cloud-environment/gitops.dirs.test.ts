@@ -81,6 +81,7 @@ function state(over: Partial<VetraCloudEnvironmentState> = {}): VetraCloudEnviro
     autoUpdateChannel: null,
     runtimeConfig: null,
     studioInstanceId: null,
+    backupSchedule: null,
     app: null,
     ...over,
   };

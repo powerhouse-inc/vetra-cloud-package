@@ -142,6 +142,45 @@ export async function up(db: Kysely<any>): Promise<void> {
     .columns(["tenantId", "requestedAt"])
     .execute();
 
+  // Dump source (MANUAL | SCHEDULED | PRE_RESTORE). Pre-existing rows were
+  // all owner-requested, so the default backfills them as MANUAL.
+  try {
+    await db.schema
+      .alterTable("database_dumps")
+      .addColumn("source", "varchar(32)", (col) => col.notNull().defaultTo("MANUAL"))
+      .execute();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/already exists|duplicate column/i.test(msg)) throw err;
+  }
+
+  // Owner-triggered restores. See vetra.io
+  // `docs/superpowers/specs/2026-10-27-environment-db-restore-design.md`.
+  await db.schema
+    .createTable("database_restores")
+    .addColumn("id", "varchar(64)", (col) => col.primaryKey())
+    .addColumn("documentId", "varchar(255)", (col) => col.notNull())
+    .addColumn("tenantId", "varchar(255)", (col) => col.notNull())
+    .addColumn("dumpId", "varchar(64)", (col) => col.notNull())
+    .addColumn("safetyDumpId", "varchar(64)", (col) => col.notNull())
+    .addColumn("status", "varchar(32)", (col) => col.notNull())
+    .addColumn("jobName", "varchar(255)")
+    .addColumn("replicas", "text")
+    .addColumn("errorMessage", "text")
+    .addColumn("requestedBy", "varchar(255)", (col) => col.notNull())
+    .addColumn("requestedAt", "varchar(64)", (col) => col.notNull())
+    .addColumn("updatedAt", "varchar(64)", (col) => col.notNull())
+    .addColumn("completedAt", "varchar(64)")
+    .ifNotExists()
+    .execute();
+
+  await db.schema
+    .createIndex("database_restores_tenant_idx")
+    .ifNotExists()
+    .on("database_restores")
+    .columns(["tenantId", "requestedAt"])
+    .execute();
+
   // Cached studio product identity (BrandSheet name/maxim/concept), pulled from
   // each awake studio's switchboard by the clint-pull-worker so /user/products
   // shows the real name even when the studio is hibernated.
@@ -203,6 +242,7 @@ export async function down(db: Kysely<any>): Promise<void> {
   await db.schema.dropTable("org_document_protection").ifExists().execute();
   await db.schema.dropTable("org_document_grants").ifExists().execute();
   await db.schema.dropTable("studio_brand").ifExists().execute();
+  await db.schema.dropTable("database_restores").ifExists().execute();
   await db.schema.dropTable("database_dumps").ifExists().execute();
   await db.schema.dropTable("clint_runtime_endpoints").execute();
   await db.schema.dropTable("release_history").execute();

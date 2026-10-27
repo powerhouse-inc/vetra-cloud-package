@@ -26,6 +26,7 @@ import {
   SetApexServiceInputSchema,
   SetAppLinkInputSchema,
   SetAutoUpdateChannelInputSchema,
+  SetBackupScheduleInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
@@ -219,6 +220,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       ClearAppLinkInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.clearAppLinkOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_BACKUP_SCHEDULE": {
+      SetBackupScheduleInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setBackupScheduleOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

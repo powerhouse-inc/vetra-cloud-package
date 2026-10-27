@@ -106,9 +106,13 @@ export interface ClintRuntimeEndpoint {
   lastSeen: string;
 }
 
+/** Why a dump exists: owner click, the backup scheduler, or a restore's safety copy. */
+export type DumpSource = "MANUAL" | "SCHEDULED" | "PRE_RESTORE";
+
 /**
- * On-demand pg_dump exports of a tenant env's Postgres. Files have a
- * 24h TTL on S3 (bucket lifecycle); rows are pruned after 7 days. See
+ * pg_dump exports of a tenant env's Postgres. Kept per source by count
+ * (`dumps/retention.ts`) with a 30-day ceiling (`expiresAt`, mirrored by
+ * the bucket lifecycle); rows are pruned a day after they expire. See
  * `docs/superpowers/specs/2026-05-07-environment-database-dump-design.md`
  * in vetra.to for the full design.
  */
@@ -126,6 +130,42 @@ export interface DatabaseDumps {
   startedAt: string | null;
   completedAt: string | null;
   expiresAt: string;
+  source: DumpSource;
+}
+
+export type RestoreStatus =
+  | "SAFETY_DUMP"
+  | "STOPPING"
+  | "RESTORING"
+  | "STARTING"
+  | "SUCCEEDED"
+  | "FAILED";
+
+/**
+ * Owner-triggered database restores, advanced one step per tick by the
+ * restore advancer (`dumps/restore.ts`): safety dump → stop Switchboard →
+ * restore Job → start Switchboard. `replicas` remembers what to scale back
+ * to, so a subgraph restart mid-restore still brings the env back up.
+ */
+export interface DatabaseRestores {
+  id: string;
+  documentId: string;
+  tenantId: string;
+  /** The dump being restored. */
+  dumpId: string;
+  /** PRE_RESTORE dump of the data being replaced. */
+  safetyDumpId: string;
+  status: RestoreStatus;
+  jobName: string | null;
+  /** JSON `{ [deploymentName]: replicas }` captured before scaling to 0. */
+  replicas: string | null;
+  /** Set when the restore failed; kept through STARTING to decide the outcome. */
+  errorMessage: string | null;
+  requestedBy: string;
+  requestedAt: string;
+  /** Last status change; drives the per-step timeouts. */
+  updatedAt: string;
+  completedAt: string | null;
 }
 
 /** Cached studio product identity from the BrandSheet, pulled by the
@@ -147,6 +187,7 @@ export interface ObservabilityDB {
   release_history: ReleaseHistory;
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
+  database_restores: DatabaseRestores;
   studio_brand: StudioBrand;
   /** Document permissions Vetra granted for organisation access (revoked only by Vetra). */
   org_document_grants: {

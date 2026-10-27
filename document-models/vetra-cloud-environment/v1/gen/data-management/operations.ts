@@ -9,6 +9,7 @@ import type {
   SetApexServiceAction,
   SetAppLinkAction,
   SetAutoUpdateChannelAction,
+  SetBackupScheduleAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
@@ -90,6 +91,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   clearAppLinkOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: ClearAppLinkAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setBackupScheduleOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetBackupScheduleAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

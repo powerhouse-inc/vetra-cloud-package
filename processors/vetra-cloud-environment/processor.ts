@@ -1,7 +1,7 @@
 import type { IProcessor, IProcessorHostModule, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
-import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink } from "../../document-models/vetra-cloud-environment/index.js";
+import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink, type BackupSchedule } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
@@ -174,6 +174,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         fusion: state.fusion ? JSON.stringify(state.fusion) : null,
         ...appLinkColumns(state),
         ...orgColumns(state),
+        ...backupScheduleColumn(state),
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
@@ -324,6 +325,17 @@ export function appLinkColumns(state: {
     appRole: app?.role ?? null,
     prNumber: app?.prNumber ?? null,
   };
+}
+
+/**
+ * Read-model column mirroring `state.backupSchedule` as JSON. Read by the
+ * observability subgraph's backup scheduler; NULL means the platform default.
+ */
+export function backupScheduleColumn(state: {
+  backupSchedule?: BackupSchedule | null;
+}): { backupSchedule: string | null } {
+  const schedule = state.backupSchedule ?? null;
+  return { backupSchedule: schedule ? JSON.stringify(schedule) : null };
 }
 
 /** Read-model columns mirroring organisation ownership. */

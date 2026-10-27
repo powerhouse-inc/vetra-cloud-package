@@ -144,12 +144,16 @@ export function createResolvers(
     : {
         Query: {
           environmentDumps: async () => [] as never[],
+          environmentRestores: async () => [] as never[],
         },
         Mutation: {
           requestEnvironmentDump: async () => {
             throw new Error("DUMPS_NOT_CONFIGURED");
           },
           cancelEnvironmentDump: async () => {
+            throw new Error("DUMPS_NOT_CONFIGURED");
+          },
+          restoreEnvironmentDump: async () => {
             throw new Error("DUMPS_NOT_CONFIGURED");
           },
         },
@@ -607,6 +611,7 @@ export function createResolvers(
         return Array.from(byPrefix.values());
       },
       environmentDumps: dumpResolvers.Query.environmentDumps,
+      environmentRestores: dumpResolvers.Query.environmentRestores,
     },
 
     Mutation: {
@@ -1076,6 +1081,7 @@ export function createResolvers(
       },
       requestEnvironmentDump: dumpResolvers.Mutation.requestEnvironmentDump,
       cancelEnvironmentDump: dumpResolvers.Mutation.cancelEnvironmentDump,
+      restoreEnvironmentDump: dumpResolvers.Mutation.restoreEnvironmentDump,
       restartEnvironmentService:
         restartResolvers.Mutation.restartEnvironmentService,
       setDefaultPackageRegistry:

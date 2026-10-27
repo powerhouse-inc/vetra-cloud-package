@@ -31,7 +31,8 @@ describe("DumpsRepo", () => {
     expect(created.status).toBe("PENDING");
     expect(created.id).toMatch(/^[a-z0-9]{12}$/);
     expect(created.requestedBy).toBe("0xabc");
-    expect(created.expiresAt).toBe("2026-05-08T10:00:00.000Z");
+    expect(created.expiresAt).toBe("2026-06-06T10:00:00.000Z");
+    expect(created.source).toBe("MANUAL");
 
     const list = await repo.listByTenant("tenant-1");
     expect(list).toHaveLength(1);
@@ -160,12 +161,67 @@ describe("DumpsRepo", () => {
         startedAt: null,
         completedAt: "2026-04-01T01:00:00Z",
         expiresAt: "2026-04-02T00:00:00Z",
+        source: "MANUAL",
       })
       .execute();
 
-    const removed = await repo.pruneOlderThan(new Date("2026-05-07T00:00:00Z"));
+    const removed = await repo.pruneExpired(new Date("2026-05-07T00:00:00Z"));
     expect(removed).toBeGreaterThanOrEqual(1);
     const list = await repo.listByTenant("tenant-1");
     expect(list).toHaveLength(0);
+  });
+});
+
+describe("DumpsRepo — sources", () => {
+  const at = (iso: string) => new Date(iso);
+  async function readyDump(source: "MANUAL" | "SCHEDULED" | "PRE_RESTORE", iso: string) {
+    const d = await repo.create({
+      documentId: "doc-1",
+      tenantId: "tenant-1",
+      requestedBy: "scheduler",
+      now: at(iso),
+      source,
+    });
+    await repo.markReady(d.id, `tenant-1/${d.id}.dump`, 10, at(iso));
+    return d;
+  }
+
+  it("lists one source oldest-first", async () => {
+    const b = await readyDump("SCHEDULED", "2026-05-02T00:00:00Z");
+    const a = await readyDump("SCHEDULED", "2026-05-01T00:00:00Z");
+    await readyDump("MANUAL", "2026-05-03T00:00:00Z");
+    const rows = await repo.listBySource("tenant-1", "SCHEDULED");
+    expect(rows.map((r) => r.id)).toEqual([a.id, b.id]);
+  });
+
+  it("returns the last requestedAt per source, null when none", async () => {
+    expect(await repo.lastRequestedAt("tenant-1", "SCHEDULED")).toBeNull();
+    await readyDump("SCHEDULED", "2026-05-01T00:00:00Z");
+    await readyDump("SCHEDULED", "2026-05-02T00:00:00Z");
+    expect(await repo.lastRequestedAt("tenant-1", "SCHEDULED")).toEqual(
+      at("2026-05-02T00:00:00Z"),
+    );
+  });
+
+  it("counts in-flight dumps per source across tenants", async () => {
+    await repo.create({ documentId: "d", tenantId: "t1", requestedBy: "scheduler", now: at("2026-05-01T00:00:00Z"), source: "SCHEDULED" });
+    await repo.create({ documentId: "d", tenantId: "t2", requestedBy: "scheduler", now: at("2026-05-01T00:00:00Z"), source: "SCHEDULED" });
+    await repo.create({ documentId: "d", tenantId: "t3", requestedBy: "0xabc", now: at("2026-05-01T00:00:00Z") });
+    expect(await repo.countInFlightBySource("SCHEDULED")).toBe(2);
+  });
+
+  it("deletes by id", async () => {
+    const d = await readyDump("MANUAL", "2026-05-01T00:00:00Z");
+    await repo.deleteById(d.id);
+    expect(await repo.getById(d.id)).toBeNull();
+  });
+
+  it("prunes rows a day past their expiry only", async () => {
+    const old = await readyDump("MANUAL", "2026-03-01T00:00:00Z"); // expires 03-31
+    const fresh = await readyDump("MANUAL", "2026-04-20T00:00:00Z"); // expires 05-20
+    const removed = await repo.pruneExpired(at("2026-05-07T00:00:00Z"));
+    expect(removed).toBe(1);
+    expect(await repo.getById(old.id)).toBeNull();
+    expect(await repo.getById(fresh.id)).not.toBeNull();
   });
 });

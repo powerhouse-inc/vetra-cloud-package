@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDumpJob } from "../dumps/job-spec.js";
+import { buildDumpJob, buildRestoreJob, RESTORE_SCRIPT } from "../dumps/job-spec.js";
 
 describe("buildDumpJob", () => {
   it("builds a Job manifest with the expected metadata, env vars, and resources", () => {
@@ -65,5 +65,50 @@ describe("buildDumpJob", () => {
     expect(job.spec?.template.spec?.imagePullSecrets).toEqual([
       { name: "harbor-credentials" },
     ]);
+  });
+});
+
+describe("buildRestoreJob", () => {
+  const job = buildRestoreJob({
+    restoreId: "r123",
+    dumpId: "abc12345",
+    tenantNs: "brave-lion-22-9c4d",
+    image: "img:1",
+    bucket: "powerhouse-env-dumps",
+    s3Endpoint: "https://fsn1.your-objectstorage.com",
+    s3AccessKey: "A",
+    s3SecretKey: "S",
+  });
+  const container = job.spec!.template.spec!.containers[0];
+  const env = Object.fromEntries((container.env ?? []).map((e) => [e.name, e]));
+
+  it("connects to the CNPG primary, not the pooler", () => {
+    expect(env.PGHOST.value).toBe("brave-lion-22-9c4d-pg-rw.brave-lion-22-9c4d.svc.cluster.local");
+    expect(env.PGPASSWORD.valueFrom?.secretKeyRef?.name).toBe("brave-lion-22-9c4d-pg-app");
+  });
+
+  it("reads the chosen dump's file", () => {
+    expect(env.S3_KEY.value).toBe("brave-lion-22-9c4d/abc12345.dump");
+  });
+
+  it("is labelled as a restore and invisible to the dump watcher", () => {
+    expect(job.metadata?.name).toBe("pgrestore-r123");
+    expect(job.metadata?.labels).toEqual({
+      "app.kubernetes.io/managed-by": "vetra-cloud-observability",
+      "vetra.io/kind": "restore",
+      "vetra.io/restore-id": "r123",
+    });
+    expect(job.spec?.template.metadata?.labels?.["vetra.io/dump-id"]).toBeUndefined();
+    expect(job.spec?.backoffLimit).toBe(0);
+  });
+
+  it("restores all-or-nothing after dropping what the app role owns", () => {
+    expect(container.command).toEqual(["/bin/sh", "-c"]);
+    expect(RESTORE_SCRIPT).toContain("set -eu -o pipefail");
+    expect(RESTORE_SCRIPT).toContain("DROP OWNED BY CURRENT_USER CASCADE;");
+    expect(RESTORE_SCRIPT).toContain("--single-transaction");
+    expect(RESTORE_SCRIPT).toContain("ON_ERROR_STOP=1");
+    expect(RESTORE_SCRIPT).toContain("--no-owner --no-acl -L /tmp/restore.list");
+    expect(container.args).toEqual([RESTORE_SCRIPT]);
   });
 });

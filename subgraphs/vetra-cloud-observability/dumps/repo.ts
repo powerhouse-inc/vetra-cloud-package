@@ -1,5 +1,5 @@
 import type { Kysely } from "kysely";
-import type { DatabaseDumps, ObservabilityDB } from "../db/schema.js";
+import type { DatabaseDumps, DumpSource, ObservabilityDB } from "../db/schema.js";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -11,7 +11,8 @@ function shortId(len = 12): string {
   return s;
 }
 
-const TTL_HOURS = 24;
+/** Hard ceiling for every dump; count-based retention usually removes it sooner. */
+const TTL_HOURS = 24 * 30;
 const IN_FLIGHT = ["PENDING", "RUNNING"] as const;
 const ERROR_MESSAGE_LIMIT = 500;
 
@@ -20,6 +21,8 @@ export type CreateInput = {
   tenantId: string;
   requestedBy: string;
   now: Date;
+  /** Defaults to MANUAL (owner-requested). */
+  source?: DumpSource;
 };
 
 export class DumpsRepo {
@@ -50,6 +53,7 @@ export class DumpsRepo {
       startedAt: null,
       completedAt: null,
       expiresAt: expiresAt.toISOString(),
+      source: input.source ?? "MANUAL",
     };
     await this.db.insertInto("database_dumps").values(row).execute();
     return row;
@@ -131,10 +135,55 @@ export class DumpsRepo {
     return rows as DatabaseDumps[];
   }
 
-  async pruneOlderThan(cutoff: Date): Promise<number> {
+  /** Rows of one source for a tenant, oldest first. */
+  async listBySource(tenantId: string, source: DumpSource): Promise<DatabaseDumps[]> {
+    const rows = await this.db
+      .selectFrom("database_dumps")
+      .selectAll()
+      .where("tenantId", "=", tenantId)
+      .where("source", "=", source)
+      .orderBy("requestedAt", "asc")
+      .execute();
+    return rows as DatabaseDumps[];
+  }
+
+  async lastRequestedAt(tenantId: string, source: DumpSource): Promise<Date | null> {
+    const row = await this.db
+      .selectFrom("database_dumps")
+      .select(["requestedAt"])
+      .where("tenantId", "=", tenantId)
+      .where("source", "=", source)
+      .orderBy("requestedAt", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return row ? new Date(row.requestedAt) : null;
+  }
+
+  /** In-flight dumps of one source across all tenants (scheduler concurrency cap). */
+  async countInFlightBySource(source: DumpSource): Promise<number> {
+    const row = await this.db
+      .selectFrom("database_dumps")
+      .select((eb) => eb.fn.countAll<string>().as("n"))
+      .where("source", "=", source)
+      .where("status", "in", [...IN_FLIGHT])
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await this.db.deleteFrom("database_dumps").where("id", "=", id).execute();
+  }
+
+  /**
+   * Drops rows a day past their `expiresAt`. The bucket lifecycle has
+   * removed their files by then; the grace day keeps an expired row visible
+   * (as expired) briefly instead of vanishing at the exact TTL.
+   */
+  async pruneExpired(now: Date): Promise<number> {
+    const cutoff = new Date(now.getTime() - 24 * 3600 * 1000);
     const result = await this.db
       .deleteFrom("database_dumps")
-      .where("requestedAt", "<", cutoff.toISOString())
+      .where("expiresAt", "<", cutoff.toISOString())
       .executeTakeFirst();
     return Number(result.numDeletedRows ?? 0);
   }

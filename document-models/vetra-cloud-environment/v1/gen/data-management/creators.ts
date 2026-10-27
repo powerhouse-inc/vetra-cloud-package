@@ -8,6 +8,7 @@ import {
   SetApexServiceInputSchema,
   SetAppLinkInputSchema,
   SetAutoUpdateChannelInputSchema,
+  SetBackupScheduleInputSchema,
   SetCustomDomainInputSchema,
   SetDefaultPackageRegistryInputSchema,
   SetDnsRecordsInputSchema,
@@ -24,6 +25,7 @@ import type {
   SetApexServiceInput,
   SetAppLinkInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -40,6 +42,7 @@ import type {
   SetApexServiceAction,
   SetAppLinkAction,
   SetAutoUpdateChannelAction,
+  SetBackupScheduleAction,
   SetCustomDomainAction,
   SetDefaultPackageRegistryAction,
   SetDnsRecordsAction,
@@ -177,5 +180,14 @@ export const clearAppLink = (input: ClearAppLinkInput) =>
     { ...input },
     undefined,
     ClearAppLinkInputSchema,
+    "global",
+  );
+
+export const setBackupSchedule = (input: SetBackupScheduleInput) =>
+  createAction<SetBackupScheduleAction>(
+    "SET_BACKUP_SCHEDULE",
+    { ...input },
+    undefined,
+    SetBackupScheduleInputSchema,
     "global",
   );

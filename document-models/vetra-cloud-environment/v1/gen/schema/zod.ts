@@ -7,6 +7,8 @@ import type {
   ApproveChangesInput,
   ArchiveInput,
   AutoUpdateChannel,
+  BackupCadence,
+  BackupSchedule,
   ClearAppLinkInput,
   DisableServiceInput,
   DnsRecord,
@@ -23,6 +25,7 @@ import type {
   SetApexServiceInput,
   SetAppLinkInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -80,6 +83,8 @@ export const definedNonNullAnySchema = z
 export const AppEnvironmentRoleSchema = z.enum(["PREVIEW", "PRODUCTION"]);
 
 export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
+
+export const BackupCadenceSchema = z.enum(["DAILY", "HOURLY", "WEEKLY"]);
 
 export const ServiceStatusSchema = z.enum([
   "ACTIVE",
@@ -141,6 +146,17 @@ export function ApproveChangesInputSchema(): z.ZodObject<
 export function ArchiveInputSchema(): z.ZodObject<Properties<ArchiveInput>> {
   return z.object({
     _placeholder: z.string().nullish(),
+  });
+}
+
+export function BackupScheduleSchema(): z.ZodObject<
+  Properties<BackupSchedule>
+> {
+  return z.object({
+    __typename: z.literal("BackupSchedule").optional(),
+    cadence: BackupCadenceSchema,
+    enabled: z.boolean(),
+    retention: z.number(),
   });
 }
 
@@ -275,6 +291,16 @@ export function SetAutoUpdateChannelInputSchema(): z.ZodObject<
 > {
   return z.object({
     channel: AutoUpdateChannelSchema.nullish(),
+  });
+}
+
+export function SetBackupScheduleInputSchema(): z.ZodObject<
+  Properties<SetBackupScheduleInput>
+> {
+  return z.object({
+    cadence: BackupCadenceSchema,
+    enabled: z.boolean(),
+    retention: z.number(),
   });
 }
 
@@ -508,6 +534,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     apexService: VetraCloudEnvironmentServiceTypeSchema.nullish(),
     app: z.lazy(() => VetraCloudAppLinkSchema().nullish()),
     autoUpdateChannel: AutoUpdateChannelSchema.nullish(),
+    backupSchedule: z.lazy(() => BackupScheduleSchema().nullish()),
     customDomain: z.lazy(() => VetraCustomDomainSchema().nullish()),
     defaultPackageRegistry: z.url().nullish(),
     fusion: z.lazy(() => VetraCloudFusionConfigSchema().nullish()),
