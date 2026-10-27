@@ -206,4 +206,14 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       state.app = null;
       markPendingIfDeployed(state);
     },
+    setBackupScheduleOperation(state, action) {
+      assertOwner(state, action);
+      const { enabled, cadence, retention } = action.input;
+      if (!Number.isInteger(retention) || retention < 1 || retention > 30) {
+        throw new Error("INVALID_RETENTION: retention must be between 1 and 30");
+      }
+      state.backupSchedule = { enabled, cadence, retention };
+      // The schedule is read by the observability subgraph's runner, not the
+      // chart, so no markPendingIfDeployed — same as setAutoUpdateChannel.
+    },
   };

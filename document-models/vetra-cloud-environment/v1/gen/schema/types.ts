@@ -80,6 +80,14 @@ export type ArchiveInput = {
 
 export type AutoUpdateChannel = "DEV" | "LATEST" | "STAGING";
 
+export type BackupCadence = "DAILY" | "HOURLY" | "WEEKLY";
+
+export type BackupSchedule = {
+  cadence: BackupCadence;
+  enabled: Scalars["Boolean"]["output"];
+  retention: Scalars["Int"]["output"];
+};
+
 export type ClearAppLinkInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;
 };
@@ -159,6 +167,12 @@ export type SetAppLinkInput = {
 
 export type SetAutoUpdateChannelInput = {
   channel?: InputMaybe<AutoUpdateChannel>;
+};
+
+export type SetBackupScheduleInput = {
+  cadence: BackupCadence;
+  enabled: Scalars["Boolean"]["input"];
+  retention: Scalars["Int"]["input"];
 };
 
 export type SetCustomDomainInput = {
@@ -290,6 +304,7 @@ export type VetraCloudEnvironmentState = {
   apexService: Maybe<VetraCloudEnvironmentServiceType>;
   app: Maybe<VetraCloudAppLink>;
   autoUpdateChannel: Maybe<AutoUpdateChannel>;
+  backupSchedule: Maybe<BackupSchedule>;
   customDomain: Maybe<VetraCustomDomain>;
   defaultPackageRegistry: Maybe<Scalars["URL"]["output"]>;
   fusion: Maybe<VetraCloudFusionConfig>;

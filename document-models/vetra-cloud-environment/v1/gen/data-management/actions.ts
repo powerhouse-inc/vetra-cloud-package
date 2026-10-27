@@ -8,6 +8,7 @@ import type {
   SetApexServiceInput,
   SetAppLinkInput,
   SetAutoUpdateChannelInput,
+  SetBackupScheduleInput,
   SetCustomDomainInput,
   SetDefaultPackageRegistryInput,
   SetDnsRecordsInput,
@@ -76,6 +77,10 @@ export type ClearAppLinkAction = Action & {
   type: "CLEAR_APP_LINK";
   input: ClearAppLinkInput;
 };
+export type SetBackupScheduleAction = Action & {
+  type: "SET_BACKUP_SCHEDULE";
+  input: SetBackupScheduleInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -91,4 +96,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetRuntimeConfigAction
   | SetStudioInstanceAction
   | SetAppLinkAction
-  | ClearAppLinkAction;
+  | ClearAppLinkAction
+  | SetBackupScheduleAction;

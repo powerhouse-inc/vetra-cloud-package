@@ -15,6 +15,7 @@ import {
   setAutoUpdateChannel,
   setRuntimeConfig,
   setStudioInstance,
+  setBackupSchedule,
 } from "document-models/vetra-cloud-environment/v1";
 
 const ALICE = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -538,6 +539,49 @@ describe("DataManagementOperations", () => {
       input,
     );
     expect(updatedDocument.operations.global[0].index).toEqual(0);
+  });
+
+  describe("SET_BACKUP_SCHEDULE", () => {
+    const owned = () =>
+      reducer(utils.createDocument(), {
+        ...setOwner({ address: ALICE }),
+        ...userSigner(ALICE),
+      });
+
+    it("starts null (platform default applies)", () => {
+      expect(utils.createDocument().state.global.backupSchedule).toBeNull();
+    });
+
+    it("stores the schedule when owner-signed", () => {
+      const document = reducer(owned(), {
+        ...setBackupSchedule({ enabled: true, cadence: "WEEKLY", retention: 4 }),
+        ...userSigner(ALICE),
+      });
+      expect(document.operations.global.at(-1)?.error).toBeUndefined();
+      expect(document.state.global.backupSchedule).toStrictEqual({
+        enabled: true,
+        cadence: "WEEKLY",
+        retention: 4,
+      });
+    });
+
+    it.each([0, 31])("rejects retention %i", (retention) => {
+      const document = reducer(owned(), {
+        ...setBackupSchedule({ enabled: true, cadence: "DAILY", retention }),
+        ...userSigner(ALICE),
+      });
+      expect(document.state.global.backupSchedule).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(/INVALID_RETENTION/);
+    });
+
+    it("rejects a non-owner", () => {
+      const document = reducer(owned(), {
+        ...setBackupSchedule({ enabled: false, cadence: "DAILY", retention: 7 }),
+        ...userSigner(BOB),
+      });
+      expect(document.state.global.backupSchedule).toBeNull();
+      expect(document.operations.global.at(-1)?.error).toMatch(/is not the owner/i);
+    });
   });
 
   describe("SET_RUNTIME_CONFIG", () => {
