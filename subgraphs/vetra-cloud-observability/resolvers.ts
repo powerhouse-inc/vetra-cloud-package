@@ -366,11 +366,29 @@ export function createResolvers(
             .execute();
         }
 
+        // Live Argo health per tenant (same source as environmentStatus), so the
+        // env list shows the same Healthy / Degraded / Down as the detail page.
+        // One query for the whole list; null where the watcher has no row yet.
+        const tenantIds = rows
+          .map((row) => row.tenantId as string | null)
+          .filter((id): id is string => !!id);
+        const health = new Map<string, { argoSyncStatus: string; argoHealthStatus: string }>();
+        if (tenantIds.length > 0) {
+          const statusRows = await db
+            .selectFrom("environment_status")
+            .select(["tenantId", "argoSyncStatus", "argoHealthStatus"])
+            .where("tenantId", "in", tenantIds)
+            .execute();
+          for (const status of statusRows) health.set(status.tenantId, status);
+        }
+
         // packages/services are stored as JSON text; parse them into the
         // arrays the summary type declares so env cards can render package
         // counts + service lists (mirrors myStudioProducts' parsing).
         return rows.map((row) => ({
           ...row,
+          argoSyncStatus: health.get(row.tenantId as string)?.argoSyncStatus ?? null,
+          argoHealthStatus: health.get(row.tenantId as string)?.argoHealthStatus ?? null,
           packages: parseEnvSummaryPackages(row.packages as string | null),
           services: parseEnvSummaryServices(row.services as string | null),
           orgOperators: parseOperators(row.orgOperators as string | null),
