@@ -392,6 +392,10 @@ export const schema: DocumentNode = gql`
     appRole: String
     """PR number of an App preview environment."""
     prNumber: Int
+    """Live ArgoCD sync status (same as environmentStatus), null until the watcher has seen the env."""
+    argoSyncStatus: ArgoSyncStatus
+    """Live ArgoCD health (same as environmentStatus), null until the watcher has seen the env."""
+    argoHealthStatus: ArgoHealthStatus
     """Renown organisation owning this environment; null for personal environments."""
     ownerOrgId: String
     """Addresses allowed to sign on an organisation environment (lowercased)."""
