@@ -1275,12 +1275,15 @@ export async function generateValuesYaml(
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
   const name = toKebabCase(state.label ?? "unnamed");
-  const switchboardEnabled = state.services.some(
-    (s) => s.type === "SWITCHBOARD" && s.enabled,
-  );
-  const connectEnabled = state.services.some(
-    (s) => s.type === "CONNECT" && s.enabled,
-  );
+  // A FUSION host image is the env's switchboard and Connect, on the tenant
+  // database: the platform ones would migrate the same database beside it.
+  const fusionHost = isFusionHost(state);
+  const switchboardEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "SWITCHBOARD" && s.enabled);
+  const connectEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "CONNECT" && s.enabled);
   const clintEnabled = state.services.some(
     (s) => s.type === "CLINT" && s.enabled,
   );
@@ -1339,8 +1342,7 @@ export async function generateValuesYaml(
   // (e.g. admin-style apex deployments) can skip the ~60-90s CNPG bootstrap
   // and the associated 50Gi Hetzner volume. Toggling Switchboard on later
   // flips this back to true and CNPG comes up then.
-  // A FUSION host image runs its own switchboard on the tenant database.
-  const databaseEnabled = switchboardEnabled || isFusionHost(state);
+  const databaseEnabled = switchboardEnabled || fusionHost;
   // PR previews: small throwaway DB (empty data, no backups), see isPreviewEnv.
   const preview = isPreviewEnv(state);
   // Previews need no durable attachments: the chart's attachments PVC is

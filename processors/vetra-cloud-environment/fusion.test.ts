@@ -345,3 +345,21 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
     }
   });
 });
+
+describe("generateValuesYaml — FUSION host beside platform services", () => {
+  it("renders neither the platform switchboard nor Connect next to a host", async () => {
+    const yaml = await render(
+      envState({
+        fusion: {
+          image: FUSION_IMAGE,
+          env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+    );
+    expect(yaml).toMatch(/^switchboard:\n  enabled: false/m);
+    expect(yaml).toMatch(/^connect:\n  enabled: false/m);
+    expect(appBlock(yaml)).toContain("  database:\n    enabled: true");
+  });
+});
