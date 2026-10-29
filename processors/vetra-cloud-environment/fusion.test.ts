@@ -275,6 +275,8 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
     expect(app).toContain(`    "PUBLIC_URL": "https://${SUB}.vetra.io"`);
     expect(app).toContain(`    "PH_HOST": "cli"`);
     expect(app).toMatch(/"NODE_OPTIONS": "--max-old-space-size=\d+"/);
+    // Vite's preview server must accept the public Host header
+    expect(app).toContain(`    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "${SUB}.vetra.io"`);
     expect(app).not.toContain("NEXT_PUBLIC_");
     expect(app).not.toContain(`"PORT"`);
     expect(app).not.toContain("staticCacheMaxAge");
@@ -322,6 +324,7 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
       ),
     );
     expect(app).toContain(`    "PUBLIC_URL": "https://sektar.example"`);
+    expect(app).toContain(`    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "sektar.example"`);
   });
 
   it("is a plain front-end without PH_HOST, or with PH_HOST as a secret", async () => {
