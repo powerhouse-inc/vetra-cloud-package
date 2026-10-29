@@ -44,6 +44,14 @@ export const schema: DocumentNode = gql`
       orgId: String
     ): [VetraCloudEnvironmentSummary!]!
 
+    """
+    Per package name, how many environments currently have it installed
+    (environments that are DESTROYED, ARCHIVED or TERMINATING are left out).
+    Public: aggregates only, no environment ids, owners or names.
+    Sorted by environments descending, then packageName.
+    """
+    packageInstallCounts: [PackageInstallCount!]!
+
     """Studio products owned or just-claimed by the caller, fully resolved."""
     myStudioProducts: [StudioProduct!]!
 
@@ -367,6 +375,12 @@ export const schema: DocumentNode = gql`
     address: String
     """Whether the caller is configured as an admin on switchboard."""
     isAdmin: Boolean!
+  }
+
+  type PackageInstallCount {
+    packageName: String!
+    "Distinct environments with this package installed"
+    environments: Int!
   }
 
   type VetraCloudEnvironmentSummary {
