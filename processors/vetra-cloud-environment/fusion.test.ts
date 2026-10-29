@@ -247,3 +247,101 @@ describe("generateValuesYaml — FUSION", () => {
     expect(appBlock(await render(envState()))).toBe("app:\n  enabled: false");
   });
 });
+
+describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
+  const hostState = (
+    env: { name: string; value: string; isSecret: boolean }[] = [],
+    overrides: Partial<VetraCloudEnvironmentState> = {},
+  ) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }, ...env],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      ...overrides,
+    });
+
+  /** The top-level `database:` block's `cnpg.enabled`. */
+  const databaseEnabled = (yaml: string) =>
+    /^database:\n  cnpg:\n    enabled: (true|false)/m.exec(yaml)?.[1];
+
+  it("serves Connect's port with PUBLIC_URL instead of the NEXT_PUBLIC_* set", async () => {
+    const app = appBlock(await render(hostState()));
+    expect(app).toContain("    targetPort: 6540");
+    // the only service: served at the generic apex
+    expect(app).toContain(`    "PUBLIC_URL": "https://${SUB}.vetra.io"`);
+    expect(app).toContain(`    "PH_HOST": "cli"`);
+    expect(app).toMatch(/"NODE_OPTIONS": "--max-old-space-size=\d+"/);
+    expect(app).not.toContain("NEXT_PUBLIC_");
+    expect(app).not.toContain(`"PORT"`);
+    expect(app).not.toContain("staticCacheMaxAge");
+    expect(app.match(/      port: 6540/g)).toHaveLength(2); // liveness + readiness
+  });
+
+  it("gives the host the tenant database and a kept /data volume", async () => {
+    const yaml = await render(hostState());
+    const app = appBlock(yaml);
+    expect(app).toContain("  database:\n    enabled: true");
+    expect(app).toContain("  persistence:\n    enabled: true");
+    expect(app).toContain("    mountPath: /data");
+    // the platform switchboard is off, the database is on for the host
+    expect(databaseEnabled(yaml)).toBe("true");
+  });
+
+  it("keeps no volume for a preview", async () => {
+    const app = appBlock(
+      await render(
+        hostState([], {
+          app: {
+            appId: "app-1",
+            role: "PREVIEW",
+            prNumber: 3,
+            gitRef: "refs/pull/3/merge",
+            imageProject: null,
+          },
+        }),
+      ),
+    );
+    expect(app).toContain("  persistence:\n    enabled: false");
+  });
+
+  it("takes the port from PH_HOST_PORT", async () => {
+    const app = appBlock(
+      await render(hostState([{ name: "PH_HOST_PORT", value: "3000", isSecret: false }])),
+    );
+    expect(app).toContain("    targetPort: 3000");
+  });
+
+  it("lets the owner override PUBLIC_URL", async () => {
+    const app = appBlock(
+      await render(
+        hostState([{ name: "PUBLIC_URL", value: "https://sektar.example", isSecret: false }]),
+      ),
+    );
+    expect(app).toContain(`    "PUBLIC_URL": "https://sektar.example"`);
+  });
+
+  it("is a plain front-end without PH_HOST, or with PH_HOST as a secret", async () => {
+    for (const state of [
+      envState({ services: [svc("FUSION", "fusion", "sha-1234567")] }),
+      envState({
+        services: [svc("FUSION", "fusion", "sha-1234567")],
+        fusion: {
+          image: FUSION_IMAGE,
+          env: [{ name: "PH_HOST", value: "cli", isSecret: true }],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+    ]) {
+      const yaml = await render(state);
+      const app = appBlock(yaml);
+      expect(app).toContain("    targetPort: 3000");
+      expect(app).not.toContain("  database:");
+      expect(databaseEnabled(yaml)).toBe("false");
+    }
+  });
+});
