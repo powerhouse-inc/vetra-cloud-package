@@ -1,6 +1,7 @@
 import type { VetraCloudEnvironmentDataManagementOperations } from "document-models/vetra-cloud-environment/v1";
 import {
   InvalidRuntimeConfigError,
+  InvalidWebhookUrlError,
   NotOrgOwnedError,
   NotOwnerError,
   OrgOwnedError,
@@ -8,6 +9,10 @@ import {
   SelfClaimRequiredError,
   ServiceNotEnabledError,
 } from "../../gen/data-management/error.js";
+import {
+  normalizeNotificationEvents,
+  webhookUrlProblem,
+} from "./notification-webhook.js";
 import { validateRuntimeConfig } from "./runtime-config-validation.js";
 import {
   assertOwner,
@@ -215,5 +220,21 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       state.backupSchedule = { enabled, cadence, retention };
       // The schedule is read by the observability subgraph's runner, not the
       // chart, so no markPendingIfDeployed — same as setAutoUpdateChannel.
+    },
+    setNotificationWebhookOperation(state, action) {
+      assertOwner(state, action);
+      const url = action.input.url?.trim() || null;
+      if (url) {
+        const problem = webhookUrlProblem(url);
+        if (problem) {
+          throw new InvalidWebhookUrlError(`Webhook URL ${problem}`);
+        }
+      }
+      state.notifications = {
+        webhookUrl: url,
+        events: normalizeNotificationEvents(action.input.events),
+      };
+      // Delivered by the processor, not rendered into the chart: no
+      // markPendingIfDeployed, the deployment is unchanged.
     },
   };
