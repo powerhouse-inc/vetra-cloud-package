@@ -352,6 +352,27 @@ describe("deployApp PREVIEW", () => {
     expect(d.image_tag).toBe("cr.vetra.io/app-shop/web:sha-222222222222");
   });
 
+  it("runs a host image (PH_HOST) without the platform switchboard and Connect", async () => {
+    const { setFusionConfig } =
+      await import("../../../document-models/vetra-cloud-environment/v1/index.js");
+    await h.envs.execute(app.production_environment_id, [
+      setFusionConfig({
+        image: "cr.vetra.io/app-shop/app",
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      }),
+    ]);
+    const d = await deployApp(
+      h.deps,
+      owner,
+      preview(4, { imageTag: "sha-333333333333" }),
+    );
+    const env = await h.envs.getState(d.environment_id!);
+    const enabled = env!.services.filter((s) => s.enabled).map((s) => s.type);
+    expect(enabled).toStrictEqual(["FUSION"]);
+  });
+
   it("never copies legacy secret-looking entries (isSecret null) into the preview template (M6)", async () => {
     const { setFusionConfig } =
       await import("../../../document-models/vetra-cloud-environment/v1/index.js");

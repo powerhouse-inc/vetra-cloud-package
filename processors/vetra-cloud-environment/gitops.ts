@@ -1041,6 +1041,56 @@ export function switchboardHasReadyEndpoint(tag: string): boolean {
  */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Port a host image's Connect serves on (powerhouse.config.json studio.port). */
+const HOST_DEFAULT_PORT = 6540;
+
+/**
+ * A FUSION image that is a whole Powerhouse host (`ph run <host> serve`: its
+ * own switchboard plus a Connect that proxies it on one origin), not a
+ * front-end. Declared by the owner's `PH_HOST` env entry, which the image's
+ * entrypoint reads to pick the host. It gets the tenant database, a data
+ * volume, `PUBLIC_URL` and the Connect port instead of the NEXT_PUBLIC_* set.
+ */
+export function isFusionHost(state: VetraCloudEnvironmentState): boolean {
+  const service = (state.services ?? []).find(
+    (s) => s.type === "FUSION" && s.enabled,
+  );
+  if (!service) return false;
+  return (state.fusion?.env ?? []).some(
+    (e) => e.name === "PH_HOST" && !e.isSecret && Boolean(e.value?.trim()),
+  );
+}
+
+/** `PH_HOST_PORT` from the owner's env, else the Connect default. */
+function hostPort(state: VetraCloudEnvironmentState): number {
+  const raw = (state.fusion?.env ?? []).find(
+    (e) => e.name === "PH_HOST_PORT" && !e.isSecret,
+  )?.value;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 && port < 65536
+    ? port
+    : HOST_DEFAULT_PORT;
+}
+
+const NEXT_STATIC_CACHE = `  # Chunks keep their names but change content when NEXT_PUBLIC_* change
+  # (placeholder swap at start) — override Next's 1-year immutable caching.
+  staticCacheMaxAge: 3600`;
+
+/**
+ * The tenant database and a kept data volume (PH_USER_DATA_DIR: the server's
+ * identity key pair, attachments). Previews keep none: a kept PVC would
+ * outlive the preview's cascade delete, as for the switchboard.
+ */
+function hostBlock(preview: boolean): string {
+  return `  database:
+    enabled: true
+  persistence:
+    enabled: ${!preview}
+    storageClass: longhorn
+    size: 10Gi
+    mountPath: /data`;
+}
+
 export function generateFusionBlock(
   state: VetraCloudEnvironmentState,
   opts: {
@@ -1095,17 +1145,28 @@ export function generateFusionBlock(
     ? `fusion-${apexDomain.replace(/\./g, "-")}-tls`
     : `fusion-${opts.subdomain}-tls`;
 
-  const env = new Map<string, string>([
-    ["PORT", "3000"],
-    ["HOSTNAME", "0.0.0.0"],
-    ["NODE_ENV", "production"],
-  ]);
-  if (opts.switchboardHost)
-    env.set("NEXT_PUBLIC_SWITCHBOARD_URL", `https://${opts.switchboardHost}/graphql`);
-  if (opts.connectHost)
-    env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
-  env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
-  env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  const hostMode = isFusionHost(state);
+  const port = hostMode ? hostPort(state) : 3000;
+  // A host runs its migrations before Connect answers: its probes allow minutes.
+  const resources = APP_RESOURCE_MAP[effectiveAppSize(state, service)];
+  const env = new Map<string, string>();
+  if (hostMode) {
+    // The host builds absolute links (OAuth callbacks) from PUBLIC_URL, and
+    // runs both servers in one process: the heap follows the size.
+    env.set("NODE_ENV", "production");
+    env.set("PUBLIC_URL", `https://${host}`);
+    env.set("NODE_OPTIONS", `--max-old-space-size=${resources.nodeMaxOldSpaceMb}`);
+  } else {
+    env.set("PORT", "3000");
+    env.set("HOSTNAME", "0.0.0.0");
+    env.set("NODE_ENV", "production");
+    if (opts.switchboardHost)
+      env.set("NEXT_PUBLIC_SWITCHBOARD_URL", `https://${opts.switchboardHost}/graphql`);
+    if (opts.connectHost)
+      env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
+    env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
+    env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  }
   const secretNames: string[] = [];
   for (const e of state.fusion?.env ?? []) {
     if (!ENV_NAME.test(e.name)) continue; // names become YAML keys
@@ -1116,7 +1177,6 @@ export function generateFusionBlock(
     env.set(e.name, e.value ?? "");
   }
 
-  const resources = APP_RESOURCE_MAP[effectiveAppSize(state, service)];
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
     .join("\n");
@@ -1142,7 +1202,7 @@ export function generateFusionBlock(
   service:
     type: ClusterIP
     port: 80
-    targetPort: 3000
+    targetPort: ${port}
   ingress:
     enabled: true
     className: traefik
@@ -1160,9 +1220,7 @@ ${envLines}
 ${secretEnvBlock}
   podLabels:
     powerhouse.io/service: fusion
-  # Chunks keep their names but change content when NEXT_PUBLIC_* change
-  # (placeholder swap at start) — override Next's 1-year immutable caching.
-  staticCacheMaxAge: 3600
+${hostMode ? hostBlock(isPreviewEnv(state)) : NEXT_STATIC_CACHE}
   resources:
     requests:
       cpu: ${yamlQuote(resources.requests.cpu)}
@@ -1174,16 +1232,16 @@ ${secretEnvBlock}
     enabled: true
     httpGet:
       path: /
-      port: 3000
-    initialDelaySeconds: 30
+      port: ${port}
+    initialDelaySeconds: ${hostMode ? 60 : 30}
     periodSeconds: 15
     timeoutSeconds: 5
-    failureThreshold: 6
+    failureThreshold: ${hostMode ? 20 : 6}
   readinessProbe:
     enabled: true
     httpGet:
       path: /
-      port: 3000
+      port: ${port}
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 5
@@ -1217,12 +1275,15 @@ export async function generateValuesYaml(
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
   const name = toKebabCase(state.label ?? "unnamed");
-  const switchboardEnabled = state.services.some(
-    (s) => s.type === "SWITCHBOARD" && s.enabled,
-  );
-  const connectEnabled = state.services.some(
-    (s) => s.type === "CONNECT" && s.enabled,
-  );
+  // A FUSION host image is the env's switchboard and Connect, on the tenant
+  // database: the platform ones would migrate the same database beside it.
+  const fusionHost = isFusionHost(state);
+  const switchboardEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "SWITCHBOARD" && s.enabled);
+  const connectEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "CONNECT" && s.enabled);
   const clintEnabled = state.services.some(
     (s) => s.type === "CLINT" && s.enabled,
   );
@@ -1281,7 +1342,7 @@ export async function generateValuesYaml(
   // (e.g. admin-style apex deployments) can skip the ~60-90s CNPG bootstrap
   // and the associated 50Gi Hetzner volume. Toggling Switchboard on later
   // flips this back to true and CNPG comes up then.
-  const databaseEnabled = switchboardEnabled;
+  const databaseEnabled = switchboardEnabled || fusionHost;
   // PR previews: small throwaway DB (empty data, no backups), see isPreviewEnv.
   const preview = isPreviewEnv(state);
   // Previews need no durable attachments: the chart's attachments PVC is
