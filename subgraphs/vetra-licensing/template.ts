@@ -126,6 +126,31 @@ function asServiceType(type: string): TemplateServiceType {
   return found;
 }
 
+/**
+ * An App image named `host` is a Powerhouse host (`ph run <host> serve`: its
+ * own switchboard and Connect), not a front-end. The name is the App's own
+ * choice, recorded with every artifact; the environment then runs it in FUSION
+ * host mode (PH_HOST) with the licence holder as its only admin.
+ */
+export const HOST_ARTIFACT = "host";
+
+type FusionEnvEntry = { name: string; value: string | null; isSecret: boolean | null };
+
+/** The FUSION env that makes a host image run as the holder's own instance. */
+export function hostEnv(host: string, owner: string): FusionEnvEntry[] {
+  return [
+    { name: "PH_HOST", value: host, isSecret: false },
+    { name: "ADMINS", value: owner, isSecret: false },
+  ];
+}
+
+/** `env` with the host settings present (and current), the holder's own entries kept. */
+function withHostEnv(env: FusionEnvEntry[], host: string, owner: string): FusionEnvEntry[] {
+  const wanted = hostEnv(host, owner);
+  const names = new Set(wanted.map((e) => e.name));
+  return [...env.filter((e) => !names.has(e.name)), ...wanted];
+}
+
 /** A template reduced to exactly what the environment document stores. */
 export interface NormalisedTemplate {
   services: {
@@ -134,6 +159,8 @@ export interface NormalisedTemplate {
     /** Set only for a FUSION service: the repository and tag to run. */
     repository?: string;
     version?: string;
+    /** Set when the FUSION image is a Powerhouse host (see HOST_ARTIFACT). */
+    host?: string;
   }[];
   packages: { name: string; version: string }[];
 }
@@ -175,6 +202,7 @@ export function validateTemplate(t: TemplateShape): NormalisedTemplate {
       ...base,
       repository: s.resolvedRepository,
       version: s.resolvedVersion,
+      ...(s.artifactName === HOST_ARTIFACT ? { host: "cli" } : {}),
     };
   });
 
@@ -223,7 +251,7 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
   }
   for (const s of n.services) {
     actions.push(enableService({ type: s.type, prefix: s.prefix }));
-    actions.push(...fusionActions(s));
+    actions.push(...fusionActions(s, input.owner));
   }
 
   actions.push(approveChanges({}));
@@ -240,12 +268,12 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
  * hash changes. Letting the environment chase tags on its own would make the
  * template's recorded version a lie.
  */
-function fusionActions(s: NormalisedTemplate["services"][number]): Action[] {
+function fusionActions(s: NormalisedTemplate["services"][number], owner: string): Action[] {
   if (s.type !== "FUSION" || !s.repository || !s.version) return [];
   return [
     setFusionConfig({
       image: s.repository,
-      env: [],
+      env: s.host ? hostEnv(s.host, owner) : [],
       autoUpdate: false,
       autoUpdateTagPattern: null,
     }),
@@ -304,7 +332,7 @@ export function renderUpdateActions(input: UpdateRenderInput): Action[] {
     if (s.type === "FUSION") {
       const sameImage = current.fusion?.image === s.repository;
       const sameVersion = have?.version === s.version;
-      if (!sameImage || !sameVersion) actions.push(...fusionActions(s));
+      if (!sameImage || !sameVersion) actions.push(...fusionActions(s, current.owner ?? ""));
     }
   }
   for (const c of currentServices) {
@@ -390,21 +418,25 @@ export interface FloorUpdateRenderInput {
  * the service has none (it was missing).
  */
 function floorFusionActions(
-  repository: string,
-  version: string,
+  s: { repository: string; version: string; host?: string },
   have: VetraCloudEnvironmentState["services"][number] | undefined,
   fusion: VetraCloudEnvironmentState["fusion"],
+  owner: string | null,
 ): Action[] {
+  const { repository, version } = s;
   const actions: Action[] = [];
-  if (fusion?.image !== repository) {
+  const env: FusionEnvEntry[] = (fusion?.env ?? []).map((e) => ({
+    name: e.name,
+    value: e.value ?? null,
+    isSecret: e.isSecret ?? null,
+  }));
+  // A host env missing its settings (or naming another admin) gets them back.
+  const wantedEnv = s.host && owner ? withHostEnv(env, s.host, owner) : env;
+  if (fusion?.image !== repository || JSON.stringify(wantedEnv) !== JSON.stringify(env)) {
     actions.push(
       setFusionConfig({
         image: repository,
-        env: (fusion?.env ?? []).map((e) => ({
-          name: e.name,
-          value: e.value ?? null,
-          isSecret: e.isSecret ?? null,
-        })),
+        env: wantedEnv,
         autoUpdate: fusion?.autoUpdate ?? false,
         autoUpdateTagPattern: fusion?.autoUpdateTagPattern ?? null,
       }),
@@ -434,7 +466,14 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
       actions.push(enableService({ type: s.type, prefix: have?.prefix ?? s.prefix }));
     }
     if (s.type === "FUSION" && s.repository && s.version) {
-      actions.push(...floorFusionActions(s.repository, s.version, have, current.fusion));
+      actions.push(
+        ...floorFusionActions(
+          { repository: s.repository, version: s.version, host: s.host },
+          have,
+          current.fusion,
+          current.owner ?? null,
+        ),
+      );
     }
   }
 

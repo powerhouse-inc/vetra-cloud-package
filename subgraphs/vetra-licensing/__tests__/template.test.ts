@@ -451,3 +451,68 @@ describe("templateHash", () => {
     expect(templateHash(more)).not.toBe(templateHash(template));
   });
 });
+
+describe("host templates (a FUSION service whose artifact is `host`)", () => {
+  const hostService = {
+    id: "h",
+    type: "FUSION",
+    prefix: "sektar",
+    artifactName: "host",
+    resolvedRepository: "cr.vetra.io/app-sektar/host",
+    resolvedVersion: "sha-abcdef012345",
+  };
+  const hostTemplate: TemplateShape = { ...template, services: [hostService], packages: [] };
+  const fusionEnv = (actions: Action[]) =>
+    (actions.find((a) => a.type === "SET_FUSION_CONFIG")?.input as { env: unknown[] } | undefined)?.env;
+
+  it("runs the image as a host with the holder as its admin", () => {
+    const actions = renderCreateActions({ label: "Sektar", subdomain: "calm-owl", owner: OWNER, template: hostTemplate });
+    expect(fusionEnv(actions)).toEqual([
+      { name: "PH_HOST", value: "cli", isSecret: false },
+      { name: "ADMINS", value: OWNER, isSecret: false },
+    ]);
+  });
+
+  it("leaves an ordinary FUSION image's env empty", () => {
+    const app = { ...hostService, artifactName: "app" };
+    const actions = renderCreateActions({
+      label: "Shop",
+      subdomain: "calm-owl",
+      owner: OWNER,
+      template: { ...template, services: [app], packages: [] },
+    });
+    expect(fusionEnv(actions)).toEqual([]);
+  });
+
+  it("re-adds the host settings on a floor update, keeping the holder's own env", () => {
+    const current = deployedState();
+    current.services = [{ ...enabled("FUSION", "sektar"), version: "sha-abcdef012345" }];
+    current.fusion = {
+      image: "cr.vetra.io/app-sektar/host",
+      env: [{ name: "FOO", value: "1", isSecret: false }],
+      autoUpdate: false,
+      autoUpdateTagPattern: null,
+    };
+    const actions = renderFloorUpdateActions({ template: hostTemplate, current });
+    expect(fusionEnv(actions)).toEqual([
+      { name: "FOO", value: "1", isSecret: false },
+      { name: "PH_HOST", value: "cli", isSecret: false },
+      { name: "ADMINS", value: OWNER, isSecret: false },
+    ]);
+  });
+
+  it("dispatches nothing when a host env already has its settings", () => {
+    const current = deployedState();
+    current.services = [{ ...enabled("FUSION", "sektar"), version: "sha-abcdef012345" }];
+    current.fusion = {
+      image: "cr.vetra.io/app-sektar/host",
+      env: [
+        { name: "PH_HOST", value: "cli", isSecret: false },
+        { name: "ADMINS", value: OWNER, isSecret: false },
+      ],
+      autoUpdate: false,
+      autoUpdateTagPattern: null,
+    };
+    expect(renderFloorUpdateActions({ template: hostTemplate, current })).toEqual([]);
+  });
+});

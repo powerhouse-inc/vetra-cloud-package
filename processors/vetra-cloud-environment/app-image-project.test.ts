@@ -103,3 +103,41 @@ describe("createAppImageProjectResolver", () => {
     ).toBeNull();
   });
 });
+
+describe("licensed environments (provisioned for a licence, not App-linked)", () => {
+  const unlinked = {} as unknown as VetraCloudEnvironmentState;
+  async function seedLicence() {
+    await seed();
+    await db.schema
+      .createTable("license_environments")
+      .addColumn("environment_id", "varchar(255)")
+      .addColumn("app_id", "varchar(255)")
+      .execute();
+    await db
+      .insertInto("license_environments")
+      .values([
+        { environment_id: "licensed-env", app_id: "app-1" },
+        { environment_id: "orphan-env", app_id: "app-gone" },
+      ])
+      .execute();
+  }
+
+  it("may pull its licence's App's images", async () => {
+    await seedLicence();
+    const resolve = createAppImageProjectResolver(db, db);
+    expect(await resolve(unlinked, "licensed-env")).toBe("app-shop");
+  });
+
+  it("gets nothing for an App that does not exist, or an env no licence provisioned", async () => {
+    await seedLicence();
+    const resolve = createAppImageProjectResolver(db, db);
+    expect(await resolve(unlinked, "orphan-env")).toBeNull();
+    expect(await resolve(unlinked, "someone-elses-env")).toBeNull();
+  });
+
+  it("gets nothing without the licensing tables", async () => {
+    await seed();
+    expect(await createAppImageProjectResolver(db, db)(unlinked, "licensed-env")).toBeNull();
+    expect(await createAppImageProjectResolver(db)(unlinked, "licensed-env")).toBeNull();
+  });
+});
