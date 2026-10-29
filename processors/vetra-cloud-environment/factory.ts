@@ -79,7 +79,11 @@ export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
       module.dispatch,
       documentView,
       secretsService,
-      createAppImageProjectResolver(appsDb),
+      createAppImageProjectResolver(
+        appsDb,
+        // Licence-provisioned envs (vetra-licensing) run their App's image too.
+        (await module.relationalDb.createNamespace("vetra-licensing")) as unknown as Kysely<any>,
+      ),
     );
 
     return [
