@@ -363,3 +363,23 @@ describe("generateValuesYaml — FUSION host beside platform services", () => {
     expect(appBlock(yaml)).toContain("  database:\n    enabled: true");
   });
 });
+
+describe("generateValuesYaml — licensed env (no App link) running its App's image", () => {
+  it("asks the resolver even without an App link, and renders the image it allows", async () => {
+    const state = envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: "cr.vetra.io/app-sektar/host",
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      app: null,
+    });
+    const resolver = vi.fn(async () => "app-sektar");
+    const yaml = await generateValuesYaml(dbStub, state, DOC_ID, null, resolver);
+    expect(resolver).toHaveBeenCalledWith(state, DOC_ID);
+    expect(appBlock(yaml)).toContain("  enabled: true");
+    expect(appBlock(yaml)).toContain(`    repository: "cr.vetra.io/app-sektar/host"`);
+  });
+});

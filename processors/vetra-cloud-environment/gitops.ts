@@ -1425,10 +1425,12 @@ export async function generateValuesYaml(
       ? (switchboardApexDomain ?? switchboardGenericHost)
       : null,
     connectHost: connectEnabled ? (connectApexDomain ?? connectGenericHost) : null,
-    appImageProject:
-      state.app && resolveAppImageProject
-        ? await resolveAppImageProject(state, documentId)
-        : null,
+    // Asked for every env: an App-linked one may run its App's project, and so
+    // may one Vetra provisioned for a licence (no App link; the resolver reads
+    // license_environments).
+    appImageProject: resolveAppImageProject
+      ? await resolveAppImageProject(state, documentId)
+      : null,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
