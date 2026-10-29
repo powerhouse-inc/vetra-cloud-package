@@ -656,16 +656,22 @@ export function createResolvers(
         }
         const operate = await access.canOperate(who, env);
         const view = operate || (await access.canView(who, env));
-        // Admins operate through the admin bypass, not as org operators.
+        // The reducer only accepts signatures of org operators; the admin
+        // bypass does not reach it. So a platform admin is synced in when the
+        // organisation itself makes them an operator, like any member, and
+        // otherwise operates through the server-side bypass only.
+        const orgOperate = isAdmin
+          ? await access.canOperate({ address: caller, isAdmin: false }, env)
+          : operate;
         let canOperateNow = operate;
         // The mode is part of the key: a viewer promoted to publisher syncs at once.
-        const key = `${caller}|${env.id}|${operate ? "operate" : "view"}`;
-        if (config.orgSync && !isAdmin && view && !orgSyncLimiter.limited(key)) {
+        const key = `${caller}|${env.id}|${orgOperate ? "operate" : "view"}`;
+        if (config.orgSync && (!isAdmin || orgOperate) && view && !orgSyncLimiter.limited(key)) {
           try {
-            if (operate) {
+            if (orgOperate) {
               const out = await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
               // Not synced (outage): only an existing operator may sign now.
-              if (out.result === "SKIPPED") canOperateNow = out.operators.includes(caller);
+              if (out.result === "SKIPPED") canOperateNow = isAdmin || out.operators.includes(caller);
               else orgSyncLimiter.mark(key);
             } else {
               await grantViewer(config.orgSync, env, caller);
@@ -673,7 +679,8 @@ export function createResolvers(
             }
           } catch (err) {
             console.warn(`[org-sync] syncEnvironmentOrg ${env.id}:`, err);
-            if (operate) canOperateNow = parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
+            if (orgOperate)
+              canOperateNow = isAdmin || parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
           }
         }
         return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: canOperateNow, canView: view };
