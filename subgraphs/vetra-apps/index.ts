@@ -49,7 +49,7 @@ import {
 } from "./watcher.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
-import { appPackagesIn, candidatesIn, listDirectory } from "./directory.js";
+import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
@@ -261,7 +261,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     // /api/@powerhousedao/vetra-cloud-package/apps/directory/v1/environments?app=<id>
     try {
       const directory = {
-        appPackages: appPackagesIn(db),
+        appMarks: appMarksIn(db, "cr.vetra.io"),
         candidates: candidatesIn(envReadModel),
         getState: (id: string) => deps.envs.getState(id),
         orgs: deps.orgs ?? null,

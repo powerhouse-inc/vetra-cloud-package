@@ -75,13 +75,14 @@ const row = (r: Partial<DirectoryEnvRow> & { id: string }): DirectoryEnvRow => (
   appId: null,
   appRole: null,
   packages: "[]",
+  fusion: null,
   status: "READY",
   ...r,
 });
 
 function deps(rows: DirectoryEnvRow[], states: Record<string, VetraCloudEnvironmentState>): DirectoryDeps {
   return {
-    appPackages: async () => [PKG],
+    appMarks: async () => ({ packages: [PKG], imagePrefix: "cr.vetra.io/app-sektar/" }),
     candidates: async () => rows,
     getState: async (id) => states[id] ?? null,
     orgs: {
@@ -133,13 +134,18 @@ describe("app directory", () => {
   });
 
   it("counts envs linked to the App (previews aside) or installing its package; never released ones", () => {
-    const pkgs = new Set([PKG]);
+    const pkgs = { packages: [PKG], imagePrefix: "cr.vetra.io/app-sektar/" };
+    const fusion = (image: string) => JSON.stringify({ image, env: [] });
     expect(runsApp(row({ id: "a", appId: APP, appRole: "PRODUCTION" }), APP, pkgs)).toBe(true);
     expect(runsApp(row({ id: "b", appId: APP, appRole: "PREVIEW" }), APP, pkgs)).toBe(false);
     expect(runsApp(row({ id: "c", packages: JSON.stringify([{ name: PKG, version: "1" }]) }), APP, pkgs)).toBe(true);
     expect(runsApp(row({ id: "d", packages: JSON.stringify([{ name: "@acme/other" }]) }), APP, pkgs)).toBe(false);
     expect(runsApp(row({ id: "e", appId: APP, status: "DESTROYED" }), APP, pkgs)).toBe(false);
     expect(runsApp(row({ id: "f", packages: "not json" }), APP, pkgs)).toBe(false);
+    // a host made from the App's image, though not linked to the App
+    expect(runsApp(row({ id: "g", fusion: fusion("cr.vetra.io/app-sektar/app") }), APP, pkgs)).toBe(true);
+    expect(runsApp(row({ id: "h", fusion: fusion("cr.vetra.io/app-sektar-other/app") }), APP, pkgs)).toBe(false);
+    expect(runsApp(row({ id: "i", fusion: fusion("cr.vetra.io/app-sektar/app") }), APP, { packages: [], imagePrefix: null })).toBe(false);
   });
 
   it("lists nothing for an organisation env when Renown is unreachable", async () => {
@@ -154,7 +160,7 @@ describe("app directory", () => {
       await sql`CREATE SCHEMA "vetra-cloud-environments"`.execute(root);
       await sql`CREATE TABLE "vetra-cloud-environments".environments (
         id text PRIMARY KEY, name text, subdomain text, owner text, "ownerOrgId" text,
-        "appId" text, "appRole" text, packages text, status text)`.execute(root);
+        "appId" text, "appRole" text, packages text, fusion text, status text)`.execute(root);
       const db = root.withSchema("vetra-cloud-environments");
       await db
         .insertInto("environments")
@@ -162,10 +168,12 @@ describe("app directory", () => {
           { id: "linked", appId: APP, packages: "[]" },
           { id: "installs", packages: JSON.stringify([{ name: PKG, version: "1", registry: "r" }]) },
           { id: "unrelated", packages: JSON.stringify([{ name: "@acme/sektar-extra" }]) },
+          { id: "host", packages: "[]", fusion: JSON.stringify({ image: "cr.vetra.io/app-sektar/app", env: [] }) },
+          { id: "other-image", packages: "[]", fusion: JSON.stringify({ image: "cr.vetra.io/achra/app", env: [] }) },
         ])
         .execute();
-      const found = await candidatesIn(db)(APP, [PKG]);
-      expect(found.map((r) => r.id).sort()).toStrictEqual(["installs", "linked"]);
+      const found = await candidatesIn(db)(APP, { packages: [PKG], imagePrefix: "cr.vetra.io/app-sektar/" });
+      expect(found.map((r) => r.id).sort()).toStrictEqual(["host", "installs", "linked"]);
     } finally {
       await root.destroy();
     }
