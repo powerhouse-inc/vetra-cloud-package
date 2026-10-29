@@ -14,6 +14,7 @@ import {
   SetDnsRecordsInputSchema,
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
+  SetNotificationWebhookInputSchema,
   SetOwnerInputSchema,
   SetOwnerOrgInputSchema,
   SetRuntimeConfigInputSchema,
@@ -31,6 +32,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetNotificationWebhookInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetRuntimeConfigInput,
@@ -48,6 +50,7 @@ import type {
   SetDnsRecordsAction,
   SetGenericSubdomainAction,
   SetLabelAction,
+  SetNotificationWebhookAction,
   SetOwnerAction,
   SetOwnerOrgAction,
   SetRuntimeConfigAction,
@@ -189,5 +192,14 @@ export const setBackupSchedule = (input: SetBackupScheduleInput) =>
     { ...input },
     undefined,
     SetBackupScheduleInputSchema,
+    "global",
+  );
+
+export const setNotificationWebhook = (input: SetNotificationWebhookInput) =>
+  createAction<SetNotificationWebhookAction>(
+    "SET_NOTIFICATION_WEBHOOK",
+    { ...input },
+    undefined,
+    SetNotificationWebhookInputSchema,
     "global",
   );

@@ -37,6 +37,7 @@ export function defaultGlobalState(): VetraCloudEnvironmentGlobalState {
     fusion: null,
     app: null,
     backupSchedule: null,
+    notifications: null,
   };
 }
 

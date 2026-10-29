@@ -73,6 +73,7 @@ function envState(
     runtimeConfig: null,
     studioInstanceId: null,
     backupSchedule: null,
+    notifications: null,
     app: null,
     ...overrides,
   };

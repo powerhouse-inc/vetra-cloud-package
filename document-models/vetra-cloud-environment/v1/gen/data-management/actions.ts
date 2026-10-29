@@ -14,6 +14,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetNotificationWebhookInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetRuntimeConfigInput,
@@ -81,6 +82,10 @@ export type SetBackupScheduleAction = Action & {
   type: "SET_BACKUP_SCHEDULE";
   input: SetBackupScheduleInput;
 };
+export type SetNotificationWebhookAction = Action & {
+  type: "SET_NOTIFICATION_WEBHOOK";
+  input: SetNotificationWebhookInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -97,4 +102,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetStudioInstanceAction
   | SetAppLinkAction
   | ClearAppLinkAction
-  | SetBackupScheduleAction;
+  | SetBackupScheduleAction
+  | SetNotificationWebhookAction;

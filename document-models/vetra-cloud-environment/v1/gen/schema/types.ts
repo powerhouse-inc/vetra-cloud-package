@@ -116,6 +116,11 @@ export type EnableServiceInput = {
   type: VetraCloudEnvironmentServiceType;
 };
 
+export type EnvironmentNotifications = {
+  events: Array<Scalars["String"]["output"]>;
+  webhookUrl: Maybe<Scalars["String"]["output"]>;
+};
+
 export type InitializeInput = {
   defaultPackageRegistry?: InputMaybe<Scalars["URL"]["input"]>;
   genericBaseDomain: Scalars["String"]["input"];
@@ -201,6 +206,11 @@ export type SetGenericSubdomainInput = {
 
 export type SetLabelInput = {
   label: Scalars["String"]["input"];
+};
+
+export type SetNotificationWebhookInput = {
+  events?: InputMaybe<Array<Scalars["String"]["input"]>>;
+  url?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export type SetOwnerInput = {
@@ -311,6 +321,7 @@ export type VetraCloudEnvironmentState = {
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
   label: Maybe<Scalars["String"]["output"]>;
+  notifications: Maybe<EnvironmentNotifications>;
   orgOperators: Array<Scalars["EthereumAddress"]["output"]>;
   owner: Maybe<Scalars["EthereumAddress"]["output"]>;
   ownerOrgId: Maybe<Scalars["String"]["output"]>;

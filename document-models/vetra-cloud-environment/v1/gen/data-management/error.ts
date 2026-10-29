@@ -6,7 +6,8 @@ export type ErrorCode =
   | "NotOrgOwnedError"
   | "ServiceNotEnabledError"
   | "InvalidRuntimeConfigError"
-  | "AppLinkSystemOnlyError";
+  | "AppLinkSystemOnlyError"
+  | "InvalidWebhookUrlError";
 
 export interface ReducerError {
   errorCode: ErrorCode;
@@ -68,6 +69,13 @@ export class AppLinkSystemOnlyError extends Error implements ReducerError {
   }
 }
 
+export class InvalidWebhookUrlError extends Error implements ReducerError {
+  errorCode = "InvalidWebhookUrlError" as ErrorCode;
+  constructor(message = "InvalidWebhookUrlError") {
+    super(message);
+  }
+}
+
 export const errors = {
   SetOwner: { NotOwnerError, SelfClaimRequiredError },
 
@@ -98,4 +106,6 @@ export const errors = {
   ClearAppLink: { AppLinkSystemOnlyError },
 
   SetBackupSchedule: { NotOwnerError },
+
+  SetNotificationWebhook: { NotOwnerError, InvalidWebhookUrlError },
 };

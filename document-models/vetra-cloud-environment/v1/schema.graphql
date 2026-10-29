@@ -38,6 +38,12 @@ type VetraCloudEnvironmentState {
   fusion: VetraCloudFusionConfig
   app: VetraCloudAppLink
   backupSchedule: BackupSchedule
+  notifications: EnvironmentNotifications
+}
+
+type EnvironmentNotifications {
+  webhookUrl: String
+  events: [String!]!
 }
 
 type BackupSchedule {
@@ -233,6 +239,11 @@ input SetBackupScheduleInput {
   enabled: Boolean!
   cadence: BackupCadence!
   retention: Int!
+}
+
+input SetNotificationWebhookInput {
+  url: String
+  events: [String!]
 }
 
 # services

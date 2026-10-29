@@ -47,6 +47,7 @@ export const initialGlobalState: VetraCloudEnvironmentGlobalState = {
   fusion: null,
   app: null,
   backupSchedule: null,
+  notifications: null,
 };
 export const initialLocalState: VetraCloudEnvironmentLocalState = {};
 

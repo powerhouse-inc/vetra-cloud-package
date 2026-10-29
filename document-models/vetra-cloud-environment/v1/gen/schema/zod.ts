@@ -14,6 +14,7 @@ import type {
   DnsRecord,
   DnsRecordInput,
   EnableServiceInput,
+  EnvironmentNotifications,
   InitializeInput,
   MarkChangesPushedInput,
   MarkDeploymentStartedInput,
@@ -32,6 +33,7 @@ import type {
   SetFusionConfigInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetNotificationWebhookInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetPackageVersionInput,
@@ -207,6 +209,16 @@ export function EnableServiceInputSchema(): z.ZodObject<
   });
 }
 
+export function EnvironmentNotificationsSchema(): z.ZodObject<
+  Properties<EnvironmentNotifications>
+> {
+  return z.object({
+    __typename: z.literal("EnvironmentNotifications").optional(),
+    events: z.array(z.string()),
+    webhookUrl: z.string().nullish(),
+  });
+}
+
 export function InitializeInputSchema(): z.ZodObject<
   Properties<InitializeInput>
 > {
@@ -351,6 +363,15 @@ export function SetGenericSubdomainInputSchema(): z.ZodObject<
 export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   return z.object({
     label: z.string(),
+  });
+}
+
+export function SetNotificationWebhookInputSchema(): z.ZodObject<
+  Properties<SetNotificationWebhookInput>
+> {
+  return z.object({
+    events: z.array(z.string()).nullish(),
+    url: z.string().nullish(),
   });
 }
 
@@ -541,6 +562,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),
     label: z.string().nullish(),
+    notifications: z.lazy(() => EnvironmentNotificationsSchema().nullish()),
     orgOperators: z.array(
       z
         .string()
