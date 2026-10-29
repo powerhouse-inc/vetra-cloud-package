@@ -5,6 +5,7 @@ import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnv
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
+import { sendNotifications } from "./notifications.js";
 import type { AppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
@@ -60,6 +61,10 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         if (deletedId) deletedIds.add(deletedId);
       }
     }
+
+    // Owner notification webhooks. Not awaited: delivery is best effort and
+    // must never delay or fail the read-model / gitops work below.
+    void sendNotifications(operations);
 
     // Deduplicate environment operations: only process the last operation per document.
     // Skip documents that were deleted in this same batch to avoid resurrecting them.
