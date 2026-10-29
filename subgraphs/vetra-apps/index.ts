@@ -49,6 +49,7 @@ import {
 } from "./watcher.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
+import { appPackagesIn, candidatesIn, listDirectory } from "./directory.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
@@ -157,6 +158,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       "vetra-github-auth",
     )) as unknown as Kysely<VetraGithubAuthDB>;
 
+    const envReadModel = (await this.relationalDb.createNamespace(
+      "vetra-cloud-environments",
+    )) as unknown as Kysely<EnvironmentsDB>;
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -174,11 +178,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       studioGithubConnections: (studioEnvironmentId) =>
         environmentConnections(githubAuthDb, studioEnvironmentId),
       // A product's <slug>.vetra.io must not collide with an env's hosts.
-      subdomainTaken: subdomainTakenIn(
-        (await this.relationalDb.createNamespace(
-          "vetra-cloud-environments",
-        )) as unknown as Kysely<EnvironmentsDB>,
-      ),
+      subdomainTaken: subdomainTakenIn(envReadModel),
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,
@@ -254,6 +254,52 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
     } catch (err) {
       console.warn(`[vetra-apps] CI routes not registered: ${String(err)}`);
+    }
+
+    // Directory for an App's own site ("where does my <App> run?"): the
+    // signed-in caller's environments running the App, never anyone else's.
+    // /api/@powerhousedao/vetra-cloud-package/apps/directory/v1/environments?app=<id>
+    try {
+      const directory = {
+        appPackages: appPackagesIn(db),
+        candidates: candidatesIn(envReadModel),
+        getState: (id: string) => deps.envs.getState(id),
+        orgs: deps.orgs ?? null,
+      };
+      this.routeHandles.push(
+        this.http.get(
+          "apps/directory/v1/environments",
+          { auth: "renown" },
+          async (request, ctx) => {
+            const appId = new URL(request.url).searchParams.get("app")?.trim();
+            if (!appId)
+              return Response.json(
+                { error: "BAD_USER_INPUT", message: "app is required" },
+                { status: 400 },
+              );
+            if (!ctx.user)
+              return Response.json(
+                { error: "UNAUTHENTICATED", message: "Sign in first" },
+                { status: 401 },
+              );
+            try {
+              const environments = await listDirectory(directory, ctx.user.address, appId);
+              return Response.json(
+                { environments },
+                { headers: { "cache-control": "private, no-store" } },
+              );
+            } catch (err) {
+              console.warn(`[vetra-apps] directory failed: ${String(err)}`);
+              return Response.json(
+                { error: "INTERNAL_SERVER_ERROR", message: "Internal error" },
+                { status: 500 },
+              );
+            }
+          },
+        ),
+      );
+    } catch (err) {
+      console.warn(`[vetra-apps] directory route not registered: ${String(err)}`);
     }
 
     const every = (ms: number, name: string, run: () => Promise<unknown>) => {
