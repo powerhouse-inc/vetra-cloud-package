@@ -12,6 +12,7 @@ import {
   type RestartResolverDeps,
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
+import { countPackageInstalls } from "./package-install-counts.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
 import {
@@ -394,6 +395,9 @@ export function createResolvers(
           orgOperators: parseOperators(row.orgOperators as string | null),
         }));
       },
+
+      // Public on purpose: only per-package counts, nothing identifying.
+      packageInstallCounts: async () => countPackageInstalls(envDb),
 
       myStudioProducts: async (
         _parent: unknown,
