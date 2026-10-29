@@ -19,6 +19,12 @@ export interface DirectoryEnvironment {
   /** Where the App opens: the host's address in host mode, else its Connect. */
   connectUrl: string;
   kind: "vetra";
+  /**
+   * The environment's status (READY once it answers). A site waiting for a
+   * new environment opens it on READY, not on the first HTTP answer: a load
+   * balancer answers before the instance does.
+   */
+  status: string;
 }
 
 /** The environments-row fields the directory reads. */
@@ -121,6 +127,7 @@ export async function listDirectory(
       name: state?.label ?? row.name ?? row.subdomain ?? row.id,
       connectUrl: url,
       kind: "vetra",
+      status: state?.status ?? row.status ?? "UNKNOWN",
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));

@@ -113,6 +113,7 @@ describe("app directory", () => {
       name: "calm-bat",
       connectUrl: "https://calm-bat-connect.vetra.io",
       kind: "vetra",
+      status: "READY",
     });
   });
 
