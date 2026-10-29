@@ -31,14 +31,24 @@ export interface DirectoryEnvRow {
   appId: string | null;
   appRole: string | null;
   packages: string | null;
+  /** JSON VetraCloudFusionConfig: its image says which App's image it runs. */
+  fusion: string | null;
   status: string | null;
 }
 
+/** What makes an environment run the App. */
+export interface AppMarks {
+  /** Package names the App deployed. */
+  packages: string[];
+  /** Repository prefix of the App's images (cr.vetra.io/<harbor project>/), or null. */
+  imagePrefix: string | null;
+}
+
 export interface DirectoryDeps {
-  /** Package names the App has deployed (any of them makes an env "run it"). */
-  appPackages(appId: string): Promise<string[]>;
-  /** Live environments linked to the App or installing one of `packages`. */
-  candidates(appId: string, packages: string[]): Promise<DirectoryEnvRow[]>;
+  /** The App's packages and image prefix (any of them makes an env "run it"). */
+  appMarks(appId: string): Promise<AppMarks>;
+  /** Environments linked to the App, installing one of its packages or running its image. */
+  candidates(appId: string, marks: AppMarks): Promise<DirectoryEnvRow[]>;
   getState(id: string): Promise<VetraCloudEnvironmentState | null>;
   orgs: MembershipReader | null;
 }
@@ -56,11 +66,24 @@ function installs(row: DirectoryEnvRow, packages: ReadonlySet<string>): boolean 
   }
 }
 
-/** Whether the row runs the App: linked to it (previews aside), or installing its package. */
-export function runsApp(row: DirectoryEnvRow, appId: string, packages: ReadonlySet<string>): boolean {
+function runsImage(row: DirectoryEnvRow, prefix: string | null): boolean {
+  if (!prefix || !row.fusion) return false;
+  try {
+    const image = (JSON.parse(row.fusion) as { image?: unknown } | null)?.image;
+    return typeof image === "string" && image.startsWith(prefix);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the row runs the App: linked to it (previews aside), installing its
+ * package, or running its image (a host made from the App's FUSION image).
+ */
+export function runsApp(row: DirectoryEnvRow, appId: string, marks: AppMarks): boolean {
   if (row.status && RELEASED.has(row.status)) return false;
   if (row.appId === appId) return row.appRole !== "PREVIEW";
-  return installs(row, packages);
+  return installs(row, new Set(marks.packages)) || runsImage(row, marks.imagePrefix);
 }
 
 async function isCallers(deps: DirectoryDeps, caller: string, row: DirectoryEnvRow): Promise<boolean> {
@@ -85,9 +108,8 @@ export async function listDirectory(
   appId: string,
 ): Promise<DirectoryEnvironment[]> {
   const caller = callerAddress.toLowerCase();
-  const packages = await deps.appPackages(appId);
-  const set = new Set(packages);
-  const rows = (await deps.candidates(appId, packages)).filter((r) => runsApp(r, appId, set));
+  const marks = await deps.appMarks(appId);
+  const rows = (await deps.candidates(appId, marks)).filter((r) => runsApp(r, appId, marks));
   const out: DirectoryEnvironment[] = [];
   for (const row of rows) {
     if (!(await isCallers(deps, caller, row))) continue;
@@ -104,9 +126,14 @@ export async function listDirectory(
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** appPackages over app_deployments: every package name an App deployed. */
-export function appPackagesIn(db: Kysely<VetraAppsDB>): DirectoryDeps["appPackages"] {
+/** appMarks over the apps tables: every package name an App deployed, and its image prefix. */
+export function appMarksIn(db: Kysely<VetraAppsDB>, harborHost: string): DirectoryDeps["appMarks"] {
   return async (appId) => {
+    const app = await db
+      .selectFrom("apps")
+      .select("harbor_project")
+      .where("id", "=", appId)
+      .executeTakeFirst();
     const rows = await db
       .selectFrom("app_deployments")
       .select("packages")
@@ -122,22 +149,28 @@ export function appPackagesIn(db: Kysely<VetraAppsDB>): DirectoryDeps["appPackag
         // a malformed row names nothing
       }
     }
-    return [...names];
+    return {
+      packages: [...names],
+      imagePrefix: app?.harbor_project ? `${harborHost}/${app.harbor_project}/` : null,
+    };
   };
 }
 
 /** candidates over the environments read model (namespace "vetra-cloud-environments"). */
 export function candidatesIn(db: Kysely<EnvironmentsDB>): DirectoryDeps["candidates"] {
-  return async (appId, packages) => {
+  return async (appId, marks) => {
     // Query builder (not raw table SQL) so the namespace qualifies the table;
     // the package match is narrowed with LIKE and decided by runsApp.
     const rows = await db
       .selectFrom("environments")
-      .select(["id", "name", "subdomain", "owner", "ownerOrgId", "appId", "appRole", "packages", "status"])
+      .select(["id", "name", "subdomain", "owner", "ownerOrgId", "appId", "appRole", "packages", "fusion", "status"])
       .where((eb) =>
         eb.or([
           eb("appId", "=", appId),
-          ...packages.map((name) => eb("packages", "like", `%"name":${JSON.stringify(name)}%`)),
+          ...marks.packages.map((name) => eb("packages", "like", `%"name":${JSON.stringify(name)}%`)),
+          ...(marks.imagePrefix
+            ? [eb("fusion", "like", `%"image":${JSON.stringify(marks.imagePrefix).slice(0, -1)}%`)]
+            : []),
         ]),
       )
       .limit(500)
