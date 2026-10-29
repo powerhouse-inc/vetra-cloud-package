@@ -1041,6 +1041,17 @@ export function switchboardHasReadyEndpoint(tag: string): boolean {
  */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Vite's extra allowed host (one), read by its dev and preview servers. */
+const VITE_ALLOWED_HOST = "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS";
+
+function hostOf(url: string | undefined): string | null {
+  try {
+    return url ? new URL(url).hostname : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Port a host image's Connect serves on (powerhouse.config.json studio.port). */
 const HOST_DEFAULT_PORT = 6540;
 
@@ -1175,6 +1186,12 @@ export function generateFusionBlock(
       continue;
     }
     env.set(e.name, e.value ?? "");
+  }
+  // A host's Connect is served by Vite's preview server, which refuses a Host
+  // header it does not know: allow the public one (PUBLIC_URL, as finally set).
+  if (hostMode && !env.has(VITE_ALLOWED_HOST)) {
+    const publicHost = hostOf(env.get("PUBLIC_URL"));
+    if (publicHost) env.set(VITE_ALLOWED_HOST, publicHost);
   }
 
   const envLines = [...env.entries()]
