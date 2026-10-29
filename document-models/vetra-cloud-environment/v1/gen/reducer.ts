@@ -33,6 +33,7 @@ import {
   SetFusionConfigInputSchema,
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
+  SetNotificationWebhookInputSchema,
   SetOwnerInputSchema,
   SetOwnerOrgInputSchema,
   SetPackageVersionInputSchema,
@@ -232,6 +233,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetBackupScheduleInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setBackupScheduleOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_NOTIFICATION_WEBHOOK": {
+      SetNotificationWebhookInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setNotificationWebhookOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

@@ -15,6 +15,7 @@ import type {
   SetDnsRecordsAction,
   SetGenericSubdomainAction,
   SetLabelAction,
+  SetNotificationWebhookAction,
   SetOwnerAction,
   SetOwnerOrgAction,
   SetRuntimeConfigAction,
@@ -96,6 +97,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setBackupScheduleOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetBackupScheduleAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setNotificationWebhookOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetNotificationWebhookAction,
     dispatch?: SignalDispatch,
   ) => void;
 }
