@@ -10,6 +10,7 @@ import {
   disableService,
   setFusionConfig,
   setServiceVersion,
+  setServiceSize,
   approveChanges,
   type VetraCloudEnvironmentState,
   type VetraCloudRessourceSize,
@@ -61,10 +62,10 @@ export interface TemplateShape {
   services: TemplateService[];
   packages: TemplatePackage[];
   /**
-   * Resource size for a CLINT service. INERT in this slice: only CLINT services
-   * carry `selectedRessource`, and CLINT templates are refused, so nothing
-   * consumes this. It is still validated (a typo must not pass silently) and
-   * still part of the hash, so the field is ready when CLINT lands.
+   * The least resource size the template's FUSION service runs at: new
+   * environments start there, and an existing one below it is raised to it. A
+   * larger size someone chose stays. Validated (a typo must not pass silently)
+   * and part of the hash, so changing it reaches every holder's environment.
    */
   size: string | null;
   baseDomain: string | null;
@@ -163,6 +164,8 @@ export interface NormalisedTemplate {
     host?: string;
   }[];
   packages: { name: string; version: string }[];
+  /** The FUSION service's least size, null for none. */
+  size: VetraCloudRessourceSize | null;
 }
 
 /**
@@ -170,7 +173,7 @@ export interface NormalisedTemplate {
  * document, so a malformed template cannot leak an environment on every tick.
  */
 export function validateTemplate(t: TemplateShape): NormalisedTemplate {
-  asResourceSize(t.size);
+  const size = asResourceSize(t.size);
 
   const packages = t.packages.map((p) => {
     if (!p.packageName) {
@@ -215,7 +218,24 @@ export function validateTemplate(t: TemplateShape): NormalisedTemplate {
     );
   }
 
-  return { services, packages };
+  return { services, packages, size };
+}
+
+/**
+ * Raises a FUSION service to the template's least size; null when it is there
+ * already or above (someone chose more), or the template names none.
+ */
+function sizeAction(
+  s: NormalisedTemplate["services"][number],
+  size: VetraCloudRessourceSize | null,
+  current: VetraCloudRessourceSize | null | undefined,
+  prefix: string = s.prefix,
+): Action | null {
+  if (s.type !== "FUSION" || !size) return null;
+  if (current && RESOURCE_SIZES.indexOf(current) >= RESOURCE_SIZES.indexOf(size)) {
+    return null;
+  }
+  return setServiceSize({ prefix, size });
 }
 
 export interface CreateRenderInput {
@@ -251,6 +271,8 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
   }
   for (const s of n.services) {
     actions.push(enableService({ type: s.type, prefix: s.prefix }));
+    const sized = sizeAction(s, n.size, null);
+    if (sized) actions.push(sized);
     actions.push(...fusionActions(s, input.owner));
   }
 
@@ -333,6 +355,10 @@ export function renderUpdateActions(input: UpdateRenderInput): Action[] {
       const sameImage = current.fusion?.image === s.repository;
       const sameVersion = have?.version === s.version;
       if (!sameImage || !sameVersion) actions.push(...fusionActions(s, current.owner ?? ""));
+      // A re-enabled service starts at the default size: raise it again too.
+      const reset = !have || !have.enabled || have.prefix !== s.prefix;
+      const sized = sizeAction(s, n.size, reset ? null : have.selectedRessource);
+      if (sized) actions.push(sized);
     }
   }
   for (const c of currentServices) {
@@ -475,6 +501,9 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
         ),
       );
     }
+    const live = have?.enabled ? have : undefined;
+    const sized = sizeAction(s, n.size, live?.selectedRessource, have?.prefix ?? s.prefix);
+    if (sized) actions.push(sized);
   }
 
   if (actions.length > 0) actions.push(approveChanges({}));
