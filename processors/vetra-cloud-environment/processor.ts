@@ -343,10 +343,16 @@ export function backupScheduleColumn(state: {
 export function hostColumns(state: {
   genericBaseDomain?: string | null;
   apexService?: string | null;
-}): { genericBaseDomain: string | null; apexService: string | null } {
+  customDomain?: { enabled?: boolean | null } | null;
+}): {
+  genericBaseDomain: string | null;
+  apexService: string | null;
+  customDomainEnabled: boolean;
+} {
   return {
     genericBaseDomain: state.genericBaseDomain ?? null,
     apexService: state.apexService ?? null,
+    customDomainEnabled: state.customDomain?.enabled === true,
   };
 }
 

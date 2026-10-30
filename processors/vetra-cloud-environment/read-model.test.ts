@@ -106,30 +106,53 @@ describe("environments read model — backupSchedule column", () => {
 });
 
 describe("environments read model — host lookup columns", () => {
-  it("adds genericBaseDomain / apexService (idempotently)", async () => {
+  it("adds genericBaseDomain / apexService / customDomainEnabled (idempotently)", async () => {
     const db = new Kysely<DB>({ dialect: new PGliteDialect(new PGlite()) });
     await up(db as Kysely<any>);
     await up(db as Kysely<any>);
     await db
       .insertInto("environments")
-      .values({ id: "e1", genericBaseDomain: "vetra.io", apexService: "FUSION" } as never)
+      .values({
+        id: "e1",
+        genericBaseDomain: "vetra.io",
+        apexService: "FUSION",
+        customDomainEnabled: true,
+      } as never)
       .execute();
     const row = await db
       .selectFrom("environments")
-      .select(["genericBaseDomain", "apexService"])
+      .select(["genericBaseDomain", "apexService", "customDomainEnabled"])
       .where("id", "=", "e1")
       .executeTakeFirstOrThrow();
-    expect(row).toStrictEqual({ genericBaseDomain: "vetra.io", apexService: "FUSION" });
+    expect(row).toStrictEqual({
+      genericBaseDomain: "vetra.io",
+      apexService: "FUSION",
+      customDomainEnabled: true,
+    });
     await db.destroy();
   });
 
-  it("maps state.genericBaseDomain and state.apexService", () => {
+  it("maps state.genericBaseDomain, apexService and customDomain.enabled", () => {
     expect(
-      hostColumns({ genericBaseDomain: "vetra.io", apexService: "CONNECT" }),
-    ).toStrictEqual({ genericBaseDomain: "vetra.io", apexService: "CONNECT" });
+      hostColumns({
+        genericBaseDomain: "vetra.io",
+        apexService: "CONNECT",
+        customDomain: { enabled: true },
+      }),
+    ).toStrictEqual({
+      genericBaseDomain: "vetra.io",
+      apexService: "CONNECT",
+      customDomainEnabled: true,
+    });
+    expect(hostColumns({ customDomain: { enabled: false } })).toStrictEqual({
+      genericBaseDomain: null,
+      apexService: null,
+      customDomainEnabled: false,
+    });
     expect(hostColumns({})).toStrictEqual({
       genericBaseDomain: null,
       apexService: null,
+      customDomainEnabled: false,
     });
   });
 });

@@ -8,6 +8,8 @@ export interface Environments {
   genericBaseDomain: string | null;
   /** state.apexService: the service type pinned to the apex, else NULL. */
   apexService: string | null;
+  /** state.customDomain.enabled; NULL = not projected since the column was added. */
+  customDomainEnabled: boolean | null;
   packages: string | null;
   services: string | null;
   status: string | null;

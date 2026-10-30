@@ -186,14 +186,20 @@ export async function up(db: Kysely<any>): Promise<void> {
 
   // Public host lookup (vetraEnvironmentHostKnown, observability subgraph):
   // an env's generated hosts need its base domain (state.genericBaseDomain,
-  // NULL = vetra.io) and the service pinned to the apex (state.apexService).
-  // Rows projected before these columns existed read as NULL until their next
-  // projection: the default base domain and no pinned apex.
-  for (const column of ["genericBaseDomain", "apexService"] as const) {
+  // NULL = vetra.io), the service pinned to the apex (state.apexService) and
+  // whether the custom domain is on (state.customDomain.enabled: a service at
+  // the apex of an enabled custom domain has no generated host). Rows
+  // projected before these columns existed read as NULL until their next
+  // projection: the default base domain, no pinned apex, no custom domain.
+  for (const [column, type] of [
+    ["genericBaseDomain", "varchar(255)"],
+    ["apexService", "varchar(255)"],
+    ["customDomainEnabled", "boolean"],
+  ] as const) {
     try {
       await db.schema
         .alterTable("environments")
-        .addColumn(column, "varchar(255)")
+        .addColumn(column, type)
         .execute();
     } catch {
       // Column already exists
