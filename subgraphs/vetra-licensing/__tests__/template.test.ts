@@ -267,8 +267,10 @@ describe("renderUpdateActions", () => {
 });
 
 describe("renderFloorUpdateActions (re-templating a live environment)", () => {
+  // The image cases; the size floor has its own describe below.
   const fusionTemplate: TemplateShape = {
     ...template,
+    size: null,
     services: [
       ...template.services,
       { id: "f", type: "FUSION", prefix: null, resolvedRepository: "registry/app", resolvedVersion: "2.0.0" },
@@ -352,6 +354,57 @@ describe("renderFloorUpdateActions (re-templating a live environment)", () => {
     const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
     expect(types(actions)).toEqual(["ENABLE_SERVICE", "SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
     expect(actions[1].input).toStrictEqual({ image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null });
+  });
+});
+
+describe("the template size, a floor for the FUSION service", () => {
+  // Sektar cloud environments need 2 GiB (M): at S a Gmail sync was OOM-killed.
+  const sized = (size: string | null): TemplateShape => ({
+    ...template,
+    size,
+    services: [
+      ...template.services,
+      { id: "f", type: "FUSION", prefix: "sektar", resolvedRepository: "registry/app", resolvedVersion: "2.0.0" },
+    ],
+  });
+  const withFusion = (selectedRessource: VetraCloudEnvironmentService["selectedRessource"]) => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "sektar"), version: "2.0.0", selectedRessource });
+    current.fusion = { image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null };
+    return current;
+  };
+  const sizeInputs = (actions: Action[]) =>
+    actions.filter((a) => a.type === "SET_SERVICE_SIZE").map((a) => a.input);
+
+  it("starts a new environment's FUSION service at the template size, and nothing else", () => {
+    const actions = renderCreateActions({ label: "x", subdomain: "x", owner: OWNER, template: sized("VETRA_AGENT_M") });
+    expect(sizeInputs(actions)).toEqual([{ prefix: "sektar", size: "VETRA_AGENT_M" }]);
+    const t = types(actions);
+    expect(t.indexOf("SET_SERVICE_SIZE")).toBeGreaterThan(t.lastIndexOf("ENABLE_SERVICE") - 1);
+  });
+
+  it("leaves the default size when the template names none", () => {
+    const actions = renderCreateActions({ label: "x", subdomain: "x", owner: OWNER, template: sized(null) });
+    expect(sizeInputs(actions)).toEqual([]);
+  });
+
+  it("raises a live environment below the floor, on both update paths", () => {
+    for (const current of [withFusion(null), withFusion("VETRA_AGENT_S")]) {
+      const floor = renderFloorUpdateActions({ template: sized("VETRA_AGENT_M"), current });
+      expect(sizeInputs(floor)).toEqual([{ prefix: "sektar", size: "VETRA_AGENT_M" }]);
+      expect(types(floor).at(-1)).toBe("APPROVE_CHANGES");
+      const update = renderUpdateActions({ label: "Acme vault", template: sized("VETRA_AGENT_M"), current });
+      expect(sizeInputs(update)).toEqual([{ prefix: "sektar", size: "VETRA_AGENT_M" }]);
+    }
+  });
+
+  it("keeps a size someone raised above the floor, and one already at it", () => {
+    for (const size of ["VETRA_AGENT_M", "VETRA_AGENT_L"] as const) {
+      const current = withFusion(size);
+      expect(sizeInputs(renderFloorUpdateActions({ template: sized("VETRA_AGENT_M"), current }))).toEqual([]);
+      expect(sizeInputs(renderUpdateActions({ label: "Acme vault", template: sized("VETRA_AGENT_M"), current }))).toEqual([]);
+    }
+    expect(renderFloorUpdateActions({ template: sized("VETRA_AGENT_M"), current: withFusion("VETRA_AGENT_M") })).toEqual([]);
   });
 });
 
@@ -461,7 +514,8 @@ describe("host templates (a FUSION service whose artifact is `host`)", () => {
     resolvedRepository: "cr.vetra.io/app-sektar/host",
     resolvedVersion: "sha-abcdef012345",
   };
-  const hostTemplate: TemplateShape = { ...template, services: [hostService], packages: [] };
+  // The host settings cases; the size floor has its own describe.
+  const hostTemplate: TemplateShape = { ...template, size: null, services: [hostService], packages: [] };
   const fusionEnv = (actions: Action[]) =>
     (actions.find((a) => a.type === "SET_FUSION_CONFIG")?.input as { env: unknown[] } | undefined)?.env;
 
