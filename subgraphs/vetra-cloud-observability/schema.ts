@@ -52,6 +52,16 @@ export const schema: DocumentNode = gql`
     """
     packageInstallCounts: [PackageInstallCount!]!
 
+    """
+    Public: whether \`host\` is a generated host of a live Vetra environment
+    (\`<subdomain>.<base>\` or \`<subdomain>-<prefix>.<base>\`, as rendered for
+    its enabled Switchboard, Connect, FUSION app and CLINT agents). Lowercased,
+    one trailing dot and a port are ignored. Custom-domain hosts answer false:
+    nothing proves a typed custom domain routes to Vetra. Answers only the
+    boolean; malformed or unknown hosts answer false, never an error.
+    """
+    vetraEnvironmentHostKnown(host: String!): Boolean!
+
     """Studio products owned or just-claimed by the caller, fully resolved."""
     myStudioProducts: [StudioProduct!]!
 
