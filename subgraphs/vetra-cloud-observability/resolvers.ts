@@ -12,6 +12,7 @@ import {
   type RestartResolverDeps,
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
+import { isKnownEnvironmentHost } from "./host-lookup.js";
 import { countPackageInstalls } from "./package-install-counts.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
@@ -398,6 +399,12 @@ export function createResolvers(
 
       // Public on purpose: only per-package counts, nothing identifying.
       packageInstallCounts: async () => countPackageInstalls(envDb),
+
+      // Public (no caller needed): the Sektar OAuth relay's host check.
+      vetraEnvironmentHostKnown: async (
+        _parent: unknown,
+        args: { host?: unknown },
+      ) => isKnownEnvironmentHost(envDb, args.host),
 
       myStudioProducts: async (
         _parent: unknown,

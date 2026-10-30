@@ -4,6 +4,12 @@ export interface Environments {
   subdomain: string | null;
   tenantId: string | null;
   customDomain: string | null;
+  /** state.genericBaseDomain; NULL = the default, vetra.io. */
+  genericBaseDomain: string | null;
+  /** state.apexService: the service type pinned to the apex, else NULL. */
+  apexService: string | null;
+  /** state.customDomain.enabled; NULL = not projected since the column was added. */
+  customDomainEnabled: boolean | null;
   packages: string | null;
   services: string | null;
   status: string | null;

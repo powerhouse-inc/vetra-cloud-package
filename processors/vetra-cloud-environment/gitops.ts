@@ -1072,6 +1072,80 @@ export function isFusionHost(state: VetraCloudEnvironmentState): boolean {
   );
 }
 
+/** The state fields an env's generated `.vetra.io` hosts depend on. */
+export type GenericHostState = Pick<
+  VetraCloudEnvironmentState,
+  | "genericSubdomain"
+  | "genericBaseDomain"
+  | "apexService"
+  | "services"
+  | "customDomain"
+  | "fusion"
+>;
+
+/**
+ * Every generated (`<subdomain>[-<prefix>].<baseDomain>`) ingress host
+ * generateValuesYaml renders for this state, and only those: Switchboard and
+ * Connect (left out when a FUSION host replaces them), the FUSION app (with an
+ * image and version), and each CLINT agent with a package. A service pinned to
+ * the apex of an enabled custom domain has no generated host. Not mirrored:
+ * the FUSION image allowlist (process env + async App/licence resolver).
+ * Speckle's dedicated host belongs to the chart and is not included.
+ */
+export function routedGenericHosts(hostState: GenericHostState): string[] {
+  const state = hostState as VetraCloudEnvironmentState;
+  const subdomain = state.genericSubdomain;
+  if (!subdomain) return [];
+  const base = state.genericBaseDomain ?? "vetra.io";
+  const services = state.services ?? [];
+  const customDomain = state.customDomain?.enabled
+    ? (state.customDomain.domain ?? null)
+    : null;
+  const apexService = readApexService(state);
+  const onCustomApex = (type: "SWITCHBOARD" | "CONNECT" | "FUSION") =>
+    !!customDomain && apexService === type;
+  const hosts: string[] = [];
+
+  if (!isFusionHost(state)) {
+    for (const [type, fallback] of [
+      ["SWITCHBOARD", "switchboard"],
+      ["CONNECT", "connect"],
+    ] as const) {
+      if (!services.some((s) => s.type === type && s.enabled)) continue;
+      if (onCustomApex(type)) continue;
+      const service = services.find((s) => s.type === type);
+      hosts.push(
+        resolveGenericHost(
+          subdomain,
+          service?.prefix ?? fallback,
+          isTypeAtApex(state, type),
+          base,
+        ),
+      );
+    }
+  }
+
+  const fusion = services.find((s) => s.type === "FUSION" && s.enabled);
+  if (fusion && state.fusion?.image && fusion.version && !onCustomApex("FUSION")) {
+    hosts.push(
+      resolveGenericHost(
+        subdomain,
+        fusion.prefix || "fusion",
+        isTypeAtApex(state, "FUSION"),
+        base,
+      ),
+    );
+  }
+
+  for (const svc of services) {
+    if (svc.type !== "CLINT" || !svc.enabled || !svc.config?.package) continue;
+    hosts.push(
+      resolveGenericHost(subdomain, svc.prefix, isTypeAtApex(state, "CLINT"), base),
+    );
+  }
+  return hosts;
+}
+
 /** `PH_HOST_PORT` from the owner's env, else the Connect default. */
 function hostPort(state: VetraCloudEnvironmentState): number {
   const raw = (state.fusion?.env ?? []).find(
