@@ -26,4 +26,11 @@ describe("generateSubdomain", () => {
     expect(sub.endsWith("-abcd1234")).toBe(true);
     expect(sub).toMatch(/^[a-z0-9-]+$/);
   });
+
+  it("drops a base64url id's underscores too, like the tenant id", () => {
+    // The id behind the invalid preview `coral-yak-l5vf3o6_` (2026-10-30).
+    const sub = generateSubdomain("l5vf3o6_4xYzAbCdEfGhIjKlMnOpQrStUvWxYz012345");
+    expect(sub.endsWith("-l5vf3o64")).toBe(true);
+    expect(sub).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
+  });
 });
