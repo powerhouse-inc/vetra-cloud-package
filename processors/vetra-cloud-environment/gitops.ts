@@ -1695,8 +1695,6 @@ switchboard:
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     REACTOR_LEGACY_PROCESSOR_IDS: ${yamlQuote(tenantLegacyProcessorIds())}
     OPENBAO_ADDR: https://openbao.vetra.io
-    PROMETHEUS_URL: http://prometheus-server.monitoring.svc
-    LOKI_URL: http://loki.monitoring.svc:3100
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
