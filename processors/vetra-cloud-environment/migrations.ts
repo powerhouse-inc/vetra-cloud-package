@@ -184,6 +184,28 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Index already exists or partial-index syntax unsupported on this backend
   }
 
+  // Public host lookup (vetraEnvironmentHostKnown, observability subgraph):
+  // an env's generated hosts need its base domain (state.genericBaseDomain,
+  // NULL = vetra.io) and the service pinned to the apex (state.apexService).
+  // Rows projected before these columns existed read as NULL until their next
+  // projection: the default base domain and no pinned apex.
+  for (const column of ["genericBaseDomain", "apexService"] as const) {
+    try {
+      await db.schema
+        .alterTable("environments")
+        .addColumn(column, "varchar(255)")
+        .execute();
+    } catch {
+      // Column already exists
+    }
+  }
+  await db.schema
+    .createIndex("environments_subdomain_idx")
+    .on("environments")
+    .column("subdomain")
+    .ifNotExists()
+    .execute();
+
   // CLINT agents now expose endpoints via pull (see
   // docs/superpowers/specs/2026-05-01-clint-endpoints-pull-design.md).
   // Drop the legacy token table if a previous version created it.

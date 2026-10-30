@@ -165,6 +165,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         subdomain: genericSubdomain ?? null,
         tenantId,
         customDomain: customDomain?.domain ?? null,
+        ...hostColumns(state),
         packages: JSON.stringify(packages ?? []),
         services: JSON.stringify(services ?? []),
         status: status ?? null,
@@ -336,6 +337,17 @@ export function backupScheduleColumn(state: {
 }): { backupSchedule: string | null } {
   const schedule = state.backupSchedule ?? null;
   return { backupSchedule: schedule ? JSON.stringify(schedule) : null };
+}
+
+/** Columns the public host lookup reads to rebuild an env's generated hosts. */
+export function hostColumns(state: {
+  genericBaseDomain?: string | null;
+  apexService?: string | null;
+}): { genericBaseDomain: string | null; apexService: string | null } {
+  return {
+    genericBaseDomain: state.genericBaseDomain ?? null,
+    apexService: state.apexService ?? null,
+  };
 }
 
 /** Read-model columns mirroring organisation ownership. */

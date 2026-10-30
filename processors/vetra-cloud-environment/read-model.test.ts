@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "./migrations.js";
-import { appLinkColumns, backupScheduleColumn, orgColumns } from "./processor.js";
+import { appLinkColumns, backupScheduleColumn, hostColumns, orgColumns } from "./processor.js";
 import type { DB } from "./schema.js";
 
 describe("environments read model — App link columns", () => {
@@ -102,5 +102,34 @@ describe("environments read model — backupSchedule column", () => {
     ).toStrictEqual({ backupSchedule: '{"enabled":true,"cadence":"HOURLY","retention":3}' });
     expect(backupScheduleColumn({ backupSchedule: null })).toStrictEqual({ backupSchedule: null });
     expect(backupScheduleColumn({})).toStrictEqual({ backupSchedule: null });
+  });
+});
+
+describe("environments read model — host lookup columns", () => {
+  it("adds genericBaseDomain / apexService (idempotently)", async () => {
+    const db = new Kysely<DB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    await db
+      .insertInto("environments")
+      .values({ id: "e1", genericBaseDomain: "vetra.io", apexService: "FUSION" } as never)
+      .execute();
+    const row = await db
+      .selectFrom("environments")
+      .select(["genericBaseDomain", "apexService"])
+      .where("id", "=", "e1")
+      .executeTakeFirstOrThrow();
+    expect(row).toStrictEqual({ genericBaseDomain: "vetra.io", apexService: "FUSION" });
+    await db.destroy();
+  });
+
+  it("maps state.genericBaseDomain and state.apexService", () => {
+    expect(
+      hostColumns({ genericBaseDomain: "vetra.io", apexService: "CONNECT" }),
+    ).toStrictEqual({ genericBaseDomain: "vetra.io", apexService: "CONNECT" });
+    expect(hostColumns({})).toStrictEqual({
+      genericBaseDomain: null,
+      apexService: null,
+    });
   });
 });
