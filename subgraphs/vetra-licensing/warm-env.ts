@@ -8,6 +8,8 @@ export interface WarmEnvDeps {
   protect(documentId: string): Promise<void>;
   generateSubdomain(id: string): string;
   store: WarmPoolStore;
+  /** Defaults to console. */
+  logger?: { warn(msg: string, ...args: unknown[]): void };
 }
 
 export interface WarmEnvInput {
@@ -48,7 +50,13 @@ export async function createWarmEnvironment(
     });
     return id;
   } catch (err) {
-    await deps.envs.delete(id).catch(() => {});
+    await deps.envs.delete(id).catch((delErr: unknown) => {
+      (deps.logger ?? console).warn(
+        `[warm-pool] could not delete warm environment ${id} after a failed create; it is orphaned`,
+        id,
+        delErr,
+      );
+    });
     throw err;
   }
 }

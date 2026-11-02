@@ -63,4 +63,15 @@ describe("createWarmEnvironment", () => {
     expect(envs.delete).toHaveBeenCalledWith("env1");
     expect(store.insertWarming).not.toHaveBeenCalled();
   });
+
+  it("logs the id and still rethrows the original error when delete fails", async () => {
+    const { envs, deps } = setup(true);
+    envs.delete.mockRejectedValueOnce(new Error("delete failed"));
+    const warn = vi.fn();
+    await expect(
+      createWarmEnvironment({ ...(deps as object), logger: { warn } } as never, input),
+    ).rejects.toThrow("rejected");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]).toContain("env1");
+  });
 });
