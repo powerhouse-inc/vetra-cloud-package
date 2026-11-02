@@ -1,7 +1,11 @@
 import type { AppDocView, AppReads } from "./app-reads.js";
 import type { WarmEnvInput } from "./warm-env.js";
 import type { WarmPoolStore, WarmRow } from "./warm-pool-db.js";
-import { computeAppPoolPlan, type PoolTarget } from "./warm-pool-plan.js";
+import {
+  computeAppPoolPlan,
+  MAX_WARMING_MS,
+  type PoolTarget,
+} from "./warm-pool-plan.js";
 import { DEAD_STATUSES } from "../vetra-studio-pool/reconcile.js";
 
 export interface WarmPoolKeeperConfig {
@@ -66,7 +70,9 @@ interface Pool {
  * status or missing document) was removed gets no creations for 2, 4, 8, then
  * 16 ticks (counting the tick of the removal); removal, promotion and
  * recycling still run. The backoff resets once a tick with no dead removal
- * finds the pool needing no creation (full and healthy).
+ * finds the pool needing no creation (full and healthy). A row WARMING for
+ * longer than MAX_WARMING_MS without becoming READY is retired like any other
+ * removal (logged); unless its environment is also dead it causes no backoff.
  *
  * In-process `running` guard: the licensing subgraph is single-replica.
  */
@@ -219,6 +225,7 @@ export class AppWarmPoolKeeper {
       pool.target,
       status,
       this.cfg.maxPerTemplate,
+      this.d.now(),
     );
     if (
       plan.create === 0 &&
@@ -240,6 +247,12 @@ export class AppWarmPoolKeeper {
     for (const id of plan.promote) {
       await this.d.store.markAvailable(id, this.d.now());
       this.d.logger.info(`[warm-pool] ${label}: ${id} is AVAILABLE`);
+    }
+
+    for (const id of plan.timedOut) {
+      this.d.logger.warn(
+        `[warm-pool] ${label}: ${id} is still WARMING (environment ${status[id] ?? "missing"}) after more than ${MAX_WARMING_MS / 60_000} minutes; retiring it`,
+      );
     }
 
     for (const id of plan.remove) {

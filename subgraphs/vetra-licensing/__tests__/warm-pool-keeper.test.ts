@@ -75,8 +75,9 @@ const liveRow = (
   template_id: templateId,
   template_hash: hash,
   state,
-  created_at: "2026-11-01T00:00:00.000Z",
-  ready_at: state === "AVAILABLE" ? "2026-11-01T00:05:00.000Z" : null,
+  // Five minutes before NOW: young enough that a WARMING row has not timed out.
+  created_at: "2026-11-02T11:55:00.000Z",
+  ready_at: state === "AVAILABLE" ? "2026-11-02T11:58:00.000Z" : null,
   claimed_at: null,
   deleted_at: null,
   root_license_id: null,
@@ -379,6 +380,28 @@ describe("AppWarmPoolKeeper", () => {
     }
     // Full at tick 4 resets the level: the death in tick 5 waits 2 again (5-7), creates in 8.
     expect(aCreated).toEqual([8]);
+  });
+
+  it("retires a WARMING row stuck past the limit, a DRAFT one included, deletes its environment, logs it and refills", async () => {
+    const old = (id: string): WarmRow => ({
+      ...liveRow(id, "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:29:00.000Z", // 31 minutes before NOW
+    });
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 2)])],
+      rows: [old("stuck"), old("draft")],
+      status: { stuck: "DEPLOYING", draft: "DRAFT" },
+    });
+    await keeper.reconcileOnce();
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stuck", NOW);
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("draft", NOW);
+    expect(deps.deleteEnv).toHaveBeenCalledWith("stuck");
+    expect(deps.deleteEnv).toHaveBeenCalledWith("draft");
+    const warned = deps.logger.warn.mock.calls.map(([m]) => String(m));
+    expect(warned.some((m) => m.includes("stuck") && m.includes("WARMING") && m.includes("30 minutes"))).toBe(true);
+    expect(warned.some((m) => m.includes("draft") && m.includes("DRAFT"))).toBe(true);
+    // Not a dead environment: the pool refills at once.
+    expect(deps.createWarm).toHaveBeenCalledTimes(1);
   });
 
   it("is inert when disabled and only logs in dry-run", async () => {
