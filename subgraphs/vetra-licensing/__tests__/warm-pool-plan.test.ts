@@ -22,6 +22,7 @@ const row = (
   ready_at: state === "AVAILABLE" ? at(minute + 5) : null,
   claimed_at: state === "CLAIMED" ? at(minute + 10) : null,
   deleted_at: null,
+  env_deleted_at: null,
   root_license_id: state === "CLAIMED" ? "root" : null,
 });
 

@@ -25,7 +25,11 @@ export interface WarmPoolKeeperDeps {
   apps: Pick<AppReads, "app">;
   store: Pick<
     WarmPoolStore,
-    "allLive" | "markAvailable" | "markDeletedUnclaimed"
+    | "allLive"
+    | "markAvailable"
+    | "markDeletedUnclaimed"
+    | "awaitingDeletion"
+    | "markEnvDeleted"
   >;
   /** The environment document's status; null when the document is missing. */
   envStatus(environmentId: string): Promise<string | null>;
@@ -195,15 +199,65 @@ export class AppWarmPoolKeeper {
     const offset = list.length === 0 ? 0 : (tickNo - 1) % list.length;
     const rotated = [...list.slice(offset), ...list.slice(0, offset)];
     let budget = this.cfg.createsPerTick;
+    const attempted = new Set<string>();
     for (const pool of rotated) {
       try {
-        budget -= await this.reconcilePool(pool, budget, tickNo);
+        budget -= await this.reconcilePool(pool, budget, tickNo, attempted);
       } catch (err) {
         this.d.logger.warn(
           `[warm-pool] pool ${pool.appId}/${pool.templateId} failed: ${String(err)}`,
         );
       }
     }
+    try {
+      await this.sweep(attempted);
+    } catch (err) {
+      this.d.logger.warn(`[warm-pool] sweep failed: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Deletes the environment of every retired row whose deletion failed
+   * before (or never ran: a crash between retiring and deleting). A document
+   * already gone counts as deleted. Durable: the rows say what is left.
+   * `attempted`: deleted (or tried) earlier in this tick; not tried twice.
+   */
+  private async sweep(attempted: ReadonlySet<string>): Promise<void> {
+    const rows = (await this.d.store.awaitingDeletion()).filter(
+      (r) => !attempted.has(r.environment_id),
+    );
+    if (this.cfg.dryRun) {
+      if (rows.length > 0) {
+        this.d.logger.info(
+          `[warm-pool] dry run: would delete ${rows.length} retired environment(s)`,
+        );
+      }
+      return;
+    }
+    for (const r of rows) {
+      const label = `${r.app_id}/${r.template_id}`;
+      try {
+        await this.deleteRetired(r.environment_id);
+        this.d.logger.info(
+          `[warm-pool] ${label}: deleted retired environment ${r.environment_id}`,
+        );
+      } catch (err) {
+        this.d.logger.warn(
+          `[warm-pool] ${label}: retired environment ${r.environment_id} still not deleted; it will be retried: ${String(err)}`,
+        );
+      }
+    }
+  }
+
+  /** Deletes a retired row's environment and records it; throws when it is still there. */
+  private async deleteRetired(id: string): Promise<void> {
+    try {
+      await this.d.deleteEnv(id);
+    } catch (err) {
+      // Already gone is what we wanted.
+      if ((await this.d.envStatus(id)) !== null) throw err;
+    }
+    await this.d.store.markEnvDeleted(id, this.d.now());
   }
 
   /** Applies one pool's plan; returns how many creations it attempted. */
@@ -211,6 +265,7 @@ export class AppWarmPoolKeeper {
     pool: Pool,
     budget: number,
     tickNo: number,
+    attempted: Set<string>,
   ): Promise<number> {
     const label = `${pool.appId}/${pool.templateId}`;
     const status: Record<string, string | null> = {};
@@ -259,12 +314,13 @@ export class AppWarmPoolKeeper {
       // Retire the row first: a claim that won the race keeps its environment.
       if (!(await this.d.store.markDeletedUnclaimed(id, this.d.now())))
         continue;
+      attempted.add(id);
       try {
-        await this.d.deleteEnv(id);
+        await this.deleteRetired(id);
         this.d.logger.info(`[warm-pool] ${label}: removed ${id}`);
       } catch (err) {
         this.d.logger.warn(
-          `[warm-pool] ${label}: could not delete environment ${id}; it is orphaned: ${String(err)}`,
+          `[warm-pool] ${label}: could not delete environment ${id}; its retired row keeps it to be retried: ${String(err)}`,
         );
       }
     }

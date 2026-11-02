@@ -149,4 +149,23 @@ describe("warm pool store (real PGlite)", () => {
       ["v", "AVAILABLE"],
     ]);
   });
+
+  it("awaitingDeletion lists retired unclaimed rows until their environment is deleted", async () => {
+    const s = await open();
+    await ins(s, "retired");
+    await ins(s, "failed");
+    await ins(s, "live");
+    await ins(s, "c");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    expect(await s.markDeletedUnclaimed("retired", "2026-11-02T01:00:00.000Z")).toBe(true);
+    // warm-env's failed create retires its row with markDeleted.
+    await s.markDeleted("failed", "2026-11-02T01:01:00.000Z");
+    // A discarded claim keeps its CLAIMED row: its environment was deleted first.
+    await s.markDeleted("c", "2026-11-02T01:02:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["retired", "failed"]);
+    await s.markEnvDeleted("retired", "2026-11-02T01:05:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["failed"]);
+    expect((await s.byEnvironment("retired"))!.env_deleted_at).toBe("2026-11-02T01:05:00.000Z");
+  });
 });

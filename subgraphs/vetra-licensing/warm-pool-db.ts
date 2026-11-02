@@ -14,6 +14,8 @@ export interface WarmRow {
   claimed_at: string | null;
   deleted_at: string | null;
   root_license_id: string | null;
+  /** When the environment document of a retired row was deleted. */
+  env_deleted_at: string | null;
 }
 
 /** A chain's `license_environments` row before it knows its environment. */
@@ -47,6 +49,13 @@ export interface WarmPoolStore {
    * only then may the caller delete the environment document.
    */
   markDeletedUnclaimed(environmentId: string, nowIso: string): Promise<boolean>;
+  /**
+   * Retired rows that were never CLAIMED whose environment document is not
+   * yet known deleted: the keeper deletes them (again) until it is.
+   */
+  awaitingDeletion(): Promise<WarmRow[]>;
+  /** Records that the row's environment document is deleted. */
+  markEnvDeleted(environmentId: string, nowIso: string): Promise<void>;
   claimOneAvailable(q: {
     appId: string;
     templateId: string;
@@ -151,6 +160,7 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
           claimed_at: null,
           deleted_at: null,
           root_license_id: null,
+          env_deleted_at: null,
         })
         .execute();
     },
@@ -203,6 +213,27 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .where("state", "!=", "CLAIMED")
         .executeTakeFirst();
       return Number(res.numUpdatedRows) > 0;
+    },
+
+    async awaitingDeletion() {
+      return (await db
+        .selectFrom("app_warm_pool")
+        .selectAll()
+        .where("deleted_at", "is not", null)
+        .where("env_deleted_at", "is", null)
+        // A CLAIMED row's environment is the licence's (a discarded claim
+        // deletes its own before retiring the row).
+        .where("state", "!=", "CLAIMED")
+        .orderBy("deleted_at")
+        .execute()) as WarmRow[];
+    },
+
+    async markEnvDeleted(environmentId, nowIso) {
+      await db
+        .updateTable("app_warm_pool")
+        .set({ env_deleted_at: nowIso })
+        .where("environment_id", "=", environmentId)
+        .execute();
     },
 
     claimOneAvailable(q) {

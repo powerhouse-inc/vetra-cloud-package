@@ -188,6 +188,11 @@ export async function up(db: Kysely<any>): Promise<void> {
     .ifNotExists().execute();
   await db.schema.createIndex("app_warm_pool_key_idx").on("app_warm_pool")
     .columns(["app_id", "template_id", "state"]).ifNotExists().execute();
+  // When the retired row's environment document was deleted: until then the
+  // keeper retries the deletion (a retired row whose delete failed was an
+  // orphan nobody swept). Rows retired before this column existed have it
+  // null and are swept once; deleting a document already gone is a no-op.
+  await addColumnIfMissing(db, "app_warm_pool", "env_deleted_at", "varchar(255)");
 
   await db.schema.createTable("app_allow_list")
     .addColumn("app_id", "varchar(255)", (c) => c.notNull())

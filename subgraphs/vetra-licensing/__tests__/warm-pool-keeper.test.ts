@@ -80,6 +80,7 @@ const liveRow = (
   ready_at: state === "AVAILABLE" ? "2026-11-02T11:58:00.000Z" : null,
   claimed_at: null,
   deleted_at: null,
+  env_deleted_at: null,
   root_license_id: null,
 });
 
@@ -94,6 +95,8 @@ const CFG: WarmPoolKeeperConfig = {
 function setup(input: {
   apps: AppDocView[];
   rows?: WarmRow[];
+  /** Retired rows whose environment is not yet known deleted. */
+  retired?: WarmRow[];
   status?: Record<string, string | null>;
   create?: (i: WarmEnvInput) => Promise<string>;
   cfg?: Partial<WarmPoolKeeperConfig>;
@@ -111,6 +114,8 @@ function setup(input: {
       allLive: vi.fn(async () => input.rows ?? []),
       markAvailable: vi.fn(async () => {}),
       markDeletedUnclaimed: vi.fn(async () => true),
+      awaitingDeletion: vi.fn(async () => input.retired ?? []),
+      markEnvDeleted: vi.fn(async (_id: string, _nowIso: string) => {}),
     },
     envStatus: vi.fn(async (id: string) => input.status?.[id] ?? null),
     deleteEnv: vi.fn(async (_id: string) => {}),
@@ -404,6 +409,42 @@ describe("AppWarmPoolKeeper", () => {
     expect(deps.createWarm).toHaveBeenCalledTimes(1);
   });
 
+  it("records a removed environment as deleted; one whose delete fails stays to be swept", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 0)])],
+      rows: [liveRow("ok", "a", "ta", "AVAILABLE", "hash-ta"), liveRow("stuck", "a", "ta", "AVAILABLE", "hash-ta")],
+      status: { stuck: "READY" },
+    });
+    deps.deleteEnv.mockImplementation(async (id: string) => {
+      if (id === "stuck") throw new Error("reactor down");
+    });
+    // The store lists the failed one as awaiting deletion: not retried in the same tick.
+    deps.store.awaitingDeletion.mockResolvedValue([{ ...liveRow("stuck", "a", "ta", "AVAILABLE", "hash-ta"), deleted_at: NOW }]);
+    await keeper.reconcileOnce();
+    expect(deps.deleteEnv.mock.calls.filter(([id]) => id === "stuck")).toHaveLength(1);
+    expect(deps.store.markEnvDeleted).toHaveBeenCalledExactlyOnceWith("ok", NOW);
+    expect(deps.logger.warn.mock.calls.some(([m]) => String(m).includes("stuck") && String(m).includes("retried"))).toBe(true);
+  });
+
+  it("sweeps retired rows whose environment was never deleted: retries, accepts a document already gone, keeps one still there", async () => {
+    const retired = (id: string): WarmRow => ({
+      ...liveRow(id, "gone-app", "t", "AVAILABLE", "h"),
+      deleted_at: "2026-11-02T11:00:00.000Z",
+    });
+    const { deps, keeper } = setup({
+      apps: [],
+      retired: [retired("retry-ok"), retired("already-gone"), retired("still-there")],
+      status: { "still-there": "READY" },
+    });
+    deps.deleteEnv.mockImplementation(async (id: string) => {
+      if (id !== "retry-ok") throw new Error("delete refused");
+    });
+    await keeper.reconcileOnce();
+    expect(deps.deleteEnv.mock.calls.map(([id]) => id)).toEqual(["retry-ok", "already-gone", "still-there"]);
+    expect(deps.store.markEnvDeleted.mock.calls.map(([id]) => id)).toEqual(["retry-ok", "already-gone"]);
+    expect(deps.logger.warn.mock.calls.some(([m]) => String(m).includes("still-there"))).toBe(true);
+  });
+
   it("is inert when disabled and only logs in dry-run", async () => {
     const off = setup({
       apps: [app("a", [tmpl("ta", 2)])],
@@ -424,6 +465,15 @@ describe("AppWarmPoolKeeper", () => {
     expect(dry.deps.store.markDeletedUnclaimed).not.toHaveBeenCalled();
     expect(dry.deps.deleteEnv).not.toHaveBeenCalled();
     expect(dry.deps.logger.info).toHaveBeenCalled();
+
+    const drySweep = setup({
+      apps: [],
+      retired: [{ ...liveRow("r", "a", "ta", "AVAILABLE", "h"), deleted_at: NOW }],
+      cfg: { dryRun: true },
+    });
+    await drySweep.keeper.reconcileOnce();
+    expect(drySweep.deps.deleteEnv).not.toHaveBeenCalled();
+    expect(drySweep.deps.store.markEnvDeleted).not.toHaveBeenCalled();
   });
 
   it("start runs a tick and stop clears the timer", async () => {
