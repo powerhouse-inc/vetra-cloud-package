@@ -73,13 +73,14 @@ A new **`AppWarmPoolKeeper`** in `vetra-licensing`, reusing the Studio pool's sh
 
 - Runs every **`APP_WARM_POOL_SCAN_INTERVAL_MS`** (default 30 s).
 - For each template with `warmPoolSize > 0` on an app that is not suspended, and a term on that template that is not DRAFT or RETIRED:
-  - **Promote**: `WARMING` rows whose environment is READY (status READY and Argo healthy) become `AVAILABLE`, `ready_at` set.
+  - **Promote**: `WARMING` rows whose environment status is READY become `AVAILABLE`, `ready_at` set (the environment processor sets READY after a successful deploy; the Studio pool promotes on the same signal).
   - **Recycle**: `WARMING`/`AVAILABLE` rows whose `template_hash` differs from the template's current hash are deleted (environment deleted, `deleted_at` set).
-  - **Shrink**: if `AVAILABLE + WARMING > warmPoolSize`, delete the surplus, oldest `WARMING` first, then oldest `AVAILABLE`.
+  - **Shrink**: if `AVAILABLE + WARMING > warmPoolSize`, delete the surplus, newest `WARMING` first, then oldest `AVAILABLE`.
   - **Heal**: rows whose environment failed or vanished are deleted, as the Studio reconcile does (`toTerminate` in `computePoolPlan`, `vetra-studio-pool/reconcile.ts`).
   - **Fill**: create `warmPoolSize − (AVAILABLE + WARMING)` new warm environments.
 - Templates with `warmPoolSize = 0`, or whose app is suspended or all of whose terms are retired, are drained to zero.
 - Creation is rate-limited per tick (**`APP_WARM_POOL_CREATES_PER_TICK`**, default 3) so a publisher raising the size to 10 does not burst the cluster.
+- Fairness across publishers *(settled in implementation review)*: each tick starts at a rotating pool, every pool gets at most one creation per tick, and a pool whose environments died is backed off from creating for 2, 4, 8, then 16 ticks (reset once the pool is full and healthy), so a failing release cannot starve other pools or churn databases and certificates.
 
 ### 3.4 Creating a warm environment
 
