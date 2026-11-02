@@ -119,7 +119,9 @@ export class AppWarmPoolKeeper {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.stopped = true;
-    await this.running;
+    // A failed tick was already the tick's caller's to report; stop() (and
+    // onDisconnect after it) must not throw for it.
+    await this.running?.catch(() => {});
   }
 
   async reconcileOnce(): Promise<void> {

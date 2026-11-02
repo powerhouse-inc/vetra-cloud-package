@@ -502,6 +502,19 @@ describe("AppWarmPoolKeeper", () => {
     expect(deps.appIds).toHaveBeenCalledTimes(1);
   });
 
+  it("stop resolves even when the tick in flight fails", async () => {
+    let fail!: (e: Error) => void;
+    const { deps, keeper } = setup({ apps: [app("a", [tmpl("ta", 1)])] });
+    deps.appIds.mockImplementationOnce(
+      () => new Promise<string[]>((_, reject) => (fail = reject)),
+    );
+    const tick = keeper.reconcileOnce().catch(() => {});
+    const stopping = keeper.stop();
+    fail(new Error("reactor down"));
+    await expect(stopping).resolves.toBeUndefined();
+    await tick;
+  });
+
   it("start runs a tick and stop clears the timer", async () => {
     vi.useFakeTimers();
     try {
