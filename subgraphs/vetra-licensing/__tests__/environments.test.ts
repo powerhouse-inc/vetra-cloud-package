@@ -218,6 +218,38 @@ describe("provisionChain", () => {
   });
 });
 
+describe("provisionChain moves a FUSION commit tag up by the app's recording order", () => {
+  const SHA_A = "sha-56e1fd7497fc";
+  const SHA_B = "sha-6141b974fc38";
+  const REPO = "cr.vetra.io/app-sektar/host";
+  // LATEST moved from sha-a to sha-b: the resolved template now names sha-b.
+  const shaTemplate = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", artifactChannel: "LATEST", resolvedRepository: REPO, resolvedVersion: SHA_B }],
+    packages: [], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const liveOnShaA = () => ({
+    status: "READY", owner: "0x1111111111111111111111111111111111111111", label: "My vault", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: SHA_A, selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "0x1111111111111111111111111111111111111111", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+
+  it("brings an existing environment on sha-a up to sha-b", async () => {
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_A, SHA_B] }));
+    expect(executed).toHaveLength(2);
+    expect(executed[1]!.actions.map((a) => a.type)).toStrictEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(executed[1]!.actions[0]!.input).toStrictEqual({ type: "FUSION", version: SHA_B });
+  });
+
+  it("without the order, leaves the version where it is (as before)", async () => {
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate }));
+    expect(executed).toHaveLength(1);
+  });
+});
+
 describe("provisionChainExclusive (the handler's and the machine API's one path)", () => {
   it("two concurrent callers on one chain create exactly one environment", async () => {
     const create = vi.spyOn(deps.envs, "create");

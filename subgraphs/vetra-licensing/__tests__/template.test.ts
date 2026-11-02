@@ -10,6 +10,7 @@ import {
   renderUpdateActions,
   renderFloorUpdateActions,
   isVersionUpgrade,
+  isFusionUpgrade,
   templateHash,
   validateTemplate,
   MissingPackageNameError,
@@ -372,6 +373,53 @@ describe("renderFloorUpdateActions (re-templating a live environment)", () => {
   });
 });
 
+describe("renderFloorUpdateActions moves a FUSION commit tag up by recording order", () => {
+  // CI records FUSION builds as commit tags, which semver cannot order. The
+  // app's artifact record lists them newest last; that order is the proof.
+  const SHA_A = "sha-56e1fd7497fc";
+  const SHA_B = "sha-6141b974fc38";
+  const shaTemplate: TemplateShape = {
+    ...template,
+    size: null,
+    services: [
+      ...template.services,
+      { id: "f", type: "FUSION", prefix: "sektar", artifactName: "app", artifactChannel: "LATEST", resolvedRepository: "registry/app", resolvedVersion: SHA_B },
+    ],
+  };
+  const onFusion = (version: string): VetraCloudEnvironmentState => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "sektar"), version });
+    current.fusion = { image: "registry/app", env: [], autoUpdate: false, autoUpdateTagPattern: null };
+    return current;
+  };
+
+  it("moves sha-a up to the template's sha-b when sha-b was recorded later", () => {
+    const actions = renderFloorUpdateActions({
+      template: shaTemplate,
+      current: onFusion(SHA_A),
+      fusionVersions: [SHA_A, "sha-000000000000", SHA_B],
+    });
+    expect(types(actions)).toEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(actions[0].input).toStrictEqual({ type: "FUSION", version: SHA_B });
+  });
+
+  it("leaves the version alone without a recording order (unchanged behaviour)", () => {
+    expect(renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A) })).toEqual([]);
+  });
+
+  it("never moves a FUSION version down: current recorded after the template's", () => {
+    expect(
+      renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A), fusionVersions: [SHA_B, SHA_A] }),
+    ).toEqual([]);
+  });
+
+  it("leaves a version the record does not list alone", () => {
+    expect(
+      renderFloorUpdateActions({ template: shaTemplate, current: onFusion("sha-ffffffffffff"), fusionVersions: [SHA_A, SHA_B] }),
+    ).toEqual([]);
+  });
+});
+
 describe("the template size, a floor for the FUSION service", () => {
   // Sektar cloud environments need 2 GiB (M): at S a Gmail sync was OOM-killed.
   const sized = (size: string | null): TemplateShape => ({
@@ -450,6 +498,37 @@ describe("isVersionUpgrade", () => {
   });
 });
 
+describe("isFusionUpgrade", () => {
+  const recorded = ["sha-aaaaaaaaaaaa", "sha-cccccccccccc", "sha-bbbbbbbbbbbb"];
+  it.each([
+    ["sha-aaaaaaaaaaaa", "sha-bbbbbbbbbbbb", recorded, true],
+    ["sha-bbbbbbbbbbbb", "sha-aaaaaaaaaaaa", recorded, false],
+    ["sha-bbbbbbbbbbbb", "sha-bbbbbbbbbbbb", recorded, false],
+    ["sha-dddddddddddd", "sha-bbbbbbbbbbbb", recorded, false],
+    ["sha-aaaaaaaaaaaa", "sha-dddddddddddd", recorded, false],
+    ["sha-aaaaaaaaaaaa", "sha-bbbbbbbbbbbb", undefined, false],
+    ["sha-aaaaaaaaaaaa", "sha-bbbbbbbbbbbb", [], false],
+    [null, "sha-bbbbbbbbbbbb", recorded, false],
+  ] as const)("%s -> %s (recorded %j) is an upgrade: %s", (current, wanted, rec, expected) => {
+    expect(isFusionUpgrade(current, wanted, rec)).toBe(expected);
+  });
+
+  // Semver pairs are ordered by semver exactly as before, whatever the record says.
+  it.each([
+    ["1.0.0", "1.0.1"],
+    ["1.0.1", "1.0.0"],
+    ["1.0.0", "1.0.0"],
+    ["1.0.0-beta.1", "1.0.0"],
+    ["1.0.0", "1.0.0-rc.1"],
+    ["v1.9.9", "2.0.0"],
+  ])("%s -> %s follows isVersionUpgrade", (current, wanted) => {
+    const expected = isVersionUpgrade(current, wanted);
+    expect(isFusionUpgrade(current, wanted, undefined)).toBe(expected);
+    expect(isFusionUpgrade(current, wanted, [wanted, current])).toBe(expected);
+    expect(isFusionUpgrade(current, wanted, [current, wanted])).toBe(expected);
+  });
+});
+
 describe("validateTemplate", () => {
   it("defaults a service prefix to the lowercased type", () => {
     const n = validateTemplate({
@@ -500,6 +579,18 @@ describe("templateHash", () => {
       packages: [...t.packages].reverse(),
     };
     expect(templateHash(flipped)).toBe(templateHash(t));
+  });
+
+  it("is the same as before the FUSION recording-order fix (no new hashed fields)", () => {
+    const fusion: TemplateShape = {
+      ...template,
+      services: [
+        ...template.services,
+        { id: "f", type: "FUSION", prefix: "sektar", artifactName: "host", artifactChannel: "LATEST", resolvedRepository: "cr.vetra.io/app-sektar/host", resolvedVersion: "sha-6141b974fc38" },
+      ],
+    };
+    expect(templateHash(template)).toBe("f0ada853ce6b411dcd84809b34e40492f0ff98a94d64b19b060fe82b628b163e");
+    expect(templateHash(fusion)).toBe("1023b6cb5e76821b3bd65e8a81835580522bebb545be480ed33306553dd243f9");
   });
 
   it("changes when the size changes", () => {

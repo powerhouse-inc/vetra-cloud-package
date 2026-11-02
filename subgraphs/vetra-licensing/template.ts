@@ -441,12 +441,42 @@ export function isVersionUpgrade(current: string | null, wanted: string): boolea
   return comparePrerelease(w[4], c[4]) > 0;
 }
 
+/**
+ * True when the FUSION image should move from `current` to `wanted`. Two
+ * semver versions compare exactly as isVersionUpgrade. Anything else (CI
+ * records FUSION builds as commit tags, `sha-56e1fd7497fc`, which semver
+ * cannot order) is an upgrade only when both appear in `recorded`, the app's
+ * FUSION artifact versions in recording order (newest last), and `wanted` was
+ * recorded after `current`. No record, a version it does not list, or an
+ * older or equal one: not an upgrade, so the floor never moves an image it
+ * cannot prove is older.
+ */
+export function isFusionUpgrade(
+  current: string | null,
+  wanted: string,
+  recorded: readonly string[] | undefined,
+): boolean {
+  if (current === null) return false;
+  if (SEMVER.test(current) && SEMVER.test(wanted)) return isVersionUpgrade(current, wanted);
+  if (!recorded) return false;
+  const from = recorded.lastIndexOf(current);
+  const to = recorded.lastIndexOf(wanted);
+  return from !== -1 && to !== -1 && to > from;
+}
+
 export interface FloorUpdateRenderInput {
   template: TemplateShape;
   /** The environment's current global state, as EnvGateway.getState returns it. */
   current: VetraCloudEnvironmentState;
   /** The broker wrote the licence's included AI key: declare it on FUSION (spec 3.11). */
   includedKey?: boolean;
+  /**
+   * The versions of the app artifact the template's FUSION service runs, in
+   * recording order (newest last): what orders commit-tag versions (see
+   * isFusionUpgrade). Deliberately not part of TemplateShape, so it never
+   * reaches templateHash. Absent: a non-semver FUSION version never moves.
+   */
+  fusionVersions?: readonly string[];
 }
 
 /**
@@ -455,7 +485,7 @@ export interface FloorUpdateRenderInput {
  * template packages provably older than the template are upgraded, template
  * services that are missing or disabled are enabled, the FUSION image
  * follows the template (keeping the holder's env, secrets and auto-update
- * settings) and the FUSION version only ever moves up. Nothing is ever
+ * settings) and the FUSION version only ever moves up (isFusionUpgrade). Nothing is ever
  * removed, disabled or downgraded, and the label and service prefixes the
  * holder has are left alone. Returns []
  * when the environment already meets the floor, so nothing is dispatched.
@@ -464,8 +494,9 @@ export interface FloorUpdateRenderInput {
  * The FUSION half of the floor. SET_FUSION_CONFIG replaces the whole fusion
  * config, so it is sent only when the image must change, and then carries the
  * holder's env (secret values live outside the document and are untouched),
- * autoUpdate and tag pattern over. The version moves only up, or is set when
- * the service has none (it was missing).
+ * autoUpdate and tag pattern over. The version moves only up (by semver, or
+ * by the artifact's recording order for commit tags), or is set when the
+ * service has none (it was missing).
  */
 function floorFusionActions(
   s: { repository: string; version: string; host?: string },
@@ -473,6 +504,7 @@ function floorFusionActions(
   fusion: VetraCloudEnvironmentState["fusion"],
   owner: string | null,
   includedKey: boolean,
+  fusionVersions: readonly string[] | undefined,
 ): Action[] {
   const { repository, version } = s;
   const actions: Action[] = [];
@@ -495,7 +527,7 @@ function floorFusionActions(
     );
   }
   const currentVersion = have?.version ?? null;
-  if (currentVersion === null || isVersionUpgrade(currentVersion, version)) {
+  if (currentVersion === null || isFusionUpgrade(currentVersion, version, fusionVersions)) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
   }
   return actions;
@@ -525,6 +557,7 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
           current.fusion,
           current.owner ?? null,
           input.includedKey === true,
+          input.fusionVersions,
         ),
       );
     }

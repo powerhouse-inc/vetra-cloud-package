@@ -341,7 +341,11 @@ async function startingHash(
   if (!state) return { hash: legacyHash, templateId: res.template.id, note: "environment document missing; legacy hash kept" };
   let pending: number;
   try {
-    pending = renderFloorUpdateActions({ template: res.template.template, current: state }).length;
+    pending = renderFloorUpdateActions({
+      template: res.template.template,
+      current: state,
+      fusionVersions: res.template.fusionVersions,
+    }).length;
   } catch (err) {
     return { hash: legacyHash, templateId: res.template.id, note: `template does not render (${msg(err)}); legacy hash kept` };
   }
