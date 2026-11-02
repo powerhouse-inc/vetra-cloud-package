@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createWarmEnvironment } from "../warm-env.js";
 
-function setup(executeFails = false) {
+function setup(executeFails = false, insertFails = false) {
   const calls: string[] = [];
   const envs = {
     create: vi.fn(async () => (calls.push("create"), "env1")),
@@ -14,7 +14,13 @@ function setup(executeFails = false) {
     delete: vi.fn(async () => void calls.push("delete")),
   };
   const protect = vi.fn(async () => void calls.push("protect"));
-  const store = { insertWarming: vi.fn(async () => void calls.push("insert")) };
+  const store = {
+    insertWarming: vi.fn(async () => {
+      calls.push("insert");
+      if (insertFails) throw new Error("insert failed");
+    }),
+    markDeleted: vi.fn(async () => void calls.push("markDeleted")),
+  };
   const deps = {
     envs,
     protect,
@@ -40,11 +46,11 @@ const input = {
 };
 
 describe("createWarmEnvironment", () => {
-  it("protects before executing, labels (warm), records WARMING", async () => {
+  it("protects, then records WARMING, before executing (the render must see the row)", async () => {
     const { calls, envs, store, deps } = setup();
     const id = await createWarmEnvironment(deps, input);
     expect(id).toBe("env1");
-    expect(calls).toEqual(["create", "protect", "execute", "insert"]);
+    expect(calls).toEqual(["create", "protect", "insert", "execute"]);
     const actions = envs.execute.mock.calls[0][1] as { type: string; input: any }[];
     expect(actions.find((a) => a.type === "SET_LABEL")!.input.label).toBe("Sektar (warm)");
     expect(actions.some((a) => a.type === "SET_OWNER")).toBe(false);
@@ -57,11 +63,30 @@ describe("createWarmEnvironment", () => {
     });
   });
 
-  it("deletes the document and inserts nothing when execute fails", async () => {
+  it("marks the row deleted and deletes the document when execute fails", async () => {
     const { envs, store, deps } = setup(true);
     await expect(createWarmEnvironment(deps, input)).rejects.toThrow("rejected");
+    expect(store.markDeleted).toHaveBeenCalledWith("env1", input.nowIso);
     expect(envs.delete).toHaveBeenCalledWith("env1");
-    expect(store.insertWarming).not.toHaveBeenCalled();
+  });
+
+  it("deletes the document and never executes when insertWarming fails", async () => {
+    const { envs, store, deps } = setup(false, true);
+    await expect(createWarmEnvironment(deps, input)).rejects.toThrow("insert failed");
+    expect(envs.execute).not.toHaveBeenCalled();
+    expect(store.markDeleted).not.toHaveBeenCalled();
+    expect(envs.delete).toHaveBeenCalledWith("env1");
+  });
+
+  it("still deletes the document and rethrows when marking the row deleted fails", async () => {
+    const { envs, store, deps } = setup(true);
+    store.markDeleted.mockRejectedValueOnce(new Error("db down"));
+    const warn = vi.fn();
+    await expect(
+      createWarmEnvironment({ ...(deps as object), logger: { warn } } as never, input),
+    ).rejects.toThrow("rejected");
+    expect(envs.delete).toHaveBeenCalledWith("env1");
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("logs the id and still rethrows the original error when delete fails", async () => {
