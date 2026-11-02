@@ -693,7 +693,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper = null;
     this.handler?.stop();
     this.handler = null;
-    this.warmPool?.stop();
+    // Waits for a tick in flight: no warm create or delete after disconnect.
+    await this.warmPool?.stop();
     this.warmPool = null;
     if (this.stats) {
       const stats = this.stats;

@@ -79,10 +79,13 @@ interface Pool {
  * removal (logged); unless its environment is also dead it causes no backoff.
  *
  * In-process `running` guard: the licensing subgraph is single-replica.
+ * stop() waits for the tick in flight, which stops at its next step.
  */
 export class AppWarmPoolKeeper {
   private timer: ReturnType<typeof setInterval> | null = null;
-  private running = false;
+  private running: Promise<void> | null = null;
+  /** Set by stop(): the tick in flight starts nothing more, later ones do nothing. */
+  private stopped = false;
   private tickNo = 0;
   /** Pool key -> consecutive dead-removal level and the last tick it may not create in. */
   private readonly backoff = new Map<
@@ -97,6 +100,7 @@ export class AppWarmPoolKeeper {
 
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     const tick = () => {
       this.reconcileOnce().catch((err: unknown) =>
         this.d.logger.warn(`[warm-pool] keeper tick failed: ${String(err)}`),
@@ -106,19 +110,24 @@ export class AppWarmPoolKeeper {
     this.timer = setInterval(tick, this.cfg.scanIntervalMs);
   }
 
-  stop(): void {
+  /**
+   * Stops the timer and resolves once the tick in flight (if any) has
+   * finished: it stops before its next pool, creation or deletion, so no
+   * create or delete runs after this resolves.
+   */
+  async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.stopped = true;
+    await this.running;
   }
 
   async reconcileOnce(): Promise<void> {
-    if (!this.cfg.enabled || this.running) return;
-    this.running = true;
-    try {
-      await this.tick();
-    } finally {
-      this.running = false;
-    }
+    if (!this.cfg.enabled || this.running || this.stopped) return;
+    this.running = this.tick().finally(() => {
+      this.running = null;
+    });
+    await this.running;
   }
 
   private async tick(): Promise<void> {
@@ -201,6 +210,7 @@ export class AppWarmPoolKeeper {
     let budget = this.cfg.createsPerTick;
     const attempted = new Set<string>();
     for (const pool of rotated) {
+      if (this.stopped) return;
       try {
         budget -= await this.reconcilePool(pool, budget, tickNo, attempted);
       } catch (err) {
@@ -235,6 +245,7 @@ export class AppWarmPoolKeeper {
       return;
     }
     for (const r of rows) {
+      if (this.stopped) return;
       const label = `${r.app_id}/${r.template_id}`;
       try {
         await this.deleteRetired(r.environment_id);
@@ -300,6 +311,7 @@ export class AppWarmPoolKeeper {
     }
 
     for (const id of plan.promote) {
+      if (this.stopped) return 0;
       await this.d.store.markAvailable(id, this.d.now());
       this.d.logger.info(`[warm-pool] ${label}: ${id} is AVAILABLE`);
     }
@@ -311,6 +323,7 @@ export class AppWarmPoolKeeper {
     }
 
     for (const id of plan.remove) {
+      if (this.stopped) return 0;
       // Retire the row first: a claim that won the race keeps its environment.
       if (!(await this.d.store.markDeletedUnclaimed(id, this.d.now())))
         continue;
@@ -343,6 +356,7 @@ export class AppWarmPoolKeeper {
     // At most one creation per pool per tick.
     const attempts = Math.min(plan.create, 1, Math.max(0, budget));
     for (let i = 0; i < attempts; i++) {
+      if (this.stopped) return i;
       try {
         const id = await this.d.createWarm({
           appId: target.appId,

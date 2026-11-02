@@ -476,6 +476,32 @@ describe("AppWarmPoolKeeper", () => {
     expect(drySweep.deps.store.markEnvDeleted).not.toHaveBeenCalled();
   });
 
+  it("stop waits for the in-flight tick, which starts nothing more, and later ticks do nothing", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)]), app("b", [tmpl("tb", 1)])],
+      create: async (i) => {
+        if (i.appId === "a") await gate;
+        return `env-${i.appId}`;
+      },
+    });
+    const tick = keeper.reconcileOnce();
+    await vi.waitFor(() => expect(deps.createWarm).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = keeper.stop().then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    await tick;
+    // Pool b came after the stop: never created, nor swept.
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toEqual(["a"]);
+    expect(deps.store.awaitingDeletion).not.toHaveBeenCalled();
+    await keeper.reconcileOnce();
+    expect(deps.appIds).toHaveBeenCalledTimes(1);
+  });
+
   it("start runs a tick and stop clears the timer", async () => {
     vi.useFakeTimers();
     try {
@@ -486,7 +512,7 @@ describe("AppWarmPoolKeeper", () => {
       expect(deps.appIds).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(30_000);
       expect(deps.appIds).toHaveBeenCalledTimes(2);
-      keeper.stop();
+      await keeper.stop();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(deps.appIds).toHaveBeenCalledTimes(2);
     } finally {
