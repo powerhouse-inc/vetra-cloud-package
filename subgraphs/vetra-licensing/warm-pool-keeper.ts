@@ -43,6 +43,13 @@ export interface WarmPoolKeeperDeps {
 /** App document statuses whose pools are drained. */
 const SUSPENDED_APP_STATUSES = new Set(["DISCONNECTED", "DELETED"]);
 
+/**
+ * A refused deletion is logged at its first failure and then every this many
+ * (one per tick otherwise); the dry-run sweep line likewise, unless its set
+ * changes.
+ */
+const SWEEP_LOG_EVERY = 20;
+
 /** stop() warns (once) when the tick in flight takes longer than this. */
 const STOP_SLOW_WARN_MS = 30_000;
 
@@ -90,6 +97,14 @@ export class AppWarmPoolKeeper {
   /** Set by stop(): the tick in flight starts nothing more, later ones do nothing. */
   private stopped = false;
   private tickNo = 0;
+  /**
+   * Environment id -> consecutive failed deletions, for log throttling only:
+   * a restart loses it and merely logs the next failure again. What is left
+   * to delete is durable (the store's awaitingDeletion).
+   */
+  private readonly deleteFailures = new Map<string, number>();
+  /** The dry-run sweep's last logged set and the dry-run ticks since. */
+  private drySweep: { key: string; ticks: number } | null = null;
   /** Pool key -> consecutive dead-removal level and the last tick it may not create in. */
   private readonly backoff = new Map<
     string,
@@ -256,9 +271,12 @@ export class AppWarmPoolKeeper {
       (r) => !attempted.has(r.environment_id),
     );
     if (this.cfg.dryRun) {
-      if (rows.length > 0) {
+      const key = rows.map((r) => r.environment_id).join(",");
+      const ticks = this.drySweep?.key === key ? this.drySweep.ticks + 1 : 0;
+      this.drySweep = { key, ticks: ticks % SWEEP_LOG_EVERY };
+      if (rows.length > 0 && ticks % SWEEP_LOG_EVERY === 0) {
         this.d.logger.info(
-          `[warm-pool] dry run: would delete ${rows.length} retired environment(s)`,
+          `[warm-pool] dry run: would delete ${rows.length} retired environment(s): ${key}`,
         );
       }
       return;
@@ -272,9 +290,12 @@ export class AppWarmPoolKeeper {
           `[warm-pool] ${label}: deleted retired environment ${r.environment_id}`,
         );
       } catch (err) {
-        this.d.logger.warn(
-          `[warm-pool] ${label}: retired environment ${r.environment_id} still not deleted; it will be retried: ${String(err)}`,
-        );
+        const n = this.deleteFailed(r.environment_id);
+        if ((n - 1) % SWEEP_LOG_EVERY === 0) {
+          this.d.logger.warn(
+            `[warm-pool] ${label}: retired environment ${r.environment_id} still not deleted after ${n} attempts; it will be retried: ${String(err)}`,
+          );
+        }
       }
     }
   }
@@ -287,7 +308,15 @@ export class AppWarmPoolKeeper {
       // Already gone is what we wanted.
       if ((await this.d.envStatus(id)) !== null) throw err;
     }
+    this.deleteFailures.delete(id);
     await this.d.store.markEnvDeleted(id, this.d.now());
+  }
+
+  /** Counts a failed deletion of `id`; returns how many in a row. */
+  private deleteFailed(id: string): number {
+    const n = (this.deleteFailures.get(id) ?? 0) + 1;
+    this.deleteFailures.set(id, n);
+    return n;
   }
 
   /** Applies one pool's plan; returns how many creations it attempted. */
@@ -359,6 +388,7 @@ export class AppWarmPoolKeeper {
         await this.deleteRetired(id);
         this.d.logger.info(`[warm-pool] ${label}: removed ${id}`);
       } catch (err) {
+        this.deleteFailed(id);
         this.d.logger.warn(
           `[warm-pool] ${label}: could not delete environment ${id}; its retired row keeps it to be retried: ${String(err)}`,
         );

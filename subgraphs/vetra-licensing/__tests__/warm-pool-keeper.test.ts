@@ -493,6 +493,37 @@ describe("AppWarmPoolKeeper", () => {
     expect(deps.logger.warn.mock.calls.some(([m]) => String(m).includes("still-there"))).toBe(true);
   });
 
+  it("logs a delete that keeps being refused at the first failure and then every 20th", async () => {
+    const { deps, keeper } = setup({
+      apps: [],
+      retired: [{ ...liveRow("stuck", "a", "ta", "AVAILABLE", "h"), deleted_at: NOW }],
+      status: { stuck: "READY" },
+    });
+    deps.deleteEnv.mockRejectedValue(new Error("delete refused"));
+    const warnedAt: number[] = [];
+    for (let tick = 1; tick <= 41; tick++) {
+      deps.logger.warn.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.logger.warn.mock.calls.some(([m]) => String(m).includes("stuck"))) warnedAt.push(tick);
+    }
+    expect(deps.deleteEnv).toHaveBeenCalledTimes(41);
+    expect(warnedAt).toEqual([1, 21, 41]);
+    expect(String(deps.logger.warn.mock.calls[0]![0])).toContain("41 attempts");
+  });
+
+  it("in dry-run, says what it would sweep when the set changes or every 20th tick", async () => {
+    const r = (id: string): WarmRow => ({ ...liveRow(id, "a", "ta", "AVAILABLE", "h"), deleted_at: NOW });
+    const { deps, keeper } = setup({ apps: [], retired: [r("x")], cfg: { dryRun: true } });
+    const loggedAt: number[] = [];
+    for (let tick = 1; tick <= 25; tick++) {
+      if (tick === 23) deps.store.awaitingDeletion.mockResolvedValue([r("x"), r("y")]);
+      deps.logger.info.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.logger.info.mock.calls.some(([m]) => String(m).includes("would delete"))) loggedAt.push(tick);
+    }
+    expect(loggedAt).toEqual([1, 21, 23]);
+  });
+
   it("is inert when disabled and only logs in dry-run", async () => {
     const off = setup({
       apps: [app("a", [tmpl("ta", 2)])],
