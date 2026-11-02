@@ -3,6 +3,7 @@ import type { Kysely } from "kysely";
 import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment";
 import { approveChanges, setLabel, setOwner } from "document-models/vetra-cloud-environment";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
+import { redactSecrets } from "../../shared/redact.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { addressOfDid } from "./did.js";
@@ -478,16 +479,19 @@ async function finishWarmClaim(
       current: { ...state, owner: holder },
       includedKey,
     });
-    const relabel = state.label !== label ? [setLabel({ label })] : [];
-    // SET_LABEL leaves a deployed environment CHANGES_PENDING: approve it even
-    // when the floor is already met.
-    const approve = relabel.length > 0 && floor.at(-1)?.type !== "APPROVE_CHANGES" ? [approveChanges({})] : [];
+    // The claim must always re-render (the ingress opens once the row is
+    // CLAIMED). SET_LABEL, even an unchanged one, leaves a deployed environment
+    // CHANGES_PENDING, so unless the floor already ends approved it is sent
+    // and approved, even when the label and the floor are already met.
+    const floorApproves = floor.at(-1)?.type === "APPROVE_CHANGES";
+    const relabel = state.label !== label || !floorApproves ? [setLabel({ label })] : [];
+    const approve = floorApproves ? [] : [approveChanges({})];
     await deps.envs.execute(id, [setOwner({ address: holder }), ...relabel, ...floor, ...approve]);
     await warmPool.handOver(id, holder);
   } catch (err) {
     if (err instanceof EnvironmentNotReadyError) throw err;
     log.error(
-      `[licensing] claim of warm environment ${id} for chain ${row.root_license_id} failed; discarding it and building cold: ${String(err)}`,
+      `[licensing] claim of warm environment ${id} for chain ${row.root_license_id} failed; discarding it and building cold: ${redactSecrets(String(err))}`,
     );
     await discardWarmClaim(deps, warmPool, id, input.now);
     return null;
@@ -521,7 +525,7 @@ async function discardWarmClaim(
     // its key) and the vetra-llm sweeper.
     await deps.releaseAppKey(id).catch((err: unknown) => {
       (deps.logger ?? console).error(
-        `[licensing] included key of discarded warm environment ${id} not released: ${String(err)}`,
+        `[licensing] included key of discarded warm environment ${id} not released: ${redactSecrets(String(err))}`,
       );
     });
   }

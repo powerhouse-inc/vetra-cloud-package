@@ -312,6 +312,17 @@ describe("provisionChain claims a warm environment first", () => {
     expect(executed[0]!.actions[1]!.input).toStrictEqual({ label: "My vault" });
   });
 
+  it("still re-renders (SET_LABEL + APPROVE_CHANGES) when the label is unchanged and the floor is met", async () => {
+    await seedWarm();
+    const doc = states.get("warm-1")!;
+    doc.fusion = { ...(doc.fusion as object), env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: HOLDER, isSecret: false }] };
+    await provisionChain(deps, warmInput({ label: "Sektar (warm)" }));
+    // An unchanged SET_LABEL still moves a deployed environment to
+    // CHANGES_PENDING, so the approve is valid and gitops opens the ingress.
+    expect(executed[0]!.actions.map((a) => a.type)).toStrictEqual(["SET_OWNER", "SET_LABEL", "APPROVE_CHANGES"]);
+    expect(executed[0]!.actions.at(-1)!.type).toBe("APPROVE_CHANGES");
+  });
+
   it("builds cold, exactly as before, when no warm environment is available", async () => {
     const row = await provisionChain(deps, warmInput());
     expect(row).toMatchObject({ environment_id: "env-1", template_hash: "h1" });
@@ -525,6 +536,19 @@ describe("the included AI key (spec 3.11)", () => {
     const row = await provisionChain(deps, keyInput());
     expect(row.environment_id).toBe("env-1");
     expect(error.mock.calls.some(([m]) => String(m).includes("openrouter down"))).toBe(true);
+  });
+
+  it("redacts secrets in the claim-failure and release-failure logs", async () => {
+    await seedWarm();
+    const error = vi.fn();
+    deps.logger = { error };
+    appKey.mockRejectedValueOnce(new Error("write failed for sk-or-v1-claimsecret"));
+    releaseAppKey.mockRejectedValueOnce(new Error("release failed for sk-or-v1-releasesecret"));
+    await provisionChain(deps, keyInput());
+    const logged = error.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("write failed for [redacted]");
+    expect(logged).toContain("release failed for [redacted]");
+    expect(logged).not.toContain("sk-or-v1-");
   });
 
   it("a template without FUSION never mints a key", async () => {
