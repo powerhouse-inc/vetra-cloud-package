@@ -155,7 +155,7 @@ export interface ChainEnvDeps {
     delete(id: string): Promise<void>;
   };
   generateSubdomain(id: string): string;
-  logger?: Pick<Console, "error">;
+  logger?: Pick<Console, "error"> & Partial<Pick<Console, "warn">>;
   /** Claim a warm environment before building one (DEDICATED templates only). */
   warmPool?: WarmClaimDeps;
   /**
@@ -345,7 +345,16 @@ export async function provisionChain(
   // was given when it was created or claimed.
   let actions: Action[];
   if (state.status !== "DRAFT") {
-    actions = renderFloorUpdateActions({ template: input.template, current: state, fusionVersions: input.fusionVersions });
+    actions = renderFloorUpdateActions({
+      template: input.template,
+      current: state,
+      fusionVersions: input.fusionVersions,
+      onFusionHeld: ({ current, wanted }) => {
+        const msg = `[licensing] environment ${row.environment_id} of chain ${row.root_license_id} stays on FUSION ${current}: the app's record no longer lists it (only its last 50 versions are kept, or it was pinned by hand), so it cannot be proven older than ${wanted}; move it by hand if it should follow the template`;
+        if (deps.logger?.warn) deps.logger.warn(msg);
+        else (deps.logger ?? console).error(msg);
+      },
+    });
   } else {
     const subdomain = deps.generateSubdomain(row.environment_id);
     actions = renderCreateActions({

@@ -242,6 +242,21 @@ describe("provisionChain moves a FUSION commit tag up by the app's recording ord
     expect(executed[1]!.actions[0]!.input).toStrictEqual({ type: "FUSION", version: SHA_B });
   });
 
+  it("warns, naming the environment and both versions, when the current version has aged out of the record", async () => {
+    const warn = vi.fn();
+    deps.logger = { error: vi.fn(), warn };
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    const row = await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_B] }));
+    expect(executed).toHaveLength(1);
+    expect(row.template_hash).toBe("h2");
+    expect(warn).toHaveBeenCalledOnce();
+    const msg = String(warn.mock.calls[0]![0]);
+    expect(msg).toContain("env-1");
+    expect(msg).toContain(SHA_A);
+    expect(msg).toContain(SHA_B);
+  });
+
   it("without the order, leaves the version where it is (as before)", async () => {
     await provisionChain(deps, input());
     states.set("env-1", liveOnShaA() as never);
@@ -309,7 +324,7 @@ describe("provisionChain claims a warm environment first", () => {
 
   async function seedWarm(id = "warm-1"): Promise<void> {
     states.set(id, warmDoc());
-    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
     await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
   }
 
@@ -478,7 +493,7 @@ describe("the included AI key (spec 3.11)", () => {
 
   async function seedWarm(id = "warm-1"): Promise<void> {
     states.set(id, warmDoc());
-    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
     await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
   }
 

@@ -285,4 +285,25 @@ describe("vetra-licensing migrations (real PGlite)", () => {
       .execute();
     expect(await d.selectFrom("app_warm_pool").selectAll().execute()).toHaveLength(1);
   });
+
+  it("adds app_warm_pool.env_deleted_at to a table created without it, keeping its rows", async () => {
+    const pg = new PGlite();
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(pg) });
+    await pg.exec(`
+      CREATE TABLE app_warm_pool (environment_id varchar(255) NOT NULL, app_id varchar(255) NOT NULL,
+        template_id varchar(255) NOT NULL, template_hash varchar(64) NOT NULL, state varchar(16) NOT NULL,
+        created_at varchar(255) NOT NULL, ready_at varchar(255), claimed_at varchar(255), deleted_at varchar(255),
+        root_license_id varchar(255), CONSTRAINT app_warm_pool_pkey PRIMARY KEY (environment_id));
+      INSERT INTO app_warm_pool VALUES ('w1','app-1','t','h','WARMING','t',NULL,NULL,'t2',NULL);
+    `);
+    await up(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    expect(await db.selectFrom("app_warm_pool").select(["environment_id", "deleted_at", "env_deleted_at", "pool_size", "timed_out_at"]).execute()).toStrictEqual([
+      { environment_id: "w1", deleted_at: "t2", env_deleted_at: null, pool_size: null, timed_out_at: null },
+    ]);
+    const { rows } = await pg.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'app_warm_pool' AND indexname = 'app_warm_pool_created_idx'`,
+    );
+    expect(rows).toHaveLength(1);
+  });
 });

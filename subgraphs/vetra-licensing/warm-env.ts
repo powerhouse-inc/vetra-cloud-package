@@ -17,6 +17,8 @@ export interface WarmEnvInput {
   appName: string;
   template: TemplateShape & { id: string };
   templateHash: string;
+  /** The pool size it is created for (recorded on its row). */
+  poolSize: number;
   nowIso: string;
 }
 
@@ -43,6 +45,7 @@ export async function createWarmEnvironment(
       appId: input.appId,
       templateId: input.template.id,
       templateHash: input.templateHash,
+      poolSize: input.poolSize,
       nowIso: input.nowIso,
     });
     inserted = true;

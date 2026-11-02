@@ -42,6 +42,7 @@ const input = {
     packageRegistry: null,
   },
   templateHash: "hash1",
+  poolSize: 3,
   nowIso: "2026-11-02T00:00:00.000Z",
 };
 
@@ -59,6 +60,7 @@ describe("createWarmEnvironment", () => {
       appId: "app1",
       templateId: "tpl1",
       templateHash: "hash1",
+      poolSize: 3,
       nowIso: input.nowIso,
     });
   });

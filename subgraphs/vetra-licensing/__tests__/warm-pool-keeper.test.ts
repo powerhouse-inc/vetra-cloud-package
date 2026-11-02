@@ -75,10 +75,14 @@ const liveRow = (
   template_id: templateId,
   template_hash: hash,
   state,
-  created_at: "2026-11-01T00:00:00.000Z",
-  ready_at: state === "AVAILABLE" ? "2026-11-01T00:05:00.000Z" : null,
+  // Five minutes before NOW: young enough that a WARMING row has not timed out.
+  created_at: "2026-11-02T11:55:00.000Z",
+  ready_at: state === "AVAILABLE" ? "2026-11-02T11:58:00.000Z" : null,
   claimed_at: null,
   deleted_at: null,
+  env_deleted_at: null,
+  pool_size: null,
+  timed_out_at: null,
   root_license_id: null,
 });
 
@@ -93,6 +97,10 @@ const CFG: WarmPoolKeeperConfig = {
 function setup(input: {
   apps: AppDocView[];
   rows?: WarmRow[];
+  /** Consecutive WARMING timeouts the store reports for a pool. */
+  streak?: (q: { templateHash: string; poolSize: number }) => number;
+  /** Retired rows whose environment is not yet known deleted. */
+  retired?: WarmRow[];
   status?: Record<string, string | null>;
   create?: (i: WarmEnvInput) => Promise<string>;
   cfg?: Partial<WarmPoolKeeperConfig>;
@@ -110,6 +118,12 @@ function setup(input: {
       allLive: vi.fn(async () => input.rows ?? []),
       markAvailable: vi.fn(async () => {}),
       markDeletedUnclaimed: vi.fn(async () => true),
+      awaitingDeletion: vi.fn(async () => input.retired ?? []),
+      markEnvDeleted: vi.fn(async (_id: string, _nowIso: string) => {}),
+      timeoutStreak: vi.fn(
+        async (q: { appId: string; templateId: string; templateHash: string; poolSize: number; limit: number }) =>
+          input.streak?.(q) ?? 0,
+      ),
     },
     envStatus: vi.fn(async (id: string) => input.status?.[id] ?? null),
     deleteEnv: vi.fn(async (_id: string) => {}),
@@ -140,6 +154,7 @@ describe("AppWarmPoolKeeper", () => {
       appName: "App a",
       template: { ...SHAPE, id: "ta" },
       templateHash: "hash-ta",
+      poolSize: 2,
       nowIso: NOW,
     });
     expect(created.map((c) => c.template.id)).toEqual(["ta"]);
@@ -196,7 +211,7 @@ describe("AppWarmPoolKeeper", () => {
       status: { stale: "READY", ready: "READY", claimed: "READY" },
     });
     await keeper.reconcileOnce();
-    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stale", NOW);
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stale", NOW, { timedOut: false });
     expect(deps.deleteEnv).toHaveBeenCalledWith("stale");
     expect(deps.store.markAvailable).toHaveBeenCalledWith("ready", NOW);
     expect(deps.createWarm).toHaveBeenCalledTimes(1);
@@ -381,6 +396,180 @@ describe("AppWarmPoolKeeper", () => {
     expect(aCreated).toEqual([8]);
   });
 
+  it("retires a WARMING row stuck past the limit, a DRAFT one included, deletes its environment, logs it and refills", async () => {
+    const old = (id: string): WarmRow => ({
+      ...liveRow(id, "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:29:00.000Z", // 31 minutes before NOW
+    });
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 2)])],
+      rows: [old("stuck"), old("draft")],
+      status: { stuck: "DEPLOYING", draft: "DRAFT" },
+    });
+    await keeper.reconcileOnce();
+    // Marked as timeouts, in the update that retires them (the halt counts these).
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stuck", NOW, { timedOut: true });
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("draft", NOW, { timedOut: true });
+    expect(deps.deleteEnv).toHaveBeenCalledWith("stuck");
+    expect(deps.deleteEnv).toHaveBeenCalledWith("draft");
+    const warned = deps.logger.warn.mock.calls.map(([m]) => String(m));
+    expect(warned.some((m) => m.includes("stuck") && m.includes("WARMING") && m.includes("30 minutes"))).toBe(true);
+    expect(warned.some((m) => m.includes("draft") && m.includes("DRAFT"))).toBe(true);
+    // A failed warm-up: the pool's creation backs off like after a dead environment.
+    expect(deps.createWarm).not.toHaveBeenCalled();
+  });
+
+  it("backs creation off after a WARMING timeout, so a template that never gets READY is not rebuilt every 30 minutes", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)])],
+      status: { slow: "DEPLOYING" },
+    });
+    const timedOut: WarmRow = {
+      ...liveRow("slow", "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:00:00.000Z",
+    };
+    const created: number[] = [];
+    for (let tick = 1; tick <= 4; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(tick === 1 ? [timedOut] : []);
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.createWarm.mock.calls.length > 0) created.push(tick);
+    }
+    // As a dead removal: ticks 1-3 withheld, creates in 4.
+    expect(deps.deleteEnv).toHaveBeenCalledWith("slow");
+    expect(created).toEqual([4]);
+  });
+
+  it("does not reset the backoff while the replacement is still WARMING, so repeated timeouts escalate", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)])],
+      status: { s1: "DEPLOYING", s2: "DEPLOYING", w2: "DEPLOYING" },
+    });
+    const old = (id: string): WarmRow => ({
+      ...liveRow(id, "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:00:00.000Z",
+    });
+    // s1 times out in tick 1; its replacement (w2) warms in 4-6 and times out (as s2) in 7.
+    const rowsAt: Record<number, WarmRow[]> = {
+      1: [old("s1")],
+      5: [liveRow("w2", "a", "ta", "WARMING", "hash-ta")],
+      6: [liveRow("w2", "a", "ta", "WARMING", "hash-ta")],
+      7: [old("s2")],
+    };
+    const created: number[] = [];
+    for (let tick = 1; tick <= 12; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(rowsAt[tick] ?? []);
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.createWarm.mock.calls.length > 0) created.push(tick);
+    }
+    // Level 1 after tick 1 (creates in 4); level 2 after tick 7: 7-11 withheld, creates in 12.
+    expect(created).toEqual([4, 12]);
+  });
+
+  it("records a removed environment as deleted; one whose delete fails stays to be swept", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 0)])],
+      rows: [liveRow("ok", "a", "ta", "AVAILABLE", "hash-ta"), liveRow("stuck", "a", "ta", "AVAILABLE", "hash-ta")],
+      status: { stuck: "READY" },
+    });
+    deps.deleteEnv.mockImplementation(async (id: string) => {
+      if (id === "stuck") throw new Error("reactor down");
+    });
+    // The store lists the failed one as awaiting deletion: not retried in the same tick.
+    deps.store.awaitingDeletion.mockResolvedValue([{ ...liveRow("stuck", "a", "ta", "AVAILABLE", "hash-ta"), deleted_at: NOW }]);
+    await keeper.reconcileOnce();
+    expect(deps.deleteEnv.mock.calls.filter(([id]) => id === "stuck")).toHaveLength(1);
+    expect(deps.store.markEnvDeleted).toHaveBeenCalledExactlyOnceWith("ok", NOW);
+    expect(deps.logger.warn.mock.calls.some(([m]) => String(m).includes("stuck") && String(m).includes("retried"))).toBe(true);
+  });
+
+  it("sweeps retired rows whose environment was never deleted: retries, accepts a document already gone, keeps one still there", async () => {
+    const retired = (id: string): WarmRow => ({
+      ...liveRow(id, "gone-app", "t", "AVAILABLE", "h"),
+      deleted_at: "2026-11-02T11:00:00.000Z",
+    });
+    const { deps, keeper } = setup({
+      apps: [],
+      retired: [retired("retry-ok"), retired("already-gone"), retired("still-there")],
+      status: { "still-there": "READY" },
+    });
+    deps.deleteEnv.mockImplementation(async (id: string) => {
+      if (id !== "retry-ok") throw new Error("delete refused");
+    });
+    await keeper.reconcileOnce();
+    expect(deps.deleteEnv.mock.calls.map(([id]) => id)).toEqual(["retry-ok", "already-gone", "still-there"]);
+    expect(deps.store.markEnvDeleted.mock.calls.map(([id]) => id)).toEqual(["retry-ok", "already-gone"]);
+    expect(deps.logger.warn.mock.calls.some(([m]) => String(m).includes("still-there"))).toBe(true);
+  });
+
+  it("logs a delete that keeps being refused at the first failure and then every 20th", async () => {
+    const { deps, keeper } = setup({
+      apps: [],
+      retired: [{ ...liveRow("stuck", "a", "ta", "AVAILABLE", "h"), deleted_at: NOW }],
+      status: { stuck: "READY" },
+    });
+    deps.deleteEnv.mockRejectedValue(new Error("delete refused"));
+    const warnedAt: number[] = [];
+    for (let tick = 1; tick <= 41; tick++) {
+      deps.logger.warn.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.logger.warn.mock.calls.some(([m]) => String(m).includes("stuck"))) warnedAt.push(tick);
+    }
+    expect(deps.deleteEnv).toHaveBeenCalledTimes(41);
+    expect(warnedAt).toEqual([1, 21, 41]);
+    expect(String(deps.logger.warn.mock.calls[0]![0])).toContain("41 attempts");
+  });
+
+  it("in dry-run, says what it would sweep when the set changes or every 20th tick", async () => {
+    const r = (id: string): WarmRow => ({ ...liveRow(id, "a", "ta", "AVAILABLE", "h"), deleted_at: NOW });
+    const { deps, keeper } = setup({ apps: [], retired: [r("x")], cfg: { dryRun: true } });
+    const loggedAt: number[] = [];
+    for (let tick = 1; tick <= 25; tick++) {
+      if (tick === 23) deps.store.awaitingDeletion.mockResolvedValue([r("x"), r("y")]);
+      deps.logger.info.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.logger.info.mock.calls.some(([m]) => String(m).includes("would delete"))) loggedAt.push(tick);
+    }
+    expect(loggedAt).toEqual([1, 21, 23]);
+  });
+
+  it("stops creating for a pool after 3 consecutive WARMING timeouts until its hash or size changes, logging once", async () => {
+    let size = 2;
+    let hash = "hash-ta";
+    const apps = () => [app("a", [tmpl("ta", size, { templateHash: hash })]), app("b", [tmpl("tb", 1)])];
+    const { deps, keeper } = setup({
+      apps: [],
+      streak: (q) => (q.templateHash === "hash-ta" && q.poolSize === 2 ? 3 : 2),
+    });
+    deps.appIds.mockImplementation(async () => apps().map((a) => a.id));
+    deps.apps.app.mockImplementation(async (id: string) => apps().find((a) => a.id === id) ?? null);
+    for (let tick = 1; tick <= 3; tick++) await keeper.reconcileOnce();
+    // Pool b (streak 2) keeps filling; pool a never creates.
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toEqual(["b", "b", "b"]);
+    expect(deps.store.timeoutStreak).toHaveBeenCalledWith(
+      expect.objectContaining({ appId: "a", templateId: "ta", templateHash: "hash-ta", poolSize: 2, limit: 3 }),
+    );
+    const halted = deps.logger.warn.mock.calls.map(([m]) => String(m)).filter((m) => m.includes("stopped creating"));
+    expect(halted).toHaveLength(1);
+    expect(halted[0]).toContain("a/ta");
+    expect(halted[0]).toContain("3 consecutive");
+    // The publisher changes the pool size: it creates again.
+    size = 3;
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toContain("a");
+    // Back at size 2 it is halted again (the same streak), and a new hash lifts it.
+    size = 2;
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).not.toContain("a");
+    hash = "hash-new";
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toContain("a");
+  });
+
   it("is inert when disabled and only logs in dry-run", async () => {
     const off = setup({
       apps: [app("a", [tmpl("ta", 2)])],
@@ -401,6 +590,104 @@ describe("AppWarmPoolKeeper", () => {
     expect(dry.deps.store.markDeletedUnclaimed).not.toHaveBeenCalled();
     expect(dry.deps.deleteEnv).not.toHaveBeenCalled();
     expect(dry.deps.logger.info).toHaveBeenCalled();
+
+    const drySweep = setup({
+      apps: [],
+      retired: [{ ...liveRow("r", "a", "ta", "AVAILABLE", "h"), deleted_at: NOW }],
+      cfg: { dryRun: true },
+    });
+    await drySweep.keeper.reconcileOnce();
+    expect(drySweep.deps.deleteEnv).not.toHaveBeenCalled();
+    expect(drySweep.deps.store.markEnvDeleted).not.toHaveBeenCalled();
+  });
+
+  it("stop waits for the in-flight tick, which starts nothing more, and later ticks do nothing", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)]), app("b", [tmpl("tb", 1)])],
+      create: async (i) => {
+        if (i.appId === "a") await gate;
+        return `env-${i.appId}`;
+      },
+    });
+    const tick = keeper.reconcileOnce();
+    await vi.waitFor(() => expect(deps.createWarm).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = keeper.stop().then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    await tick;
+    // Pool b came after the stop: never created, nor swept.
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toEqual(["a"]);
+    expect(deps.store.awaitingDeletion).not.toHaveBeenCalled();
+    await keeper.reconcileOnce();
+    expect(deps.appIds).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop resolves even when the tick in flight fails", async () => {
+    let fail!: (e: Error) => void;
+    const { deps, keeper } = setup({ apps: [app("a", [tmpl("ta", 1)])] });
+    deps.appIds.mockImplementationOnce(
+      () => new Promise<string[]>((_, reject) => (fail = reject)),
+    );
+    const tick = keeper.reconcileOnce().catch(() => {});
+    const stopping = keeper.stop();
+    fail(new Error("reactor down"));
+    await expect(stopping).resolves.toBeUndefined();
+    await tick;
+  });
+
+  it("stop warns once when the tick in flight is still running after 30 s, and keeps waiting", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const { deps, keeper } = setup({
+        apps: [app("a", [tmpl("ta", 1)])],
+        create: async () => {
+          await gate;
+          return "env";
+        },
+      });
+      const tick = keeper.reconcileOnce();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.createWarm).toHaveBeenCalledTimes(1);
+      let stopped = false;
+      const stopping = keeper.stop().then(() => (stopped = true));
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(deps.logger.warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const slow = deps.logger.warn.mock.calls.filter(([m]) => String(m).includes("still running"));
+      expect(slow).toHaveLength(1);
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      await tick;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a stopping keeper reads no further apps", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { deps, keeper } = setup({ apps: [app("a", [tmpl("ta", 1)]), app("b", [tmpl("tb", 1)])] });
+    const read = deps.apps.app.getMockImplementation()!;
+    deps.apps.app.mockImplementationOnce(async (id: string) => {
+      await gate;
+      return read(id);
+    });
+    const tick = keeper.reconcileOnce();
+    await vi.waitFor(() => expect(deps.apps.app).toHaveBeenCalledTimes(1));
+    const stopping = keeper.stop();
+    release();
+    await stopping;
+    await tick;
+    expect(deps.apps.app).toHaveBeenCalledTimes(1);
+    expect(deps.createWarm).not.toHaveBeenCalled();
   });
 
   it("start runs a tick and stop clears the timer", async () => {
@@ -413,7 +700,7 @@ describe("AppWarmPoolKeeper", () => {
       expect(deps.appIds).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(30_000);
       expect(deps.appIds).toHaveBeenCalledTimes(2);
-      keeper.stop();
+      await keeper.stop();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(deps.appIds).toHaveBeenCalledTimes(2);
     } finally {

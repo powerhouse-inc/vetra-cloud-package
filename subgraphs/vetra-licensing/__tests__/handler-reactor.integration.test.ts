@@ -218,7 +218,7 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
     const ded = (await appReads.app(APP))!.templates.find((t) => t.id === "ded")!;
     const warmId = await createWarmEnvironment(
       { envs, protect: async () => {}, generateSubdomain, store: warmStore },
-      { appId: APP, appName: "KV", template: { ...ded.template, id: "ded" }, templateHash: ded.templateHash, nowIso: NOW },
+      { appId: APP, appName: "KV", template: { ...ded.template, id: "ded" }, templateHash: ded.templateHash, poolSize: 1, nowIso: NOW },
     );
     // What gitops and observability report once it is up.
     await envs.execute(warmId, [markChangesPushed({}), markDeploymentStarted({}), reportDeploymentSucceeded({})]);

@@ -449,7 +449,8 @@ export function isVersionUpgrade(current: string | null, wanted: string): boolea
  * FUSION artifact versions in recording order (newest last), and `wanted` was
  * recorded after `current`. No record, a version it does not list, or an
  * older or equal one: not an upgrade, so the floor never moves an image it
- * cannot prove is older.
+ * cannot prove is older (a listed `wanted` over an unlisted `current` is
+ * reported instead: isFusionStranded).
  */
 export function isFusionUpgrade(
   current: string | null,
@@ -459,9 +460,29 @@ export function isFusionUpgrade(
   if (current === null) return false;
   if (SEMVER.test(current) && SEMVER.test(wanted)) return isVersionUpgrade(current, wanted);
   if (!recorded) return false;
-  const from = recorded.lastIndexOf(current);
-  const to = recorded.lastIndexOf(wanted);
+  // The vetra-app reducer keeps versions unique (a re-record replaces in place).
+  const from = recorded.indexOf(current);
+  const to = recorded.indexOf(wanted);
   return from !== -1 && to !== -1 && to > from;
+}
+
+/**
+ * True when the floor holds a FUSION version it cannot order: the record
+ * lists `wanted` but not `current`, and they are not both semver. The record
+ * keeps only the app's last 50 versions, so `current` may have aged out (and
+ * is then older), but it may as well be a build the holder pinned by hand
+ * that was never recorded (and newer). Moving it could be a downgrade of a
+ * running app whose data a newer version already migrated, so the floor holds
+ * it and the caller says so, for someone to look at.
+ */
+export function isFusionStranded(
+  current: string | null,
+  wanted: string,
+  recorded: readonly string[] | undefined,
+): boolean {
+  if (current === null || current === wanted || !recorded) return false;
+  if (SEMVER.test(current) && SEMVER.test(wanted)) return false;
+  return !recorded.includes(current) && recorded.includes(wanted);
 }
 
 export interface FloorUpdateRenderInput {
@@ -477,6 +498,11 @@ export interface FloorUpdateRenderInput {
    * reaches templateHash. Absent: a non-semver FUSION version never moves.
    */
   fusionVersions?: readonly string[];
+  /**
+   * Called when the FUSION version is held because the record lists the
+   * wanted version but not the current one (see isFusionStranded).
+   */
+  onFusionHeld?: (held: { current: string; wanted: string }) => void;
 }
 
 /**
@@ -505,6 +531,7 @@ function floorFusionActions(
   owner: string | null,
   includedKey: boolean,
   fusionVersions: readonly string[] | undefined,
+  onFusionHeld: FloorUpdateRenderInput["onFusionHeld"],
 ): Action[] {
   const { repository, version } = s;
   const actions: Action[] = [];
@@ -529,6 +556,8 @@ function floorFusionActions(
   const currentVersion = have?.version ?? null;
   if (currentVersion === null || isFusionUpgrade(currentVersion, version, fusionVersions)) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (isFusionStranded(currentVersion, version, fusionVersions)) {
+    onFusionHeld?.({ current: currentVersion, wanted: version });
   }
   return actions;
 }
@@ -558,6 +587,7 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
           current.owner ?? null,
           input.includedKey === true,
           input.fusionVersions,
+          input.onFusionHeld,
         ),
       );
     }

@@ -14,6 +14,12 @@ export interface WarmRow {
   claimed_at: string | null;
   deleted_at: string | null;
   root_license_id: string | null;
+  /** When the environment document of a retired row was deleted. */
+  env_deleted_at: string | null;
+  /** The pool size the row was created for; null on rows from before it was recorded. */
+  pool_size: number | null;
+  /** Set when the keeper retired the row as a WARMING timeout. */
+  timed_out_at: string | null;
 }
 
 /** A chain's `license_environments` row before it knows its environment. */
@@ -34,6 +40,7 @@ export interface WarmPoolStore {
     appId: string;
     templateId: string;
     templateHash: string;
+    poolSize: number;
     nowIso: string;
   }): Promise<void>;
   live(appId: string, templateId: string): Promise<WarmRow[]>;
@@ -44,9 +51,36 @@ export interface WarmPoolStore {
   /**
    * The keeper's removal: marks the row deleted only while it is live and not
    * CLAIMED, in one statement, so it cannot race a claim. True when it did;
-   * only then may the caller delete the environment document.
+   * only then may the caller delete the environment document. `timedOut`:
+   * retired for not becoming READY in time; recorded (timed_out_at) in the
+   * same statement, for timeoutStreak.
    */
-  markDeletedUnclaimed(environmentId: string, nowIso: string): Promise<boolean>;
+  markDeletedUnclaimed(
+    environmentId: string,
+    nowIso: string,
+    opts?: { timedOut?: boolean },
+  ): Promise<boolean>;
+  /**
+   * Retired rows that were never CLAIMED whose environment document is not
+   * yet known deleted: the keeper deletes them (again) until it is.
+   */
+  awaitingDeletion(): Promise<WarmRow[]>;
+  /** Records that the row's environment document is deleted. */
+  markEnvDeleted(environmentId: string, nowIso: string): Promise<void>;
+  /**
+   * How many of the pool's newest rows for this template hash and pool size
+   * (at most `limit`) the keeper retired as WARMING timeouts (timed_out_at),
+   * counting back to the first that was not: a row that became AVAILABLE or
+   * CLAIMED, one retired for any other reason (drain, surplus, dead), or one
+   * still WARMING ends the run.
+   */
+  timeoutStreak(q: {
+    appId: string;
+    templateId: string;
+    templateHash: string;
+    poolSize: number;
+    limit: number;
+  }): Promise<number>;
   claimOneAvailable(q: {
     appId: string;
     templateId: string;
@@ -151,6 +185,9 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
           claimed_at: null,
           deleted_at: null,
           root_license_id: null,
+          env_deleted_at: null,
+          pool_size: r.poolSize,
+          timed_out_at: null,
         })
         .execute();
     },
@@ -194,15 +231,54 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .execute();
     },
 
-    async markDeletedUnclaimed(environmentId, nowIso) {
+    async markDeletedUnclaimed(environmentId, nowIso, opts) {
       const res = await db
         .updateTable("app_warm_pool")
-        .set({ deleted_at: nowIso })
+        .set({
+          deleted_at: nowIso,
+          ...(opts?.timedOut ? { timed_out_at: nowIso } : {}),
+        })
         .where("environment_id", "=", environmentId)
         .where("deleted_at", "is", null)
         .where("state", "!=", "CLAIMED")
         .executeTakeFirst();
       return Number(res.numUpdatedRows) > 0;
+    },
+
+    async awaitingDeletion() {
+      return (await db
+        .selectFrom("app_warm_pool")
+        .selectAll()
+        .where("deleted_at", "is not", null)
+        .where("env_deleted_at", "is", null)
+        // A CLAIMED row's environment is the licence's (a discarded claim
+        // deletes its own before retiring the row).
+        .where("state", "!=", "CLAIMED")
+        .orderBy("deleted_at")
+        .execute()) as WarmRow[];
+    },
+
+    async markEnvDeleted(environmentId, nowIso) {
+      await db
+        .updateTable("app_warm_pool")
+        .set({ env_deleted_at: nowIso })
+        .where("environment_id", "=", environmentId)
+        .execute();
+    },
+
+    async timeoutStreak(q) {
+      const rows = await db
+        .selectFrom("app_warm_pool")
+        .select("timed_out_at")
+        .where("app_id", "=", q.appId)
+        .where("template_id", "=", q.templateId)
+        .where("template_hash", "=", q.templateHash)
+        .where("pool_size", "=", q.poolSize)
+        .orderBy("created_at", "desc")
+        .limit(q.limit)
+        .execute();
+      const firstNot = rows.findIndex((r) => r.timed_out_at === null);
+      return firstNot === -1 ? rows.length : firstNot;
     },
 
     claimOneAvailable(q) {

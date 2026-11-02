@@ -75,6 +75,28 @@ describe("parseAppDocument", () => {
     expect(app.templates.find((t) => t.id === "t-free")!.fusionVersions).toBeUndefined();
   });
 
+  it("takes the recording order from the template's own FUSION image only", () => {
+    const doc = structuredClone(KV) as any;
+    const fusion = doc.state.global.artifacts[0];
+    fusion.versions = [
+      { version: "sha-56e1fd7497fc", reference: "cr.vetra.io/p/kv:sha-56e1fd7497fc" },
+      { version: "sha-6141b974fc38", reference: "cr.vetra.io/p/kv:sha-6141b974fc38" },
+    ];
+    fusion.channels = [{ channel: "LATEST", version: "sha-6141b974fc38" }];
+    // A package of the same name, and another app image, both listed first.
+    doc.state.global.artifacts = [
+      { id: "PACKAGE:kv", kind: "PACKAGE", name: "kv",
+        versions: [{ version: "9.9.9", reference: "kv@9.9.9" }], channels: [{ channel: "LATEST", version: "9.9.9" }] },
+      { id: "FUSION_IMAGE:other", kind: "FUSION_IMAGE", name: "other",
+        versions: [{ version: "sha-ffffffffffff", reference: "cr.vetra.io/p/other:sha-ffffffffffff" }],
+        channels: [{ channel: "LATEST", version: "sha-ffffffffffff" }] },
+      fusion,
+    ];
+    const pro = parseAppDocument(doc)!.templates.find((t) => t.id === "t-pro")!;
+    expect(pro.resolutionError).toBeNull();
+    expect(pro.fusionVersions).toStrictEqual(["sha-56e1fd7497fc", "sha-6141b974fc38"]);
+  });
+
   it("reports an unresolvable artifact instead of throwing", () => {
     const broken = parseAppDocument(KV)!.templates.find((t) => t.id === "t-broken")!;
     expect(broken.resolutionError).toMatch(/has not published/);

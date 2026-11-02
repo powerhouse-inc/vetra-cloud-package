@@ -21,9 +21,19 @@ export interface PoolPlanItem {
   promote: string[];
   /** Unclaimed rows to retire and whose environments to delete. */
   remove: string[];
+  /** The rows of `remove` that were WARMING for longer than MAX_WARMING_MS. */
+  timedOut: string[];
 }
 
 const READY = "READY";
+
+/**
+ * How long a row may stay WARMING before it is retired: a normal warm-up
+ * takes about 3 minutes. Past it the environment is taken to be stuck (a
+ * failed rollout, or a document left DRAFT by a crash between the row and its
+ * actions); without a limit it would hold a pool slot forever.
+ */
+export const MAX_WARMING_MS = 30 * 60_000;
 
 /**
  * The keeper's plan for one pool. Pure. `rows` are the pool's live rows;
@@ -34,7 +44,9 @@ const READY = "READY";
  * `target` null (size 0, app suspended or gone, no active term) drains every
  * unclaimed row. Otherwise:
  *  - remove: rows on another template hash (recycle), rows whose environment
- *    is dead or missing (heal), and the surplus over min(size, maxPerTemplate):
+ *    is dead or missing (heal), WARMING rows not READY created more than
+ *    MAX_WARMING_MS before `nowIso` (timedOut), and the surplus over
+ *    min(size, maxPerTemplate):
  *    WARMING newest first, then AVAILABLE oldest first;
  *  - promote: the remaining WARMING rows whose environment is READY (they
  *    count as AVAILABLE for the surplus order);
@@ -45,6 +57,7 @@ export function computeAppPoolPlan(
   target: PoolTarget | null,
   envStatus: Record<string, string | null>,
   maxPerTemplate: number,
+  nowIso: string,
 ): PoolPlanItem {
   const unclaimed = rows.filter(
     (r) => r.state === "WARMING" || r.state === "AVAILABLE",
@@ -54,17 +67,24 @@ export function computeAppPoolPlan(
       create: 0,
       promote: [],
       remove: unclaimed.map((r) => r.environment_id),
+      timedOut: [],
     };
   }
 
   const statusOf = (r: WarmRow): string | null =>
     envStatus[r.environment_id] ?? null;
+  const now = Date.parse(nowIso);
+  const isTimedOut = (r: WarmRow): boolean =>
+    r.state === "WARMING" &&
+    statusOf(r) !== READY &&
+    now - Date.parse(r.created_at) > MAX_WARMING_MS;
   const unusable = (r: WarmRow): boolean => {
     const status = statusOf(r);
     return (
       r.template_hash !== target.templateHash ||
       status === null ||
-      DEAD_STATUSES.has(status)
+      DEAD_STATUSES.has(status) ||
+      isTimedOut(r)
     );
   };
   const remove = unclaimed.filter(unusable).map((r) => r.environment_id);
@@ -98,5 +118,6 @@ export function computeAppPoolPlan(
     create: Math.max(0, cap - (kept.length - surplus)),
     promote,
     remove,
+    timedOut: unclaimed.filter(isTimedOut).map((r) => r.environment_id),
   };
 }

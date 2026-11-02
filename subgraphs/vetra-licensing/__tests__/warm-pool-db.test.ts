@@ -18,7 +18,7 @@ describe("warm pool store (real PGlite)", () => {
     db = undefined;
   });
   const ins = (s: Awaited<ReturnType<typeof open>>, id: string, nowIso = "2026-11-01T00:00:00.000Z", hash = "h1") =>
-    s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: hash, nowIso });
+    s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: hash, poolSize: 1, nowIso });
   const claim = (s: Awaited<ReturnType<typeof open>>, hash = "h1") =>
     s.claimOneAvailable({ appId: "app", templateId: "t", templateHash: hash, rootLicenseId: "root-1", nowIso: "2026-11-02T00:00:00.000Z" });
 
@@ -148,5 +148,69 @@ describe("warm pool store (real PGlite)", () => {
       ["w", "WARMING"],
       ["v", "AVAILABLE"],
     ]);
+  });
+
+  it("awaitingDeletion lists retired unclaimed rows until their environment is deleted", async () => {
+    const s = await open();
+    await ins(s, "retired");
+    await ins(s, "failed");
+    await ins(s, "live");
+    await ins(s, "c");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    expect(await s.markDeletedUnclaimed("retired", "2026-11-02T01:00:00.000Z")).toBe(true);
+    // warm-env's failed create retires its row with markDeleted.
+    await s.markDeleted("failed", "2026-11-02T01:01:00.000Z");
+    // A discarded claim keeps its CLAIMED row: its environment was deleted first.
+    await s.markDeleted("c", "2026-11-02T01:02:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["retired", "failed"]);
+    await s.markEnvDeleted("retired", "2026-11-02T01:05:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["failed"]);
+    expect((await s.byEnvironment("retired"))!.env_deleted_at).toBe("2026-11-02T01:05:00.000Z");
+  });
+
+  it("timeoutStreak counts the newest rows of a hash and size the keeper retired as timed out, back to the first that was not", async () => {
+    const s = await open();
+    const T = (min: number) => new Date(Date.parse("2026-11-01T00:00:00.000Z") + min * 60_000).toISOString();
+    const add = (id: string, min: number, over: { hash?: string; size?: number } = {}) =>
+      s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: over.hash ?? "h1", poolSize: over.size ?? 2, nowIso: T(min) });
+    const timeOut = async (id: string, min: number) => {
+      await add(id, min);
+      expect(await s.markDeletedUnclaimed(id, T(min + 31), { timedOut: true })).toBe(true);
+    };
+    await add("ok", 0);
+    await s.markAvailable("ok", T(3));
+    await timeOut("t1", 10);
+    // Retired for another reason (surplus, a dead status): not a timeout, and it breaks the streak.
+    await add("quick", 50);
+    await s.markDeletedUnclaimed("quick", T(55));
+    expect((await s.byEnvironment("quick"))!.timed_out_at).toBeNull();
+    expect((await s.byEnvironment("t1"))!.timed_out_at).toBe(T(41));
+    await timeOut("t2", 100);
+    await timeOut("t3", 140);
+    // Another hash or size is another streak.
+    await add("other-hash", 150, { hash: "h2" });
+    await add("other-size", 151, { size: 5 });
+    const streak = (hash = "h1", size = 2) =>
+      s.timeoutStreak({ appId: "app", templateId: "t", templateHash: hash, poolSize: size, limit: 3 });
+    expect(await streak()).toBe(2);
+    await timeOut("t4", 180);
+    expect(await streak()).toBe(3);
+    expect(await streak("h2")).toBe(0);
+    expect(await streak("h1", 5)).toBe(0);
+    // A row still WARMING (not yet timed out) is newest: the streak is 0 until it resolves.
+    await add("warming", 220);
+    expect(await streak()).toBe(0);
+  });
+
+  it("timeoutStreak does not count a WARMING row drained, trimmed or retired after an outage, however old", async () => {
+    const s = await open();
+    const T = (min: number) => new Date(Date.parse("2026-11-01T00:00:00.000Z") + min * 60_000).toISOString();
+    for (const [id, min] of [["d1", 0], ["d2", 10], ["d3", 20]] as const) {
+      await s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: "h1", poolSize: 2, nowIso: T(min) });
+      // Retired hours later, still WARMING, but not as a timeout.
+      expect(await s.markDeletedUnclaimed(id, T(min + 300))).toBe(true);
+    }
+    expect(await s.timeoutStreak({ appId: "app", templateId: "t", templateHash: "h1", poolSize: 2, limit: 3 })).toBe(0);
   });
 });
