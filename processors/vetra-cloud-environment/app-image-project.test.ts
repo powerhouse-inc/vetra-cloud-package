@@ -153,4 +153,16 @@ describe("createAppImageProjectResolver — warm environment", () => {
     expect(await resolve(unlinked, "warm-env")).toBe("app-shop");
     expect(await resolve(unlinked, "other-env")).toBeNull();
   });
+
+  it("uses a warm result handed in by the caller instead of looking it up again", async () => {
+    await seed();
+    let lookups = 0;
+    const resolve = createAppImageProjectResolver(db, db, async () => {
+      lookups++;
+      return null;
+    });
+    expect(await resolve(unlinked, "warm-env", { appId: "app-1" })).toBe("app-shop");
+    expect(await resolve(unlinked, "warm-env", null)).toBeNull();
+    expect(lookups).toBe(0);
+  });
 });

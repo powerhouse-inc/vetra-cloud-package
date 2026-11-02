@@ -15,7 +15,11 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
-import type { AppImageProjectResolver, WarmPoolLookup } from "./app-image-project.js";
+import {
+  lookupWarm,
+  type AppImageProjectResolver,
+  type WarmPoolLookup,
+} from "./app-image-project.js";
 import {
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
@@ -1512,6 +1516,8 @@ export async function generateValuesYaml(
     connectApexDomain,
   );
 
+  // One warm-pool lookup per render, shared with the image resolver.
+  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
   const fusionBlock = generateFusionBlock(state, {
     tenantId,
     subdomain,
@@ -1526,9 +1532,11 @@ export async function generateValuesYaml(
     // may one Vetra provisioned for a licence (no App link; the resolver reads
     // license_environments).
     appImageProject: resolveAppImageProject
-      ? await resolveAppImageProject(state, documentId)
+      ? await (warm === undefined
+          ? resolveAppImageProject(state, documentId)
+          : resolveAppImageProject(state, documentId, warm))
       : null,
-    warm: isWarm ? (await isWarm(documentId)) !== null : false,
+    warm: warm != null,
   });
 
   const tenantName = yamlQuote(state.label ?? name);

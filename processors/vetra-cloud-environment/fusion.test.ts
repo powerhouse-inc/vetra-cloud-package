@@ -445,4 +445,29 @@ describe("generateValuesYaml — warm environment is closed", () => {
     expect(yaml).not.toContain("closed:");
     expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
   });
+
+  it("looks the warm pool up once per render and hands the result to the image resolver", async () => {
+    const isWarm = vi.fn(async () => ({ appId: "app-1" }));
+    const resolver = vi.fn(async () => "app-sektar");
+    await generateValuesYaml(dbStub, warmState(), DOC_ID, null, resolver, isWarm);
+    expect(isWarm).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(expect.anything(), DOC_ID, { appId: "app-1" });
+  });
+
+  it("renders a normal environment as not warm when the warm-pool table is missing (42P01)", async () => {
+    const isWarm = vi.fn(async () => {
+      throw Object.assign(new Error('relation "app_warm_pool" does not exist'), { code: "42P01" });
+    });
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
+  });
+
+  it("fails the render on any other warm-pool lookup error (a warm env fails closed)", async () => {
+    const isWarm = vi.fn(async () => {
+      throw Object.assign(new Error("connection reset"), { code: "08006" });
+    });
+    await expect(
+      generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm),
+    ).rejects.toThrow("connection reset");
+  });
 });
