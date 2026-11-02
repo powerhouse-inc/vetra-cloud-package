@@ -9,6 +9,7 @@ import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
 import { getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
+import { redactSecrets } from "../../shared/redact.js";
 import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
@@ -651,30 +652,38 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     db: Kysely<VetraLicensingDB>,
   ): Promise<Pick<ChainEnvDeps, "appKey" | "releaseAppKey">> {
     if (!transit || !secrets) return {};
-    const llmDb = (await this.relationalDb.createNamespace("vetra-llm")) as unknown as Kysely<VetraLlmDB>;
-    await ensureLlmTables(llmDb as Kysely<any>);
-    const appBudget = (rootLicenseId: string, ownerDid: string) => appBudgetForLicence(db, rootLicenseId, ownerDid);
-    const { broker, openrouter, keyVault } = createProcessBroker({
-      db: llmDb,
-      transit,
-      secrets,
-      studio,
-      appBudget,
-      env: process.env,
-    });
-    if (!openrouter || !keyVault) {
-      console.warn("[licensing] OPENROUTER_MANAGEMENT_KEY unset — app environments get no included AI key");
+    // An optional feature: its setup failing never fails the licensing setup.
+    try {
+      const llmDb = (await this.relationalDb.createNamespace("vetra-llm")) as unknown as Kysely<VetraLlmDB>;
+      await ensureLlmTables(llmDb as Kysely<any>);
+      const appBudget = (rootLicenseId: string, ownerDid: string) => appBudgetForLicence(db, rootLicenseId, ownerDid);
+      const { broker, openrouter, keyVault } = createProcessBroker({
+        db: llmDb,
+        transit,
+        secrets,
+        studio,
+        appBudget,
+        env: process.env,
+      });
+      if (!openrouter || !keyVault) {
+        console.warn("[licensing] OPENROUTER_MANAGEMENT_KEY unset — app environments get no included AI key");
+        return {};
+      }
+      return {
+        // Only a licence whose code carries a budget is keyed (provisionVetraKey
+        // re-reads it under the env's key lock).
+        appKey: async (k) =>
+          (await appBudget(k.rootLicenseId, k.ownerDid)) === null
+            ? false
+            : (await broker.provisionVetraKey(k)).connected,
+        releaseAppKey: (environmentId) => broker.releaseVetraKey(environmentId),
+      };
+    } catch (err) {
+      console.warn(
+        `[licensing] included AI key unavailable, app environments are built keyless: ${redactSecrets(String(err))}`,
+      );
       return {};
     }
-    return {
-      // Only a licence whose code carries a budget is keyed (provisionVetraKey
-      // re-reads it under the env's key lock).
-      appKey: async (k) =>
-        (await appBudget(k.rootLicenseId, k.ownerDid)) === null
-          ? false
-          : (await broker.provisionVetraKey(k)).connected,
-      releaseAppKey: (environmentId) => broker.releaseVetraKey(environmentId),
-    };
   }
 
   async onDisconnect(): Promise<void> {
