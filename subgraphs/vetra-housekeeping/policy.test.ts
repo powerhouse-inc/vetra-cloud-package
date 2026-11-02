@@ -128,6 +128,13 @@ describe("isEligibleForSleep", () => {
     expect(isEligibleForSleep({ ...base, poolState: "WARMING" })).toBe(false);
   });
 
+  it("never sleeps an unowned FUSION-only (app warm pool) environment", () => {
+    const fusion = JSON.stringify([{ type: "FUSION", prefix: "app", enabled: true }]);
+    expect(isEligibleForSleep({ ...base, owner: null, poolState: null, services: fusion })).toBe(false);
+    // Even owned, a FUSION-only environment has no CLINT service to sleep.
+    expect(isEligibleForSleep({ ...base, services: fusion })).toBe(false);
+  });
+
   it("rejects core tenants and the allowlist", () => {
     expect(isEligibleForSleep({ ...base, tenantId: "vetra", subdomain: "vetra" })).toBe(false);
     expect(isEligibleForSleep(base, { allowlist: [base.tenantId] })).toBe(false);

@@ -28,6 +28,12 @@ export interface WarmPoolStore {
   allLive(): Promise<WarmRow[]>;
   markAvailable(environmentId: string, nowIso: string): Promise<void>;
   markDeleted(environmentId: string, nowIso: string): Promise<void>;
+  /**
+   * The keeper's removal: marks the row deleted only while it is live and not
+   * CLAIMED, in one statement, so it cannot race a claim. True when it did;
+   * only then may the caller delete the environment document.
+   */
+  markDeletedUnclaimed(environmentId: string, nowIso: string): Promise<boolean>;
   claimOneAvailable(q: {
     appId: string;
     templateId: string;
@@ -102,6 +108,17 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .set({ deleted_at: nowIso })
         .where("environment_id", "=", environmentId)
         .execute();
+    },
+
+    async markDeletedUnclaimed(environmentId, nowIso) {
+      const res = await db
+        .updateTable("app_warm_pool")
+        .set({ deleted_at: nowIso })
+        .where("environment_id", "=", environmentId)
+        .where("deleted_at", "is", null)
+        .where("state", "!=", "CLAIMED")
+        .executeTakeFirst();
+      return Number(res.numUpdatedRows) > 0;
     },
 
     // Single statement (UPDATE ... WHERE pk = (SELECT ... FOR UPDATE SKIP

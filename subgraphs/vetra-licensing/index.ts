@@ -32,6 +32,13 @@ import {
 } from "./license-gateway.js";
 import { createLifecycleStore } from "./lifecycle.js";
 import { LicenseKeeper } from "./keeper.js";
+import { AppWarmPoolKeeper } from "./warm-pool-keeper.js";
+import { createWarmPoolStore } from "./warm-pool-db.js";
+import { createWarmEnvironment } from "./warm-env.js";
+import {
+  protectUnownedForService,
+  vetraServiceAddress,
+} from "../vetra-cloud-observability/env-protection.js";
 import { AppLicenseHandler } from "./handler.js";
 import {
   createChainEnvironmentRows,
@@ -114,6 +121,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   additionalContextFields = {};
   private keeper: LicenseKeeper | null = null;
   private handler: AppLicenseHandler | null = null;
+  private warmPool: AppWarmPoolKeeper | null = null;
   private stats: RenownStatsClient | null = null;
   private migration: { stop(): void } | null = null;
 
@@ -546,6 +554,49 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     kick = () => handler.kick();
     this.handler.start();
 
+    // App warm pools: ownerless environments kept ready per DEDICATED
+    // template (warmPoolSize). Gated like the handler (cfg.enabled, dryRun
+    // logs only); with every template at 0 it only lists. Warm environments
+    // must be protected for the Vetra service identity at creation, so
+    // without a permission service there is no keeper.
+    if (perm) {
+      const warmStore = createWarmPoolStore(db);
+      const trustedAppIds = appsTrustedIds(appsDb);
+      this.warmPool = new AppWarmPoolKeeper(
+        {
+          appIds: async () => [...(await trustedAppIds())],
+          apps: appReads,
+          store: warmStore,
+          envStatus: async (id) => (await envs.getState(id))?.status ?? null,
+          deleteEnv: (id) => envs.delete(id),
+          createWarm: (input) =>
+            createWarmEnvironment(
+              {
+                envs,
+                protect: (documentId) =>
+                  protectUnownedForService(perm, documentId, vetraServiceAddress()),
+                generateSubdomain,
+                store: warmStore,
+                logger: console,
+              },
+              input,
+            ),
+          now: () => new Date().toISOString(),
+          logger: console,
+        },
+        {
+          enabled: cfg.enabled,
+          dryRun: cfg.dryRun,
+          scanIntervalMs: cfg.warmPoolScanIntervalMs,
+          createsPerTick: cfg.warmPoolCreatesPerTick,
+          maxPerTemplate: cfg.warmPoolMaxPerTemplate,
+        },
+      );
+      this.warmPool.start();
+    } else {
+      console.warn("[warm-pool] no document permission service: app warm pools are off");
+    }
+
     // cfg.enabled gates the whole write path: the keeper below, and every
     // mutation in createResolvers (they refuse with LicensingDisabledError).
     // Queries stay available either way. cfg.dryRun only affects the keeper.
@@ -569,6 +620,8 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper = null;
     this.handler?.stop();
     this.handler = null;
+    this.warmPool?.stop();
+    this.warmPool = null;
     if (this.stats) {
       const stats = this.stats;
       this.stats = null;

@@ -44,4 +44,16 @@ describe("loadLicensingConfig", () => {
     expect(loadLicensingConfig({ LICENSING_TOKENS_PER_TICK: "12" }).tokensPerTick).toBe(12);
     expect(loadLicensingConfig({ LICENSING_TOKENS_PER_TICK: "-3" }).tokensPerTick).toBe(5);
   });
+  it("reads the warm pool keeper settings; the per-template maximum may only lower 10", () => {
+    expect(loadLicensingConfig({})).toMatchObject({
+      warmPoolScanIntervalMs: 30_000, warmPoolCreatesPerTick: 3, warmPoolMaxPerTemplate: 10,
+    });
+    expect(loadLicensingConfig({
+      APP_WARM_POOL_SCAN_INTERVAL_MS: "5000", APP_WARM_POOL_CREATES_PER_TICK: "0", APP_WARM_POOL_MAX_PER_TEMPLATE: "4",
+    })).toMatchObject({ warmPoolScanIntervalMs: 5000, warmPoolCreatesPerTick: 0, warmPoolMaxPerTemplate: 4 });
+    expect(loadLicensingConfig({ APP_WARM_POOL_MAX_PER_TEMPLATE: "50" }).warmPoolMaxPerTemplate).toBe(10);
+    expect(loadLicensingConfig({
+      APP_WARM_POOL_SCAN_INTERVAL_MS: "0", APP_WARM_POOL_CREATES_PER_TICK: "-1", APP_WARM_POOL_MAX_PER_TEMPLATE: "x",
+    })).toMatchObject({ warmPoolScanIntervalMs: 30_000, warmPoolCreatesPerTick: 3, warmPoolMaxPerTemplate: 10 });
+  });
 });

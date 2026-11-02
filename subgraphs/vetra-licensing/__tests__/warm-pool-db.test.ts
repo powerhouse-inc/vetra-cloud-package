@@ -109,4 +109,16 @@ describe("warm pool store (real PGlite)", () => {
     const h = await s.warmHours("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z", "2026-11-01T03:00:00.000Z");
     expect(h).toBe(24 + 3);
   });
+  it("markDeletedUnclaimed retires an unclaimed row but never a CLAIMED or deleted one", async () => {
+    const s = await open();
+    await ins(s, "w");
+    await ins(s, "c");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    expect(await s.markDeletedUnclaimed("w", "2026-11-02T01:00:00.000Z")).toBe(true);
+    expect(await s.markDeletedUnclaimed("w", "2026-11-02T02:00:00.000Z")).toBe(false);
+    expect(await s.markDeletedUnclaimed("c", "2026-11-02T01:00:00.000Z")).toBe(false);
+    expect(await s.markDeletedUnclaimed("nope", "2026-11-02T01:00:00.000Z")).toBe(false);
+    expect((await s.allLive()).map((r) => [r.environment_id, r.state])).toEqual([["c", "CLAIMED"]]);
+  });
 });
