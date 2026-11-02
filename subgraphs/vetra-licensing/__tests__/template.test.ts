@@ -570,3 +570,25 @@ describe("host templates (a FUSION service whose artifact is `host`)", () => {
     expect(renderFloorUpdateActions({ template: hostTemplate, current })).toEqual([]);
   });
 });
+
+describe("renderCreateActions without an owner", () => {
+  it("has no SET_OWNER and an empty ADMINS for a host service", () => {
+    const actions = renderCreateActions({
+      label: "x (warm)",
+      subdomain: "s",
+      owner: null,
+      template: {
+        services: [
+          { id: "f", type: "FUSION", prefix: "app", resolvedRepository: "ghcr.io/x/y", resolvedVersion: "1.0.0", artifactName: "host" },
+        ],
+        packages: [],
+        size: "VETRA_AGENT_S",
+        baseDomain: null,
+        packageRegistry: null,
+      },
+    });
+    expect(types(actions)).not.toContain("SET_OWNER");
+    const cfg = actions.find((a) => a.type === "SET_FUSION_CONFIG") as any;
+    expect(cfg.input.env).toContainEqual({ name: "ADMINS", value: "", isSecret: false });
+  });
+});

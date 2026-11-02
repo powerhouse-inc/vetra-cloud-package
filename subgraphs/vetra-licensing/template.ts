@@ -241,7 +241,8 @@ function sizeAction(
 export interface CreateRenderInput {
   label: string;
   subdomain: string;
-  owner: string;
+  /** null renders an ownerless (warm) environment: no SET_OWNER, empty ADMINS. */
+  owner: string | null;
   template: TemplateShape;
 }
 
@@ -263,8 +264,8 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
       genericBaseDomain: t.baseDomain ?? DEFAULT_BASE_DOMAIN,
       defaultPackageRegistry: t.packageRegistry ?? undefined,
     }),
-    setOwner({ address: input.owner }),
   ];
+  if (input.owner) actions.push(setOwner({ address: input.owner }));
 
   for (const p of n.packages) {
     actions.push(addPackage({ packageName: p.name, version: p.version }));
@@ -273,7 +274,7 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
     actions.push(enableService({ type: s.type, prefix: s.prefix }));
     const sized = sizeAction(s, n.size, null);
     if (sized) actions.push(sized);
-    actions.push(...fusionActions(s, input.owner));
+    actions.push(...fusionActions(s, input.owner ?? ""));
   }
 
   actions.push(approveChanges({}));
