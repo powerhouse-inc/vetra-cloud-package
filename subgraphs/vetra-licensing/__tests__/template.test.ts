@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   defaultGlobalState,
   type VetraCloudEnvironmentService,
@@ -417,6 +417,39 @@ describe("renderFloorUpdateActions moves a FUSION commit tag up by recording ord
     expect(
       renderFloorUpdateActions({ template: shaTemplate, current: onFusion("sha-ffffffffffff"), fusionVersions: [SHA_A, SHA_B] }),
     ).toEqual([]);
+  });
+
+  it("holds a FUSION version the record no longer lists and reports it, never guessing it is older", () => {
+    // The vetra-app reducer keeps the last 50 versions: sha-a may have aged
+    // out, or the holder may have pinned a newer unrecorded build. Moving it
+    // to the template's version could be a downgrade, so it stays.
+    const held = vi.fn();
+    expect(
+      renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A), fusionVersions: [SHA_B], onFusionHeld: held }),
+    ).toEqual([]);
+    expect(held).toHaveBeenCalledExactlyOnceWith({ current: SHA_A, wanted: SHA_B });
+  });
+
+  it("reports nothing when the version moves, already matches, or there is no record", () => {
+    const held = vi.fn();
+    renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A), fusionVersions: [SHA_A, SHA_B], onFusionHeld: held });
+    renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_B), fusionVersions: [SHA_B], onFusionHeld: held });
+    renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A), onFusionHeld: held });
+    // Neither listed: nothing the record could say either way.
+    renderFloorUpdateActions({ template: shaTemplate, current: onFusion(SHA_A), fusionVersions: ["sha-000000000000"], onFusionHeld: held });
+    expect(held).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing for two semver versions, which semver orders", () => {
+    const held = vi.fn();
+    const semverTemplate: TemplateShape = {
+      ...shaTemplate,
+      services: shaTemplate.services.map((s) => (s.type === "FUSION" ? { ...s, resolvedVersion: "1.0.0" } : s)),
+    };
+    expect(
+      renderFloorUpdateActions({ template: semverTemplate, current: onFusion("2.0.0"), fusionVersions: ["1.0.0"], onFusionHeld: held }),
+    ).toEqual([]);
+    expect(held).not.toHaveBeenCalled();
   });
 });
 

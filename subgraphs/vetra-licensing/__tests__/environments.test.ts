@@ -242,6 +242,21 @@ describe("provisionChain moves a FUSION commit tag up by the app's recording ord
     expect(executed[1]!.actions[0]!.input).toStrictEqual({ type: "FUSION", version: SHA_B });
   });
 
+  it("warns, naming the environment and both versions, when the current version has aged out of the record", async () => {
+    const warn = vi.fn();
+    deps.logger = { error: vi.fn(), warn };
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    const row = await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_B] }));
+    expect(executed).toHaveLength(1);
+    expect(row.template_hash).toBe("h2");
+    expect(warn).toHaveBeenCalledOnce();
+    const msg = String(warn.mock.calls[0]![0]);
+    expect(msg).toContain("env-1");
+    expect(msg).toContain(SHA_A);
+    expect(msg).toContain(SHA_B);
+  });
+
   it("without the order, leaves the version where it is (as before)", async () => {
     await provisionChain(deps, input());
     states.set("env-1", liveOnShaA() as never);
