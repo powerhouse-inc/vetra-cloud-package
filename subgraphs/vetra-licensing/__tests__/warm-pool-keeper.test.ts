@@ -515,6 +515,56 @@ describe("AppWarmPoolKeeper", () => {
     await tick;
   });
 
+  it("stop warns once when the tick in flight is still running after 30 s, and keeps waiting", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const { deps, keeper } = setup({
+        apps: [app("a", [tmpl("ta", 1)])],
+        create: async () => {
+          await gate;
+          return "env";
+        },
+      });
+      const tick = keeper.reconcileOnce();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.createWarm).toHaveBeenCalledTimes(1);
+      let stopped = false;
+      const stopping = keeper.stop().then(() => (stopped = true));
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(deps.logger.warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const slow = deps.logger.warn.mock.calls.filter(([m]) => String(m).includes("still running"));
+      expect(slow).toHaveLength(1);
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      await tick;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a stopping keeper reads no further apps", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { deps, keeper } = setup({ apps: [app("a", [tmpl("ta", 1)]), app("b", [tmpl("tb", 1)])] });
+    const read = deps.apps.app.getMockImplementation()!;
+    deps.apps.app.mockImplementationOnce(async (id: string) => {
+      await gate;
+      return read(id);
+    });
+    const tick = keeper.reconcileOnce();
+    await vi.waitFor(() => expect(deps.apps.app).toHaveBeenCalledTimes(1));
+    const stopping = keeper.stop();
+    release();
+    await stopping;
+    await tick;
+    expect(deps.apps.app).toHaveBeenCalledTimes(1);
+    expect(deps.createWarm).not.toHaveBeenCalled();
+  });
+
   it("start runs a tick and stop clears the timer", async () => {
     vi.useFakeTimers();
     try {

@@ -43,6 +43,9 @@ export interface WarmPoolKeeperDeps {
 /** App document statuses whose pools are drained. */
 const SUSPENDED_APP_STATUSES = new Set(["DISCONNECTED", "DELETED"]);
 
+/** stop() warns (once) when the tick in flight takes longer than this. */
+const STOP_SLOW_WARN_MS = 30_000;
+
 /** Creation backoff after a dead removal: 2, 4, 8, then 16 ticks. */
 const BACKOFF_BASE_TICKS = 2;
 const BACKOFF_MAX_TICKS = 16;
@@ -119,9 +122,22 @@ export class AppWarmPoolKeeper {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.stopped = true;
-    // A failed tick was already the tick's caller's to report; stop() (and
-    // onDisconnect after it) must not throw for it.
-    await this.running?.catch(() => {});
+    const running = this.running;
+    if (!running) return;
+    // Keeps waiting (no create or delete may run after stop resolves), but
+    // says so when a reactor call in the tick seems to hang.
+    const slow = setTimeout(() => {
+      this.d.logger.warn(
+        `[warm-pool] stopping: the keeper tick is still running after ${STOP_SLOW_WARN_MS / 1000} s; still waiting for it`,
+      );
+    }, STOP_SLOW_WARN_MS);
+    try {
+      // A failed tick was already the tick's caller's to report; stop() (and
+      // onDisconnect after it) must not throw for it.
+      await running.catch(() => {});
+    } finally {
+      clearTimeout(slow);
+    }
   }
 
   async reconcileOnce(): Promise<void> {
@@ -142,6 +158,7 @@ export class AppWarmPoolKeeper {
     const heldApps = new Set<string>();
 
     for (const id of ids) {
+      if (this.stopped) return;
       let app: AppDocView | null;
       try {
         app = await this.d.apps.app(id);
