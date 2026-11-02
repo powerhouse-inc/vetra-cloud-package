@@ -141,3 +141,16 @@ describe("licensed environments (provisioned for a licence, not App-linked)", ()
     expect(await createAppImageProjectResolver(db)(unlinked, "licensed-env")).toBeNull();
   });
 });
+
+describe("createAppImageProjectResolver — warm environment", () => {
+  const unlinked = { app: null } as unknown as VetraCloudEnvironmentState;
+
+  it("treats a warm document as licensed for its app, without a license_environments row", async () => {
+    await seed();
+    const resolve = createAppImageProjectResolver(db, db, async (id) =>
+      id === "warm-env" ? { appId: "app-1" } : null,
+    );
+    expect(await resolve(unlinked, "warm-env")).toBe("app-shop");
+    expect(await resolve(unlinked, "other-env")).toBeNull();
+  });
+});

@@ -13,6 +13,14 @@ export type AppImageProjectResolver = (
 ) => Promise<string | null>;
 
 /**
+ * Whether a document is a live warm-pool environment (pre-started, ownerless,
+ * waiting to be claimed), and for which App.
+ */
+export type WarmPoolLookup = (
+  documentId: string,
+) => Promise<{ appId: string } | null>;
+
+/**
  * The App named by `state.app.appId` must exist, and this document must be
  * its production env or one of its preview envs. Missing tables (vetra-apps
  * not migrated yet) or any query failure → null (no App project).
@@ -20,10 +28,11 @@ export type AppImageProjectResolver = (
 export function createAppImageProjectResolver(
   appsDb: Kysely<any>,
   licensingDb: Kysely<any> | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): AppImageProjectResolver {
   return async (state, documentId) => {
     const appId = state.app?.appId;
-    if (!appId) return licensedImageProject(appsDb, licensingDb, documentId);
+    if (!appId) return licensedImageProject(appsDb, licensingDb, documentId, isWarm);
     try {
       const app = (await appsDb
         .selectFrom("apps")
@@ -58,19 +67,27 @@ async function licensedImageProject(
   appsDb: Kysely<any>,
   licensingDb: Kysely<any> | null,
   documentId: string,
+  isWarm: WarmPoolLookup | null,
 ): Promise<string | null> {
-  if (!licensingDb) return null;
   try {
-    const licensed = (await licensingDb
-      .selectFrom("license_environments")
-      .select("app_id")
-      .where("environment_id", "=", documentId)
-      .executeTakeFirst()) as { app_id: string } | undefined;
-    if (!licensed) return null;
+    // A warm environment has no license_environments row yet (the claim writes
+    // it); the warm pool names its App.
+    const warm = isWarm ? await isWarm(documentId) : null;
+    let appId = warm?.appId;
+    if (!appId) {
+      if (!licensingDb) return null;
+      const licensed = (await licensingDb
+        .selectFrom("license_environments")
+        .select("app_id")
+        .where("environment_id", "=", documentId)
+        .executeTakeFirst()) as { app_id: string } | undefined;
+      if (!licensed) return null;
+      appId = licensed.app_id;
+    }
     const app = (await appsDb
       .selectFrom("apps")
       .select("harbor_project")
-      .where("id", "=", licensed.app_id)
+      .where("id", "=", appId)
       .executeTakeFirst()) as { harbor_project: string | null } | undefined;
     return app?.harbor_project ?? null;
   } catch {

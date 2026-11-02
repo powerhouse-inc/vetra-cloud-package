@@ -386,3 +386,36 @@ describe("generateValuesYaml — licensed env (no App link) running its App's im
     expect(appBlock(yaml)).toContain(`    repository: "cr.vetra.io/app-sektar/host"`);
   });
 });
+
+describe("generateValuesYaml — warm environment is closed", () => {
+  const warmState = () =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: "cr.vetra.io/app-sektar/host",
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      app: null,
+    });
+  const allow = vi.fn(async () => "app-sektar");
+
+  it("sets ingress.closed on the FUSION ingress, keeping TLS and cert-manager", async () => {
+    const isWarm = vi.fn(async () => ({ appId: "app-1" }));
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(isWarm).toHaveBeenCalledWith(DOC_ID);
+    const block = appBlock(yaml);
+    expect(block).toContain("    closed: true");
+    expect(block).toContain("      cert-manager.io/cluster-issuer:");
+    expect(block).toContain("      enabled: true\n      secretName:");
+    await expect(yaml).toMatchFileSnapshot("./__golden__/warm-values.yaml");
+  });
+
+  it("leaves a non-warm environment untouched", async () => {
+    const isWarm = vi.fn(async () => null);
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(yaml).not.toContain("closed:");
+    expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
+  });
+});

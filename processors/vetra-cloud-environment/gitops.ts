@@ -15,7 +15,7 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
-import type { AppImageProjectResolver } from "./app-image-project.js";
+import type { AppImageProjectResolver, WarmPoolLookup } from "./app-image-project.js";
 import {
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
@@ -1188,6 +1188,8 @@ export function generateFusionBlock(
     connectHost: string | null;
     /** Harbor project of the env's App, confirmed by vetra-apps (never the doc's own claim). */
     appImageProject?: string | null;
+    /** A warm (unclaimed) environment: the chart renders its ingress closed (`ingress.closed: true`) until claimed. */
+    warm?: boolean;
   },
 ): string {
   const service = (state.services ?? []).find(
@@ -1296,7 +1298,7 @@ export function generateFusionBlock(
     targetPort: ${port}
   ingress:
     enabled: true
-    className: traefik
+    className: traefik${opts.warm ? "\n    closed: true" : ""}
     host: ${yamlQuote(host)}
     additionalHosts: []
     tls:
@@ -1362,6 +1364,7 @@ export async function generateValuesYaml(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1522,6 +1525,7 @@ export async function generateValuesYaml(
     appImageProject: resolveAppImageProject
       ? await resolveAppImageProject(state, documentId)
       : null,
+    warm: isWarm ? (await isWarm(documentId)) !== null : false,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
@@ -1854,6 +1858,7 @@ export async function syncEnvironment(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -1874,6 +1879,7 @@ export async function syncEnvironment(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
   } finally {
     gitMutex.release();
@@ -2009,6 +2015,7 @@ async function syncEnvironmentEphemeral(
   documentId: string,
   secretsService: SecretsService | null,
   resolveAppImageProject: AppImageProjectResolver | null,
+  isWarm: WarmPoolLookup | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -2037,6 +2044,7 @@ async function syncEnvironmentEphemeral(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
