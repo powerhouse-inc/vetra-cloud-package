@@ -109,6 +109,20 @@ describe("warm pool store (real PGlite)", () => {
     const h = await s.warmHours("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z", "2026-11-01T03:00:00.000Z");
     expect(h).toBe(24 + 3);
   });
+  it("claimedBetween counts claims inside [from, to), deleted or not", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await ins(s, "b");
+    await ins(s, "c");
+    for (const id of ["a", "b", "c"]) await s.markAvailable(id, "2026-10-31T00:00:00.000Z");
+    await claim(s); // claimed_at 2026-11-02T00:00
+    await s.claimOneAvailable({ appId: "app", templateId: "t", templateHash: "h1", rootLicenseId: "r2", nowIso: "2026-10-31T12:00:00.000Z" });
+    await s.markDeleted("a", "2026-11-03T00:00:00.000Z");
+    expect(await s.claimedBetween("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z")).toBe(1);
+    expect(await s.claimedBetween("app", "t", "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z")).toBe(1);
+    expect(await s.claimedBetween("app", "other", "2026-10-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z")).toBe(0);
+  });
+
   it("markDeletedUnclaimed retires an unclaimed row but never a CLAIMED or deleted one", async () => {
     const s = await open();
     await ins(s, "w");

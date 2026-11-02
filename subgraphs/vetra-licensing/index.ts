@@ -267,6 +267,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       },
       auth: { ...ownerLookup, orgs: defaultRenownOrgs() },
       appPublisher: defaultRenownOrgs(),
+      warmPool: createWarmPoolStore(db),
       apps: appReads,
       appWriter,
       licences: reads,

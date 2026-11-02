@@ -81,6 +81,13 @@ export interface WarmPoolStore {
     toIso: string,
     nowIso?: string,
   ): Promise<number>;
+  /** Rows of the pool claimed in [fromIso, toIso), deleted or not. */
+  claimedBetween(
+    appId: string,
+    templateId: string,
+    fromIso: string,
+    toIso: string,
+  ): Promise<number>;
 }
 
 const HOUR_MS = 3_600_000;
@@ -252,6 +259,22 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .where("state", "!=", "CLAIMED")
         .executeTakeFirst();
       return row ? { appId: row.app_id } : null;
+    },
+
+    async claimedBetween(appId, templateId, fromIso, toIso) {
+      const rows = await db
+        .selectFrom("app_warm_pool")
+        .select("claimed_at")
+        .where("app_id", "=", appId)
+        .where("template_id", "=", templateId)
+        .where("claimed_at", "is not", null)
+        .execute();
+      const from = Date.parse(fromIso);
+      const to = Date.parse(toIso);
+      return rows.filter((r) => {
+        const t = Date.parse(r.claimed_at as string);
+        return t >= from && t < to;
+      }).length;
     },
 
     async warmHours(appId, templateId, fromIso, toIso, nowIso) {

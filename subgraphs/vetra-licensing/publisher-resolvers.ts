@@ -18,6 +18,8 @@ import type { LicenseReads } from "./reads.js";
 import type { LifecycleStore } from "./lifecycle.js";
 import type { GrantRow, GrantStore } from "./grants.js";
 import type { ChainEnvRows } from "./environments.js";
+import type { WarmPoolStore } from "./warm-pool-db.js";
+import { estimateEnvironmentEurPerMonth } from "./warm-cost.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import { KeyStorageUnavailableError, type KeyVault } from "./key-vault.js";
 import type { LicensingConfig } from "./config.js";
@@ -68,6 +70,7 @@ export interface PublisherDeps {
     "grantFor" | "grantsForApp" | "allowList" | "addToAllowList" | "removeFromAllowList"
   >;
   envRows: Pick<ChainEnvRows, "forApp">;
+  warmPool: Pick<WarmPoolStore, "live" | "warmHours" | "claimedBetween">;
   codes: Kysely<VetraLicensingDB>;
   /** Null when OPENBAO_ADDR is unset: attached Claude keys are then refused. */
   keyVault: KeyVault | null;
@@ -273,6 +276,28 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           apps = await deps.auth.listAppsForOwner(address);
         }
         return apps.map((a) => ({ id: a.id, name: a.name, status: a.status, identityDid: a.identity_did ?? null }));
+      }),
+
+      warmPool: withCodes(async (a: { appId: string; templateId: string }, ctx) => {
+        const app = await readable(a.appId, ctx);
+        const tpl = app?.templates.find((t) => t.id === a.templateId);
+        if (!app || !tpl) throw new UnknownTemplateError();
+        const now = new Date(deps.now());
+        const y = now.getUTCFullYear();
+        const mo = now.getUTCMonth();
+        const monthStart = new Date(Date.UTC(y, mo, 1)).toISOString();
+        const lastStart = new Date(Date.UTC(y, mo - 1, 1)).toISOString();
+        const nowIso = now.toISOString();
+        const live = await deps.warmPool.live(app.id, tpl.id);
+        return {
+          size: tpl.warmPoolSize,
+          warming: live.filter((r) => r.state === "WARMING").length,
+          available: live.filter((r) => r.state === "AVAILABLE").length,
+          claimedThisMonth: await deps.warmPool.claimedBetween(app.id, tpl.id, monthStart, nowIso),
+          warmHoursThisMonth: await deps.warmPool.warmHours(app.id, tpl.id, monthStart, nowIso, nowIso),
+          warmHoursLastMonth: await deps.warmPool.warmHours(app.id, tpl.id, lastStart, monthStart, nowIso),
+          estimatePerEnvironmentEur: estimateEnvironmentEurPerMonth(tpl.template.size),
+        };
       }),
 
       templates: withCodes(async (a: { appId: string }, ctx) => {

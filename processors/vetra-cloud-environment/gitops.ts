@@ -469,7 +469,7 @@ type ResourceSpec = {
  * today's powerhouse-chart default — preventing regression on next sync for
  * any environment that hasn't yet picked a size.
  */
-const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
+export const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "1", memory: "1Gi" },
@@ -563,6 +563,9 @@ const CONNECT_RESOURCES: ResourceSpec = {
   nodeMaxOldSpaceMb: 384,
 };
 
+/** The size a service runs at when none was selected. */
+export const DEFAULT_RESOURCE_SIZE: VetraCloudRessourceSize = "VETRA_AGENT_S";
+
 /**
  * Resolve the effective t-shirt size for a service. Reads the top-level
  * `selectedRessource` first, falls back to the legacy CLINT
@@ -571,11 +574,11 @@ const CONNECT_RESOURCES: ResourceSpec = {
 function readServiceSize(
   svc: VetraCloudEnvironmentService | undefined,
 ): VetraCloudRessourceSize {
-  if (!svc) return "VETRA_AGENT_S";
+  if (!svc) return DEFAULT_RESOURCE_SIZE;
   return (
     svc.selectedRessource ??
     svc.config?.selectedRessource ??
-    "VETRA_AGENT_S"
+    DEFAULT_RESOURCE_SIZE
   );
 }
 

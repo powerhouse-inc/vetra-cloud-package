@@ -456,6 +456,31 @@ describe("vetraPublisher end to end", () => {
       h.cfg.enabled = true;
     }
   });
+
+  it("warmPool reports live counts, claims, warm hours and the cost estimate", async () => {
+    const tid = (await m("addTemplate", { input: { appId: APP, name: "Warm", mode: "DEDICATED" } })) as string;
+    await m("setTemplateDetails", { input: { appId: APP, templateId: tid, warmPoolSize: 3, size: "VETRA_AGENT_XXL" } });
+    const row = (environment_id: string, state: "WARMING" | "AVAILABLE" | "CLAIMED", created_at: string, claimed_at: string | null) => ({
+      environment_id, app_id: APP, template_id: tid, template_hash: "h", state, created_at,
+      ready_at: null, claimed_at, deleted_at: null, root_license_id: claimed_at ? `root-${environment_id}` : null,
+    });
+    await h.db.insertInto("app_warm_pool").values([
+      row("w1", "WARMING", "2026-10-07T22:00:00.000Z", null),
+      row("a1", "AVAILABLE", "2026-10-07T00:00:00.000Z", null),
+      row("c1", "CLAIMED", "2026-09-30T00:00:00.000Z", "2026-10-02T00:00:00.000Z"),
+    ]).execute();
+    expect(await q("warmPool", { appId: APP, templateId: tid })).toStrictEqual({
+      size: 3,
+      warming: 1,
+      available: 1,
+      claimedThisMonth: 1,
+      warmHoursThisMonth: 50,
+      warmHoursLastMonth: 24,
+      estimatePerEnvironmentEur: 120,
+    });
+    expect(await codeOf(q("warmPool", { appId: APP, templateId: "nope" }))).toBe("NOT_FOUND");
+  });
+
 });
 
 describe("a tampered app", () => {
