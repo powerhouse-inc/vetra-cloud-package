@@ -36,6 +36,7 @@ import { AppWarmPoolKeeper } from "./warm-pool-keeper.js";
 import { createWarmPoolStore } from "./warm-pool-db.js";
 import { createWarmEnvironment } from "./warm-env.js";
 import {
+  protectForOwner,
   protectUnownedForService,
   vetraServiceAddress,
 } from "../vetra-cloud-observability/env-protection.js";
@@ -336,7 +337,23 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     // Provisioning, shared by the handler and the machine API: one DEDICATED
     // environment per licence chain, under the chain's lock.
-    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    // Warm environments are claimed first only when their protection can be
+    // handed to the holder (the same permission service the keeper protects
+    // them with); otherwise every chain is built cold.
+    const warmStore = createWarmPoolStore(db);
+    const chainEnvDeps: ChainEnvDeps = {
+      rows: chainRows,
+      envs,
+      generateSubdomain,
+      ...(perm
+        ? {
+            warmPool: {
+              store: warmStore,
+              handOver: (documentId: string, owner: string) => protectForOwner(perm, documentId, owner),
+            },
+          }
+        : {}),
+    };
     const offboarding: OffboardingDeps = {
       rows: chainRows,
       envStatus: async (id) => (await envs.getState(id))?.status ?? null,
@@ -560,7 +577,6 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // must be protected for the Vetra service identity at creation, so
     // without a permission service there is no keeper.
     if (perm) {
-      const warmStore = createWarmPoolStore(db);
       const trustedAppIds = appsTrustedIds(appsDb);
       this.warmPool = new AppWarmPoolKeeper(
         {

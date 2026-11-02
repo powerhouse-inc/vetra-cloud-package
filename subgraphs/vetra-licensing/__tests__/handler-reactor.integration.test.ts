@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { ReactorBuilder, ReactorClientBuilder } from "@powerhousedao/reactor";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
+import { markChangesPushed, markDeploymentStarted, reportDeploymentSucceeded } from "document-models/vetra-cloud-environment";
 import { documentModels } from "../../../document-models/document-models.js";
 import { createReactorAppDocStore } from "../../vetra-apps/app-doc-store.js";
 import { createReactorEnvGateway, ENV_DOC_TYPE } from "../../vetra-apps/envs.js";
@@ -21,6 +22,8 @@ import { loadLicensingConfig } from "../config.js";
 import { createChainEnvironmentRows, provisionChain, type ChainEnvDeps } from "../environments.js";
 import { AppLicenseHandler } from "../handler.js";
 import { createLifecycleStore } from "../lifecycle.js";
+import { createWarmPoolStore, type WarmPoolStore } from "../warm-pool-db.js";
+import { createWarmEnvironment } from "../warm-env.js";
 
 /**
  * The handler against a REAL reactor and a REAL database (PGlite), wired with
@@ -47,6 +50,8 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
   let migrated = true;
   const ended: string[] = [];
   let appReads: ReturnType<typeof createAppReads>;
+  let warmStore: WarmPoolStore;
+  const handOver = vi.fn(async (_documentId: string, _owner: string) => {});
 
   const countEnvDocuments = async (): Promise<number> => {
     let cursor = "0";
@@ -113,7 +118,10 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
 
     const cfg = { ...loadLicensingConfig({}), enabled: true, dryRun: false, scanIntervalMs: 1_000 };
     const chainRows = createChainEnvironmentRows(db, cfg);
-    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    // Wired as production does with a permission service: claim warm first.
+    // With the pool empty (every test but the warm one) this is the cold path.
+    warmStore = createWarmPoolStore(db);
+    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain, warmPool: { store: warmStore, handOver } };
     handler = new AppLicenseHandler({
       licences: () => reads.allLicenceRecords(),
       chainRoots: () => grants.chainRoots(),
@@ -204,6 +212,30 @@ describe("AppLicenseHandler against a real reactor + real database", () => {
     await gateway.execute(row.license_id, [licenseActions.revokeLicense({ reason: "refund" })]);
     await handler.reconcileOnce();
     expect(ended).toStrictEqual([row.environment_id]);
+  });
+
+  it("a licence claims a READY warm environment instead of building one", async () => {
+    const ded = (await appReads.app(APP))!.templates.find((t) => t.id === "ded")!;
+    const warmId = await createWarmEnvironment(
+      { envs, protect: async () => {}, generateSubdomain, store: warmStore },
+      { appId: APP, appName: "KV", template: { ...ded.template, id: "ded" }, templateHash: ded.templateHash, nowIso: NOW },
+    );
+    // What gitops and observability report once it is up.
+    await envs.execute(warmId, [markChangesPushed({}), markDeploymentStarted({}), reportDeploymentSucceeded({})]);
+    await warmStore.markAvailable(warmId, NOW);
+    expect(await envs.getState(warmId)).toMatchObject({ status: "READY", owner: null, label: "KV (warm)" });
+
+    const documents = await countEnvDocuments();
+    const { licenseId } = await issueLicense(issueDeps, { appId: APP, user: DID2, kind: "pro", issuer: "PUBLISHER_GRANT", details: {}, issuedBy: "0xo", label: "Vault W", now: NOW });
+    await handler.reconcileOnce();
+
+    expect(await countEnvDocuments()).toBe(documents);
+    const row = (await rows()).find((r) => r.root_license_id === licenseId)!;
+    expect(row).toMatchObject({ environment_id: warmId, user_did: DID2, template_hash: ded.templateHash, label: "Vault W" });
+    expect(await envs.getState(warmId)).toMatchObject({ owner: DID2.slice("did:pkh:eip155:1:".length), label: "Vault W", status: "CHANGES_APPROVED" });
+    expect(handOver).toHaveBeenCalledWith(warmId, DID2.slice("did:pkh:eip155:1:".length));
+    expect((await reads.licenceRecord(licenseId))!.stage).toBe(warmId);
+    expect(await warmStore.byEnvironment(warmId)).toMatchObject({ state: "CLAIMED", root_license_id: licenseId });
   });
 
   it("a write to the app outside Vetra holds the app: nothing is re-templated", async () => {

@@ -1,5 +1,5 @@
 import type { Kysely } from "kysely";
-import type { VetraLicensingDB } from "./db/schema.js";
+import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 
 export type WarmState = "WARMING" | "AVAILABLE" | "CLAIMED";
 
@@ -15,6 +15,18 @@ export interface WarmRow {
   deleted_at: string | null;
   root_license_id: string | null;
 }
+
+/** A chain's `license_environments` row before it knows its environment. */
+export type ChainRowDraft = Omit<LicenseEnvironments, "environment_id">;
+
+/**
+ * claimForChain's outcome: a warm environment claimed together with the
+ * chain's row; none available (row null); or the chain already belonged to
+ * another environment (row is that one, nothing was claimed).
+ */
+export type WarmChainClaim =
+  | { warm: WarmRow; row: LicenseEnvironments }
+  | { warm: null; row: LicenseEnvironments | null };
 
 export interface WarmPoolStore {
   insertWarming(row: {
@@ -41,7 +53,26 @@ export interface WarmPoolStore {
     rootLicenseId: string;
     nowIso: string;
   }): Promise<WarmRow | null>;
+  /**
+   * claimOneAvailable and the chain's `license_environments` row (pointing at
+   * the claimed environment) in ONE transaction, so nothing ever sees the warm
+   * row CLAIMED without the chain row (gitops would turn the app image off).
+   * When the chain is already someone's, the transaction is rolled back and
+   * the warm row stays AVAILABLE.
+   */
+  claimForChain(
+    q: {
+      appId: string;
+      templateId: string;
+      templateHash: string;
+      rootLicenseId: string;
+      nowIso: string;
+    },
+    chainRow: ChainRowDraft,
+  ): Promise<WarmChainClaim>;
   releaseClaim(environmentId: string): Promise<void>;
+  /** The row of an environment, in any state, deleted or not. */
+  byEnvironment(environmentId: string): Promise<WarmRow | null>;
   isWarm(environmentId: string): Promise<{ appId: string } | null>;
   warmHours(
     appId: string,
@@ -53,6 +84,48 @@ export interface WarmPoolStore {
 }
 
 const HOUR_MS = 3_600_000;
+
+/** Thrown inside claimForChain's transaction to roll it back. */
+class ChainTakenRollback extends Error {
+  constructor(readonly row: LicenseEnvironments) {
+    super("chain already claimed");
+  }
+}
+
+// Single statement (UPDATE ... WHERE pk = (SELECT ... FOR UPDATE SKIP
+// LOCKED)), so on its own it is one transaction; safe behind pgbouncer
+// transaction mode. `db` may be a transaction.
+async function claimOneAvailableIn(
+  db: Kysely<VetraLicensingDB>,
+  q: Parameters<WarmPoolStore["claimOneAvailable"]>[0],
+): Promise<WarmRow | null> {
+  const row = await db
+    .updateTable("app_warm_pool")
+    .set({
+      state: "CLAIMED",
+      claimed_at: q.nowIso,
+      root_license_id: q.rootLicenseId,
+    })
+    .where(
+      "environment_id",
+      "=",
+      db
+        .selectFrom("app_warm_pool")
+        .select("environment_id")
+        .where("app_id", "=", q.appId)
+        .where("template_id", "=", q.templateId)
+        .where("template_hash", "=", q.templateHash)
+        .where("state", "=", "AVAILABLE")
+        .where("deleted_at", "is", null)
+        .orderBy("ready_at")
+        .limit(1)
+        .forUpdate()
+        .skipLocked(),
+    )
+    .returningAll()
+    .executeTakeFirst();
+  return (row as WarmRow | undefined) ?? null;
+}
 
 export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore {
   return {
@@ -121,35 +194,36 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
       return Number(res.numUpdatedRows) > 0;
     },
 
-    // Single statement (UPDATE ... WHERE pk = (SELECT ... FOR UPDATE SKIP
-    // LOCKED)) so it is one transaction; safe behind pgbouncer transaction mode.
-    async claimOneAvailable(q) {
-      const row = await db
-        .updateTable("app_warm_pool")
-        .set({
-          state: "CLAIMED",
-          claimed_at: q.nowIso,
-          root_license_id: q.rootLicenseId,
-        })
-        .where(
-          "environment_id",
-          "=",
-          db
-            .selectFrom("app_warm_pool")
-            .select("environment_id")
-            .where("app_id", "=", q.appId)
-            .where("template_id", "=", q.templateId)
-            .where("template_hash", "=", q.templateHash)
-            .where("state", "=", "AVAILABLE")
-            .where("deleted_at", "is", null)
-            .orderBy("ready_at")
-            .limit(1)
-            .forUpdate()
-            .skipLocked(),
-        )
-        .returningAll()
-        .executeTakeFirst();
-      return (row as WarmRow | undefined) ?? null;
+    claimOneAvailable(q) {
+      return claimOneAvailableIn(db, q);
+    },
+
+    async claimForChain(q, chainRow) {
+      try {
+        // One BEGIN..COMMIT on one connection: fine behind pgbouncer in
+        // transaction mode.
+        return await db.transaction().execute(async (trx) => {
+          const warm = await claimOneAvailableIn(trx, q);
+          if (!warm) return { warm: null, row: null };
+          // As createChainEnvironmentRows().claim: the UNIQUE root_license_id
+          // is the lock and an existing claim is never overwritten.
+          await trx
+            .insertInto("license_environments")
+            .values({ ...chainRow, environment_id: warm.environment_id })
+            .onConflict((oc) => oc.column("root_license_id").doNothing())
+            .execute();
+          const row = await trx
+            .selectFrom("license_environments")
+            .selectAll()
+            .where("root_license_id", "=", chainRow.root_license_id)
+            .executeTakeFirstOrThrow();
+          if (row.environment_id !== warm.environment_id) throw new ChainTakenRollback(row);
+          return { warm, row };
+        });
+      } catch (err) {
+        if (err instanceof ChainTakenRollback) return { warm: null, row: err.row };
+        throw err;
+      }
     },
 
     async releaseClaim(environmentId) {
@@ -158,6 +232,15 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .set({ state: "AVAILABLE", claimed_at: null, root_license_id: null })
         .where("environment_id", "=", environmentId)
         .execute();
+    },
+
+    async byEnvironment(environmentId) {
+      const row = await db
+        .selectFrom("app_warm_pool")
+        .selectAll()
+        .where("environment_id", "=", environmentId)
+        .executeTakeFirst();
+      return (row as WarmRow | undefined) ?? null;
     },
 
     async isWarm(environmentId) {
