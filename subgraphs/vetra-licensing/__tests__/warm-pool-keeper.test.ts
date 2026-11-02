@@ -128,12 +128,13 @@ function setup(input: {
 }
 
 describe("AppWarmPoolKeeper", () => {
-  it("creates at most createsPerTick across two pools in one tick", async () => {
+  it("creates at most createsPerTick across pools in one tick", async () => {
     const { deps, keeper, created } = setup({
       apps: [app("a", [tmpl("ta", 2)]), app("b", [tmpl("tb", 2)])],
+      cfg: { createsPerTick: 1 },
     });
     await keeper.reconcileOnce();
-    expect(deps.createWarm).toHaveBeenCalledTimes(3);
+    expect(deps.createWarm).toHaveBeenCalledTimes(1);
     expect(created[0]).toEqual({
       appId: "a",
       appName: "App a",
@@ -141,7 +142,7 @@ describe("AppWarmPoolKeeper", () => {
       templateHash: "hash-ta",
       nowIso: NOW,
     });
-    expect(created.map((c) => c.template.id)).toEqual(["ta", "ta", "tb"]);
+    expect(created.map((c) => c.template.id)).toEqual(["ta"]);
   });
 
   it("a pool whose creation throws does not stop the next pool filling", async () => {
@@ -154,7 +155,7 @@ describe("AppWarmPoolKeeper", () => {
     });
     await keeper.reconcileOnce();
     const byApp = deps.createWarm.mock.calls.map(([i]) => i.appId);
-    expect(byApp.filter((a) => a === "b")).toHaveLength(2);
+    expect(byApp).toEqual(["a", "b"]);
     expect(deps.logger.warn).toHaveBeenCalled();
   });
 
@@ -287,10 +288,97 @@ describe("AppWarmPoolKeeper", () => {
   it("caps a pool at maxPerTemplate", async () => {
     const { deps, keeper } = setup({
       apps: [app("a", [tmpl("ta", 5)])],
+      rows: [
+        liveRow("a1", "a", "ta", "AVAILABLE", "hash-ta"),
+        liveRow("a2", "a", "ta", "AVAILABLE", "hash-ta"),
+      ],
+      status: { a1: "READY", a2: "READY" },
       cfg: { maxPerTemplate: 2, createsPerTick: 10 },
     });
     await keeper.reconcileOnce();
+    expect(deps.createWarm).not.toHaveBeenCalled();
+  });
+
+  it("rotates the starting pool each tick so a fourth pool is not starved", async () => {
+    const { deps, keeper } = setup({
+      apps: ["p1", "p2", "p3", "p4"].map((id) => app(id, [tmpl(`t${id}`, 2)])),
+      cfg: { createsPerTick: 3 },
+    });
+    const perTick: string[][] = [];
+    for (let i = 0; i < 2; i++) {
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      perTick.push(deps.createWarm.mock.calls.map(([c]) => c.appId));
+    }
+    expect(perTick).toEqual([
+      ["p1", "p2", "p3"],
+      ["p2", "p3", "p4"],
+    ]);
+  });
+
+  it("gives a pool at most one creation per tick", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 5)])],
+      cfg: { createsPerTick: 10 },
+    });
+    await keeper.reconcileOnce();
+    expect(deps.createWarm).toHaveBeenCalledTimes(1);
+    await keeper.reconcileOnce();
     expect(deps.createWarm).toHaveBeenCalledTimes(2);
+  });
+
+  it("backs creation off after a dead removal, doubling, without blocking other pools", async () => {
+    const status: Record<string, string | null> = {
+      d1: "DEPLOYMENt_FAILED",
+      d2: null,
+    };
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)]), app("b", [tmpl("tb", 10)])],
+      status,
+    });
+    const deadAt: Record<number, WarmRow> = {
+      1: liveRow("d1", "a", "ta", "WARMING", "hash-ta"),
+      5: liveRow("d2", "a", "ta", "WARMING", "hash-ta"),
+    };
+    const aCreated: number[] = [];
+    const bCreated: number[] = [];
+    for (let tick = 1; tick <= 10; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(
+        deadAt[tick] ? [deadAt[tick]] : [],
+      );
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      const apps = deps.createWarm.mock.calls.map(([c]) => c.appId);
+      if (apps.includes("a")) aCreated.push(tick);
+      if (apps.includes("b")) bCreated.push(tick);
+    }
+    // Dead in tick 1: ticks 1-3 withheld, creates in 4. Dead (missing) in 5:
+    // the wait doubles to 4, so 5-9 withheld and creates in 10.
+    expect(aCreated).toEqual([4, 10]);
+    expect(deps.deleteEnv).toHaveBeenCalledWith("d1");
+    expect(deps.deleteEnv).toHaveBeenCalledWith("d2");
+    expect(bCreated).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("resets the backoff once the pool is full and healthy", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)])],
+      status: { d1: "STOPPED", ok: "READY", d2: "DESTROYED" },
+    });
+    const rowsAt: Record<number, WarmRow[]> = {
+      1: [liveRow("d1", "a", "ta", "WARMING", "hash-ta")],
+      4: [liveRow("ok", "a", "ta", "AVAILABLE", "hash-ta")],
+      5: [liveRow("d2", "a", "ta", "WARMING", "hash-ta")],
+    };
+    const aCreated: number[] = [];
+    for (let tick = 1; tick <= 8; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(rowsAt[tick] ?? []);
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.createWarm.mock.calls.length > 0) aCreated.push(tick);
+    }
+    // Full at tick 4 resets the level: the death in tick 5 waits 2 again (5-7), creates in 8.
+    expect(aCreated).toEqual([8]);
   });
 
   it("is inert when disabled and only logs in dry-run", async () => {

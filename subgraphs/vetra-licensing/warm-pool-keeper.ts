@@ -2,6 +2,7 @@ import type { AppDocView, AppReads } from "./app-reads.js";
 import type { WarmEnvInput } from "./warm-env.js";
 import type { WarmPoolStore, WarmRow } from "./warm-pool-db.js";
 import { computeAppPoolPlan, type PoolTarget } from "./warm-pool-plan.js";
+import { DEAD_STATUSES } from "../vetra-studio-pool/reconcile.js";
 
 export interface WarmPoolKeeperConfig {
   /** LICENSING_KEEPER_ENABLED: off, the keeper does nothing. */
@@ -34,10 +35,15 @@ export interface WarmPoolKeeperDeps {
 /** App document statuses whose pools are drained. */
 const SUSPENDED_APP_STATUSES = new Set(["DISCONNECTED", "DELETED"]);
 
+/** Creation backoff after a dead removal: 2, 4, 8, then 16 ticks. */
+const BACKOFF_BASE_TICKS = 2;
+const BACKOFF_MAX_TICKS = 16;
+
 const poolKey = (appId: string, templateId: string) =>
   `${appId}\u0000${templateId}`;
 
 interface Pool {
+  key: string;
   appId: string;
   templateId: string;
   /** null drains the pool. */
@@ -54,11 +60,25 @@ interface Pool {
  * pool is left exactly as it is. CLAIMED rows belong to licences and are
  * never touched.
  *
+ * Fairness: each tick starts at a pool one further along than the last
+ * (rotation), and a pool gets at most one creation per tick, within the
+ * shared createsPerTick budget. A pool from which a dead environment (dead
+ * status or missing document) was removed gets no creations for 2, 4, 8, then
+ * 16 ticks (counting the tick of the removal); removal, promotion and
+ * recycling still run. The backoff resets once a tick with no dead removal
+ * finds the pool needing no creation (full and healthy).
+ *
  * In-process `running` guard: the licensing subgraph is single-replica.
  */
 export class AppWarmPoolKeeper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private tickNo = 0;
+  /** Pool key -> consecutive dead-removal level and the last tick it may not create in. */
+  private readonly backoff = new Map<
+    string,
+    { level: number; blockedThrough: number }
+  >();
 
   constructor(
     private readonly d: WarmPoolKeeperDeps,
@@ -131,6 +151,7 @@ export class AppWarmPoolKeeper {
           continue;
         }
         pools.set(key, {
+          key,
           appId: app.id,
           templateId: t.id,
           rows: [],
@@ -150,6 +171,7 @@ export class AppWarmPoolKeeper {
       const key = poolKey(r.app_id, r.template_id);
       if (held.has(key) || heldApps.has(r.app_id)) continue;
       const pool = pools.get(key) ?? {
+        key,
         appId: r.app_id,
         templateId: r.template_id,
         target: null,
@@ -159,10 +181,17 @@ export class AppWarmPoolKeeper {
       pools.set(key, pool);
     }
 
+    const tickNo = ++this.tickNo;
+    for (const key of [...this.backoff.keys()]) {
+      if (!pools.has(key)) this.backoff.delete(key);
+    }
+    const list = [...pools.values()];
+    const offset = list.length === 0 ? 0 : (tickNo - 1) % list.length;
+    const rotated = [...list.slice(offset), ...list.slice(0, offset)];
     let budget = this.cfg.createsPerTick;
-    for (const pool of pools.values()) {
+    for (const pool of rotated) {
       try {
-        budget -= await this.reconcilePool(pool, budget);
+        budget -= await this.reconcilePool(pool, budget, tickNo);
       } catch (err) {
         this.d.logger.warn(
           `[warm-pool] pool ${pool.appId}/${pool.templateId} failed: ${String(err)}`,
@@ -172,7 +201,11 @@ export class AppWarmPoolKeeper {
   }
 
   /** Applies one pool's plan; returns how many creations it attempted. */
-  private async reconcilePool(pool: Pool, budget: number): Promise<number> {
+  private async reconcilePool(
+    pool: Pool,
+    budget: number,
+    tickNo: number,
+  ): Promise<number> {
     const label = `${pool.appId}/${pool.templateId}`;
     const status: Record<string, string | null> = {};
     if (pool.target) {
@@ -191,8 +224,11 @@ export class AppWarmPoolKeeper {
       plan.create === 0 &&
       plan.promote.length === 0 &&
       plan.remove.length === 0
-    )
+    ) {
+      // Full and healthy: any creation backoff is over.
+      this.backoff.delete(pool.key);
       return 0;
+    }
 
     if (this.cfg.dryRun) {
       this.d.logger.info(
@@ -222,7 +258,21 @@ export class AppWarmPoolKeeper {
 
     const target = pool.target;
     if (!target) return 0;
-    const attempts = Math.min(plan.create, Math.max(0, budget));
+    // Every unclaimed row of a targeted pool has its status read above.
+    const dead = plan.remove.some((id) => {
+      const st = status[id];
+      return st === null || DEAD_STATUSES.has(st);
+    });
+    if (!this.mayCreate(pool.key, dead, plan.create, tickNo)) {
+      if (plan.create > 0) {
+        this.d.logger.info(
+          `[warm-pool] ${label}: creation backed off after a dead environment`,
+        );
+      }
+      return 0;
+    }
+    // At most one creation per pool per tick.
+    const attempts = Math.min(plan.create, 1, Math.max(0, budget));
     for (let i = 0; i < attempts; i++) {
       try {
         const id = await this.d.createWarm({
@@ -241,5 +291,27 @@ export class AppWarmPoolKeeper {
       }
     }
     return attempts;
+  }
+
+  /** Updates the pool's backoff for this tick; true when it may create. */
+  private mayCreate(
+    key: string,
+    dead: boolean,
+    create: number,
+    tickNo: number,
+  ): boolean {
+    const prev = this.backoff.get(key);
+    if (dead) {
+      const level = (prev?.level ?? 0) + 1;
+      const wait = Math.min(BACKOFF_BASE_TICKS ** level, BACKOFF_MAX_TICKS);
+      this.backoff.set(key, { level, blockedThrough: tickNo + wait });
+      return false;
+    }
+    if (!prev) return true;
+    if (create === 0) {
+      this.backoff.delete(key);
+      return true;
+    }
+    return tickNo > prev.blockedThrough;
   }
 }
