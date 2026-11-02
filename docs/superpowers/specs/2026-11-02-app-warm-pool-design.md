@@ -46,7 +46,8 @@ Sektar launched on Vetra cloud through invite codes. The first-run experience (a
 
 A template fixes everything a warm environment consists of: mode, size, services, packages, artifact channel and the resolved `templateHash`. Several plans (terms) can point at one template; a pool per plan would split identical environments. So:
 
-- New template field **`warmPoolSize: Int!`** (default `0`) on the `vetra-app` document model's `Template`, set through **`SET_TEMPLATE_DETAILS`** (`SetTemplateDetailsInput.warmPoolSize: Int`).
+- New template field **`warmPoolSize: Int`** on the `vetra-app` document model's `Template`, **nullable, null meaning 0**, set only through **`SET_TEMPLATE_DETAILS`** (`SetTemplateDetailsInput.warmPoolSize: Int`); `ADD_TEMPLATE` does not write it. Nullable because `licensingStateHash` (`licensing-ledger.ts:34-70`) hashes templates as stored and omits undefined keys: a non-null default would change the hash of every existing app document. It is also kept out of `TemplateShape`, so `templateHash` does not move when only the pool size changes. *(Builder's call, settled in planning.)*
+- A negative size is rejected (`WarmPoolInvalidSizeError`); switching a template to SHARED while its size is above 0 is rejected (`WarmPoolNotDedicatedError`).
 - Allowed only when the template is `DEDICATED`. Setting it on a SHARED template is an error (`WarmPoolNotDedicatedError`).
 - Bounded by a maximum of **10**, a constant in the document model: the reducer rejects more with `WarmPoolTooLargeError` (a pure reducer cannot read env vars, and app documents are writable directly, so the bound must live in the model). The keeper additionally caps every pool at **`APP_WARM_POOL_MAX_PER_TEMPLATE`** (default 10, may only lower it), so the platform can tighten the limit without a model change. *(Builder's call, settled in review.)*
 - A claim draws from the pool of the template the licence's kind resolves to (`resolveKind`, `subgraphs/vetra-licensing/app-reads.ts:207-229`).
@@ -75,7 +76,7 @@ A new **`AppWarmPoolKeeper`** in `vetra-licensing`, reusing the Studio pool's sh
   - **Promote**: `WARMING` rows whose environment is READY (status READY and Argo healthy) become `AVAILABLE`, `ready_at` set.
   - **Recycle**: `WARMING`/`AVAILABLE` rows whose `template_hash` differs from the template's current hash are deleted (environment deleted, `deleted_at` set).
   - **Shrink**: if `AVAILABLE + WARMING > warmPoolSize`, delete the surplus, oldest `WARMING` first, then oldest `AVAILABLE`.
-  - **Heal**: rows whose environment failed or vanished are deleted, as the Studio reconcile does (`reconcile.ts:218-276`).
+  - **Heal**: rows whose environment failed or vanished are deleted, as the Studio reconcile does (`toTerminate` in `computePoolPlan`, `vetra-studio-pool/reconcile.ts`).
   - **Fill**: create `warmPoolSize − (AVAILABLE + WARMING)` new warm environments.
 - Templates with `warmPoolSize = 0`, or whose app is suspended or all of whose terms are retired, are drained to zero.
 - Creation is rate-limited per tick (**`APP_WARM_POOL_CREATES_PER_TICK`**, default 3) so a publisher raising the size to 10 does not burst the cluster.
@@ -87,7 +88,8 @@ Same rendering as a cold licence environment, minus the owner:
 - `renderCreateActions` (`template.ts`) gains an ownerless variant: no `SET_OWNER`, `ADMINS` empty for host FUSION services (`hostEnv()`, `template.ts:141-146`), label `<app name> (warm)`.
 - The environment is protected for the Vetra service identity at creation, as Studio warm environments are (`vetra-studio-pool/create-env.ts`), so nobody else can claim or edit it.
 - It gets everything a cold environment gets: subdomain, database (CNPG), the `/data` PVC, image, size, and its TLS certificate.
-- **It is not reachable until claimed** *(decided by the owner)*. Gitops renders a warm environment's ingress in a closed mode: the certificate is issued and the host name resolves, but the ingress answers every request with 503 "This environment is being prepared" instead of routing to the app (an ingress annotation or a dedicated backend; the builder picks the mechanism the ingress controller supports). The claim re-renders it open. This keeps the first anti-goal in Vetra's hands rather than each app's: no visitor can create anything a later claimant would inherit. The health checks the keeper uses to promote WARMING to AVAILABLE read the pod and Argo status in-cluster, not through the ingress.
+- **It is not reachable until claimed** *(decided by the owner)*. Gitops renders a warm environment's ingress in a closed mode: the certificate is issued and the host name resolves, but the ingress refuses every request instead of routing to the app. Mechanism *(builder's call, settled in planning)*: the ingress carries the Traefik annotation `traefik.ingress.kubernetes.io/router.middlewares: vetra-system-warm-closed@kubernetescrd`, a cluster-wide `Middleware` (`ipAllowList` with source range `127.0.0.1/32`, so every request gets **403**) added once in `powerhouse-k8s-hosting`. The chart is outside this repo; a custom 503 page would need chart changes for no gain.
+- Gitops needs to know a document is warm: a per-document **`WarmPoolLookup`** resolver passed to `generateValuesYaml`, like `AppImageProjectResolver`. The same lookup lets `licensedImageProject` (`app-image-project.ts:53-80`) allow the app's Harbor project for a warm environment, which has no `license_environments` row yet. The claim re-renders it open. This keeps the first anti-goal in Vetra's hands rather than each app's: no visitor can create anything a later claimant would inherit. The health checks the keeper uses to promote WARMING to AVAILABLE read the pod and Argo status in-cluster, not through the ingress.
 
 ### 3.5 Claiming in `provisionChain`
 
@@ -107,14 +109,14 @@ Concurrency: `SKIP LOCKED` makes two simultaneous claims take different rows; th
 
 ### 3.7 Warm environments never sleep
 
-Like Studio's (`vetra-housekeeping/policy.ts:195`), unclaimed warm environments are excluded from housekeeping sleep: a sleeping warm environment would not be warm. After the claim, the environment is an ordinary licence environment and housekeeping treats it as one.
+Unclaimed warm environments must not sleep: a sleeping warm environment would not be warm. No code is needed: `isEligibleForSleep` (`vetra-housekeeping/policy.ts:187-209`) only sleeps owned environments with a CLINT service, and app environments are FUSION-only and warm ones unowned. A test pins it. After the claim, the environment is an ordinary licence environment.
 
 ### 3.8 What the publisher sees and pays
 
 - **Console** (`vetra.io`): on the template form, next to Size (`modules/publisher/components/templates/template-details-form.tsx:113-131`), a field **"Warm environments"** (0 to the platform maximum), disabled for SHARED templates, with the hint "Kept running and ready to hand out. You pay for them while they wait."
-- Beside it, the **estimated monthly cost**: `warmPoolSize × units(size) × €40`, at the customer price the landing page uses (`modules/landing/lib/pricing.ts`: €40 per unit of 2 vCPU / 4 GB / 80 GB). `units(size)` = `ceil(max(vCPU ÷ 2, RAM GB ÷ 4))` of the resources the template's size actually requests in gitops (the `VETRA_AGENT_*` size table; "Default" = the FUSION fallback size), plus 1 unit for the environment's database and volume. One function, `estimateWarmCostEur(size)`, shared by console and API so they cannot disagree. Labelled "estimate". *(Builder's call, settled in review.)*
+- Beside it, the **estimated monthly cost**: `warmPoolSize × units(size) × €40`, at the customer price the landing page uses (`modules/landing/lib/pricing.ts`: €40 per unit of 2 vCPU / 4 GB / 80 GB). `units(size)` = `ceil(max(vCPU ÷ 2, RAM GB ÷ 4))` of the resources the template's size requests in gitops (the `VETRA_AGENT_*` size table; "Default" = the FUSION fallback size), plus 1 unit for the environment's database and volume. It is computed once, in the backend (`estimateEnvironmentEurPerMonth(size)`), and the API returns it per environment so the console only multiplies: the size table lives in this repo. Labelled "estimate". *(Builder's call, settled in review and planning.)*
 - On the template card (`template-card.tsx`), next to the environment count: "N warm, M ready" and "X warm hours this month".
-- New publisher query **`warmPool(appId, templateId)`** in the `vetraPublisher` namespace: `{ size, warming, available, claimedThisMonth, warmHoursThisMonth, warmHoursLastMonth }`. Warm hours = sum over rows of (`claimed_at` or `deleted_at` or now) − `created_at`, clipped to the month.
+- New publisher query **`warmPool(appId, templateId)`** in the `vetraPublisher` namespace: `{ size, warming, available, claimedThisMonth, warmHoursThisMonth, warmHoursLastMonth, estimatePerEnvironmentEur }`. Warm hours = sum over rows of (`claimed_at` or `deleted_at` or now) − `created_at`, clipped to the month.
 - Nothing is charged. Warm hours are kept so the future billing feature can charge the publisher for them.
 
 ### 3.9 What an app must do to be poolable (the app contract)
@@ -139,9 +141,10 @@ Sektar meets it: the host starts with empty `ADMINS`, generates `PH_WORKFLOWS_SE
 
 Today Vetra's LLM broker mints an OpenRouter key only for Studio environments. This change extends it to app licence environments:
 
-- When a licence's plan or invite code carries `llmBudgetUsd`, the environment that licence gets, **warm-claimed or cold-built**, receives a broker-minted OpenRouter key capped at that budget, as the secret **`OPENROUTER_API_KEY`**, declared in the FUSION service's env so the chart mounts it (`gitops.ts:1256-1260, 1277-1286`), with the secrets controller enabled for it.
+- When the invite code a licence was redeemed with carries `llm_budget_usd` (`redeemedCodeOf`, `invite-codes.ts:383`), the environment that licence gets, **warm-claimed or cold-built**, receives a broker-minted OpenRouter key capped at that budget, as the secret **`OPENROUTER_API_KEY`**, declared in the FUSION service's env so the chart mounts it (`gitops.ts:1256-1260, 1277-1286`), with the secrets controller enabled for it.
 - On a claim it is written in the same batch as `ADMINS` (one restart). On a cold build it is part of the create. Warm environments never hold a key.
 - Keys are released with the environment (deletion, licence end), as Studio's are; a failed claim releases the key it minted.
+- *(Settled in planning.)* Only invite codes carry a budget today; terms have none, so "plan default" budgets are out of scope. App keys are named `app:<environmentId>` (Studio's are `studio:<id>`), and the broker gets an app budget source (the licence's redeemed code) so the sweeper (`vetra-llm/sweeper.ts:74-86`), which checks Studio licences, does not disable them.
 - What the app does with it is the app's business. Sektar offers it to the admin as "Use the key included with your Sektar" (Sektar #12).
 
 ## 4. Failure and edge cases
