@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import {
@@ -477,5 +477,30 @@ describe("a tampered app", () => {
     expect(await h.revisionOf(HELD)).toBe(before);
     expect(await h.db.selectFrom("invite_codes").select("code").where("app_id", "=", HELD).execute()).toStrictEqual([]);
     expect(((await q("templates", { appId: HELD })) as { name: string | null }[])[0]!.name).toBe("forged");
+  });
+});
+
+describe("vetraPublisher: provisioning kick", () => {
+  const grant = (res: Resolvers, user: string) =>
+    res.VetraPublisherMutations.issueGrant!({}, { input: { appId: APP, kind: "2026-pro", user } }, asOwner);
+
+  it("kicks provisioning after a successful grantLicense", async () => {
+    const onLicenceIssued = vi.fn();
+    const id = await grant(h.build({ onLicenceIssued }), OTHER);
+    expect(onLicenceIssued).toHaveBeenCalledTimes(1);
+    expect(onLicenceIssued).toHaveBeenCalledWith(id);
+  });
+
+  it("does not kick on a refused grant", async () => {
+    const onLicenceIssued = vi.fn();
+    const res = h.build({ onLicenceIssued });
+    expect(await codeOf(res.VetraPublisherMutations.issueGrant!({}, { input: { appId: APP, kind: "nope", user: OTHER } }, asOwner))).toBe("TERM_NOT_ISSUABLE");
+    expect(await codeOf(grant(res, "did:key:z6Mk"))).toBe("UNSUPPORTED_DID");
+    expect(onLicenceIssued).not.toHaveBeenCalled();
+  });
+
+  it("returns the grant even if the kick throws", async () => {
+    const id = await grant(h.build({ onLicenceIssued: () => { throw new Error("kick failed"); } }), OTHER);
+    expect(id).toBeTruthy();
   });
 });

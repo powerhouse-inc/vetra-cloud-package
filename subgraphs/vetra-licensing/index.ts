@@ -226,7 +226,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       migrationComplete,
       logger: console,
     };
+    // Late-bound: the handler is built after the resolvers. A no-op until then.
+    let kick: (licenseId: string) => void = () => {};
+    const onLicenceIssued = (licenseId: string) => kick(licenseId);
     const publisherResolvers = createPublisherResolvers({
+      onLicenceIssued,
       // Ownership of environments comes from the apps tables, never documents.
       appEnvironments: async (appId) => {
         const [row, previews] = await Promise.all([
@@ -293,6 +297,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       "vetra-cloud-environments",
     )) as unknown as Kysely<{ environments: { tenantId: string | null; owner: string | null } }>;
     const subscriptionResolvers = createSubscriptionResolvers({
+      onLicenceIssued,
       issuer: {
         ...issueDeps,
         db,
@@ -537,6 +542,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       logger: console,
       now: () => new Date().toISOString(),
     });
+    const handler = this.handler;
+    kick = () => {
+      // reconcileOnce's own running guard stops overlapping runs.
+      void handler.reconcileOnce().catch((e) => console.warn("[licensing] immediate reconcile failed:", e));
+    };
     this.handler.start();
 
     // cfg.enabled gates the whole write path: the keeper below, and every

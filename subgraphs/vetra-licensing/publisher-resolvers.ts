@@ -40,6 +40,12 @@ import {
 } from "./publisher-errors.js";
 
 export interface PublisherDeps {
+  /**
+   * Called (fire-and-forget) after a licence is issued, so provisioning can
+   * start at once instead of on the next tick. Its failure never reaches the
+   * caller.
+   */
+  onLicenceIssued?: (licenseId: string) => void;
   auth: PublisherAuthDeps;
   /**
    * The environments the app owns besides its document's production
@@ -584,7 +590,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
       issueGrant: withCodes(
         async (a: In<{ appId: string; kind: string; user: string; label?: Opt<string> }>, ctx) => {
           const appId = await owned(a.input.appId, ctx, true);
-          return grantLicense(deps.issue, {
+          const licenseId = await grantLicense(deps.issue, {
             appId,
             kind: a.input.kind,
             user: a.input.user,
@@ -592,6 +598,12 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             label: a.input.label ?? null,
             now: deps.now(),
           });
+          try {
+            deps.onLicenceIssued?.(licenseId);
+          } catch (e) {
+            deps.issue.logger.warn(`[licensing] onLicenceIssued failed for ${licenseId}:`, e);
+          }
+          return licenseId;
         },
       ),
 

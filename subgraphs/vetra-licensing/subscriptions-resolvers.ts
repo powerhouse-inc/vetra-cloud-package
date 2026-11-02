@@ -42,6 +42,12 @@ export interface SubscriptionDeps {
   /** The recording gateway: a cancel also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   studio: StudioAccessDeps;
+  /**
+   * Called (fire-and-forget) after a licence is issued, so provisioning can
+   * start at once instead of on the next tick. Its failure never reaches the
+   * caller.
+   */
+  onLicenceIssued?: (licenseId: string) => void;
   /** Null when OPENBAO_ADDR is unset: no key can be written. */
   secrets: Pick<SecretsService, "setSecret"> | null;
   /**
@@ -287,6 +293,11 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
             // surface keeps TERM_NOT_ISSUABLE.)
             if (err instanceof TermNotIssuableError) throw new InvalidCodeError();
             throw err;
+          }
+          try {
+            deps.onLicenceIssued?.(licenseId);
+          } catch (e) {
+            deps.issuer.logger.warn(`[licensing] onLicenceIssued failed for ${licenseId}:`, e);
           }
           const l = await owned(licenseId, caller);
           const root = (await deps.grants.chainRootsFor([l.id])).get(l.id) ?? l.id;
