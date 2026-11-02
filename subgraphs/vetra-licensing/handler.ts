@@ -633,6 +633,7 @@ export class AppLicenseHandler {
           templateId: step.templateId,
           template: resolved.template.template,
           templateHash: step.templateHash,
+          fusionVersions: resolved.template.fusionVersions,
           label: (await this.d.chainLabel(step.root)) ?? step.label,
           now: this.d.now(),
         });

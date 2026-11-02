@@ -179,6 +179,12 @@ export interface ProvisionChainInput {
   templateId: string;
   template: TemplateShape;
   templateHash: string;
+  /**
+   * The template's FUSION artifact versions, newest last (AppTemplateView's
+   * fusionVersions): lets a re-template move a commit-tag image up. Absent:
+   * such a version stays where it is.
+   */
+  fusionVersions?: readonly string[];
   label: string;
   now: string;
 }
@@ -339,7 +345,7 @@ export async function provisionChain(
   // was given when it was created or claimed.
   let actions: Action[];
   if (state.status !== "DRAFT") {
-    actions = renderFloorUpdateActions({ template: input.template, current: state });
+    actions = renderFloorUpdateActions({ template: input.template, current: state, fusionVersions: input.fusionVersions });
   } else {
     const subdomain = deps.generateSubdomain(row.environment_id);
     actions = renderCreateActions({
@@ -478,6 +484,7 @@ async function finishWarmClaim(
       template: input.template,
       current: { ...state, owner: holder },
       includedKey,
+      fusionVersions: input.fusionVersions,
     });
     // The claim must always re-render (the ingress opens once the row is
     // CLAIMED). SET_LABEL, even an unchanged one, leaves a deployed environment

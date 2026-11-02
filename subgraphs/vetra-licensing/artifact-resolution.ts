@@ -82,3 +82,20 @@ export function repositoryOf(reference: string): string {
 export function templateNeedsArtifacts(template: TemplateShape): boolean {
   return template.services.some((s) => Boolean(s.artifactName));
 }
+
+/**
+ * The recorded versions (newest last) of the image the template's FUSION
+ * service runs: what orders commit-tag versions for the floor update (see
+ * isFusionUpgrade). Undefined when the template runs no app image or the app
+ * has not published it. Kept beside the template, never in it, so it cannot
+ * change templateHash.
+ */
+export function fusionVersionsOf(
+  template: TemplateShape,
+  artifacts: AppArtifact[],
+): string[] | undefined {
+  const name = template.services.find((s) => s.type === "FUSION" && s.artifactName)?.artifactName;
+  if (!name) return undefined;
+  const artifact = artifacts.find((a) => a.kind === "FUSION_IMAGE" && a.name === name);
+  return artifact?.versions.map((v) => v.version);
+}

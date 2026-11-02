@@ -135,6 +135,17 @@ describe("AppLicenseHandler", () => {
     expect(h.staged).toStrictEqual([]);
   });
 
+  it("passes the template's FUSION recording order to provision, so a commit tag can move up", async () => {
+    const order = ["sha-56e1fd7497fc", "sha-6141b974fc38"];
+    const withOrder: AppDocView = {
+      ...APP,
+      templates: [{ ...tpl("ded", "DEDICATED"), fusionVersions: order }, tpl("sh", "SHARED")],
+    };
+    const h = harness({ app: async (id) => (id === "app-1" ? withOrder : null) });
+    await h.handler.reconcileOnce();
+    expect(h.deps.provision).toHaveBeenCalledWith(expect.objectContaining({ templateId: "ded", fusionVersions: order }));
+  });
+
   it("falls back to the term label when the chain has none", async () => {
     const h = harness({ chainLabel: async () => null });
     await h.handler.reconcileOnce();

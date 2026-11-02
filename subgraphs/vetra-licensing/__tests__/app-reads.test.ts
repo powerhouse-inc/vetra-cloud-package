@@ -59,6 +59,22 @@ describe("parseAppDocument", () => {
     expect(p2.templateHash).toBe(pro.templateHash);
   });
 
+  it("carries the FUSION artifact's recording order beside the template, outside its hash", () => {
+    const doc = structuredClone(KV) as any;
+    doc.state.global.artifacts[0].versions = [
+      { version: "sha-56e1fd7497fc", reference: "cr.vetra.io/p/kv:sha-56e1fd7497fc" },
+      { version: "sha-6141b974fc38", reference: "cr.vetra.io/p/kv:sha-6141b974fc38" },
+    ];
+    doc.state.global.artifacts[0].channels = [{ channel: "LATEST", version: "sha-6141b974fc38" }];
+    const app = parseAppDocument(doc)!;
+    const pro = app.templates.find((t) => t.id === "t-pro")!;
+    expect(pro.fusionVersions).toStrictEqual(["sha-56e1fd7497fc", "sha-6141b974fc38"]);
+    expect(Object.keys(pro.template).sort()).toStrictEqual(["baseDomain", "packageRegistry", "packages", "services", "size"]);
+    expect(pro.templateHash).toBe("9475ab9a2790bc514229f93df9b672a2f1f749c52c15648148dde6756cbd0d50");
+    // A template without a FUSION artifact has no order to carry.
+    expect(app.templates.find((t) => t.id === "t-free")!.fusionVersions).toBeUndefined();
+  });
+
   it("reports an unresolvable artifact instead of throwing", () => {
     const broken = parseAppDocument(KV)!.templates.find((t) => t.id === "t-broken")!;
     expect(broken.resolutionError).toMatch(/has not published/);
