@@ -623,3 +623,68 @@ describe("licensing: errors", () => {
     expect(doc.state.global.templates.map((t) => t.id)).toStrictEqual(["t1"]);
   });
 });
+
+describe("licensing: warm pool size", () => {
+  const msg = (d: VetraAppDocument) => lastError(d);
+  const tpl = (d: VetraAppDocument) => d.state.global.templates[0]!;
+
+  it("ADD_TEMPLATE leaves warmPoolSize absent", () => {
+    expect("warmPoolSize" in tpl(base())).toBe(false);
+  });
+
+  it("sets, keeps and clears the size on a DEDICATED template", () => {
+    let doc = run(base(), setTemplateDetails({ id: "t1", warmPoolSize: 3 }));
+    expect(tpl(doc).warmPoolSize).toBe(3);
+    doc = run(doc, setTemplateDetails({ id: "t1", name: "Pro+" }));
+    expect(tpl(doc).warmPoolSize).toBe(3);
+    doc = run(doc, setTemplateDetails({ id: "t1", warmPoolSize: 10 }));
+    expect(tpl(doc).warmPoolSize).toBe(10);
+    doc = run(doc, setTemplateDetails({ id: "t1", warmPoolSize: null }));
+    expect(tpl(doc).warmPoolSize).toBeNull();
+    // Cleared, a SHARED switch is allowed again.
+    doc = run(doc, setTemplateDetails({ id: "t1", mode: "SHARED" }));
+    expect(lastError(doc)).toBeUndefined();
+  });
+
+  it("rejects a size above 10", () => {
+    const doc = run(base(), setTemplateDetails({ id: "t1", warmPoolSize: 11 }));
+    expect(msg(doc)).toMatch(/at most 10/);
+    expect("warmPoolSize" in tpl(doc)).toBe(false);
+  });
+
+  it("rejects a negative size", () => {
+    const doc = run(base(), setTemplateDetails({ id: "t1", warmPoolSize: -1 }));
+    expect(msg(doc)).toMatch(/not be negative/);
+    expect("warmPoolSize" in tpl(doc)).toBe(false);
+  });
+
+  it("rejects a pool on a SHARED template", () => {
+    const doc = run(
+      base(),
+      addTemplate({ id: "t2", name: null, mode: "SHARED" }),
+      setTemplateDetails({ id: "t2", warmPoolSize: 1 }),
+    );
+    expect(msg(doc)).toMatch(/only a DEDICATED/);
+    expect("warmPoolSize" in doc.state.global.templates[1]!).toBe(false);
+  });
+
+  it("rejects switching to SHARED while a pool is set", () => {
+    const doc = run(
+      base(),
+      setTemplateDetails({ id: "t1", warmPoolSize: 2 }),
+      setTemplateDetails({ id: "t1", mode: "SHARED" }),
+    );
+    expect(msg(doc)).toMatch(/only a DEDICATED/);
+    expect(tpl(doc).mode).toBe("DEDICATED");
+    expect(tpl(doc).warmPoolSize).toBe(2);
+  });
+
+  it("allows size 0 on a SHARED template", () => {
+    const doc = run(
+      base(),
+      addTemplate({ id: "t2", name: null, mode: "SHARED" }),
+      setTemplateDetails({ id: "t2", warmPoolSize: 0 }),
+    );
+    expect(msg(doc)).toBeUndefined();
+  });
+});

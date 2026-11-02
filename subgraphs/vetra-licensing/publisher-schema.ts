@@ -73,6 +73,8 @@ export const publisherSchema: DocumentNode = gql`
     size: String
     baseDomain: String
     packageRegistry: String
+    "Warm environments kept ready (DEDICATED only); 0 = none"
+    warmPoolSize: Int!
     services: [PublisherTemplateService!]!
     packages: [PublisherTemplatePackage!]!
     templateHash: String!
@@ -189,6 +191,8 @@ export const publisherSchema: DocumentNode = gql`
     size: String
     baseDomain: String
     packageRegistry: String
+    "0-10, DEDICATED only; null clears"
+    warmPoolSize: Int
   }
 
   input AddTemplateServiceInput {

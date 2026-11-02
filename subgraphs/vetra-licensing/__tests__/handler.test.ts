@@ -12,7 +12,7 @@ import { addDays, confirmedEndedRows, tickOffboarding, type OffboardingDeps } fr
 const ADDR = "0x1111111111111111111111111111111111111111";
 const DID = `did:pkh:eip155:1:${ADDR}`;
 const tpl = (id: string, mode: "SHARED" | "DEDICATED") => ({
-  id, name: null, mode, sharedEnvironment: null, templateHash: `h-${id}`, resolutionError: null,
+  id, name: null, mode, sharedEnvironment: null, warmPoolSize: 0, templateHash: `h-${id}`, resolutionError: null,
   template: { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null },
 });
 const APP: AppDocView = {

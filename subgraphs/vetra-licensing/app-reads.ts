@@ -17,6 +17,8 @@ export interface AppTemplateView {
   name: string | null;
   mode: TemplateMode;
   sharedEnvironment: string | null;
+  /** Warm environments kept ready (DEDICATED); 0 = none. Not part of the template hash. */
+  warmPoolSize: number;
   /** RESOLVED: artifact channels replaced by the version they point at. */
   template: TemplateShape;
   templateHash: string;
@@ -139,6 +141,7 @@ function parseTemplateView(raw: unknown, artifacts: AppArtifact[]): AppTemplateV
     name: str(raw.name),
     mode,
     sharedEnvironment: str(raw.sharedEnvironment),
+    warmPoolSize: typeof raw.warmPoolSize === "number" ? raw.warmPoolSize : 0,
     template,
     // Over the RESOLVED template: a publish moves a channel, which moves the hash.
     templateHash: templateHash(template),

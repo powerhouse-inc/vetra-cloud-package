@@ -51,7 +51,7 @@ const TEMPLATE = {
 };
 const template = (id: string, mode: "SHARED" | "DEDICATED", hash: string, resolutionError: string | null = null): AppTemplateView => ({
   id, name: id, mode, sharedEnvironment: mode === "SHARED" ? "env-shared" : null,
-  template: TEMPLATE, templateHash: hash, resolutionError,
+  warmPoolSize: 0, template: TEMPLATE, templateHash: hash, resolutionError,
 });
 const term = (id: string, kind: string, templateId: string | null, status: "DRAFT" | "ACTIVE" | "RETIRED" = "ACTIVE") => ({
   id, kind, label: null, templateId, validityDays: null, issuers: ["PUBLISHER_GRANT"], status,

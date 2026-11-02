@@ -103,6 +103,18 @@ describe("vetraPublisher end to end", () => {
     expect(t).toMatchObject({ size: null, baseDomain: "vetra.io" });
   });
 
+  it("sets and reads the warm pool size", async () => {
+    expect(await m("setTemplateDetails", { input: { appId: APP, templateId, warmPoolSize: 2 } })).toBe(true);
+    let [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(2);
+    await m("setTemplateDetails", { input: { appId: APP, templateId, name: "Pro" } });
+    [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(2);
+    await m("setTemplateDetails", { input: { appId: APP, templateId, warmPoolSize: null } });
+    [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(0);
+  });
+
   it("a SHARED template may only point at one of the app's own environments", async () => {
     h.ownedEnvironments.set(APP, ["env-prod", "env-preview-7"]);
     h.ownedEnvironments.set(HELD, ["env-of-another-app"]);

@@ -2,6 +2,9 @@ export type ErrorCode =
   | "DuplicateTemplateError"
   | "TemplateNotFoundError"
   | "SharedTemplateServicesError"
+  | "WarmPoolNotDedicatedError"
+  | "WarmPoolTooLargeError"
+  | "WarmPoolInvalidSizeError"
   | "DuplicateServiceError"
   | "ArtifactOnNonFusionServiceError"
   | "UnknownServiceError"
@@ -38,6 +41,27 @@ export class TemplateNotFoundError extends Error implements ReducerError {
 export class SharedTemplateServicesError extends Error implements ReducerError {
   errorCode = "SharedTemplateServicesError" as ErrorCode;
   constructor(message = "SharedTemplateServicesError") {
+    super(message);
+  }
+}
+
+export class WarmPoolNotDedicatedError extends Error implements ReducerError {
+  errorCode = "WarmPoolNotDedicatedError" as ErrorCode;
+  constructor(message = "WarmPoolNotDedicatedError") {
+    super(message);
+  }
+}
+
+export class WarmPoolTooLargeError extends Error implements ReducerError {
+  errorCode = "WarmPoolTooLargeError" as ErrorCode;
+  constructor(message = "WarmPoolTooLargeError") {
+    super(message);
+  }
+}
+
+export class WarmPoolInvalidSizeError extends Error implements ReducerError {
+  errorCode = "WarmPoolInvalidSizeError" as ErrorCode;
+  constructor(message = "WarmPoolInvalidSizeError") {
     super(message);
   }
 }
@@ -146,7 +170,13 @@ export class TermNotPublishedError extends Error implements ReducerError {
 export const errors = {
   AddTemplate: { DuplicateTemplateError },
 
-  SetTemplateDetails: { TemplateNotFoundError, SharedTemplateServicesError },
+  SetTemplateDetails: {
+    TemplateNotFoundError,
+    SharedTemplateServicesError,
+    WarmPoolNotDedicatedError,
+    WarmPoolTooLargeError,
+    WarmPoolInvalidSizeError,
+  },
 
   AddTemplateService: {
     TemplateNotFoundError,

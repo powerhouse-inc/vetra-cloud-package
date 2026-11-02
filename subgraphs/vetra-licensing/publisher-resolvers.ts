@@ -287,6 +287,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           size: t.template.size,
           baseDomain: t.template.baseDomain,
           packageRegistry: t.template.packageRegistry,
+          warmPoolSize: t.warmPoolSize,
           services: t.template.services.map((s) => ({
             id: s.id,
             type: s.type,
@@ -420,6 +421,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             size?: Opt<string>;
             baseDomain?: Opt<string>;
             packageRegistry?: Opt<string>;
+            warmPoolSize?: Opt<number>;
           }>,
           ctx,
         ) => {
@@ -439,7 +441,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             }
           }
           const fields = present(a.input, [
-            "name", "sharedEnvironment", "size", "baseDomain", "packageRegistry",
+            "name", "sharedEnvironment", "size", "baseDomain", "packageRegistry", "warmPoolSize",
           ] as const);
           // A template always has a mode: null leaves it unchanged.
           const mode = maybeOneOf(MODES, a.input.mode, "mode");

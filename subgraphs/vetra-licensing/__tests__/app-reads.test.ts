@@ -47,6 +47,18 @@ describe("parseAppDocument", () => {
     expect(pro.templateHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("reads warmPoolSize, null or absent as 0, and keeps it out of the template hash", () => {
+    const app = parseAppDocument(KV)!;
+    const pro = app.templates.find((t) => t.id === "t-pro")!;
+    expect(pro.warmPoolSize).toBe(0);
+    const doc = KV as any;
+    const pooled = structuredClone(doc);
+    pooled.state.global.templates[0].warmPoolSize = 4;
+    const p2 = parseAppDocument(pooled)!.templates.find((t) => t.id === "t-pro")!;
+    expect(p2.warmPoolSize).toBe(4);
+    expect(p2.templateHash).toBe(pro.templateHash);
+  });
+
   it("reports an unresolvable artifact instead of throwing", () => {
     const broken = parseAppDocument(KV)!.templates.find((t) => t.id === "t-broken")!;
     expect(broken.resolutionError).toMatch(/has not published/);
