@@ -168,9 +168,32 @@ export function createResolvers(
   );
   const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch, access });
 
+  /** Throws UNAUTHENTICATED / ENV_NOT_FOUND / FORBIDDEN unless the caller may view the tenant's environment. */
+  async function assertCanView(ctx: AuthAwareContext | undefined, tenantId: string): Promise<void> {
+    const callerAddress = ctx?.user?.address?.toLowerCase();
+    if (!callerAddress) throw new Error("UNAUTHENTICATED");
+    const isAdmin = callerIsAdmin(ctx ?? {}, callerAddress);
+
+    const envRow = (await envDb
+      .selectFrom("environments")
+      .select(["owner", "ownerOrgId", "appId"])
+      .where("tenantId", "=", tenantId)
+      .executeTakeFirst()) as EnvAccessFields | undefined;
+    if (!envRow) throw new Error("ENV_NOT_FOUND");
+
+    if (!(await access.canView({ address: callerAddress, isAdmin }, envRow))) {
+      throw new Error("FORBIDDEN");
+    }
+  }
+
   return {
     Query: {
-      environmentStatus: async (_parent: unknown, { tenantId }: { tenantId: string }) => {
+      environmentStatus: async (
+        _parent: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: AuthAwareContext,
+      ) => {
+        await assertCanView(ctx, tenantId);
         const row = await db
           .selectFrom("environment_status")
           .selectAll()
@@ -187,7 +210,12 @@ export function createResolvers(
         };
       },
 
-      environmentPods: async (_parent: unknown, { tenantId }: { tenantId: string }) => {
+      environmentPods: async (
+        _parent: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: AuthAwareContext,
+      ) => {
+        await assertCanView(ctx, tenantId);
         const rows = await db
           .selectFrom("environment_pods")
           .selectAll()
@@ -204,7 +232,9 @@ export function createResolvers(
       environmentEvents: async (
         _parent: unknown,
         { tenantId, limit }: { tenantId: string; limit?: number | null },
+        ctx?: AuthAwareContext,
       ) => {
+        await assertCanView(ctx, tenantId);
         const cappedLimit = Math.min(limit ?? 50, 200);
 
         return db
