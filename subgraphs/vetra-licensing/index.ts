@@ -73,6 +73,12 @@ import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
+import { up as ensureLlmTables } from "../vetra-llm/db/migrations.js";
+import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
+import { createProcessBroker } from "../vetra-llm/factory.js";
+import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { StudioAccessDeps } from "./studio-access.js";
+import { appBudgetForLicence } from "./invite-codes.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
@@ -341,7 +347,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // handed to the holder (the same permission service the keeper protects
     // them with); otherwise every chain is built cold.
     const warmStore = createWarmPoolStore(db);
+    const appKeys = await this.appKeyDeps(transit, secretsService, studio, db);
     const chainEnvDeps: ChainEnvDeps = {
+      ...appKeys,
       rows: chainRows,
       envs,
       generateSubdomain,
@@ -627,6 +635,45 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       logger: console,
     });
     this.keeper.start();
+  }
+
+  /**
+   * The included AI key of app licence environments (spec 3.11), through the
+   * vetra-llm broker in-process (its tables ensured here: boot order is not
+   * fixed). Without OpenRouter, key storage or tenant secrets nothing is
+   * wired, and environments are built and claimed exactly as before, keyless.
+   */
+  private async appKeyDeps(
+    transit: OpenBaoTransitClient | null,
+    secrets: SecretsService | null,
+    studio: StudioAccessDeps,
+    db: Kysely<VetraLicensingDB>,
+  ): Promise<Pick<ChainEnvDeps, "appKey" | "releaseAppKey">> {
+    if (!transit || !secrets) return {};
+    const llmDb = (await this.relationalDb.createNamespace("vetra-llm")) as unknown as Kysely<VetraLlmDB>;
+    await ensureLlmTables(llmDb as Kysely<any>);
+    const appBudget = (rootLicenseId: string, ownerDid: string) => appBudgetForLicence(db, rootLicenseId, ownerDid);
+    const { broker, openrouter, keyVault } = createProcessBroker({
+      db: llmDb,
+      transit,
+      secrets,
+      studio,
+      appBudget,
+      env: process.env,
+    });
+    if (!openrouter || !keyVault) {
+      console.warn("[licensing] OPENROUTER_MANAGEMENT_KEY unset — app environments get no included AI key");
+      return {};
+    }
+    return {
+      // Only a licence whose code carries a budget is keyed (provisionVetraKey
+      // re-reads it under the env's key lock).
+      appKey: async (k) =>
+        (await appBudget(k.rootLicenseId, k.ownerDid)) === null
+          ? false
+          : (await broker.provisionVetraKey(k)).connected,
+      releaseAppKey: (environmentId) => broker.releaseVetraKey(environmentId),
+    };
   }
 
   async onDisconnect(): Promise<void> {

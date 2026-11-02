@@ -136,13 +136,13 @@ export interface WarmClaimDeps {
   store: WarmPoolStore;
   /** Hands the document's protection to its new owner (protectForOwner). */
   handOver(documentId: string, owner: string): Promise<void>;
-  /** Writes the licence's included AI key, when it carries one (§3.11). */
-  appKey?: (input: {
-    environmentId: string;
-    tenantId: string;
-    rootLicenseId: string;
-    ownerDid: string;
-  }) => Promise<void>;
+}
+
+export interface AppKeyInput {
+  environmentId: string;
+  tenantId: string;
+  rootLicenseId: string;
+  ownerDid: string;
 }
 
 export interface ChainEnvDeps {
@@ -157,6 +157,16 @@ export interface ChainEnvDeps {
   logger?: Pick<Console, "error">;
   /** Claim a warm environment before building one (DEDICATED templates only). */
   warmPool?: WarmClaimDeps;
+  /**
+   * The licence's included AI key (spec 3.11), for a warm claim and a cold
+   * build alike: mints it and writes the tenant secret when the licence's code
+   * carries a budget. Resolves true when a key was written (the environment
+   * must then declare it), false when the licence has none. Absent (no broker
+   * in this process): no environment gets a key.
+   */
+  appKey?: (input: AppKeyInput) => Promise<boolean>;
+  /** Releases an environment's included key (a failed claim); idempotent. */
+  releaseAppKey?: (environmentId: string) => Promise<void>;
 }
 
 export interface ProvisionChainInput {
@@ -170,6 +180,29 @@ export interface ProvisionChainInput {
   templateHash: string;
   label: string;
   now: string;
+}
+
+/**
+ * Write the licence's included key into the environment's tenant before the
+ * batch that declares it, so the one rollout that batch causes mounts a
+ * secret that is already there. Only a template that runs FUSION (the only
+ * service that mounts it) gets one.
+ */
+async function writeIncludedKey(
+  deps: ChainEnvDeps,
+  environmentId: string,
+  subdomain: string,
+  rootLicenseId: string,
+  input: ProvisionChainInput,
+): Promise<boolean> {
+  if (!deps.appKey) return false;
+  if (!validateTemplate(input.template).services.some((s) => s.type === "FUSION")) return false;
+  return deps.appKey({
+    environmentId,
+    tenantId: getTenantId(subdomain, environmentId),
+    rootLicenseId,
+    ownerDid: input.userDid,
+  });
 }
 
 /** Statuses a template must not be applied in: asleep, going away, or gone. */
@@ -301,15 +334,21 @@ export async function provisionChain(
   // list was rejected leaves behind, so that retry is a create. A live
   // environment is only brought UP TO the template (a floor): its label, its
   // extra packages and its other services are the holder's.
-  const actions =
-    state.status !== "DRAFT"
-      ? renderFloorUpdateActions({ template: input.template, current: state })
-      : renderCreateActions({
-          label: input.label,
-          subdomain: deps.generateSubdomain(row.environment_id),
-          owner: addressOfDid(input.userDid),
-          template: input.template,
-        });
+  // A create carries the included key (spec 3.11); a live environment's key
+  // was given when it was created or claimed.
+  let actions: Action[];
+  if (state.status !== "DRAFT") {
+    actions = renderFloorUpdateActions({ template: input.template, current: state });
+  } else {
+    const subdomain = deps.generateSubdomain(row.environment_id);
+    actions = renderCreateActions({
+      label: input.label,
+      subdomain,
+      owner: addressOfDid(input.userDid),
+      template: input.template,
+      includedKey: await writeIncludedKey(deps, row.environment_id, subdomain, row.root_license_id, input),
+    });
+  }
   if (actions.length > 0) await deps.envs.execute(row.environment_id, actions);
 
   // The row's label is the one the environment was created with.
@@ -423,26 +462,27 @@ async function finishWarmClaim(
     if (owner === null && state.status !== "READY") {
       throw new WarmEnvironmentUnusableError(`warm environment ${id} is ${state.status}, not READY`);
     }
+    // The included key is written to the tenant first and declared in the
+    // batch below, so the one rollout mounts it (spec 3.11).
+    if (deps.appKey && !state.genericSubdomain) {
+      throw new WarmEnvironmentUnusableError(`warm environment ${id} has no subdomain to key`);
+    }
+    const includedKey = state.genericSubdomain
+      ? await writeIncludedKey(deps, id, state.genericSubdomain, row.root_license_id, input)
+      : false;
     // One batch: gitops re-renders once and the app restarts once. The warm
     // label ("<App> (warm)") becomes the holder's, as a cold build's would.
     const label = row.label ?? input.label;
-    const floor = renderFloorUpdateActions({ template: input.template, current: { ...state, owner: holder } });
+    const floor = renderFloorUpdateActions({
+      template: input.template,
+      current: { ...state, owner: holder },
+      includedKey,
+    });
     const relabel = state.label !== label ? [setLabel({ label })] : [];
     // SET_LABEL leaves a deployed environment CHANGES_PENDING: approve it even
     // when the floor is already met.
     const approve = relabel.length > 0 && floor.at(-1)?.type !== "APPROVE_CHANGES" ? [approveChanges({})] : [];
     await deps.envs.execute(id, [setOwner({ address: holder }), ...relabel, ...floor, ...approve]);
-    if (warmPool.appKey) {
-      if (!state.genericSubdomain) {
-        throw new WarmEnvironmentUnusableError(`warm environment ${id} has no subdomain to key`);
-      }
-      await warmPool.appKey({
-        environmentId: id,
-        tenantId: getTenantId(state.genericSubdomain, id),
-        rootLicenseId: row.root_license_id,
-        ownerDid: input.userDid,
-      });
-    }
     await warmPool.handOver(id, holder);
   } catch (err) {
     if (err instanceof EnvironmentNotReadyError) throw err;
@@ -463,8 +503,9 @@ async function finishWarmClaim(
 }
 
 /**
- * Undo a failed claim: the environment deleted, its warm row deleted, the
- * chain's row removed (the key goes with the environment, as Studio's do).
+ * Undo a failed claim: the included key released (first, and whatever the
+ * rest does: a failed claim never keeps a key it minted), the environment
+ * deleted, its warm row deleted, the chain's row removed.
  * Any step failing rethrows with the chain row still in place, so the next
  * call rolls the claim forward or discards it again; never a second
  * environment alongside it.
@@ -475,6 +516,15 @@ async function discardWarmClaim(
   id: string,
   now: string,
 ): Promise<void> {
+  if (deps.releaseAppKey) {
+    // A failed release is left to the environment's deletion (which releases
+    // its key) and the vetra-llm sweeper.
+    await deps.releaseAppKey(id).catch((err: unknown) => {
+      (deps.logger ?? console).error(
+        `[licensing] included key of discarded warm environment ${id} not released: ${String(err)}`,
+      );
+    });
+  }
   try {
     await deps.envs.delete(id);
   } catch (err) {

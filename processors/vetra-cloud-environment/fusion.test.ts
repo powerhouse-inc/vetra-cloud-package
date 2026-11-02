@@ -349,6 +349,33 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
   });
 });
 
+describe("generateValuesYaml — the included AI key on a FUSION-only host (spec 3.11)", () => {
+  const host = (env: { name: string; value: string | null; isSecret: boolean }[]) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }, ...env],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+    });
+
+  it("mounts OPENROUTER_API_KEY by key from the tenant Secret and turns the secrets controller on", async () => {
+    const yaml = await render(host([{ name: "OPENROUTER_API_KEY", value: null, isSecret: true }]));
+    const app = appBlock(yaml);
+    expect(app).toContain(`    - name: "OPENROUTER_API_KEY"\n      secretName: ${TENANT}-secrets\n      key: "OPENROUTER_API_KEY"`);
+    expect(app).not.toContain(`    "OPENROUTER_API_KEY":`);
+    expect(yaml).toContain("tenantSecretsController:\n  enabled: true");
+  });
+
+  it("without the key: no secretEnv and no secrets controller", async () => {
+    const yaml = await render(host([{ name: "ADMINS", value: "0xabc", isSecret: false }]));
+    expect(appBlock(yaml)).toContain("  secretEnv: []");
+    expect(yaml).not.toContain("tenantSecretsController:");
+  });
+});
+
 describe("generateValuesYaml — FUSION host beside platform services", () => {
   it("renders neither the platform switchboard nor Connect next to a host", async () => {
     const yaml = await render(

@@ -13,6 +13,8 @@ import {
 } from "../environments.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
 import { createWarmPoolStore, type WarmPoolStore } from "../warm-pool-db.js";
+import { renderCreateActions } from "../template.js";
+import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
 
 const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 const OTHER_DID = "did:pkh:eip155:1:0x2222222222222222222222222222222222222222";
@@ -409,3 +411,134 @@ describe("provisionChain claims a warm environment first", () => {
     expect(executed).toHaveLength(0);
   });
 });
+describe("the included AI key (spec 3.11)", () => {
+  const HOLDER = "0x1111111111111111111111111111111111111111";
+  const REPO = "cr.vetra.io/app-sektar/host";
+  const HOST_TEMPLATE = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", resolvedRepository: REPO, resolvedVersion: "sha-abcdef012345" }],
+    packages: [], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const keyInput = (over: Partial<ProvisionChainInput> = {}) => input({ template: HOST_TEMPLATE, ...over });
+  const KEY_ENTRY = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
+  const warmDoc = () => ({
+    status: "READY", owner: null, label: "Sektar (warm)", genericSubdomain: "calm-owl", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: "sha-abcdef012345", selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+  const fusionEnv = (actions: Action[]) =>
+    (actions.find((a) => a.type === "SET_FUSION_CONFIG")?.input as { env: unknown[] } | undefined)?.env;
+
+  let store: WarmPoolStore;
+  let order: string[];
+  let appKey: ReturnType<typeof vi.fn<NonNullable<ChainEnvDeps["appKey"]>>>;
+  let releaseAppKey: ReturnType<typeof vi.fn<(environmentId: string) => Promise<void>>>;
+
+  async function seedWarm(id = "warm-1"): Promise<void> {
+    states.set(id, warmDoc());
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
+  }
+
+  beforeEach(() => {
+    store = createWarmPoolStore(db);
+    order = [];
+    appKey = vi.fn(async (k: { environmentId: string }) => { order.push(`key:${k.environmentId}`); return true; });
+    releaseAppKey = vi.fn(async () => {});
+    const execute = deps.envs.execute;
+    deps.envs.execute = async (id, actions) => { order.push(`execute:${id}`); return execute(id, actions); };
+    deps.warmPool = { store, handOver: async () => {} };
+    deps.appKey = appKey;
+    deps.releaseAppKey = releaseAppKey;
+  });
+
+  it("a claim with a code budget writes the key first and declares it in the same batch as ADMINS", async () => {
+    await seedWarm();
+    await provisionChain(deps, keyInput());
+    expect(appKey).toHaveBeenCalledWith({
+      environmentId: "warm-1", tenantId: getTenantId("calm-owl", "warm-1"), rootLicenseId: "l1", ownerDid: DID,
+    });
+    expect(order).toStrictEqual(["key:warm-1", "execute:warm-1"]);
+    expect(executed).toHaveLength(1);
+    const env = fusionEnv(executed[0]!.actions);
+    expect(env).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(env).toContainEqual(KEY_ENTRY);
+    expect(releaseAppKey).not.toHaveBeenCalled();
+  });
+
+  it("a claim without a budget gets no key and no OPENROUTER_API_KEY entry", async () => {
+    await seedWarm();
+    appKey.mockResolvedValue(false);
+    await provisionChain(deps, keyInput());
+    const env = fusionEnv(executed[0]!.actions)!;
+    expect(env).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(env.some((e) => (e as { name: string }).name === "OPENROUTER_API_KEY")).toBe(false);
+  });
+
+  it("a cold build with a budget gets the key as part of the create", async () => {
+    const row = await provisionChain(deps, keyInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(appKey).toHaveBeenCalledWith({
+      environmentId: "env-1", tenantId: getTenantId("sub-env-1", "env-1"), rootLicenseId: "l1", ownerDid: DID,
+    });
+    expect(order).toStrictEqual(["key:env-1", "execute:env-1"]);
+    expect(executed[0]!.actions.map((a) => a.type)).toContain("INITIALIZE");
+    expect(fusionEnv(executed[0]!.actions)).toContainEqual(KEY_ENTRY);
+  });
+
+  it("a cold build without a budget declares no key", async () => {
+    appKey.mockResolvedValue(false);
+    await provisionChain(deps, keyInput());
+    expect(JSON.stringify(executed[0]!.actions)).not.toContain("OPENROUTER_API_KEY");
+  });
+
+  it("a failing key write releases the key and the claim falls back to cold", async () => {
+    await seedWarm();
+    appKey.mockImplementation(async (k) => {
+      if (k.environmentId === "warm-1") throw new Error("secrets down");
+      return true;
+    });
+    const row = await provisionChain(deps, keyInput());
+    expect(releaseAppKey).toHaveBeenCalledWith("warm-1");
+    expect(row.environment_id).toBe("env-1");
+    expect(states.has("warm-1")).toBe(false);
+    expect(executed.map((e) => e.id)).toStrictEqual(["env-1"]);
+  });
+
+  it("a claim whose batch fails after the key was written releases the key, even when the delete fails", async () => {
+    await seedWarm();
+    const execute = deps.envs.execute;
+    deps.envs.execute = async (id, actions) => {
+      if (id === "warm-1") throw new Error("SET_OWNER rejected");
+      return execute(id, actions);
+    };
+    deps.envs.delete = vi.fn(async () => { throw new Error("reactor down"); });
+    await expect(provisionChain(deps, keyInput())).rejects.toThrow("reactor down");
+    expect(releaseAppKey).toHaveBeenCalledWith("warm-1");
+  });
+
+  it("a failed release is logged, and the discard carries on", async () => {
+    await seedWarm();
+    const error = vi.fn();
+    deps.logger = { error };
+    appKey.mockRejectedValueOnce(new Error("secrets down"));
+    releaseAppKey.mockRejectedValueOnce(new Error("openrouter down"));
+    const row = await provisionChain(deps, keyInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(error.mock.calls.some(([m]) => String(m).includes("openrouter down"))).toBe(true);
+  });
+
+  it("a template without FUSION never mints a key", async () => {
+    await provisionChain(deps, input());
+    expect(appKey).not.toHaveBeenCalled();
+  });
+
+  it("a warm (unclaimed) environment never gets a key", async () => {
+    await db.insertInto("app_environment_limits").values({ app_id: "app-1", max_environments: 0 }).execute();
+    await seedWarm();
+    await expect(provisionChain(deps, keyInput())).rejects.toBeInstanceOf(AppEnvironmentCapReachedError);
+    expect(appKey).not.toHaveBeenCalled();
+    const warm = renderCreateActions({ label: "Sektar (warm)", subdomain: "calm-owl", owner: null, template: HOST_TEMPLATE, includedKey: true });
+    expect(JSON.stringify(warm)).not.toContain("OPENROUTER_API_KEY");
+  });
+});
+

@@ -362,6 +362,74 @@ describe("provisionVetraKey", () => {
   });
 });
 
+describe("app licence keys (spec 3.11)", () => {
+  const ROOT = "licence-root-1";
+  const appSetup = (budget: number | null) => {
+    const appBudget = vi.fn(async (_root: string, _did: string) => budget);
+    return setup({ allowed: false, budgetUsd: 0 }, { appBudget }).then((s) => ({
+      ...s,
+      appBudget,
+    }));
+  };
+  const provisionApp = (b: LlmBroker) =>
+    b.provisionVetraKey({
+      environmentId: ENV,
+      tenantId: TENANT,
+      ownerDid: holderDid(),
+      rootLicenseId: ROOT,
+    });
+
+  it("mints app:<env> capped at the licence's code budget and writes only OPENROUTER_API_KEY", async () => {
+    const s = await appSetup(20);
+    expect(await provisionApp(s.broker)).toStrictEqual({
+      connected: true,
+      llmBudgetUsd: 20,
+    });
+    const [key] = [...s.fake.keys.values()];
+    expect(key).toMatchObject({ name: `app:${ENV}`, limit: 20 });
+    expect(s.appBudget).toHaveBeenCalledWith(ROOT, holderDid());
+    // The Studio licence gate is not consulted for an app key.
+    expect(s.budgetForDid).not.toHaveBeenCalled();
+    expect(await s.store.get(ENV)).toMatchObject({
+      root_license_id: ROOT,
+      status: "ACTIVE",
+      limit_usd: 20,
+    });
+    expect(s.secrets.setSecret.mock.calls).toStrictEqual([
+      [TENANT, "OPENROUTER_API_KEY", key.secret],
+    ]);
+    expect(s.secrets.setEnvVar).not.toHaveBeenCalled();
+  });
+
+  it("releases the key it minted when the secret write fails, and rethrows", async () => {
+    const s = await appSetup(20);
+    s.secrets.setSecret.mockRejectedValueOnce(new Error("secrets down"));
+    await expect(provisionApp(s.broker)).rejects.toThrow("secrets down");
+    expect(s.fake.keys.size).toBe(0);
+    expect((await s.store.get(ENV))?.status).toBe("DELETED");
+  });
+
+  it("no budget on the licence's code: no key, nothing written", async () => {
+    const s = await appSetup(null);
+    expect(await provisionApp(s.broker)).toStrictEqual({
+      connected: false,
+      llmBudgetUsd: 0,
+    });
+    expect(s.fake.keys.size).toBe(0);
+    expect(s.secrets.setSecret).not.toHaveBeenCalled();
+    expect(s.secrets.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("Studio keys keep their name and budget source", async () => {
+    const s = await setup();
+    await provision(s.broker);
+    expect([...s.fake.keys.values()][0]).toMatchObject({
+      name: `studio:${ENV}`,
+    });
+    expect((await s.store.get(ENV))?.root_license_id ?? null).toBeNull();
+  });
+});
+
 describe("releaseVetraKey", () => {
   it("deletes the key and marks the row DELETED; a second release is a no-op", async () => {
     const s = await setup();

@@ -39,6 +39,7 @@ export function createLlmKeyStore(db: Kysely<VetraLlmDB>): LlmKeyStore {
         limit_reset: row.limit_reset,
         model: row.model,
         owner_did: row.owner_did,
+        root_license_id: row.root_license_id ?? null,
         status: row.status,
         updated_at: row.updated_at,
       };

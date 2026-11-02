@@ -22,6 +22,11 @@ describe("vetra-llm migrations", () => {
       expect(tables.rows).toStrictEqual([
         { table_schema: "vetra-llm", table_name: "studio_llm_keys" },
       ]);
+      // App licence keys (spec 3.11), added to an existing table on a re-run.
+      const rootCol = await pg.query(
+        `SELECT table_schema FROM information_schema.columns WHERE table_name = 'studio_llm_keys' AND column_name = 'root_license_id'`,
+      );
+      expect(rootCol.rows).toStrictEqual([{ table_schema: "vetra-llm" }]);
       const publicTables = await pg.query(
         `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
       );

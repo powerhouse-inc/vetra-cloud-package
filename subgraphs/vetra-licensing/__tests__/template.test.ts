@@ -349,6 +349,21 @@ describe("renderFloorUpdateActions (re-templating a live environment)", () => {
     expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
   });
 
+  it("declares the included AI key once, replacing a plain entry of that name (spec 3.11)", () => {
+    const KEY = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "fusion"), version: "2.0.0" });
+    current.fusion = { image: "registry/app", env: [{ name: "OPENROUTER_API_KEY", value: "x", isSecret: false }], autoUpdate: true, autoUpdateTagPattern: null };
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current, includedKey: true });
+    expect(types(actions)).toEqual(["SET_FUSION_CONFIG", "APPROVE_CHANGES"]);
+    expect((actions[0].input as { env: unknown[] }).env).toStrictEqual([KEY]);
+    // Already declared: nothing to send.
+    current.fusion = { ...current.fusion, env: [KEY] };
+    expect(renderFloorUpdateActions({ template: fusionTemplate, current, includedKey: true })).toEqual([]);
+    // Never removed by a floor without it.
+    expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
+  });
+
   it("sets up a missing FUSION service from scratch", () => {
     const current = deployedState();
     const actions = renderFloorUpdateActions({ template: fusionTemplate, current });
