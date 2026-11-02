@@ -34,7 +34,7 @@ export interface ProcessBroker {
   keyVault: KeyVault | null;
 }
 
-/** One broker definition for every subgraph that provisions keys (vetra-llm, vetra-studio-pool). */
+/** One broker definition for every subgraph that provisions keys (vetra-llm, vetra-studio-pool, vetra-licensing). */
 export function createProcessBroker(input: {
   db: Kysely<VetraLlmDB>;
   transit: OpenBaoTransitClient | null;
@@ -43,6 +43,14 @@ export function createProcessBroker(input: {
     "setSecret" | "setEnvVar" | "deleteSecret"
   > | null;
   studio: StudioAccessDeps;
+  /**
+   * An app licence's budget (appBudgetForLicence, spec 3.11). Absent: the
+   * broker mints no app environment keys.
+   */
+  appBudget?: (
+    rootLicenseId: string,
+    ownerDid: string,
+  ) => Promise<number | null>;
   env: Record<string, string | undefined>;
 }): ProcessBroker {
   const cfg = loadLlmConfig(input.env);
@@ -61,6 +69,7 @@ export function createProcessBroker(input: {
     secrets: input.secrets,
     budgetForDid: (did) => studioLlmBudgetForDid(input.studio, did),
     budgetOverride: (env) => budgets.getOverride(env),
+    ...(input.appBudget ? { appBudget: input.appBudget } : {}),
     cfg,
     now: () => new Date(),
     logger: console,

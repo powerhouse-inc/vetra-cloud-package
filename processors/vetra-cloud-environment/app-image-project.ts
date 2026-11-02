@@ -10,7 +10,39 @@ import type { VetraCloudEnvironmentState } from "../../document-models/vetra-clo
 export type AppImageProjectResolver = (
   state: VetraCloudEnvironmentState,
   documentId: string,
+  /** The caller's warm-pool lookup for this document, when it already did one. */
+  warm?: WarmPoolEntry | null,
 ) => Promise<string | null>;
+
+export type WarmPoolEntry = { appId: string };
+
+/**
+ * Whether a document is a live warm-pool environment (pre-started, ownerless,
+ * waiting to be claimed), and for which App.
+ */
+export type WarmPoolLookup = (
+  documentId: string,
+) => Promise<WarmPoolEntry | null>;
+
+const UNDEFINED_TABLE = "42P01";
+
+/**
+ * One warm-pool lookup for a render. The warm-pool table missing (42P01: the
+ * licensing subgraph has not created it yet, boot order is not fixed) means
+ * nothing is warm; any other failure propagates, so a warm environment can
+ * never render open by accident.
+ */
+export async function lookupWarm(
+  isWarm: WarmPoolLookup,
+  documentId: string,
+): Promise<WarmPoolEntry | null> {
+  try {
+    return await isWarm(documentId);
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE) return null;
+    throw err;
+  }
+}
 
 /**
  * The App named by `state.app.appId` must exist, and this document must be
@@ -20,10 +52,12 @@ export type AppImageProjectResolver = (
 export function createAppImageProjectResolver(
   appsDb: Kysely<any>,
   licensingDb: Kysely<any> | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): AppImageProjectResolver {
-  return async (state, documentId) => {
+  return async (state, documentId, warm) => {
     const appId = state.app?.appId;
-    if (!appId) return licensedImageProject(appsDb, licensingDb, documentId);
+    if (!appId)
+      return licensedImageProject(appsDb, licensingDb, documentId, isWarm, warm);
     try {
       const app = (await appsDb
         .selectFrom("apps")
@@ -58,19 +92,29 @@ async function licensedImageProject(
   appsDb: Kysely<any>,
   licensingDb: Kysely<any> | null,
   documentId: string,
+  isWarm: WarmPoolLookup | null,
+  given: WarmPoolEntry | null | undefined,
 ): Promise<string | null> {
-  if (!licensingDb) return null;
   try {
-    const licensed = (await licensingDb
-      .selectFrom("license_environments")
-      .select("app_id")
-      .where("environment_id", "=", documentId)
-      .executeTakeFirst()) as { app_id: string } | undefined;
-    if (!licensed) return null;
+    // A warm environment has no license_environments row yet (the claim writes
+    // it); the warm pool names its App. A render hands in its own lookup.
+    const warm =
+      given !== undefined ? given : isWarm ? await isWarm(documentId) : null;
+    let appId = warm?.appId;
+    if (!appId) {
+      if (!licensingDb) return null;
+      const licensed = (await licensingDb
+        .selectFrom("license_environments")
+        .select("app_id")
+        .where("environment_id", "=", documentId)
+        .executeTakeFirst()) as { app_id: string } | undefined;
+      if (!licensed) return null;
+      appId = licensed.app_id;
+    }
     const app = (await appsDb
       .selectFrom("apps")
       .select("harbor_project")
-      .where("id", "=", licensed.app_id)
+      .where("id", "=", appId)
       .executeTakeFirst()) as { harbor_project: string | null } | undefined;
     return app?.harbor_project ?? null;
   } catch {

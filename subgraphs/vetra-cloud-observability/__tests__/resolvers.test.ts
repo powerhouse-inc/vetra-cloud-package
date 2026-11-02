@@ -6,10 +6,22 @@ import type { ObservabilityDB } from "../db/schema.js";
 import { createResolvers, type ResolverConfig } from "../resolvers.js";
 
 let db: Kysely<ObservabilityDB>;
+let envDb: Kysely<any>;
 let resolvers: ReturnType<typeof createResolvers>;
 
 const PROMETHEUS_URL = "http://prometheus.test";
 const LOKI_URL = "http://loki.test";
+
+const OWNER = "0xdef";
+/** A signed-in caller who owns the seeded environments. */
+const ownerCtx = { user: { address: OWNER } };
+
+async function seedEnv(tenantId: string, owner: string | null): Promise<void> {
+  await envDb
+    .insertInto("environments")
+    .values({ id: `doc-${tenantId}`, tenantId, owner })
+    .execute();
+}
 
 beforeEach(async () => {
   const pglite = new PGlite();
@@ -18,11 +30,22 @@ beforeEach(async () => {
   });
   await up(db);
 
+  envDb = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+  await envDb.schema
+    .createTable("environments")
+    .addColumn("id", "varchar(255)", (col) => col.primaryKey())
+    .addColumn("tenantId", "varchar(255)")
+    .addColumn("owner", "varchar(255)")
+    .addColumn("ownerOrgId", "varchar(255)")
+    .addColumn("appId", "varchar(255)")
+    .execute();
+  await seedEnv("tenant-1", OWNER);
+  await seedEnv("unknown-tenant", OWNER);
+
   resolvers = createResolvers(db, {
     prometheusUrl: PROMETHEUS_URL,
     lokiUrl: LOKI_URL,
-    // Not exercised by these tests; minimal stubs to satisfy ResolverConfig.
-    envDb: {} as Kysely<any>,
+    envDb,
     dispatch: (async () => {}) as ResolverConfig["dispatch"],
   });
 });
@@ -30,17 +53,99 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await db.destroy();
+  await envDb.destroy();
 });
 
 // Use a getter so `query` always refers to the current resolvers instance set by beforeEach
 const getQuery = () => resolvers.Query;
 
 describe("resolvers", () => {
+  describe("observability access", () => {
+    const stubs = {
+      environmentStatus: () => getQuery().environmentStatus,
+      environmentPods: () => getQuery().environmentPods,
+      environmentEvents: () => getQuery().environmentEvents,
+    };
+    const names = Object.keys(stubs) as (keyof typeof stubs)[];
+
+    afterEach(() => {
+      delete process.env.ADMINS;
+    });
+
+    it("refuses an anonymous caller", async () => {
+      for (const name of names) {
+        await expect(stubs[name]()(undefined, { tenantId: "tenant-1" }, {})).rejects.toThrow(
+          "UNAUTHENTICATED",
+        );
+      }
+    });
+
+    it("refuses a signed-in stranger", async () => {
+      for (const name of names) {
+        await expect(
+          stubs[name]()(undefined, { tenantId: "tenant-1" }, { user: { address: "0xabc" } }),
+        ).rejects.toThrow("FORBIDDEN");
+      }
+    });
+
+    it("refuses an unknown tenant", async () => {
+      for (const name of names) {
+        await expect(
+          stubs[name]()(undefined, { tenantId: "no-such" }, ownerCtx),
+        ).rejects.toThrow("ENV_NOT_FOUND");
+      }
+    });
+
+    it("serves the owner", async () => {
+      await db
+        .insertInto("environment_pods")
+        .values({
+          id: "tenant-1/p",
+          tenantId: "tenant-1",
+          name: "p",
+          service: "CONNECT",
+          phase: "Running",
+          ready: 1,
+          restartCount: 0,
+          updatedAt: "2024-01-01T00:00:00Z",
+        })
+        .execute();
+      const pods = await getQuery().environmentPods(undefined, { tenantId: "tenant-1" }, ownerCtx);
+      expect(pods).toHaveLength(1);
+      expect(
+        await getQuery().environmentStatus(undefined, { tenantId: "tenant-1" }, ownerCtx),
+      ).toBeNull();
+      expect(
+        await getQuery().environmentEvents(undefined, { tenantId: "tenant-1" }, ownerCtx),
+      ).toEqual([]);
+    });
+
+    it("serves an admin", async () => {
+      process.env.ADMINS = "0xAdmin";
+      const ctx = { user: { address: "0xadmin" } };
+      expect(await getQuery().environmentPods(undefined, { tenantId: "tenant-1" }, ctx)).toEqual(
+        [],
+      );
+      expect(
+        await getQuery().environmentEvents(undefined, { tenantId: "tenant-1" }, ctx),
+      ).toEqual([]);
+    });
+
+    it("refuses an unowned environment to its future holder", async () => {
+      await seedEnv("unowned", null);
+      for (const name of names) {
+        await expect(
+          stubs[name]()(undefined, { tenantId: "unowned" }, { user: { address: "0xabc" } }),
+        ).rejects.toThrow("FORBIDDEN");
+      }
+    });
+  });
+
   describe("environmentStatus", () => {
     it("returns null for unknown tenant", async () => {
       const result = await getQuery().environmentStatus(undefined, {
         tenantId: "unknown-tenant",
-      });
+      }, ownerCtx);
 
       expect(result).toBeNull();
     });
@@ -64,7 +169,7 @@ describe("resolvers", () => {
 
       const result = await getQuery().environmentStatus(undefined, {
         tenantId: "tenant-1",
-      });
+      }, ownerCtx);
 
       expect(result).not.toBeNull();
       expect(result.tenantId).toBe("tenant-1");
@@ -78,7 +183,7 @@ describe("resolvers", () => {
     it("returns empty array for unknown tenant", async () => {
       const result = await getQuery().environmentPods(undefined, {
         tenantId: "unknown-tenant",
-      });
+      }, ownerCtx);
 
       expect(result).toEqual([]);
     });
@@ -112,7 +217,7 @@ describe("resolvers", () => {
 
       const result = await getQuery().environmentPods(undefined, {
         tenantId: "tenant-1",
-      });
+      }, ownerCtx);
 
       expect(result).toHaveLength(2);
 
@@ -165,7 +270,7 @@ describe("resolvers", () => {
 
       const result = await getQuery().environmentEvents(undefined, {
         tenantId: "tenant-1",
-      });
+      }, ownerCtx);
 
       expect(result).toHaveLength(3);
       expect(result[0].id).toBe("event-2");
@@ -189,7 +294,7 @@ describe("resolvers", () => {
       const result = await getQuery().environmentEvents(undefined, {
         tenantId: "tenant-1",
         limit: 3,
-      });
+      }, ownerCtx);
 
       expect(result).toHaveLength(3);
     });

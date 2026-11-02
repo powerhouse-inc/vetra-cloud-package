@@ -27,6 +27,8 @@ async function setup(
       { tenantId: string | null; status: string | null } | null
     >;
     budgets?: Record<string, StudioLlmBudget>;
+    /** App licence budgets by root licence id (absent: null). */
+    appBudgets?: Record<string, number | null>;
     workspaceId?: string | null;
   } = {},
 ) {
@@ -46,6 +48,9 @@ async function setup(
         opts.budgets?.[did] ?? { allowed: true, budgetUsd: 20 },
     ),
     budgetOverride: async () => null,
+    appBudget: vi.fn(
+      async (root: string, _did: string) => opts.appBudgets?.[root] ?? null,
+    ),
     envOf: async (id) =>
       opts.envs && id in opts.envs
         ? opts.envs[id]
@@ -61,7 +66,7 @@ async function setup(
   /** A Studio row whose key exists on the fake (in the workspace). */
   const held = async (env: string, over: Partial<StudioLlmKeys> = {}) => {
     const hash = fake.seed({
-      name: `studio:${env}`,
+      name: over.root_license_id ? `app:${env}` : `studio:${env}`,
       createdAt: ago(60 * 60_000),
       workspaceId: "ws-1",
     });
@@ -196,5 +201,54 @@ describe("runLlmSweepOnce", () => {
       failed: 1,
     });
     for (const line of s.logs) expect(line).not.toMatch(/sk-or-|vault:v\d+:/);
+  });
+});
+describe("runLlmSweepOnce: app licence keys", () => {
+  it("leaves an app: key alone while its licence is active and its code has a budget, even without a Studio licence", async () => {
+    const s = await setup({
+      budgets: { [holderDid()]: { allowed: false, budgetUsd: 0 } },
+      appBudgets: { "root-1": 20 },
+    });
+    const hash = await s.held("app-env", { root_license_id: "root-1" });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({
+      deleted: 0,
+      disabled: 0,
+      limited: 0,
+      failed: 0,
+    });
+    expect(s.fake.keys.get(hash)).toMatchObject({ disabled: false, limit: 20 });
+    expect(await s.store.get("app-env")).toMatchObject({ status: "ACTIVE" });
+    expect(s.deps.appBudget).toHaveBeenCalledWith("root-1", holderDid());
+    expect(s.deps.budgetForDid).not.toHaveBeenCalled();
+  });
+
+  it("releases an app: key when its environment is gone", async () => {
+    const s = await setup({
+      envs: { "app-env": null },
+      appBudgets: { "root-1": 20 },
+    });
+    const hash = await s.held("app-env", { root_license_id: "root-1" });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ deleted: 1 });
+    expect(s.fake.keys.has(hash)).toBe(false);
+    expect(await s.store.get("app-env")).toMatchObject({ status: "DELETED" });
+  });
+
+  it("disables an app: key once its licence ended, keeping the secret the app mounts", async () => {
+    const s = await setup({ appBudgets: { "root-1": null } });
+    const hash = await s.held("app-env", { root_license_id: "root-1" });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ disabled: 1 });
+    expect(s.fake.keys.get(hash)!.disabled).toBe(true);
+    expect(s.secrets.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("deletes old app: orphans too", async () => {
+    const s = await setup();
+    const old = s.fake.seed({
+      name: "app:lost",
+      createdAt: ago(ORPHAN_GRACE_MS + 60_000),
+      workspaceId: "ws-1",
+    });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ orphans: 1 });
+    expect(s.fake.keys.has(old)).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ const HOLDER = "0x1111111111111111111111111111111111111111";
 
 // Contract § vetraPublisher, in contract order.
 const CONTRACT_QUERIES = [
-  "myApps", "templates", "terms", "appArtifacts", "licenses", "environments", "inviteCodes", "allowList",
+  "myApps", "templates", "terms", "appArtifacts", "licenses", "environments", "inviteCodes", "allowList", "warmPool",
 ];
 const CONTRACT_MUTATIONS = [
   "addTemplate", "setTemplateDetails", "addTemplateService", "removeTemplateService",
@@ -99,6 +99,7 @@ const CASES: Case[] = [
   ["environments", "q", (x) => ({ appId: x.app })],
   ["inviteCodes", "q", (x) => ({ appId: x.app })],
   ["allowList", "q", (x) => ({ appId: x.app })],
+  ["warmPool", "q", (x) => ({ appId: x.app, templateId: x.template })],
   ["addTemplate", "m", (x) => ({ input: { appId: x.app, mode: "SHARED" } })],
   ["setTemplateDetails", "m", (x) => ({ input: { appId: x.app, templateId: x.template, name: "renamed" } })],
   ["addTemplateService", "m", (x) => ({ input: { appId: x.app, templateId: x.template, type: "SWITCHBOARD" } })],
@@ -124,6 +125,7 @@ const CASES: Case[] = [
 
 /** A's appId with one of B's inner ids: still B's, still NOT_FOUND. */
 const CROSS: Case[] = [
+  ["warmPool", "q", (x, own) => ({ appId: own.app, templateId: x.template })],
   ["setTemplateDetails", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, name: "renamed" } })],
   ["addTemplateService", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, type: "SWITCHBOARD" } })],
   ["removeTemplateService", "m", (x, own) => ({ input: { appId: own.app, templateId: x.template, id: x.service } })],

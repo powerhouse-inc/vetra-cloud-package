@@ -30,6 +30,18 @@ export async function up(db: Kysely<any>): Promise<void> {
     if (!isConcurrentIndexError(err)) throw err;
   }
   try {
+    // App licence keys (spec 3.11): null for every Studio key.
+    await db.schema
+      .alterTable("studio_llm_keys")
+      .addColumn("root_license_id", "varchar(255)")
+      .execute();
+  } catch (err) {
+    // 42701: the column already exists (an earlier boot); a racing boot may
+    // also lose on the catalogue's unique index (23505).
+    const exists = (err as { code?: unknown } | null)?.code === "42701";
+    if (!exists && !isConcurrentIndexError(err)) throw err;
+  }
+  try {
     await db.schema
       .createIndex("studio_llm_keys_status_idx")
       .ifNotExists()

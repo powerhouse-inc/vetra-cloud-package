@@ -19,12 +19,18 @@ export const MODEL_VAR = "VETRA_MODEL";
  */
 export const MODEL_FALLBACKS_VAR = "VETRA_MODEL_FALLBACKS";
 export const KEY_NAME_PREFIX = "studio:";
+/** An app licence environment's key (spec 3.11). */
+export const APP_KEY_NAME_PREFIX = "app:";
 /** Verified enum (daily | weekly | monthly | null) in https://openrouter.ai/openapi.yaml. */
 export const LIMIT_RESET = "monthly" as const;
 export const USAGE_CACHE_MS = 60_000;
 
-export const keyName = (environmentId: string): string =>
-  `${KEY_NAME_PREFIX}${environmentId}`;
+/** `studio:<env>`, or `app:<env>` for an app licence environment's key. */
+export const keyName = (
+  environmentId: string,
+  rootLicenseId?: string | null,
+): string =>
+  `${rootLicenseId ? APP_KEY_NAME_PREFIX : KEY_NAME_PREFIX}${environmentId}`;
 /** The per-env lock every key mutation (broker and sweeper) takes. */
 export const llmLockKey = (environmentId: string): string =>
   `llm:${environmentId}`;
@@ -77,9 +83,22 @@ export interface BrokerDeps {
   budgetForDid(did: string): Promise<StudioLlmBudget>;
   /** The Studio's admin budget override (USD/month); null when none. */
   budgetOverride(environmentId: string): Promise<number | null>;
+  /**
+   * An app licence's budget (USD/month): its redeemed code's llm_budget_usd
+   * while the licence is active, else null (appBudgetForLicence). Absent: no
+   * app environment gets a key.
+   */
+  appBudget?(rootLicenseId: string, ownerDid: string): Promise<number | null>;
   cfg: Pick<LlmConfig, "defaultModel" | "workspaceId" | "fallbackModels">;
   now(): Date;
   logger: Pick<Console, "info" | "warn" | "error">;
+}
+
+export interface VetraKeyInput {
+  environmentId: string;
+  ownerDid: string;
+  /** Set for an app licence environment: the chain root whose code budgets the key. */
+  rootLicenseId?: string;
 }
 
 export interface LlmBroker {
@@ -88,21 +107,21 @@ export interface LlmBroker {
    * Null (and an existing key disabled) when the licence is not usable or its
    * budget is 0. Writes no tenant secret: the pool claim batches it.
    */
-  ensureVetraKey(input: {
-    environmentId: string;
-    ownerDid: string;
-  }): Promise<VetraKeyGrant | null>;
+  ensureVetraKey(input: VetraKeyInput): Promise<VetraKeyGrant | null>;
   /**
    * ensureVetraKey + OPENROUTER_API_KEY / VETRA_MODEL into the tenant; a key
    * minted here is deleted when the write fails. When there is no grant
    * (licence ended, budget 0), OPENROUTER_API_KEY is removed so the agent
    * falls back to no-model mode instead of 401ing with a disabled key.
+   *
+   * With `rootLicenseId` the key is an app licence environment's (`app:<env>`,
+   * spec 3.11): budgeted by the licence's code, only OPENROUTER_API_KEY is
+   * written (no model vars), and a missing grant never deletes the secret the
+   * app's FUSION service mounts by key.
    */
-  provisionVetraKey(input: {
-    environmentId: string;
-    tenantId: string;
-    ownerDid: string;
-  }): Promise<ProvisionResult>;
+  provisionVetraKey(
+    input: VetraKeyInput & { tenantId: string },
+  ): Promise<ProvisionResult>;
   /** Delete the env's key on OpenRouter and mark its row DELETED. Idempotent. */
   releaseVetraKey(environmentId: string): Promise<void>;
   /** This month's spend against the limit; null without a key. Cached 60 s. */
@@ -133,6 +152,24 @@ export async function studioBudget(
   if (!budget.allowed) return budget;
   const override = await d.budgetOverride(environmentId);
   return override === null ? budget : { allowed: true, budgetUsd: override };
+}
+
+/**
+ * A key's budget: a Studio's (studioBudget), or an app licence
+ * environment's when `rootLicenseId` is set, from its licence's code alone
+ * (no Studio licence gate, no admin override).
+ */
+export async function keyBudget(
+  d: Pick<BrokerDeps, "budgetForDid" | "budgetOverride" | "appBudget">,
+  did: string,
+  environmentId: string,
+  rootLicenseId: string | null | undefined,
+): Promise<StudioLlmBudget> {
+  if (!rootLicenseId) return studioBudget(d, did, environmentId);
+  const usd = d.appBudget ? await d.appBudget(rootLicenseId, did) : null;
+  return usd === null
+    ? { allowed: false, budgetUsd: 0 }
+    : { allowed: true, budgetUsd: usd };
 }
 
 /** A row whose key still exists on OpenRouter and can be decrypted. */
@@ -200,14 +237,11 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     }
   }
 
-  async function ensureLocked(input: {
-    environmentId: string;
-    ownerDid: string;
-  }): Promise<Grant | null> {
+  async function ensureLocked(input: VetraKeyInput): Promise<Grant | null> {
     const { openrouter, keyVault } = configured();
     const env = input.environmentId;
     usageCache.delete(env);
-    const budget = await studioBudget(d, input.ownerDid, env);
+    const budget = await keyBudget(d, input.ownerDid, env, input.rootLicenseId);
     const row = await d.store.get(env);
     const now = d.now().toISOString();
     const held = heldRow(row);
@@ -272,7 +306,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     }
 
     const created = await openrouter.createKey({
-      name: keyName(env),
+      name: keyName(env, input.rootLicenseId),
       limitUsd: budget.budgetUsd,
       limitReset: LIMIT_RESET,
       workspaceId: d.cfg.workspaceId,
@@ -289,6 +323,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         limit_reset: LIMIT_RESET,
         model,
         owner_did: input.ownerDid,
+        root_license_id: input.rootLicenseId ?? null,
         status: "ACTIVE",
         created_at: row?.created_at ?? now,
         updated_at: now,
@@ -367,8 +402,12 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
       withKeyLock(llmLockKey(input.environmentId), async () => {
         if (!d.secrets) throw notConfigured("tenant secrets (OPENBAO_ADDR)");
         const env = input.environmentId;
+        const app = Boolean(input.rootLicenseId);
         const grant = await ensureLocked(input);
         if (!grant) {
+          // An app's FUSION service mounts the secret by key: removing it
+          // would stop the app restarting. A disabled key is the app's business.
+          if (app) return { connected: false, llmBudgetUsd: 0 };
           // The agent must fall back to no-model mode, not 401 with a disabled
           // key. Only a Studio that held a Vetra key loses the secret; one with
           // no row may carry the user's own key. A failed delete throws: the
@@ -379,15 +418,18 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         }
         try {
           // The key goes last: when any write fails, the tenant never holds
-          // a key the undo below is about to delete.
-          await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
-          // Always written (blank = the agent's default chain, `none` = no
-          // fallbacks), so a changed or removed list converges.
-          await d.secrets.setEnvVar(
-            input.tenantId,
-            MODEL_FALLBACKS_VAR,
-            grant.fallbackModels.join(","),
-          );
+          // a key the undo below is about to delete. The model vars are the
+          // Studio agent's; an app chooses its own models.
+          if (!app) {
+            await d.secrets.setEnvVar(input.tenantId, MODEL_VAR, grant.model);
+            // Always written (blank = the agent's default chain, `none` = no
+            // fallbacks), so a changed or removed list converges.
+            await d.secrets.setEnvVar(
+              input.tenantId,
+              MODEL_FALLBACKS_VAR,
+              grant.fallbackModels.join(","),
+            );
+          }
           await d.secrets.setSecret(
             input.tenantId,
             OPENROUTER_KEY_SECRET,

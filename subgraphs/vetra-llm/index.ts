@@ -19,6 +19,7 @@ import {
   createStudioAccessDeps,
 } from "../vetra-licensing/studio-access-factory.js";
 import { studioLlmBudgetForDid } from "../vetra-licensing/studio-access.js";
+import { appBudgetForLicence } from "../vetra-licensing/invite-codes.js";
 import { up } from "./db/migrations.js";
 import type { VetraLlmDB } from "./db/schema.js";
 import { createBudgetStore, createLlmKeyStore } from "./store.js";
@@ -73,11 +74,14 @@ export class VetraLlmSubgraph extends BaseSubgraph {
       trustedIds: appsTrustedIds(appsDb),
       transit,
     });
+    const appBudget = (rootLicenseId: string, ownerDid: string) =>
+      appBudgetForLicence(licensingDb, rootLicenseId, ownerDid);
     const { broker, cfg, openrouter, keyVault } = createProcessBroker({
       db,
       transit,
       secrets,
       studio,
+      appBudget,
       env: process.env,
     });
     if (!cfg.managementKey) {
@@ -168,6 +172,7 @@ export class VetraLlmSubgraph extends BaseSubgraph {
           secrets,
           budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
           budgetOverride,
+          appBudget,
           envOf: async (environmentId) =>
             (await envDb
               .selectFrom("environments")

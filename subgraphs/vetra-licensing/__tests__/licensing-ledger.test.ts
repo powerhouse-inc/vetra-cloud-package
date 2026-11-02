@@ -114,6 +114,13 @@ describe("licensingStateHash", () => {
     expect(licensingStateHash(null)).toBe(licensingStateHash({}));
   });
 
+  it("hashes a template without warmPoolSize like before the field existed", () => {
+    const withUndefined = TEMPLATES.map((t) => ({ ...t, warmPoolSize: undefined }));
+    expect(licensingStateHash({ ...S, templates: withUndefined })).toBe(licensingStateHash(S));
+    const pooled = TEMPLATES.map((t) => ({ ...t, warmPoolSize: 2 }));
+    expect(licensingStateHash({ ...S, templates: pooled })).not.toBe(licensingStateHash(S));
+  });
+
   it("covers artifact versions and channel pointers, and ignores fields outside its scope", () => {
     const moved = structuredClone(ARTIFACTS);
     moved[0]!.channels[0]!.version = "1.0.0";

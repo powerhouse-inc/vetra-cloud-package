@@ -200,7 +200,7 @@ describe("issueLicense", () => {
 
   it("refuses a DEDICATED term whose template cannot be resolved, as the public code check does", async () => {
     const tpl = (id: string, mode: "DEDICATED" | "SHARED", resolutionError: string | null) => ({
-      id, name: null, mode, sharedEnvironment: null, templateHash: "h", resolutionError,
+      id, name: null, mode, sharedEnvironment: null, warmPoolSize: 0, templateHash: "h", resolutionError,
       template: { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null },
     });
     DOCS["app-1"] = { ...app, templates: [tpl("t", "DEDICATED", "artifact missing has no channel STAGING")] };

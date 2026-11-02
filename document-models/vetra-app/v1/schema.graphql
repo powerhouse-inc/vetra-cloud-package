@@ -99,6 +99,7 @@ type VetraAppEnvironmentTemplate {
   size: String
   baseDomain: String
   packageRegistry: URL
+  warmPoolSize: Int
 }
 
 enum TemplateInstanceMode {
@@ -218,6 +219,7 @@ input SetTemplateDetailsInput {
   size: String
   baseDomain: String
   packageRegistry: URL
+  warmPoolSize: Int
 }
 
 input AddTemplateServiceInput {

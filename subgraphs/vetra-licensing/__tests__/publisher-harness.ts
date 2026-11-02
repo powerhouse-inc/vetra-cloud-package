@@ -14,6 +14,7 @@ import { createReactorLicenseReads } from "../reads.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
 import { createLifecycleStore } from "../lifecycle.js";
 import { createGrantStore } from "../grants.js";
+import { createWarmPoolStore } from "../warm-pool-db.js";
 import { createChainEnvironmentRows } from "../environments.js";
 import { loadLicensingConfig } from "../config.js";
 import { createOwnerAppLookup } from "../owner-apps.js";
@@ -113,6 +114,7 @@ export async function createPublisherHarness() {
     },
     grants,
     envRows: createChainEnvironmentRows(db, cfg),
+    warmPool: createWarmPoolStore(db),
     codes: db,
     keyVault,
     cfg,

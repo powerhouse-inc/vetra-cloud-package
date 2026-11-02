@@ -84,6 +84,7 @@ describe("subgraph schema composition", () => {
       "environments",
       "inviteCodes",
       "allowList",
+      "warmPool",
     ]);
     expect(fieldsOf(built, "VetraPublisherMutations")).toStrictEqual([
       "addTemplate",

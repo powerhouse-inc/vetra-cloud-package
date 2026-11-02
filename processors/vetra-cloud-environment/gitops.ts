@@ -15,7 +15,11 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
-import type { AppImageProjectResolver } from "./app-image-project.js";
+import {
+  lookupWarm,
+  type AppImageProjectResolver,
+  type WarmPoolLookup,
+} from "./app-image-project.js";
 import {
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
@@ -469,7 +473,7 @@ type ResourceSpec = {
  * today's powerhouse-chart default — preventing regression on next sync for
  * any environment that hasn't yet picked a size.
  */
-const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
+export const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "1", memory: "1Gi" },
@@ -563,6 +567,9 @@ const CONNECT_RESOURCES: ResourceSpec = {
   nodeMaxOldSpaceMb: 384,
 };
 
+/** The size a service runs at when none was selected. */
+export const DEFAULT_RESOURCE_SIZE: VetraCloudRessourceSize = "VETRA_AGENT_S";
+
 /**
  * Resolve the effective t-shirt size for a service. Reads the top-level
  * `selectedRessource` first, falls back to the legacy CLINT
@@ -571,11 +578,11 @@ const CONNECT_RESOURCES: ResourceSpec = {
 function readServiceSize(
   svc: VetraCloudEnvironmentService | undefined,
 ): VetraCloudRessourceSize {
-  if (!svc) return "VETRA_AGENT_S";
+  if (!svc) return DEFAULT_RESOURCE_SIZE;
   return (
     svc.selectedRessource ??
     svc.config?.selectedRessource ??
-    "VETRA_AGENT_S"
+    DEFAULT_RESOURCE_SIZE
   );
 }
 
@@ -1188,6 +1195,8 @@ export function generateFusionBlock(
     connectHost: string | null;
     /** Harbor project of the env's App, confirmed by vetra-apps (never the doc's own claim). */
     appImageProject?: string | null;
+    /** A warm (unclaimed) environment: the chart renders its ingress closed (`ingress.closed: true`) until claimed. */
+    warm?: boolean;
   },
 ): string {
   const service = (state.services ?? []).find(
@@ -1296,7 +1305,7 @@ export function generateFusionBlock(
     targetPort: ${port}
   ingress:
     enabled: true
-    className: traefik
+    className: traefik${opts.warm ? "\n    closed: true" : ""}
     host: ${yamlQuote(host)}
     additionalHosts: []
     tls:
@@ -1362,6 +1371,7 @@ export async function generateValuesYaml(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1506,6 +1516,8 @@ export async function generateValuesYaml(
     connectApexDomain,
   );
 
+  // One warm-pool lookup per render, shared with the image resolver.
+  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
   const fusionBlock = generateFusionBlock(state, {
     tenantId,
     subdomain,
@@ -1520,8 +1532,11 @@ export async function generateValuesYaml(
     // may one Vetra provisioned for a licence (no App link; the resolver reads
     // license_environments).
     appImageProject: resolveAppImageProject
-      ? await resolveAppImageProject(state, documentId)
+      ? await (warm === undefined
+          ? resolveAppImageProject(state, documentId)
+          : resolveAppImageProject(state, documentId, warm))
       : null,
+    warm: warm != null,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
@@ -1854,6 +1869,7 @@ export async function syncEnvironment(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -1874,6 +1890,7 @@ export async function syncEnvironment(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
   } finally {
     gitMutex.release();
@@ -2009,6 +2026,7 @@ async function syncEnvironmentEphemeral(
   documentId: string,
   secretsService: SecretsService | null,
   resolveAppImageProject: AppImageProjectResolver | null,
+  isWarm: WarmPoolLookup | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -2037,6 +2055,7 @@ async function syncEnvironmentEphemeral(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);

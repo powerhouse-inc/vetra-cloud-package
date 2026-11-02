@@ -18,6 +18,7 @@ const row = (over: Partial<StudioLlmKeys> = {}): StudioLlmKeys => ({
   limit_reset: "monthly",
   model: "anthropic/claude-sonnet-4.6",
   owner_did: "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  root_license_id: null,
   status: "ACTIVE",
   created_at: "2026-10-15T10:00:00.000Z",
   updated_at: "2026-10-15T10:00:00.000Z",
@@ -33,6 +34,16 @@ describe("LlmKeyStore", () => {
     const got = await store.get("env-1");
     expect(got).toStrictEqual(row());
     expect(typeof got!.limit_usd).toBe("number");
+  });
+
+  it("keeps an app key's root licence and replaces it on upsert", async () => {
+    const h = await openLlmDb();
+    destroy = h.destroy;
+    const store = createLlmKeyStore(h.db);
+    await store.upsert(row({ root_license_id: "root-1" }));
+    expect((await store.get("env-1"))?.root_license_id).toBe("root-1");
+    await store.upsert(row());
+    expect((await store.get("env-1"))?.root_license_id).toBeNull();
   });
 
   it("upserts on environment_id and keeps created_at", async () => {

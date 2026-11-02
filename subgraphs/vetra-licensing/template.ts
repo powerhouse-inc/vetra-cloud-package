@@ -145,6 +145,20 @@ export function hostEnv(host: string, owner: string): FusionEnvEntry[] {
   ];
 }
 
+/**
+ * The included AI key (spec 3.11): declared on the FUSION service as a secret
+ * with no value, so the chart mounts OPENROUTER_API_KEY by key from the
+ * tenant Secret the LLM broker wrote it to.
+ */
+export const INCLUDED_KEY_ENV: FusionEnvEntry = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
+
+/** `env` declaring the included key; unchanged when it already does. */
+function withIncludedKey(env: FusionEnvEntry[]): FusionEnvEntry[] {
+  const { name } = INCLUDED_KEY_ENV;
+  if (env.some((e) => e.name === name && e.isSecret === true)) return env;
+  return [...env.filter((e) => e.name !== name), INCLUDED_KEY_ENV];
+}
+
 /** `env` with the host settings present (and current), the holder's own entries kept. */
 function withHostEnv(env: FusionEnvEntry[], host: string, owner: string): FusionEnvEntry[] {
   const wanted = hostEnv(host, owner);
@@ -241,8 +255,15 @@ function sizeAction(
 export interface CreateRenderInput {
   label: string;
   subdomain: string;
-  owner: string;
+  /** null renders an ownerless (warm) environment: no SET_OWNER, empty ADMINS. */
+  owner: string | null;
   template: TemplateShape;
+  /**
+   * The broker wrote the licence's included AI key (spec 3.11): declare it on
+   * the FUSION service. Ignored without an owner: a warm environment never
+   * holds a key.
+   */
+  includedKey?: boolean;
 }
 
 /**
@@ -263,8 +284,8 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
       genericBaseDomain: t.baseDomain ?? DEFAULT_BASE_DOMAIN,
       defaultPackageRegistry: t.packageRegistry ?? undefined,
     }),
-    setOwner({ address: input.owner }),
   ];
+  if (input.owner) actions.push(setOwner({ address: input.owner }));
 
   for (const p of n.packages) {
     actions.push(addPackage({ packageName: p.name, version: p.version }));
@@ -273,7 +294,7 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
     actions.push(enableService({ type: s.type, prefix: s.prefix }));
     const sized = sizeAction(s, n.size, null);
     if (sized) actions.push(sized);
-    actions.push(...fusionActions(s, input.owner));
+    actions.push(...fusionActions(s, input.owner ?? "", Boolean(input.owner) && input.includedKey === true));
   }
 
   actions.push(approveChanges({}));
@@ -290,12 +311,13 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
  * hash changes. Letting the environment chase tags on its own would make the
  * template's recorded version a lie.
  */
-function fusionActions(s: NormalisedTemplate["services"][number], owner: string): Action[] {
+function fusionActions(s: NormalisedTemplate["services"][number], owner: string, includedKey = false): Action[] {
   if (s.type !== "FUSION" || !s.repository || !s.version) return [];
+  const env = s.host ? hostEnv(s.host, owner) : [];
   return [
     setFusionConfig({
       image: s.repository,
-      env: s.host ? hostEnv(s.host, owner) : [],
+      env: includedKey ? withIncludedKey(env) : env,
       autoUpdate: false,
       autoUpdateTagPattern: null,
     }),
@@ -423,6 +445,8 @@ export interface FloorUpdateRenderInput {
   template: TemplateShape;
   /** The environment's current global state, as EnvGateway.getState returns it. */
   current: VetraCloudEnvironmentState;
+  /** The broker wrote the licence's included AI key: declare it on FUSION (spec 3.11). */
+  includedKey?: boolean;
 }
 
 /**
@@ -448,6 +472,7 @@ function floorFusionActions(
   have: VetraCloudEnvironmentState["services"][number] | undefined,
   fusion: VetraCloudEnvironmentState["fusion"],
   owner: string | null,
+  includedKey: boolean,
 ): Action[] {
   const { repository, version } = s;
   const actions: Action[] = [];
@@ -457,7 +482,8 @@ function floorFusionActions(
     isSecret: e.isSecret ?? null,
   }));
   // A host env missing its settings (or naming another admin) gets them back.
-  const wantedEnv = s.host && owner ? withHostEnv(env, s.host, owner) : env;
+  const hosted = s.host && owner ? withHostEnv(env, s.host, owner) : env;
+  const wantedEnv = includedKey ? withIncludedKey(hosted) : hosted;
   if (fusion?.image !== repository || JSON.stringify(wantedEnv) !== JSON.stringify(env)) {
     actions.push(
       setFusionConfig({
@@ -498,6 +524,7 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
           have,
           current.fusion,
           current.owner ?? null,
+          input.includedKey === true,
         ),
       );
     }

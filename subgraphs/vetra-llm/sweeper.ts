@@ -4,11 +4,12 @@ import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-ser
 import type { KeyVault } from "../vetra-licensing/key-vault.js";
 import type { StudioLlmBudget } from "../vetra-licensing/studio-access.js";
 import {
+  APP_KEY_NAME_PREFIX,
   KEY_NAME_PREFIX,
   OPENROUTER_KEY_SECRET,
+  keyBudget,
   llmLockKey,
   sameUsd,
-  studioBudget,
 } from "./broker.js";
 import type { OpenRouterApi } from "./openrouter.js";
 import type { LlmKeyStore } from "./store.js";
@@ -16,7 +17,7 @@ import type { LlmKeyStore } from "./store.js";
 /** Like the Apps watcher. */
 export const SWEEP_INTERVAL_MS = 15 * 60_000;
 /**
- * A studio: key younger than this is never an orphan: provisionVetraKey mints
+ * A studio: or app: key younger than this is never an orphan: provisionVetraKey mints
  * the key before it records the row, and a claim may still be in flight.
  */
 export const ORPHAN_GRACE_MS = 30 * 60_000;
@@ -31,6 +32,11 @@ export interface SweepDeps {
   budgetForDid(did: string): Promise<StudioLlmBudget>;
   /** The Studio's admin budget override; wins over the licence's budget. */
   budgetOverride(environmentId: string): Promise<number | null>;
+  /**
+   * An app licence's budget (appBudgetForLicence): the redeemed code's while
+   * the licence is active, else null. Absent: app keys are left alone.
+   */
+  appBudget?(rootLicenseId: string, ownerDid: string): Promise<number | null>;
   /** The env's projection row; null when the env document is gone. */
   envOf(
     environmentId: string,
@@ -72,11 +78,16 @@ async function sweepRow(
     return;
   }
 
-  const budget = await studioBudget(d, row.owner_did, environmentId);
+  // An app licence environment's key answers to its licence, not to Studio.
+  const root = row.root_license_id ?? null;
+  if (root && !d.appBudget) return;
+  const budget = await keyBudget(d, row.owner_did, environmentId, root);
   if (!budget.allowed || budget.budgetUsd <= 0) {
     if (row.status === "ACTIVE") {
       await d.openrouter.updateKey(row.key_hash, { disabled: true });
-      if (env.tenantId)
+      // An app's FUSION service mounts the secret by key: it stays, and the
+      // disabled key is the app's business.
+      if (env.tenantId && !root)
         await d.secrets.deleteSecret(env.tenantId, OPENROUTER_KEY_SECRET);
       await d.store.update(environmentId, {
         status: "DISABLED",
@@ -92,7 +103,7 @@ async function sweepRow(
       disabled: false,
       limitUsd: budget.budgetUsd,
     });
-    if (env.tenantId && row.key_ciphertext) {
+    if (env.tenantId && row.key_ciphertext && !root) {
       await d.secrets.setSecret(
         env.tenantId,
         OPENROUTER_KEY_SECRET,
@@ -126,7 +137,10 @@ async function sweepOrphans(
   const known = new Set((await d.store.listHeld()).map((r) => r.key_hash));
   const cutoff = d.now().getTime() - ORPHAN_GRACE_MS;
   for (const key of await d.openrouter.listKeys({ workspaceId })) {
-    if (!key.name.startsWith(KEY_NAME_PREFIX) || known.has(key.hash)) continue;
+    const ours =
+      key.name.startsWith(KEY_NAME_PREFIX) ||
+      key.name.startsWith(APP_KEY_NAME_PREFIX);
+    if (!ours || known.has(key.hash)) continue;
     const created = Date.parse(key.createdAt);
     if (!Number.isFinite(created) || created > cutoff) continue;
     try {
@@ -142,12 +156,15 @@ async function sweepOrphans(
 }
 
 /**
- * One pass of the lifecycle rules (spec "Lifecycle sweeper"):
+ * One pass of the lifecycle rules (spec "Lifecycle sweeper"). An `app:` key
+ * (app licence environment, spec 3.11) follows the same rules with its
+ * licence's code budget in place of the Studio licence, and its tenant secret
+ * is never removed or rewritten (the app mounts it by key):
  * - a deleted or released Studio → its key is deleted;
  * - a licence no longer usable → the key is disabled and the secret removed;
  * - a renewed licence → the key is re-enabled, its limit updated and the secret written back;
  * - a changed budget (licence or admin override) → the limit is PATCHed;
- * - `studio:` keys with no row → deleted, but only within this deployment's
+ * - `studio:` and `app:` keys with no row → deleted, but only within this deployment's
  *   workspace and only once they are older than the grace window.
  *
  * Each row runs under the broker's env lock; one failing row never stops the pass.

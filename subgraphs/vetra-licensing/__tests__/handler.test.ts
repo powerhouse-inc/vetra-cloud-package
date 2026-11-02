@@ -12,7 +12,7 @@ import { addDays, confirmedEndedRows, tickOffboarding, type OffboardingDeps } fr
 const ADDR = "0x1111111111111111111111111111111111111111";
 const DID = `did:pkh:eip155:1:${ADDR}`;
 const tpl = (id: string, mode: "SHARED" | "DEDICATED") => ({
-  id, name: null, mode, sharedEnvironment: null, templateHash: `h-${id}`, resolutionError: null,
+  id, name: null, mode, sharedEnvironment: null, warmPoolSize: 0, templateHash: `h-${id}`, resolutionError: null,
   template: { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null },
 });
 const APP: AppDocView = {
@@ -732,6 +732,82 @@ describe("AppLicenseHandler", () => {
       await c.h.handler.reconcileOnce();
       expect(c.sleep).not.toHaveBeenCalled();
       warned(c.h, "frozen");
+    });
+  });
+
+  describe("kick", () => {
+    /** A handler whose ticks (counted in their licence read) can be held open. */
+    const kicker = (failFirst = false) => {
+      const gates: (() => void)[] = [];
+      const state = { started: 0, finished: 0, concurrent: 0, maxConcurrent: 0, hold: true };
+      const h = harness({
+        licences: async () => {
+          state.started++;
+          state.concurrent++;
+          state.maxConcurrent = Math.max(state.maxConcurrent, state.concurrent);
+          if (failFirst && state.started === 1) {
+            state.concurrent--;
+            state.finished++;
+            throw new Error("boom");
+          }
+          if (state.hold) await new Promise<void>((r) => gates.push(r));
+          state.concurrent--;
+          state.finished++;
+          return [lic("l1")];
+        },
+      });
+      const release = async () => {
+        gates.splice(0).forEach((g) => g());
+        await new Promise((r) => setTimeout(r, 10));
+      };
+      return { h, state, release };
+    };
+
+    it("runs one tick when nothing is running", async () => {
+      const k = kicker();
+      k.state.hold = false;
+      k.h.handler.kick();
+      await vi.waitFor(() => expect(k.state.finished).toBe(1));
+      expect(k.state.started).toBe(1);
+    });
+
+    it("never overlaps a running tick and runs exactly one follow-up", async () => {
+      const k = kicker();
+      k.h.handler.kick();
+      await vi.waitFor(() => expect(k.state.started).toBe(1));
+      k.h.handler.kick();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(k.state.started).toBe(1);
+      await k.release();
+      await vi.waitFor(() => expect(k.state.started).toBe(2));
+      await k.release();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(k.state).toMatchObject({ started: 2, finished: 2, maxConcurrent: 1 });
+    });
+
+    it("coalesces several kicks during one tick into one follow-up", async () => {
+      const k = kicker();
+      k.h.handler.kick();
+      await vi.waitFor(() => expect(k.state.started).toBe(1));
+      k.h.handler.kick();
+      k.h.handler.kick();
+      k.h.handler.kick();
+      await k.release();
+      await vi.waitFor(() => expect(k.state.started).toBe(2));
+      await k.release();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(k.state).toMatchObject({ started: 2, maxConcurrent: 1 });
+    });
+
+    it("logs a failing tick and still serves the next kick", async () => {
+      const k = kicker(true);
+      k.state.hold = false;
+      k.h.handler.kick();
+      await vi.waitFor(() => expect(k.h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("handler tick failed")));
+      await new Promise((r) => setTimeout(r, 0));
+      k.h.handler.kick();
+      await vi.waitFor(() => expect(k.state.finished).toBe(2));
+      expect(k.state.started).toBe(2);
     });
   });
 });

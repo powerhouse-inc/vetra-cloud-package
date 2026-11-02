@@ -173,6 +173,22 @@ export async function up(db: Kysely<any>): Promise<void> {
       .column(col).ifNotExists().execute();
   }
 
+  await db.schema.createTable("app_warm_pool")
+    .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("template_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("template_hash", "varchar(64)", (c) => c.notNull())
+    .addColumn("state", "varchar(16)", (c) => c.notNull())
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("ready_at", "varchar(255)")
+    .addColumn("claimed_at", "varchar(255)")
+    .addColumn("deleted_at", "varchar(255)")
+    .addColumn("root_license_id", "varchar(255)")
+    .addPrimaryKeyConstraint("app_warm_pool_pkey", ["environment_id"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("app_warm_pool_key_idx").on("app_warm_pool")
+    .columns(["app_id", "template_id", "state"]).ifNotExists().execute();
+
   await db.schema.createTable("app_allow_list")
     .addColumn("app_id", "varchar(255)", (c) => c.notNull())
     .addColumn("user_did", "varchar(255)", (c) => c.notNull())

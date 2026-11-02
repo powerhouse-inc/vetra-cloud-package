@@ -22,7 +22,7 @@ const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 const OTHER = "0x2222222222222222222222222222222222222222";
 const NOW = "2026-10-08T00:00:00.000Z";
 const tpl = (id: string, mode: "SHARED" | "DEDICATED") => ({
-  id, name: null, mode, sharedEnvironment: null, templateHash: "h", resolutionError: null,
+  id, name: null, mode, sharedEnvironment: null, warmPoolSize: 0, templateHash: "h", resolutionError: null,
   template: { services: [], packages: [], size: null, baseDomain: null, packageRegistry: null },
 });
 const app: AppDocView = {

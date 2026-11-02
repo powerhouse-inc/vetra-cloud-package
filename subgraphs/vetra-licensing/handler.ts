@@ -201,21 +201,44 @@ export class AppLicenseHandler {
     this.notices = new Notices(d.logger);
   }
 
+  /** Set by kick() while a tick runs: one more tick follows it. */
+  private rerun = false;
+
   start(): void {
     if (this.timer) return;
-    const tick = () => {
-      if (this.running) return;
-      this.running = true;
-      this.reconcileOnce()
-        .catch((err: unknown) =>
-          this.d.logger.warn(`[licensing] handler tick failed: ${String(err)}`),
-        )
-        .finally(() => {
-          this.running = false;
-        });
-    };
+    const tick = () => this.launch();
     tick();
     this.timer = setInterval(tick, this.d.cfg.scanIntervalMs);
+  }
+
+  /**
+   * Ask for a tick now (a licence was just issued). Starts one if none is
+   * running; otherwise exactly one more runs right after the current one,
+   * however many kicks arrive. Never throws; failures are logged.
+   */
+  kick(): void {
+    if (this.running) {
+      this.rerun = true;
+      return;
+    }
+    this.launch();
+  }
+
+  /** The one guarded path to a tick, shared by the interval and kick(). */
+  private launch(): void {
+    if (this.running) return;
+    this.running = true;
+    this.reconcileOnce()
+      .catch((err: unknown) =>
+        this.d.logger.warn(`[licensing] handler tick failed: ${String(err)}`),
+      )
+      .finally(() => {
+        this.running = false;
+        if (this.rerun) {
+          this.rerun = false;
+          this.launch();
+        }
+      });
   }
 
   stop(): void {

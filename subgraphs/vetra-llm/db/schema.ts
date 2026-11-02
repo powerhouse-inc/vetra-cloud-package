@@ -14,6 +14,11 @@ export interface StudioLlmKeys {
   limit_reset: string;
   model: string;
   owner_did: string;
+  /**
+   * Set for an app licence environment's key (`app:<env>`): the root of the
+   * licence chain whose redeemed code sets its budget. Null for a Studio key.
+   */
+  root_license_id?: string | null;
   status: LlmKeyStatus;
   created_at: string;
   updated_at: string;
