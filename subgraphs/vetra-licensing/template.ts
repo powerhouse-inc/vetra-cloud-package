@@ -460,8 +460,9 @@ export function isFusionUpgrade(
   if (current === null) return false;
   if (SEMVER.test(current) && SEMVER.test(wanted)) return isVersionUpgrade(current, wanted);
   if (!recorded) return false;
-  const from = recorded.lastIndexOf(current);
-  const to = recorded.lastIndexOf(wanted);
+  // The vetra-app reducer keeps versions unique (a re-record replaces in place).
+  const from = recorded.indexOf(current);
+  const to = recorded.indexOf(wanted);
   return from !== -1 && to !== -1 && to > from;
 }
 

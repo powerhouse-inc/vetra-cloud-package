@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  fusionVersionsOf,
   resolveTemplateArtifacts,
   repositoryOf,
   templateNeedsArtifacts,
@@ -54,6 +55,26 @@ const catalogue = (
     channels,
   },
 ];
+
+describe("fusionVersionsOf", () => {
+  it("reads only the FUSION_IMAGE artifact the FUSION service names, in recording order", () => {
+    const artifacts: AppArtifact[] = [
+      { kind: "PACKAGE", name: "dtbau-psb", versions: [{ version: "9.9.9", reference: "dtbau-psb@9.9.9" }], channels: [] },
+      { kind: "FUSION_IMAGE", name: "other", versions: [{ version: "sha-ffffffffffff", reference: ref("other", "sha-ffffffffffff") }], channels: [] },
+      ...catalogue(["sha-aaaaaaaaaaaa", "sha-bbbbbbbbbbbb"], []),
+    ];
+    expect(fusionVersionsOf(withImage(), artifacts)).toStrictEqual(["sha-aaaaaaaaaaaa", "sha-bbbbbbbbbbbb"]);
+  });
+
+  it("is undefined when only a package or another image carries the name", () => {
+    const artifacts: AppArtifact[] = [
+      { kind: "PACKAGE", name: "dtbau-psb", versions: [{ version: "9.9.9", reference: "dtbau-psb@9.9.9" }], channels: [] },
+      { kind: "FUSION_IMAGE", name: "other", versions: [{ version: "sha-ffffffffffff", reference: ref("other", "sha-ffffffffffff") }], channels: [] },
+    ];
+    expect(fusionVersionsOf(withImage(), artifacts)).toBeUndefined();
+    expect(fusionVersionsOf(base, catalogue(["sha-aaaaaaaaaaaa"], []))).toBeUndefined();
+  });
+});
 
 describe("resolveTemplateArtifacts", () => {
   it("fills in the version the channel points at", () => {
