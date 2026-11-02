@@ -200,6 +200,8 @@ export interface AppWarmPool {
   root_license_id: string | null;
   /** When a retired row's environment document was deleted (see warm-pool-db). */
   env_deleted_at: string | null;
+  /** The pool size the row was created for (see warm-pool-db timeoutStreak). */
+  pool_size: number | null;
 }
 
 export interface VetraLicensingDB {

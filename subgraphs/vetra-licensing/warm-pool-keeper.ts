@@ -30,6 +30,7 @@ export interface WarmPoolKeeperDeps {
     | "markDeletedUnclaimed"
     | "awaitingDeletion"
     | "markEnvDeleted"
+    | "timeoutStreak"
   >;
   /** The environment document's status; null when the document is missing. */
   envStatus(environmentId: string): Promise<string | null>;
@@ -49,6 +50,13 @@ const SUSPENDED_APP_STATUSES = new Set(["DISCONNECTED", "DELETED"]);
  * changes.
  */
 const SWEEP_LOG_EVERY = 20;
+
+/**
+ * Consecutive WARMING timeouts after which a pool stops creating until its
+ * template hash or pool size changes: the template evidently never gets
+ * READY, and rebuilding it forever only costs.
+ */
+export const MAX_CONSECUTIVE_TIMEOUTS = 3;
 
 /** stop() warns (once) when the tick in flight takes longer than this. */
 const STOP_SLOW_WARN_MS = 30_000;
@@ -105,6 +113,11 @@ export class AppWarmPoolKeeper {
   private readonly deleteFailures = new Map<string, number>();
   /** The dry-run sweep's last logged set and the dry-run ticks since. */
   private drySweep: { key: string; ticks: number } | null = null;
+  /**
+   * Pool key -> the "hash/size" it was last logged halted at, so the halt is
+   * logged once. The halt itself is derived from the rows each tick.
+   */
+  private readonly haltLogged = new Map<string, string>();
   /** Pool key -> consecutive dead-removal level and the last tick it may not create in. */
   private readonly backoff = new Map<
     string,
@@ -413,6 +426,9 @@ export class AppWarmPoolKeeper {
       }
       return 0;
     }
+    if (plan.create > 0 && budget > 0 && (await this.halted(pool.key, label, target))) {
+      return 0;
+    }
     // At most one creation per pool per tick.
     const attempts = Math.min(plan.create, 1, Math.max(0, budget));
     for (let i = 0; i < attempts; i++) {
@@ -423,6 +439,7 @@ export class AppWarmPoolKeeper {
           appName: target.appName,
           template: { ...target.template, id: target.templateId },
           templateHash: target.templateHash,
+          poolSize: target.size,
           nowIso: this.d.now(),
         });
         this.d.logger.info(`[warm-pool] ${label}: warming ${id}`);
@@ -434,6 +451,37 @@ export class AppWarmPoolKeeper {
       }
     }
     return attempts;
+  }
+
+  /**
+   * True when the pool's newest MAX_CONSECUTIVE_TIMEOUTS rows for its current
+   * template hash and size all timed out WARMING. Durable: derived from the
+   * rows, so a restart keeps the halt; a new hash or size starts a new run.
+   */
+  private async halted(
+    key: string,
+    label: string,
+    target: PoolTarget,
+  ): Promise<boolean> {
+    const streak = await this.d.store.timeoutStreak({
+      appId: target.appId,
+      templateId: target.templateId,
+      templateHash: target.templateHash,
+      poolSize: target.size,
+      limit: MAX_CONSECUTIVE_TIMEOUTS,
+    });
+    const at = `${target.templateHash}/${target.size}`;
+    if (streak < MAX_CONSECUTIVE_TIMEOUTS) {
+      this.haltLogged.delete(key);
+      return false;
+    }
+    if (this.haltLogged.get(key) !== at) {
+      this.haltLogged.set(key, at);
+      this.d.logger.warn(
+        `[warm-pool] ${label}: stopped creating: ${streak} consecutive warm environments did not become READY within ${MAX_WARMING_MS / 60_000} minutes; resumes when the template changes or the pool size does`,
+      );
+    }
+    return true;
   }
 
   /** Updates the pool's backoff for this tick; true when it may create. */

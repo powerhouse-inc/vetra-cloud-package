@@ -81,6 +81,7 @@ const liveRow = (
   claimed_at: null,
   deleted_at: null,
   env_deleted_at: null,
+  pool_size: null,
   root_license_id: null,
 });
 
@@ -95,6 +96,8 @@ const CFG: WarmPoolKeeperConfig = {
 function setup(input: {
   apps: AppDocView[];
   rows?: WarmRow[];
+  /** Consecutive WARMING timeouts the store reports for a pool. */
+  streak?: (q: { templateHash: string; poolSize: number }) => number;
   /** Retired rows whose environment is not yet known deleted. */
   retired?: WarmRow[];
   status?: Record<string, string | null>;
@@ -116,6 +119,10 @@ function setup(input: {
       markDeletedUnclaimed: vi.fn(async () => true),
       awaitingDeletion: vi.fn(async () => input.retired ?? []),
       markEnvDeleted: vi.fn(async (_id: string, _nowIso: string) => {}),
+      timeoutStreak: vi.fn(
+        async (q: { appId: string; templateId: string; templateHash: string; poolSize: number; limit: number }) =>
+          input.streak?.(q) ?? 0,
+      ),
     },
     envStatus: vi.fn(async (id: string) => input.status?.[id] ?? null),
     deleteEnv: vi.fn(async (_id: string) => {}),
@@ -146,6 +153,7 @@ describe("AppWarmPoolKeeper", () => {
       appName: "App a",
       template: { ...SHAPE, id: "ta" },
       templateHash: "hash-ta",
+      poolSize: 2,
       nowIso: NOW,
     });
     expect(created.map((c) => c.template.id)).toEqual(["ta"]);
@@ -522,6 +530,42 @@ describe("AppWarmPoolKeeper", () => {
       if (deps.logger.info.mock.calls.some(([m]) => String(m).includes("would delete"))) loggedAt.push(tick);
     }
     expect(loggedAt).toEqual([1, 21, 23]);
+  });
+
+  it("stops creating for a pool after 3 consecutive WARMING timeouts until its hash or size changes, logging once", async () => {
+    let size = 2;
+    let hash = "hash-ta";
+    const apps = () => [app("a", [tmpl("ta", size, { templateHash: hash })]), app("b", [tmpl("tb", 1)])];
+    const { deps, keeper } = setup({
+      apps: [],
+      streak: (q) => (q.templateHash === "hash-ta" && q.poolSize === 2 ? 3 : 2),
+    });
+    deps.appIds.mockImplementation(async () => apps().map((a) => a.id));
+    deps.apps.app.mockImplementation(async (id: string) => apps().find((a) => a.id === id) ?? null);
+    for (let tick = 1; tick <= 3; tick++) await keeper.reconcileOnce();
+    // Pool b (streak 2) keeps filling; pool a never creates.
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toEqual(["b", "b", "b"]);
+    expect(deps.store.timeoutStreak).toHaveBeenCalledWith(
+      expect.objectContaining({ appId: "a", templateId: "ta", templateHash: "hash-ta", poolSize: 2, limit: 3 }),
+    );
+    const halted = deps.logger.warn.mock.calls.map(([m]) => String(m)).filter((m) => m.includes("stopped creating"));
+    expect(halted).toHaveLength(1);
+    expect(halted[0]).toContain("a/ta");
+    expect(halted[0]).toContain("3 consecutive");
+    // The publisher changes the pool size: it creates again.
+    size = 3;
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toContain("a");
+    // Back at size 2 it is halted again (the same streak), and a new hash lifts it.
+    size = 2;
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).not.toContain("a");
+    hash = "hash-new";
+    deps.createWarm.mockClear();
+    await keeper.reconcileOnce();
+    expect(deps.createWarm.mock.calls.map(([i]) => i.appId)).toContain("a");
   });
 
   it("is inert when disabled and only logs in dry-run", async () => {

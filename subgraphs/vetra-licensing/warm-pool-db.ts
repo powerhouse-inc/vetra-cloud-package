@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
+import { MAX_WARMING_MS } from "./warm-pool-plan.js";
 
 export type WarmState = "WARMING" | "AVAILABLE" | "CLAIMED";
 
@@ -16,6 +17,8 @@ export interface WarmRow {
   root_license_id: string | null;
   /** When the environment document of a retired row was deleted. */
   env_deleted_at: string | null;
+  /** The pool size the row was created for; null on rows from before it was recorded. */
+  pool_size: number | null;
 }
 
 /** A chain's `license_environments` row before it knows its environment. */
@@ -36,6 +39,7 @@ export interface WarmPoolStore {
     appId: string;
     templateId: string;
     templateHash: string;
+    poolSize: number;
     nowIso: string;
   }): Promise<void>;
   live(appId: string, templateId: string): Promise<WarmRow[]>;
@@ -56,6 +60,20 @@ export interface WarmPoolStore {
   awaitingDeletion(): Promise<WarmRow[]>;
   /** Records that the row's environment document is deleted. */
   markEnvDeleted(environmentId: string, nowIso: string): Promise<void>;
+  /**
+   * How many of the pool's newest rows for this template hash and pool size
+   * (at most `limit`) timed out WARMING, counting back to the first that did
+   * not: retired while still WARMING more than MAX_WARMING_MS after creation.
+   * A row that became AVAILABLE or CLAIMED, one retired sooner, or one still
+   * WARMING ends the run.
+   */
+  timeoutStreak(q: {
+    appId: string;
+    templateId: string;
+    templateHash: string;
+    poolSize: number;
+    limit: number;
+  }): Promise<number>;
   claimOneAvailable(q: {
     appId: string;
     templateId: string;
@@ -161,6 +179,7 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
           deleted_at: null,
           root_license_id: null,
           env_deleted_at: null,
+          pool_size: r.poolSize,
         })
         .execute();
     },
@@ -234,6 +253,29 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .set({ env_deleted_at: nowIso })
         .where("environment_id", "=", environmentId)
         .execute();
+    },
+
+    async timeoutStreak(q) {
+      const rows = await db
+        .selectFrom("app_warm_pool")
+        .select(["state", "created_at", "deleted_at"])
+        .where("app_id", "=", q.appId)
+        .where("template_id", "=", q.templateId)
+        .where("template_hash", "=", q.templateHash)
+        .where("pool_size", "=", q.poolSize)
+        .orderBy("created_at", "desc")
+        .limit(q.limit)
+        .execute();
+      let n = 0;
+      for (const r of rows) {
+        const timedOut =
+          r.state === "WARMING" &&
+          r.deleted_at !== null &&
+          Date.parse(r.deleted_at) - Date.parse(r.created_at) > MAX_WARMING_MS;
+        if (!timedOut) break;
+        n++;
+      }
+      return n;
     },
 
     claimOneAvailable(q) {

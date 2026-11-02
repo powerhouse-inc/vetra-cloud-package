@@ -30,7 +30,7 @@ async function addColumnIfMissing(
   db: Kysely<any>,
   table: string,
   column: string,
-  type: "varchar(255)" | "text" | "boolean" | "double precision",
+  type: "varchar(255)" | "text" | "boolean" | "double precision" | "integer",
   build?: ColumnDefinitionBuilderCallback,
 ): Promise<void> {
   const schema = namespaceSchema(db, table);
@@ -193,6 +193,10 @@ export async function up(db: Kysely<any>): Promise<void> {
   // orphan nobody swept). Rows retired before this column existed have it
   // null and are swept once; deleting a document already gone is a no-op.
   await addColumnIfMissing(db, "app_warm_pool", "env_deleted_at", "varchar(255)");
+  // The pool size the row was created for: a run of WARMING timeouts halts a
+  // pool only for one (template hash, size). Older rows have none and count
+  // for no streak.
+  await addColumnIfMissing(db, "app_warm_pool", "pool_size", "integer");
 
   await db.schema.createTable("app_allow_list")
     .addColumn("app_id", "varchar(255)", (c) => c.notNull())

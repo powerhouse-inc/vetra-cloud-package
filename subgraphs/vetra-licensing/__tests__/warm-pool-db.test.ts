@@ -18,7 +18,7 @@ describe("warm pool store (real PGlite)", () => {
     db = undefined;
   });
   const ins = (s: Awaited<ReturnType<typeof open>>, id: string, nowIso = "2026-11-01T00:00:00.000Z", hash = "h1") =>
-    s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: hash, nowIso });
+    s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: hash, poolSize: 1, nowIso });
   const claim = (s: Awaited<ReturnType<typeof open>>, hash = "h1") =>
     s.claimOneAvailable({ appId: "app", templateId: "t", templateHash: hash, rootLicenseId: "root-1", nowIso: "2026-11-02T00:00:00.000Z" });
 
@@ -167,5 +167,37 @@ describe("warm pool store (real PGlite)", () => {
     await s.markEnvDeleted("retired", "2026-11-02T01:05:00.000Z");
     expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["failed"]);
     expect((await s.byEnvironment("retired"))!.env_deleted_at).toBe("2026-11-02T01:05:00.000Z");
+  });
+
+  it("timeoutStreak counts the newest rows of a hash and size that timed out WARMING, back to the last that did not", async () => {
+    const s = await open();
+    const T = (min: number) => new Date(Date.parse("2026-11-01T00:00:00.000Z") + min * 60_000).toISOString();
+    const add = (id: string, min: number, over: { hash?: string; size?: number } = {}) =>
+      s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: over.hash ?? "h1", poolSize: over.size ?? 2, nowIso: T(min) });
+    const timeOut = async (id: string, min: number) => {
+      await add(id, min);
+      expect(await s.markDeletedUnclaimed(id, T(min + 31))).toBe(true);
+    };
+    await add("ok", 0);
+    await s.markAvailable("ok", T(3));
+    await timeOut("t1", 10);
+    // Retired young (surplus, a dead status): not a timeout, and it breaks the streak.
+    await add("quick", 50);
+    await s.markDeletedUnclaimed("quick", T(55));
+    await timeOut("t2", 100);
+    await timeOut("t3", 140);
+    // Another hash or size is another streak.
+    await add("other-hash", 150, { hash: "h2" });
+    await add("other-size", 151, { size: 5 });
+    const streak = (hash = "h1", size = 2) =>
+      s.timeoutStreak({ appId: "app", templateId: "t", templateHash: hash, poolSize: size, limit: 3 });
+    expect(await streak()).toBe(2);
+    await timeOut("t4", 180);
+    expect(await streak()).toBe(3);
+    expect(await streak("h2")).toBe(0);
+    expect(await streak("h1", 5)).toBe(0);
+    // A row still WARMING (not yet timed out) is newest: the streak is 0 until it resolves.
+    await add("warming", 220);
+    expect(await streak()).toBe(0);
   });
 });

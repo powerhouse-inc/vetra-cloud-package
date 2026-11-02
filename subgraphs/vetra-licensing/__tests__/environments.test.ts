@@ -324,7 +324,7 @@ describe("provisionChain claims a warm environment first", () => {
 
   async function seedWarm(id = "warm-1"): Promise<void> {
     states.set(id, warmDoc());
-    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
     await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
   }
 
@@ -493,7 +493,7 @@ describe("the included AI key (spec 3.11)", () => {
 
   async function seedWarm(id = "warm-1"): Promise<void> {
     states.set(id, warmDoc());
-    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
     await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
   }
 

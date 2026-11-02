@@ -23,6 +23,7 @@ const row = (
   claimed_at: state === "CLAIMED" ? at(minute + 10) : null,
   deleted_at: null,
   env_deleted_at: null,
+  pool_size: null,
   root_license_id: state === "CLAIMED" ? "root" : null,
 });
 
