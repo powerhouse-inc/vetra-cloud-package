@@ -271,4 +271,18 @@ describe("vetra-licensing migrations (real PGlite)", () => {
       .execute();
     expect(await d.selectFrom("app_user_environments").selectAll().execute()).toHaveLength(1);
   });
+
+  it("creates app_warm_pool and re-running up() is a no-op", async () => {
+    const d = await open();
+    await up(d as Kysely<any>);
+    await d
+      .insertInto("app_warm_pool")
+      .values({
+        environment_id: "w1", app_id: "app-1", template_id: "t", template_hash: "h",
+        state: "WARMING", created_at: "2026-11-01T00:00:00.000Z",
+        ready_at: null, claimed_at: null, deleted_at: null, root_license_id: null,
+      })
+      .execute();
+    expect(await d.selectFrom("app_warm_pool").selectAll().execute()).toHaveLength(1);
+  });
 });
