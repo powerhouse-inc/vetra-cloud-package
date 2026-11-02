@@ -37,6 +37,7 @@ export interface WarmPoolStore {
     nowIso: string;
   }): Promise<void>;
   live(appId: string, templateId: string): Promise<WarmRow[]>;
+  /** Every live WARMING or AVAILABLE row (never CLAIMED ones). */
   allLive(): Promise<WarmRow[]>;
   markAvailable(environmentId: string, nowIso: string): Promise<void>;
   markDeleted(environmentId: string, nowIso: string): Promise<void>;
@@ -170,6 +171,9 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .selectFrom("app_warm_pool")
         .selectAll()
         .where("deleted_at", "is", null)
+        // A CLAIMED row is never deleted (it is the licence's environment):
+        // without this every claim ever made would load on every keeper tick.
+        .where("state", "!=", "CLAIMED")
         .orderBy("created_at")
         .execute()) as WarmRow[];
     },

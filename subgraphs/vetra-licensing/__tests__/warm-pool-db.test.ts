@@ -87,7 +87,7 @@ describe("warm pool store (real PGlite)", () => {
     await s.markDeleted("b", "2026-11-02T00:00:00.000Z");
     expect(await s.isWarm("b")).toBeNull();
     expect(await s.isWarm("nope")).toBeNull();
-    expect((await s.allLive()).map((r) => r.environment_id).sort()).toEqual(["a", "c"]);
+    expect((await s.allLive()).map((r) => r.environment_id).sort()).toEqual(["c"]);
   });
 
   it("warmHours splits a row across a month boundary", async () => {
@@ -133,6 +133,20 @@ describe("warm pool store (real PGlite)", () => {
     expect(await s.markDeletedUnclaimed("w", "2026-11-02T02:00:00.000Z")).toBe(false);
     expect(await s.markDeletedUnclaimed("c", "2026-11-02T01:00:00.000Z")).toBe(false);
     expect(await s.markDeletedUnclaimed("nope", "2026-11-02T01:00:00.000Z")).toBe(false);
-    expect((await s.allLive()).map((r) => [r.environment_id, r.state])).toEqual([["c", "CLAIMED"]]);
+    expect(await s.allLive()).toEqual([]);
+  });
+
+  it("allLive holds only WARMING and AVAILABLE rows: a CLAIMED row is the licence's for good", async () => {
+    const s = await open();
+    await ins(s, "w", "2026-11-01T00:00:00.000Z");
+    await ins(s, "c", "2026-11-01T00:01:00.000Z");
+    await ins(s, "v", "2026-11-01T00:02:00.000Z");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    await s.markAvailable("v", "2026-11-01T00:06:00.000Z");
+    expect((await s.allLive()).map((r) => [r.environment_id, r.state])).toEqual([
+      ["w", "WARMING"],
+      ["v", "AVAILABLE"],
+    ]);
   });
 });
