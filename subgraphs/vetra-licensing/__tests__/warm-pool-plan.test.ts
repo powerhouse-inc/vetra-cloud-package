@@ -24,6 +24,7 @@ const row = (
   deleted_at: null,
   env_deleted_at: null,
   pool_size: null,
+  timed_out_at: null,
   root_license_id: state === "CLAIMED" ? "root" : null,
 });
 

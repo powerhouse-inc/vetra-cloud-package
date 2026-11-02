@@ -197,6 +197,13 @@ export async function up(db: Kysely<any>): Promise<void> {
   // pool only for one (template hash, size). Older rows have none and count
   // for no streak.
   await addColumnIfMissing(db, "app_warm_pool", "pool_size", "integer");
+  // Set, in the same update that retires the row, only when the keeper
+  // retired it for not becoming READY within MAX_WARMING_MS: what the
+  // timeout streak counts (an old row drained or trimmed is not a timeout).
+  await addColumnIfMissing(db, "app_warm_pool", "timed_out_at", "varchar(255)");
+  // The timeout streak reads a pool's newest rows.
+  await db.schema.createIndex("app_warm_pool_created_idx").on("app_warm_pool")
+    .columns(["app_id", "template_id", "created_at"]).ifNotExists().execute();
 
   await db.schema.createTable("app_allow_list")
     .addColumn("app_id", "varchar(255)", (c) => c.notNull())

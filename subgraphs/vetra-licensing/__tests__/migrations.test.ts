@@ -298,8 +298,12 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     `);
     await up(db as Kysely<any>);
     await up(db as Kysely<any>);
-    expect(await db.selectFrom("app_warm_pool").select(["environment_id", "deleted_at", "env_deleted_at", "pool_size"]).execute()).toStrictEqual([
-      { environment_id: "w1", deleted_at: "t2", env_deleted_at: null, pool_size: null },
+    expect(await db.selectFrom("app_warm_pool").select(["environment_id", "deleted_at", "env_deleted_at", "pool_size", "timed_out_at"]).execute()).toStrictEqual([
+      { environment_id: "w1", deleted_at: "t2", env_deleted_at: null, pool_size: null, timed_out_at: null },
     ]);
+    const { rows } = await pg.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'app_warm_pool' AND indexname = 'app_warm_pool_created_idx'`,
+    );
+    expect(rows).toHaveLength(1);
   });
 });

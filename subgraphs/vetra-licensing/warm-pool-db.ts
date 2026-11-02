@@ -1,6 +1,5 @@
 import type { Kysely } from "kysely";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
-import { MAX_WARMING_MS } from "./warm-pool-plan.js";
 
 export type WarmState = "WARMING" | "AVAILABLE" | "CLAIMED";
 
@@ -19,6 +18,8 @@ export interface WarmRow {
   env_deleted_at: string | null;
   /** The pool size the row was created for; null on rows from before it was recorded. */
   pool_size: number | null;
+  /** Set when the keeper retired the row as a WARMING timeout. */
+  timed_out_at: string | null;
 }
 
 /** A chain's `license_environments` row before it knows its environment. */
@@ -50,9 +51,15 @@ export interface WarmPoolStore {
   /**
    * The keeper's removal: marks the row deleted only while it is live and not
    * CLAIMED, in one statement, so it cannot race a claim. True when it did;
-   * only then may the caller delete the environment document.
+   * only then may the caller delete the environment document. `timedOut`:
+   * retired for not becoming READY in time; recorded (timed_out_at) in the
+   * same statement, for timeoutStreak.
    */
-  markDeletedUnclaimed(environmentId: string, nowIso: string): Promise<boolean>;
+  markDeletedUnclaimed(
+    environmentId: string,
+    nowIso: string,
+    opts?: { timedOut?: boolean },
+  ): Promise<boolean>;
   /**
    * Retired rows that were never CLAIMED whose environment document is not
    * yet known deleted: the keeper deletes them (again) until it is.
@@ -62,10 +69,10 @@ export interface WarmPoolStore {
   markEnvDeleted(environmentId: string, nowIso: string): Promise<void>;
   /**
    * How many of the pool's newest rows for this template hash and pool size
-   * (at most `limit`) timed out WARMING, counting back to the first that did
-   * not: retired while still WARMING more than MAX_WARMING_MS after creation.
-   * A row that became AVAILABLE or CLAIMED, one retired sooner, or one still
-   * WARMING ends the run.
+   * (at most `limit`) the keeper retired as WARMING timeouts (timed_out_at),
+   * counting back to the first that was not: a row that became AVAILABLE or
+   * CLAIMED, one retired for any other reason (drain, surplus, dead), or one
+   * still WARMING ends the run.
    */
   timeoutStreak(q: {
     appId: string;
@@ -180,6 +187,7 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
           root_license_id: null,
           env_deleted_at: null,
           pool_size: r.poolSize,
+          timed_out_at: null,
         })
         .execute();
     },
@@ -223,10 +231,13 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .execute();
     },
 
-    async markDeletedUnclaimed(environmentId, nowIso) {
+    async markDeletedUnclaimed(environmentId, nowIso, opts) {
       const res = await db
         .updateTable("app_warm_pool")
-        .set({ deleted_at: nowIso })
+        .set({
+          deleted_at: nowIso,
+          ...(opts?.timedOut ? { timed_out_at: nowIso } : {}),
+        })
         .where("environment_id", "=", environmentId)
         .where("deleted_at", "is", null)
         .where("state", "!=", "CLAIMED")
@@ -258,7 +269,7 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
     async timeoutStreak(q) {
       const rows = await db
         .selectFrom("app_warm_pool")
-        .select(["state", "created_at", "deleted_at"])
+        .select("timed_out_at")
         .where("app_id", "=", q.appId)
         .where("template_id", "=", q.templateId)
         .where("template_hash", "=", q.templateHash)
@@ -266,16 +277,8 @@ export function createWarmPoolStore(db: Kysely<VetraLicensingDB>): WarmPoolStore
         .orderBy("created_at", "desc")
         .limit(q.limit)
         .execute();
-      let n = 0;
-      for (const r of rows) {
-        const timedOut =
-          r.state === "WARMING" &&
-          r.deleted_at !== null &&
-          Date.parse(r.deleted_at) - Date.parse(r.created_at) > MAX_WARMING_MS;
-        if (!timedOut) break;
-        n++;
-      }
-      return n;
+      const firstNot = rows.findIndex((r) => r.timed_out_at === null);
+      return firstNot === -1 ? rows.length : firstNot;
     },
 
     claimOneAvailable(q) {

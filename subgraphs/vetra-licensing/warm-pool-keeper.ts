@@ -391,10 +391,16 @@ export class AppWarmPoolKeeper {
       );
     }
 
+    const timedOutIds = new Set(plan.timedOut);
     for (const id of plan.remove) {
       if (this.stopped) return 0;
       // Retire the row first: a claim that won the race keeps its environment.
-      if (!(await this.d.store.markDeletedUnclaimed(id, this.d.now())))
+      // A timeout is recorded as such in the same update (timeoutStreak).
+      if (
+        !(await this.d.store.markDeletedUnclaimed(id, this.d.now(), {
+          timedOut: timedOutIds.has(id),
+        }))
+      )
         continue;
       attempted.add(id);
       try {
@@ -413,10 +419,9 @@ export class AppWarmPoolKeeper {
     // Every unclaimed row of a targeted pool has its status read above.
     // A dead or missing environment, or a warm-up that timed out: a failure
     // that backs the pool's creation off.
-    const timedOut = new Set(plan.timedOut);
     const dead = plan.remove.some((id) => {
       const st = status[id];
-      return st === null || DEAD_STATUSES.has(st) || timedOut.has(id);
+      return st === null || DEAD_STATUSES.has(st) || timedOutIds.has(id);
     });
     if (!this.mayCreate(pool.key, dead, plan.create, settled, tickNo)) {
       if (plan.create > 0) {
@@ -455,8 +460,11 @@ export class AppWarmPoolKeeper {
 
   /**
    * True when the pool's newest MAX_CONSECUTIVE_TIMEOUTS rows for its current
-   * template hash and size all timed out WARMING. Durable: derived from the
-   * rows, so a restart keeps the halt; a new hash or size starts a new run.
+   * template hash and size were all retired as WARMING timeouts. Durable:
+   * derived from the rows, so a restart keeps the halt; a new hash or size
+   * starts a new run. Returning to a hash and size that was halted before
+   * halts again at once: its run of timeouts is still its newest rows, and
+   * only a row that does not time out (none is created while halted) ends it.
    */
   private async halted(
     key: string,

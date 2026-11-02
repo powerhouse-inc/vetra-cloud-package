@@ -202,6 +202,8 @@ export interface AppWarmPool {
   env_deleted_at: string | null;
   /** The pool size the row was created for (see warm-pool-db timeoutStreak). */
   pool_size: number | null;
+  /** Set when the keeper retired the row as a WARMING timeout. */
+  timed_out_at: string | null;
 }
 
 export interface VetraLicensingDB {

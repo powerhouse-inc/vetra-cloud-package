@@ -82,6 +82,7 @@ const liveRow = (
   deleted_at: null,
   env_deleted_at: null,
   pool_size: null,
+  timed_out_at: null,
   root_license_id: null,
 });
 
@@ -210,7 +211,7 @@ describe("AppWarmPoolKeeper", () => {
       status: { stale: "READY", ready: "READY", claimed: "READY" },
     });
     await keeper.reconcileOnce();
-    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stale", NOW);
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stale", NOW, { timedOut: false });
     expect(deps.deleteEnv).toHaveBeenCalledWith("stale");
     expect(deps.store.markAvailable).toHaveBeenCalledWith("ready", NOW);
     expect(deps.createWarm).toHaveBeenCalledTimes(1);
@@ -406,8 +407,9 @@ describe("AppWarmPoolKeeper", () => {
       status: { stuck: "DEPLOYING", draft: "DRAFT" },
     });
     await keeper.reconcileOnce();
-    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stuck", NOW);
-    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("draft", NOW);
+    // Marked as timeouts, in the update that retires them (the halt counts these).
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("stuck", NOW, { timedOut: true });
+    expect(deps.store.markDeletedUnclaimed).toHaveBeenCalledWith("draft", NOW, { timedOut: true });
     expect(deps.deleteEnv).toHaveBeenCalledWith("stuck");
     expect(deps.deleteEnv).toHaveBeenCalledWith("draft");
     const warned = deps.logger.warn.mock.calls.map(([m]) => String(m));
