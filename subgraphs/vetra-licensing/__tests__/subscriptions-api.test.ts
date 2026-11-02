@@ -457,7 +457,6 @@ describe("vetraSubscriptions: studio", () => {
   });
 });
 
-
 describe("vetraSubscriptions: provisioning kick", () => {
   it("kicks provisioning after a successful redeem", async () => {
     await code(APP_DED, "pro", "kv-kick-01");

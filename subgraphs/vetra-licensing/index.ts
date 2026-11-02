@@ -543,10 +543,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       now: () => new Date().toISOString(),
     });
     const handler = this.handler;
-    kick = () => {
-      // reconcileOnce's own running guard stops overlapping runs.
-      void handler.reconcileOnce().catch((e) => console.warn("[licensing] immediate reconcile failed:", e));
-    };
+    kick = () => handler.kick();
     this.handler.start();
 
     // cfg.enabled gates the whole write path: the keeper below, and every
