@@ -74,12 +74,12 @@ interface Pool {
  * Fairness: each tick starts at a pool one further along than the last
  * (rotation), and a pool gets at most one creation per tick, within the
  * shared createsPerTick budget. A pool from which a dead environment (dead
- * status or missing document) was removed gets no creations for 2, 4, 8, then
- * 16 ticks (counting the tick of the removal); removal, promotion and
+ * status, missing document, or WARMING longer than MAX_WARMING_MS without
+ * becoming READY, which is logged) was removed gets no creations for 2, 4, 8,
+ * then 16 ticks (counting the tick of the removal); removal, promotion and
  * recycling still run. The backoff resets once a tick with no dead removal
- * finds the pool needing no creation (full and healthy). A row WARMING for
- * longer than MAX_WARMING_MS without becoming READY is retired like any other
- * removal (logged); unless its environment is also dead it causes no backoff.
+ * finds the pool needing no creation with no row left WARMING (full and
+ * healthy), so repeated timeouts escalate rather than restart at 2.
  *
  * In-process `running` guard: the licensing subgraph is single-replica.
  * stop() waits for the tick in flight, which stops at its next step.
@@ -312,13 +312,21 @@ export class AppWarmPoolKeeper {
       this.cfg.maxPerTemplate,
       this.d.now(),
     );
+    // A row still WARMING has not proven the template healthy: until it is
+    // READY (or retired) the backoff stands, or every timeout would restart it.
+    const settled = !pool.rows.some(
+      (r) =>
+        r.state === "WARMING" &&
+        !plan.promote.includes(r.environment_id) &&
+        !plan.remove.includes(r.environment_id),
+    );
     if (
       plan.create === 0 &&
       plan.promote.length === 0 &&
       plan.remove.length === 0
     ) {
       // Full and healthy: any creation backoff is over.
-      this.backoff.delete(pool.key);
+      if (settled) this.backoff.delete(pool.key);
       return 0;
     }
 
@@ -360,14 +368,17 @@ export class AppWarmPoolKeeper {
     const target = pool.target;
     if (!target) return 0;
     // Every unclaimed row of a targeted pool has its status read above.
+    // A dead or missing environment, or a warm-up that timed out: a failure
+    // that backs the pool's creation off.
+    const timedOut = new Set(plan.timedOut);
     const dead = plan.remove.some((id) => {
       const st = status[id];
-      return st === null || DEAD_STATUSES.has(st);
+      return st === null || DEAD_STATUSES.has(st) || timedOut.has(id);
     });
-    if (!this.mayCreate(pool.key, dead, plan.create, tickNo)) {
+    if (!this.mayCreate(pool.key, dead, plan.create, settled, tickNo)) {
       if (plan.create > 0) {
         this.d.logger.info(
-          `[warm-pool] ${label}: creation backed off after a dead environment`,
+          `[warm-pool] ${label}: creation backed off after a dead or timed-out environment`,
         );
       }
       return 0;
@@ -400,6 +411,7 @@ export class AppWarmPoolKeeper {
     key: string,
     dead: boolean,
     create: number,
+    settled: boolean,
     tickNo: number,
   ): boolean {
     const prev = this.backoff.get(key);
@@ -411,7 +423,7 @@ export class AppWarmPoolKeeper {
     }
     if (!prev) return true;
     if (create === 0) {
-      this.backoff.delete(key);
+      if (settled) this.backoff.delete(key);
       return true;
     }
     return tickNo > prev.blockedThrough;

@@ -405,8 +405,56 @@ describe("AppWarmPoolKeeper", () => {
     const warned = deps.logger.warn.mock.calls.map(([m]) => String(m));
     expect(warned.some((m) => m.includes("stuck") && m.includes("WARMING") && m.includes("30 minutes"))).toBe(true);
     expect(warned.some((m) => m.includes("draft") && m.includes("DRAFT"))).toBe(true);
-    // Not a dead environment: the pool refills at once.
-    expect(deps.createWarm).toHaveBeenCalledTimes(1);
+    // A failed warm-up: the pool's creation backs off like after a dead environment.
+    expect(deps.createWarm).not.toHaveBeenCalled();
+  });
+
+  it("backs creation off after a WARMING timeout, so a template that never gets READY is not rebuilt every 30 minutes", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)])],
+      status: { slow: "DEPLOYING" },
+    });
+    const timedOut: WarmRow = {
+      ...liveRow("slow", "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:00:00.000Z",
+    };
+    const created: number[] = [];
+    for (let tick = 1; tick <= 4; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(tick === 1 ? [timedOut] : []);
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.createWarm.mock.calls.length > 0) created.push(tick);
+    }
+    // As a dead removal: ticks 1-3 withheld, creates in 4.
+    expect(deps.deleteEnv).toHaveBeenCalledWith("slow");
+    expect(created).toEqual([4]);
+  });
+
+  it("does not reset the backoff while the replacement is still WARMING, so repeated timeouts escalate", async () => {
+    const { deps, keeper } = setup({
+      apps: [app("a", [tmpl("ta", 1)])],
+      status: { s1: "DEPLOYING", s2: "DEPLOYING", w2: "DEPLOYING" },
+    });
+    const old = (id: string): WarmRow => ({
+      ...liveRow(id, "a", "ta", "WARMING", "hash-ta"),
+      created_at: "2026-11-02T11:00:00.000Z",
+    });
+    // s1 times out in tick 1; its replacement (w2) warms in 4-6 and times out (as s2) in 7.
+    const rowsAt: Record<number, WarmRow[]> = {
+      1: [old("s1")],
+      5: [liveRow("w2", "a", "ta", "WARMING", "hash-ta")],
+      6: [liveRow("w2", "a", "ta", "WARMING", "hash-ta")],
+      7: [old("s2")],
+    };
+    const created: number[] = [];
+    for (let tick = 1; tick <= 12; tick++) {
+      deps.store.allLive.mockResolvedValueOnce(rowsAt[tick] ?? []);
+      deps.createWarm.mockClear();
+      await keeper.reconcileOnce();
+      if (deps.createWarm.mock.calls.length > 0) created.push(tick);
+    }
+    // Level 1 after tick 1 (creates in 4); level 2 after tick 7: 7-11 withheld, creates in 12.
+    expect(created).toEqual([4, 12]);
   });
 
   it("records a removed environment as deleted; one whose delete fails stays to be swept", async () => {
