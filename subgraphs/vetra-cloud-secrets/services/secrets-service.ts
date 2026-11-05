@@ -65,13 +65,57 @@ export const ROTATABLE_MANAGED_KEYS = new Set<string>([STUDIO_LAUNCH_SECRET_KEY]
 /** Managed secrets a tenant purge keeps (data encrypted under them may outlive the env). */
 export const PURGE_KEPT_KEYS = new Set<string>([WORKFLOWS_MASTER_KEY]);
 
+/**
+ * Tenant config Vetra writes itself (the console shows it read-only as "Set
+ * by Vetra"). A user-facing service (createSecretsService({ userFacing: true }),
+ * used by the vetra-cloud-secrets GraphQL mutations) refuses to set or delete
+ * these, on top of MANAGED_SECRET_KEYS. Vetra's own writers use the internal
+ * service and keep writing them:
+ *   - VETRA_LICENSING_URL, VETRA_REPORTING_TOKEN: vetra-licensing/reporting.ts
+ *   - VETRA_MODEL, VETRA_MODEL_FALLBACKS, OPENROUTER_API_KEY: vetra-llm/broker.ts
+ *     (+ sweeper, migrate, applyStudioKey)
+ *   - ADMINS, CI, npm_config_node_linker, PH_ATTACHMENT_URL_SIGNING_SECRET,
+ *     VETRA_CLOUD_RENOWN_URL, VETRA_SESSION_EXPORT_SECRET: vetra-studio-pool/claim.ts
+ *   - PH_REGISTRY_URL, VETRA_CLOUD_SWITCHBOARD_URL, VETRA_ENVIRONMENT_ID,
+ *     VETRA_OBSERVABILITY_CONSENT (+ CI, npm_config_node_linker,
+ *     VETRA_CLOUD_RENOWN_URL): vetra-studio-pool/create-env.ts, as document
+ *     env routed by the gitops processor
+ */
+export const PLATFORM_MANAGED_KEYS: ReadonlySet<string> = new Set<string>([
+  ...MANAGED_SECRET_KEYS,
+  "VETRA_LICENSING_URL",
+  "VETRA_REPORTING_TOKEN",
+  "VETRA_MODEL",
+  "VETRA_MODEL_FALLBACKS",
+  "OPENROUTER_API_KEY",
+  "ADMINS",
+  "CI",
+  "npm_config_node_linker",
+  "PH_ATTACHMENT_URL_SIGNING_SECRET",
+  "PH_REGISTRY_URL",
+  "VETRA_CLOUD_RENOWN_URL",
+  "VETRA_CLOUD_SWITCHBOARD_URL",
+  "VETRA_ENVIRONMENT_ID",
+  "VETRA_OBSERVABILITY_CONSENT",
+  "VETRA_SESSION_EXPORT_SECRET",
+]);
+
+/** GraphQL error code the user-facing mutations return for a managed key. */
+export const MANAGED_KEY_ERROR_CODE = "MANAGED_KEY";
+
 export class ManagedSecretKeyError extends Error {
+  readonly code = MANAGED_KEY_ERROR_CODE;
+  readonly key: string;
   constructor(key: string) {
-    super(
-      `"${key}" is generated and managed by Vetra Cloud; it cannot be set or deleted`,
-    );
+    super(`"${key}" is set by Vetra Cloud; it cannot be set or deleted`);
     this.name = "ManagedSecretKeyError";
+    this.key = key;
   }
+}
+
+/** The user-facing guard: refuses every key Vetra manages. */
+function assertUserWritable(key: string): void {
+  if (PLATFORM_MANAGED_KEYS.has(key)) throw new ManagedSecretKeyError(key);
 }
 
 function validateKey(key: string): void {
@@ -201,12 +245,22 @@ export async function purgeTenantRows(
 export interface CreateSecretsServiceArgs {
   db: Kysely<SecretsDB>;
   transit: OpenBaoTransitClient;
+  /**
+   * True for the instance behind user-facing mutations: setEnvVar,
+   * deleteEnvVar, setSecret, setSecrets and deleteSecret then also refuse
+   * PLATFORM_MANAGED_KEYS. Vetra's internal writers leave it unset.
+   */
+  userFacing?: boolean;
 }
 
 export function createSecretsService({
   db,
   transit,
+  userFacing = false,
 }: CreateSecretsServiceArgs): SecretsService {
+  const guardUser = (key: string) => {
+    if (userFacing) assertUserWritable(key);
+  };
   return {
     async listEnvVars(tenantId) {
       return db
@@ -227,6 +281,7 @@ export function createSecretsService({
     },
 
     async setEnvVar(tenantId, key, value) {
+      guardUser(key);
       validateKey(key);
       const now = new Date().toISOString();
       await db.transaction().execute(async (trx) => {
@@ -245,6 +300,7 @@ export function createSecretsService({
     },
 
     async deleteEnvVar(tenantId, key) {
+      guardUser(key);
       return await db.transaction().execute(async (trx) => {
         const result = await trx
           .deleteFrom("tenant_env_vars")
@@ -262,6 +318,7 @@ export function createSecretsService({
     },
 
     async setSecret(tenantId, key, value) {
+      guardUser(key);
       validateKey(key);
       await transit.ensureTenantKey(tenantId);
       const ciphertext = await transit.encrypt(tenantId, value);
@@ -286,7 +343,10 @@ export function createSecretsService({
       // Validate + encrypt BEFORE opening the transaction so a bad key (or a
       // transit failure) aborts the whole batch with nothing written — no
       // partial materialization, no spurious notify.
-      for (const e of entries) validateKey(e.key);
+      for (const e of entries) {
+        guardUser(e.key);
+        validateKey(e.key);
+      }
       await transit.ensureTenantKey(tenantId);
       const now = new Date().toISOString();
       const rows = await Promise.all(
@@ -315,6 +375,7 @@ export function createSecretsService({
     },
 
     async deleteSecret(tenantId, key) {
+      guardUser(key);
       if (MANAGED_SECRET_KEYS.has(key)) throw new ManagedSecretKeyError(key);
       return await db.transaction().execute(async (trx) => {
         const result = await trx
