@@ -23,18 +23,21 @@ import { parseArgs } from "node:util";
 import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
 import { Kysely, PostgresDialect } from "kysely";
 import pg from "pg";
-import type { PodLike } from "../subgraphs/vetra-cloud-observability/pod-sync.js";
+import type {
+  PodLike,
+  reconcilePods as ReconcilePods,
+} from "../subgraphs/vetra-cloud-observability/pod-sync.js";
 import type { ObservabilityDB } from "../subgraphs/vetra-cloud-observability/db/schema.js";
 
 // Loaded by URL so plain `node --experimental-strip-types` resolves the .ts
-// source while tsc still type-checks it through the `typeof import`.
+// source while tsc still type-checks the call through the type import.
 const podSyncUrl = new URL(
   "../subgraphs/vetra-cloud-observability/pod-sync.ts",
   import.meta.url,
 );
 const { reconcilePods } = (await import(
   podSyncUrl.href
-)) as typeof import("../subgraphs/vetra-cloud-observability/pod-sync.js");
+)) as { reconcilePods: typeof ReconcilePods };
 
 const { values: args } = parseArgs({
   options: {
@@ -50,7 +53,7 @@ if (!databaseUrl) {
   console.error("Missing --database-url (or DATABASE_URL).");
   process.exit(2);
 }
-const dryRun = args["dry-run"] ?? false;
+const dryRun = args["dry-run"];
 
 const pool = new pg.Pool({
   connectionString: databaseUrl,
@@ -99,7 +102,7 @@ async function main(): Promise<void> {
   );
 
   const namespaces = new Set(
-    ((await kc.makeApiClient(CoreV1Api).listNamespace({})).items ?? [])
+    (await kc.makeApiClient(CoreV1Api).listNamespace({})).items
       .map((n) => n.metadata?.name)
       .filter((n): n is string => !!n),
   );
