@@ -19,7 +19,9 @@ import { checkCustomDomain, type DomainCheck } from "./domain-check.js";
  * components (clint agents, registry, helper pods, pre-chart legacy
  * pods without the label) collapse to OTHER.
  */
-export function classifyPodService(component: string | null | undefined): string {
+export function classifyPodService(
+  component: string | null | undefined,
+): string {
   if (component === "connect") return "CONNECT";
   if (component === "switchboard") return "SWITCHBOARD";
   return "OTHER";
@@ -80,6 +82,165 @@ export async function upsertPod(
       }),
     )
     .execute();
+}
+
+export async function deletePod(
+  db: Kysely<ObservabilityDB>,
+  tenantId: string,
+  name: string,
+): Promise<void> {
+  await db
+    .deleteFrom("environment_pods")
+    .where("id", "=", `${tenantId}/${name}`)
+    .execute();
+}
+
+/** Minimal shape of a k8s Pod object, as delivered by list and watch. */
+export interface PodLike {
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+  };
+  status?: {
+    phase?: string;
+    containerStatuses?: Array<{
+      ready?: boolean;
+      restartCount?: number;
+    }>;
+  };
+}
+
+/** Map a k8s Pod to its environment_pods row (null when name/namespace is missing). */
+export function podToRow(
+  pod: PodLike,
+  now = new Date().toISOString(),
+): EnvironmentPods | null {
+  const tenantId = pod.metadata?.namespace;
+  const name = pod.metadata?.name;
+  if (!tenantId || !name) return null;
+
+  const containerStatuses = pod.status?.containerStatuses ?? [];
+  const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
+  const restartCount = containerStatuses.reduce(
+    (sum, cs) => sum + (cs.restartCount ?? 0),
+    0,
+  );
+  const labels = pod.metadata?.labels ?? {};
+  const component = labels["app.kubernetes.io/component"] ?? null;
+  const agent = labels["clint.vetra.io/agent"] ?? null;
+
+  return {
+    id: `${tenantId}/${name}`,
+    tenantId,
+    name,
+    service: classifyPodService(component),
+    component,
+    agent,
+    phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
+    ready,
+    restartCount,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Apply one pod watch event. DELETED removes the row — previously every
+ * event was upserted, so gone pods lingered forever (often as FAILED) and
+ * made healthy services look like they were failing.
+ */
+export async function handlePodWatchEvent(
+  db: Kysely<ObservabilityDB>,
+  type: string,
+  obj: unknown,
+): Promise<void> {
+  const pod = obj as PodLike;
+  if (type === "DELETED") {
+    const tenantId = pod.metadata?.namespace;
+    const name = pod.metadata?.name;
+    if (tenantId && name) await deletePod(db, tenantId, name);
+    return;
+  }
+  // BOOKMARK / ERROR carry no pod; podToRow returns null for them.
+  if (type !== "ADDED" && type !== "MODIFIED") return;
+  const row = podToRow(pod);
+  if (row) await upsertPod(db, row);
+}
+
+export interface ReconcilePodsResult {
+  upserted: number;
+  /** Stale row count per tenant (deleted, or would be deleted on dry run). */
+  stale: Map<string, number>;
+}
+
+const DELETE_CHUNK = 1000;
+
+/**
+ * Bring environment_pods in line with a fresh pod listing: upsert every
+ * listed pod and delete rows for pods that no longer exist.
+ *
+ * Deletes are scoped strictly to `tenants` — the namespaces the caller
+ * actually listed (plus any extra tenants it knows were covered by the
+ * listing, e.g. ArgoCD tenants whose namespace currently has no pods).
+ * Rows of any other tenant are never touched. If `listPods` throws, the
+ * error propagates before anything is written or deleted.
+ *
+ * Rows updated at/after the moment the listing started are kept, so a pod
+ * the watcher upserted while the list was in flight is not pruned.
+ */
+export async function reconcilePods(
+  db: Kysely<ObservabilityDB>,
+  listPods: () => Promise<PodLike[]>,
+  opts: { extraTenants?: Iterable<string>; dryRun?: boolean } = {},
+): Promise<ReconcilePodsResult> {
+  const listStartedAt = new Date().toISOString();
+  const pods = await listPods();
+
+  const rows = pods
+    .map((p) => podToRow(p, listStartedAt))
+    .filter((r): r is EnvironmentPods => r !== null);
+
+  const tenants = new Set<string>(opts.extraTenants ?? []);
+  const liveIds = new Set<string>();
+  for (const r of rows) {
+    tenants.add(r.tenantId);
+    liveIds.add(r.id);
+  }
+
+  if (!opts.dryRun) {
+    for (const row of rows) await upsertPod(db, row);
+  }
+
+  const stale = new Map<string, number>();
+  if (tenants.size === 0)
+    return { upserted: opts.dryRun ? 0 : rows.length, stale };
+
+  const existing = await db
+    .selectFrom("environment_pods")
+    .select(["id", "tenantId"])
+    .where("tenantId", "in", [...tenants])
+    .where("updatedAt", "<", listStartedAt)
+    .execute();
+
+  const staleIds: string[] = [];
+  for (const r of existing) {
+    if (liveIds.has(r.id)) continue;
+    staleIds.push(r.id);
+    stale.set(r.tenantId, (stale.get(r.tenantId) ?? 0) + 1);
+  }
+
+  if (!opts.dryRun) {
+    for (let i = 0; i < staleIds.length; i += DELETE_CHUNK) {
+      await db
+        .deleteFrom("environment_pods")
+        .where("id", "in", staleIds.slice(i, i + DELETE_CHUNK))
+        // Re-check so a row the watcher refreshed meanwhile survives.
+        .where("updatedAt", "<", listStartedAt)
+        .execute();
+    }
+  }
+
+  return { upserted: opts.dryRun ? 0 : rows.length, stale };
 }
 
 export async function insertEvent(
@@ -248,7 +409,9 @@ async function listIngressHosts(
 ): Promise<string[]> {
   const { NetworkingV1Api } = await import("@kubernetes/client-node");
   const networkingApi = kc.makeApiClient(NetworkingV1Api);
-  const res = (await networkingApi.listNamespacedIngress({ namespace: tenantId })) as {
+  const res = (await networkingApi.listNamespacedIngress({
+    namespace: tenantId,
+  })) as {
     items?: Array<{ spec?: { rules?: Array<{ host?: string }> } }>;
   };
   return (res.items ?? [])
@@ -263,9 +426,15 @@ async function checkTenantCustomDomain(
 ): Promise<DomainCheck> {
   if (!customDomain) return checkCustomDomain([], null);
   try {
-    return await checkCustomDomain(await listIngressHosts(kc, tenantId), customDomain);
+    return await checkCustomDomain(
+      await listIngressHosts(kc, tenantId),
+      customDomain,
+    );
   } catch (err) {
-    console.warn(`[domain-check] error checking custom domain for ${tenantId}:`, err);
+    console.warn(
+      `[domain-check] error checking custom domain for ${tenantId}:`,
+      err,
+    );
     return checkCustomDomain([], null);
   }
 }
@@ -324,9 +493,11 @@ async function reconcile(
       }>;
     };
 
+    const argoTenants = new Set<string>();
     for (const app of appsBody.items ?? []) {
       const tenantId = app.metadata?.labels?.["tenant"];
       if (!tenantId) continue;
+      argoTenants.add(tenantId);
 
       const syncStatus = app.status?.sync?.status ?? "Unknown";
       const healthStatus = app.status?.health?.status ?? "Unknown";
@@ -363,7 +534,11 @@ async function reconcile(
         .executeTakeFirst()) as { customDomain: string | null } | undefined;
       const customDomain = envRow?.customDomain ?? null;
 
-      const domainCheck = await checkTenantCustomDomain(kc, tenantId, customDomain);
+      const domainCheck = await checkTenantCustomDomain(
+        kc,
+        tenantId,
+        customDomain,
+      );
 
       await upsertEnvironmentStatus(db, {
         tenantId,
@@ -379,55 +554,22 @@ async function reconcile(
       });
     }
 
-    // List all pods across all namespaces (filtered by tenant namespace in DB)
-    const podsResponse = await coreApi.listPodForAllNamespaces({});
-
-    const podsBody = podsResponse as {
-      items?: Array<{
-        metadata?: {
-          name?: string;
-          namespace?: string;
-          uid?: string;
-          labels?: Record<string, string>;
+    // List all pods across all namespaces, upsert them and prune rows of
+    // pods that are gone. A tenant from the ArgoCD listing whose namespace
+    // currently has no pods (scaled to zero) is in scope too.
+    await reconcilePods(
+      db,
+      async () => {
+        const res = (await coreApi.listPodForAllNamespaces({})) as {
+          items?: PodLike[];
         };
-        status?: {
-          phase?: string;
-          containerStatuses?: Array<{
-            ready?: boolean;
-            restartCount?: number;
-          }>;
-        };
-      }>;
-    };
-
-    for (const pod of podsBody.items ?? []) {
-      const tenantId = pod.metadata?.namespace;
-      const name = pod.metadata?.name;
-      if (!tenantId || !name) continue;
-
-      const containerStatuses = pod.status?.containerStatuses ?? [];
-      const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
-      const restartCount = containerStatuses.reduce(
-        (sum, cs) => sum + (cs.restartCount ?? 0),
-        0,
-      );
-      const labels = pod.metadata?.labels ?? {};
-      const component = labels["app.kubernetes.io/component"] ?? null;
-      const agent = labels["clint.vetra.io/agent"] ?? null;
-
-      await upsertPod(db, {
-        id: `${tenantId}/${name}`,
-        tenantId,
-        name,
-        service: classifyPodService(component),
-        component,
-        agent,
-        phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
-        ready,
-        restartCount,
-        updatedAt: new Date().toISOString(),
-      });
-    }
+        if (!Array.isArray(res.items)) {
+          throw new Error("pod listing returned no items array");
+        }
+        return res.items;
+      },
+      { extraTenants: argoTenants },
+    );
   } catch (err) {
     console.warn("[reconcile] error during reconciliation", err);
   }
@@ -447,9 +589,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
   // work, not request-driven, and scale O(tenant-count). See
   // trace-suppress.ts.
   const intervalId = setInterval(() => {
-    void withTracingSuppressed(() =>
-      reconcile(db, envDb, k8sToken, k8sApiUrl),
-    );
+    void withTracingSuppressed(() => reconcile(db, envDb, k8sToken, k8sApiUrl));
   }, 60_000);
 
   // Run an initial reconcile
@@ -564,49 +704,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
         watch,
         "/api/v1/pods",
         {},
-        async (_phase: string, obj: unknown) => {
-          const pod = obj as {
-            metadata?: {
-              name?: string;
-              namespace?: string;
-              labels?: Record<string, string>;
-            };
-            status?: {
-              phase?: string;
-              containerStatuses?: Array<{
-                ready?: boolean;
-                restartCount?: number;
-              }>;
-            };
-          };
-
-          const tenantId = pod.metadata?.namespace;
-          const name = pod.metadata?.name;
-          if (!tenantId || !name) return;
-
-          const containerStatuses = pod.status?.containerStatuses ?? [];
-          const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
-          const restartCount = containerStatuses.reduce(
-            (sum, cs) => sum + (cs.restartCount ?? 0),
-            0,
-          );
-          const labels = pod.metadata?.labels ?? {};
-          const component = labels["app.kubernetes.io/component"] ?? null;
-          const agent = labels["clint.vetra.io/agent"] ?? null;
-
-          await upsertPod(db, {
-            id: `${tenantId}/${name}`,
-            tenantId,
-            name,
-            service: classifyPodService(component),
-            component,
-            agent,
-            phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
-            ready,
-            restartCount,
-            updatedAt: new Date().toISOString(),
-          });
-        },
+        (type: string, obj: unknown) => handlePodWatchEvent(db, type, obj),
         "pods",
       );
       watcherAborts.push(podAbort);

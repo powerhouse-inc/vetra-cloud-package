@@ -9,6 +9,9 @@ import {
   upsertPod,
   insertEvent,
   pruneEvents,
+  handlePodWatchEvent,
+  reconcilePods,
+  type PodLike,
 } from "../watchers.js";
 
 let db: Kysely<ObservabilityDB>;
@@ -329,5 +332,161 @@ describe("pruneEvents", () => {
       .where("tenantId", "=", tenantId)
       .execute();
     expect(rows).toHaveLength(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pod lifecycle: watch DELETED + reconcile pruning
+// ---------------------------------------------------------------------------
+
+function pod(namespace: string, name: string, phase = "Running"): PodLike {
+  return {
+    metadata: {
+      namespace,
+      name,
+      labels: { "app.kubernetes.io/component": "switchboard" },
+    },
+    status: { phase, containerStatuses: [{ ready: true, restartCount: 0 }] },
+  };
+}
+
+async function seedPod(tenantId: string, name: string, phase = "FAILED") {
+  await upsertPod(db, {
+    id: `${tenantId}/${name}`,
+    tenantId,
+    name,
+    service: "SWITCHBOARD",
+    component: "switchboard",
+    agent: null,
+    phase,
+    ready: 0,
+    restartCount: 0,
+    updatedAt: "2024-01-01T00:00:00.000Z",
+  });
+}
+
+async function podIds(): Promise<string[]> {
+  const rows = await db
+    .selectFrom("environment_pods")
+    .select("id")
+    .orderBy("id")
+    .execute();
+  return rows.map((r) => r.id);
+}
+
+describe("handlePodWatchEvent", () => {
+  it("upserts on ADDED and MODIFIED", async () => {
+    await handlePodWatchEvent(db, "ADDED", pod("t1", "sb-1", "Pending"));
+    await handlePodWatchEvent(db, "MODIFIED", pod("t1", "sb-1", "Running"));
+    const rows = await db.selectFrom("environment_pods").selectAll().execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].phase).toBe("RUNNING");
+  });
+
+  it("deletes the row on DELETED instead of upserting it", async () => {
+    await handlePodWatchEvent(db, "ADDED", pod("t1", "sb-1"));
+    await handlePodWatchEvent(db, "ADDED", pod("t1", "sb-2"));
+    await handlePodWatchEvent(db, "DELETED", pod("t1", "sb-1", "Failed"));
+    expect(await podIds()).toEqual(["t1/sb-2"]);
+  });
+
+  it("DELETED for an unknown pod is a no-op", async () => {
+    await seedPod("t1", "keep");
+    await handlePodWatchEvent(db, "DELETED", pod("t1", "never-seen"));
+    expect(await podIds()).toEqual(["t1/keep"]);
+  });
+
+  it("ignores BOOKMARK/ERROR events", async () => {
+    await handlePodWatchEvent(db, "BOOKMARK", pod("t1", "sb-1"));
+    await handlePodWatchEvent(db, "ERROR", { status: "Failure" });
+    expect(await podIds()).toEqual([]);
+  });
+});
+
+describe("reconcilePods", () => {
+  it("upserts listed pods and deletes rows of gone pods in listed tenants", async () => {
+    await seedPod("t1", "old-failed");
+    await seedPod("t1", "sb-1", "PENDING");
+
+    const res = await reconcilePods(db, async () => [
+      pod("t1", "sb-1"),
+      pod("t1", "sb-2"),
+    ]);
+
+    expect(await podIds()).toEqual(["t1/sb-1", "t1/sb-2"]);
+    expect(res.stale.get("t1")).toBe(1);
+    const sb1 = await db
+      .selectFrom("environment_pods")
+      .selectAll()
+      .where("id", "=", "t1/sb-1")
+      .executeTakeFirstOrThrow();
+    expect(sb1.phase).toBe("RUNNING");
+  });
+
+  it("never touches tenants absent from the listing", async () => {
+    await seedPod("t1", "gone");
+    await seedPod("t2", "unlisted");
+
+    await reconcilePods(db, async () => [pod("t1", "sb-1")]);
+
+    expect(await podIds()).toEqual(["t1/sb-1", "t2/unlisted"]);
+  });
+
+  it("prunes an extra (listed-but-empty) tenant, e.g. scaled to zero", async () => {
+    await seedPod("t1", "gone");
+    await seedPod("t2", "other");
+
+    await reconcilePods(db, async () => [], { extraTenants: ["t1"] });
+
+    expect(await podIds()).toEqual(["t2/other"]);
+  });
+
+  it("deletes nothing when the listing fails", async () => {
+    await seedPod("t1", "a");
+    await seedPod("t2", "b");
+
+    await expect(
+      reconcilePods(
+        db,
+        async () => {
+          throw new Error("k8s API unavailable");
+        },
+        { extraTenants: ["t1", "t2"] },
+      ),
+    ).rejects.toThrow("k8s API unavailable");
+
+    expect(await podIds()).toEqual(["t1/a", "t2/b"]);
+  });
+
+  it("keeps rows the watcher refreshed while the listing was in flight", async () => {
+    await seedPod("t1", "stale");
+
+    await reconcilePods(
+      db,
+      async () => {
+        // Watcher sees a brand-new pod after the list snapshot was taken.
+        await new Promise((r) => setTimeout(r, 5));
+        await handlePodWatchEvent(db, "ADDED", pod("t1", "fresh"));
+        return [];
+      },
+      { extraTenants: ["t1"] },
+    );
+
+    expect(await podIds()).toEqual(["t1/fresh"]);
+  });
+
+  it("dry run reports stale counts per tenant without writing", async () => {
+    await seedPod("t1", "a");
+    await seedPod("t1", "b");
+    await seedPod("t2", "c");
+
+    const res = await reconcilePods(
+      db,
+      async () => [pod("t1", "live"), pod("t2", "c")],
+      { dryRun: true },
+    );
+
+    expect(Object.fromEntries(res.stale)).toEqual({ t1: 2 });
+    expect(await podIds()).toEqual(["t1/a", "t1/b", "t2/c"]);
   });
 });
