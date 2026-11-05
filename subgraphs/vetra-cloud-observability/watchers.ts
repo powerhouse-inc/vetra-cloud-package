@@ -2,37 +2,32 @@ import type { KubeConfig } from "@kubernetes/client-node";
 import type { Kysely } from "kysely";
 import type {
   EnvironmentStatus,
-  EnvironmentPods,
   EnvironmentEvents,
   ObservabilityDB,
 } from "./db/schema.js";
 import { withTracingSuppressed } from "./trace-suppress.js";
 import { checkCustomDomain, type DomainCheck } from "./domain-check.js";
+import {
+  handlePodWatchEvent,
+  reconcilePods,
+  toUpperEnum,
+  type PodLike,
+} from "./pod-sync.js";
+
+export {
+  classifyPodService,
+  deletePod,
+  handlePodWatchEvent,
+  podToRow,
+  reconcilePods,
+  upsertPod,
+  type PodLike,
+  type ReconcilePodsResult,
+} from "./pod-sync.js";
 
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
-
-/**
- * Map the chart's `app.kubernetes.io/component` label to the
- * TenantService enum used by the GraphQL schema. Unrecognised
- * components (clint agents, registry, helper pods, pre-chart legacy
- * pods without the label) collapse to OTHER.
- */
-export function classifyPodService(component: string | null | undefined): string {
-  if (component === "connect") return "CONNECT";
-  if (component === "switchboard") return "SWITCHBOARD";
-  return "OTHER";
-}
-
-/** Uppercase enum values to match GraphQL schema (K8s returns Mixed case).
- *  Handles camelCase (e.g. OutOfSync → OUT_OF_SYNC) and spaces. */
-function toUpperEnum(val: string): string {
-  return val
-    .replace(/([a-z])([A-Z])/g, "$1_$2")
-    .toUpperCase()
-    .replace(/ /g, "_");
-}
 
 // ---------------------------------------------------------------------------
 // DB helpers
@@ -55,27 +50,6 @@ export async function upsertEnvironmentStatus(
         tlsCertValid: row.tlsCertValid,
         tlsCertExpiresAt: row.tlsCertExpiresAt,
         domainResolves: row.domainResolves,
-        updatedAt: row.updatedAt,
-      }),
-    )
-    .execute();
-}
-
-export async function upsertPod(
-  db: Kysely<ObservabilityDB>,
-  row: EnvironmentPods,
-): Promise<void> {
-  await db
-    .insertInto("environment_pods")
-    .values(row)
-    .onConflict((oc) =>
-      oc.column("id").doUpdateSet({
-        phase: row.phase,
-        ready: row.ready,
-        restartCount: row.restartCount,
-        service: row.service,
-        component: row.component,
-        agent: row.agent,
         updatedAt: row.updatedAt,
       }),
     )
@@ -248,7 +222,9 @@ async function listIngressHosts(
 ): Promise<string[]> {
   const { NetworkingV1Api } = await import("@kubernetes/client-node");
   const networkingApi = kc.makeApiClient(NetworkingV1Api);
-  const res = (await networkingApi.listNamespacedIngress({ namespace: tenantId })) as {
+  const res = (await networkingApi.listNamespacedIngress({
+    namespace: tenantId,
+  })) as {
     items?: Array<{ spec?: { rules?: Array<{ host?: string }> } }>;
   };
   return (res.items ?? [])
@@ -263,9 +239,15 @@ async function checkTenantCustomDomain(
 ): Promise<DomainCheck> {
   if (!customDomain) return checkCustomDomain([], null);
   try {
-    return await checkCustomDomain(await listIngressHosts(kc, tenantId), customDomain);
+    return await checkCustomDomain(
+      await listIngressHosts(kc, tenantId),
+      customDomain,
+    );
   } catch (err) {
-    console.warn(`[domain-check] error checking custom domain for ${tenantId}:`, err);
+    console.warn(
+      `[domain-check] error checking custom domain for ${tenantId}:`,
+      err,
+    );
     return checkCustomDomain([], null);
   }
 }
@@ -324,9 +306,11 @@ async function reconcile(
       }>;
     };
 
+    const argoTenants = new Set<string>();
     for (const app of appsBody.items ?? []) {
       const tenantId = app.metadata?.labels?.["tenant"];
       if (!tenantId) continue;
+      argoTenants.add(tenantId);
 
       const syncStatus = app.status?.sync?.status ?? "Unknown";
       const healthStatus = app.status?.health?.status ?? "Unknown";
@@ -363,7 +347,11 @@ async function reconcile(
         .executeTakeFirst()) as { customDomain: string | null } | undefined;
       const customDomain = envRow?.customDomain ?? null;
 
-      const domainCheck = await checkTenantCustomDomain(kc, tenantId, customDomain);
+      const domainCheck = await checkTenantCustomDomain(
+        kc,
+        tenantId,
+        customDomain,
+      );
 
       await upsertEnvironmentStatus(db, {
         tenantId,
@@ -379,55 +367,22 @@ async function reconcile(
       });
     }
 
-    // List all pods across all namespaces (filtered by tenant namespace in DB)
-    const podsResponse = await coreApi.listPodForAllNamespaces({});
-
-    const podsBody = podsResponse as {
-      items?: Array<{
-        metadata?: {
-          name?: string;
-          namespace?: string;
-          uid?: string;
-          labels?: Record<string, string>;
+    // List all pods across all namespaces, upsert them and prune rows of
+    // pods that are gone. A tenant from the ArgoCD listing whose namespace
+    // currently has no pods (scaled to zero) is in scope too.
+    await reconcilePods(
+      db,
+      async () => {
+        const res = (await coreApi.listPodForAllNamespaces({})) as {
+          items?: PodLike[];
         };
-        status?: {
-          phase?: string;
-          containerStatuses?: Array<{
-            ready?: boolean;
-            restartCount?: number;
-          }>;
-        };
-      }>;
-    };
-
-    for (const pod of podsBody.items ?? []) {
-      const tenantId = pod.metadata?.namespace;
-      const name = pod.metadata?.name;
-      if (!tenantId || !name) continue;
-
-      const containerStatuses = pod.status?.containerStatuses ?? [];
-      const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
-      const restartCount = containerStatuses.reduce(
-        (sum, cs) => sum + (cs.restartCount ?? 0),
-        0,
-      );
-      const labels = pod.metadata?.labels ?? {};
-      const component = labels["app.kubernetes.io/component"] ?? null;
-      const agent = labels["clint.vetra.io/agent"] ?? null;
-
-      await upsertPod(db, {
-        id: `${tenantId}/${name}`,
-        tenantId,
-        name,
-        service: classifyPodService(component),
-        component,
-        agent,
-        phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
-        ready,
-        restartCount,
-        updatedAt: new Date().toISOString(),
-      });
-    }
+        if (!Array.isArray(res.items)) {
+          throw new Error("pod listing returned no items array");
+        }
+        return res.items;
+      },
+      { extraTenants: argoTenants },
+    );
   } catch (err) {
     console.warn("[reconcile] error during reconciliation", err);
   }
@@ -447,9 +402,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
   // work, not request-driven, and scale O(tenant-count). See
   // trace-suppress.ts.
   const intervalId = setInterval(() => {
-    void withTracingSuppressed(() =>
-      reconcile(db, envDb, k8sToken, k8sApiUrl),
-    );
+    void withTracingSuppressed(() => reconcile(db, envDb, k8sToken, k8sApiUrl));
   }, 60_000);
 
   // Run an initial reconcile
@@ -564,49 +517,7 @@ export function startWatchers(deps: WatcherDeps): WatcherHandle {
         watch,
         "/api/v1/pods",
         {},
-        async (_phase: string, obj: unknown) => {
-          const pod = obj as {
-            metadata?: {
-              name?: string;
-              namespace?: string;
-              labels?: Record<string, string>;
-            };
-            status?: {
-              phase?: string;
-              containerStatuses?: Array<{
-                ready?: boolean;
-                restartCount?: number;
-              }>;
-            };
-          };
-
-          const tenantId = pod.metadata?.namespace;
-          const name = pod.metadata?.name;
-          if (!tenantId || !name) return;
-
-          const containerStatuses = pod.status?.containerStatuses ?? [];
-          const ready = containerStatuses.every((cs) => cs.ready) ? 1 : 0;
-          const restartCount = containerStatuses.reduce(
-            (sum, cs) => sum + (cs.restartCount ?? 0),
-            0,
-          );
-          const labels = pod.metadata?.labels ?? {};
-          const component = labels["app.kubernetes.io/component"] ?? null;
-          const agent = labels["clint.vetra.io/agent"] ?? null;
-
-          await upsertPod(db, {
-            id: `${tenantId}/${name}`,
-            tenantId,
-            name,
-            service: classifyPodService(component),
-            component,
-            agent,
-            phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
-            ready,
-            restartCount,
-            updatedAt: new Date().toISOString(),
-          });
-        },
+        (type: string, obj: unknown) => handlePodWatchEvent(db, type, obj),
         "pods",
       );
       watcherAborts.push(podAbort);

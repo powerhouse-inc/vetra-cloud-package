@@ -1,19 +1,39 @@
+import { GraphQLError } from "graphql";
 import type { Kysely } from "kysely";
 import type { SecretsDB } from "./db/schema.js";
 import type { OpenBaoTransitClient } from "./openbao-transit.js";
-import { createSecretsService } from "./services/secrets-service.js";
+import {
+  createSecretsService,
+  ManagedSecretKeyError,
+  MANAGED_KEY_ERROR_CODE,
+} from "./services/secrets-service.js";
 import {
   createTenantGuard,
   type SecretsContext,
   type TenantAccessDeps,
 } from "./access.js";
 
+/** Surface a managed-key refusal with its code so the console can tell it apart. */
+async function withCodes<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof ManagedSecretKeyError) {
+      throw new GraphQLError(err.message, {
+        extensions: { code: MANAGED_KEY_ERROR_CODE, key: err.key },
+      });
+    }
+    throw err;
+  }
+}
+
 export function createResolvers(
   db: Kysely<SecretsDB>,
   transit: OpenBaoTransitClient,
   access: TenantAccessDeps,
 ): Record<string, any> {
-  const service = createSecretsService({ db, transit });
+  // User-facing: refuses the keys Vetra manages (PLATFORM_MANAGED_KEYS).
+  const service = createSecretsService({ db, transit, userFacing: true });
   const guard = createTenantGuard(access);
   return {
     Query: {
@@ -43,7 +63,7 @@ export function createResolvers(
         ctx?: SecretsContext,
       ) => {
         await guard(ctx, tenantId, { wait: true });
-        return service.setEnvVar(tenantId, key, value);
+        return withCodes(() => service.setEnvVar(tenantId, key, value));
       },
 
       deleteEnvVar: async (
@@ -52,7 +72,7 @@ export function createResolvers(
         ctx?: SecretsContext,
       ) => {
         await guard(ctx, tenantId, { wait: true });
-        return service.deleteEnvVar(tenantId, key);
+        return withCodes(() => service.deleteEnvVar(tenantId, key));
       },
 
       setSecret: async (
@@ -61,7 +81,7 @@ export function createResolvers(
         ctx?: SecretsContext,
       ) => {
         await guard(ctx, tenantId, { wait: true });
-        return service.setSecret(tenantId, key, value);
+        return withCodes(() => service.setSecret(tenantId, key, value));
       },
 
       deleteSecret: async (
@@ -70,7 +90,7 @@ export function createResolvers(
         ctx?: SecretsContext,
       ) => {
         await guard(ctx, tenantId, { wait: true });
-        return service.deleteSecret(tenantId, key);
+        return withCodes(() => service.deleteSecret(tenantId, key));
       },
     },
   };

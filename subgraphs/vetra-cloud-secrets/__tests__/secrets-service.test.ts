@@ -9,6 +9,7 @@ import {
   createSecretsService,
   ManagedSecretKeyError,
   NOTIFY_CHANNEL,
+  PLATFORM_MANAGED_KEYS,
   purgeTenantRows,
   STUDIO_LAUNCH_SECRET_KEY,
   WORKFLOWS_MASTER_KEY,
@@ -373,5 +374,108 @@ describe("Studio launch secret (a rotatable managed key)", () => {
     await service.ensureSecret("t", STUDIO_LAUNCH_SECRET_KEY, () => randomBytes(32).toString("hex"));
     expect(await purgeTenantRows(db, "t")).toStrictEqual({ envVars: 0, secrets: 1 });
     expect(await keysOf("t")).toStrictEqual([[WORKFLOWS_MASTER_KEY, "vault:v1:t:master"]]);
+  });
+});
+
+describe("platform-managed keys (user-facing service)", () => {
+  async function ciphertextOf(tenantId: string, key: string) {
+    const row = await db
+      .selectFrom("tenant_secrets")
+      .select("ciphertext")
+      .where("tenantId", "=", tenantId)
+      .where("key", "=", key)
+      .executeTakeFirst();
+    return row?.ciphertext;
+  }
+
+  const LISTED = [
+    "VETRA_LICENSING_URL",
+    "VETRA_REPORTING_TOKEN",
+    "VETRA_MODEL",
+    "VETRA_MODEL_FALLBACKS",
+    "OPENROUTER_API_KEY",
+    "ADMINS",
+    "CI",
+    "npm_config_node_linker",
+    "PH_ATTACHMENT_URL_SIGNING_SECRET",
+    "PH_REGISTRY_URL",
+    "VETRA_CLOUD_RENOWN_URL",
+    "VETRA_CLOUD_SWITCHBOARD_URL",
+    "VETRA_ENVIRONMENT_ID",
+    "VETRA_OBSERVABILITY_CONSENT",
+    "VETRA_SESSION_EXPORT_SECRET",
+    "VETRA_STUDIO_LAUNCH_SECRET",
+    "PH_WORKFLOWS_SECRETS_MASTER_KEY",
+  ];
+
+  it("covers every key the console shows as set by Vetra", () => {
+    expect([...PLATFORM_MANAGED_KEYS].sort()).toEqual([...LISTED].sort());
+  });
+
+  it.each(LISTED)("refuses set and delete of %s, leaving Vetra's value", async (key) => {
+    const user = createSecretsService({ db, transit: mockTransit, userFacing: true });
+    // Vetra's own value, as an internal writer would have put it.
+    await db
+      .insertInto("tenant_env_vars")
+      .values({ tenantId: "t", key, value: "vetra", updatedAt: "x" })
+      .execute();
+    await db
+      .insertInto("tenant_secrets")
+      .values({ tenantId: "t", key, ciphertext: "vault:v1:t:vetra", updatedAt: "x" })
+      .execute();
+
+    const attempts = [
+      user.setEnvVar("t", key, "mine"),
+      user.deleteEnvVar("t", key),
+      user.setSecret("t", key, "mine"),
+      user.setSecrets("t", [{ key: "FINE_KEY", value: "v" }, { key, value: "mine" }]),
+      user.deleteSecret("t", key),
+    ];
+    for (const a of attempts) {
+      await expect(a).rejects.toMatchObject({ name: "ManagedSecretKeyError", code: "MANAGED_KEY", key });
+    }
+
+    expect(
+      await db.selectFrom("tenant_env_vars").select("value").where("key", "=", key).execute(),
+    ).toEqual([{ value: "vetra" }]);
+    expect(await ciphertextOf("t", key)).toBe("vault:v1:t:vetra");
+    // The batch failed as a whole: its valid entry was not written either.
+    expect(await ciphertextOf("t", "FINE_KEY")).toBeUndefined();
+  });
+
+  it("still lets users set and delete their own keys", async () => {
+    const user = createSecretsService({ db, transit: mockTransit, userFacing: true });
+    await user.setEnvVar("t", "MY_VAR", "1");
+    await user.setSecret("t", "MY_SECRET", "s");
+    expect(await user.deleteEnvVar("t", "MY_VAR")).toBe(true);
+    expect(await user.deleteSecret("t", "MY_SECRET")).toBe(true);
+  });
+
+  it("the internal service keeps writing them (Vetra's own writers)", async () => {
+    // reporting.ts
+    await service.setSecrets("t", [
+      { key: "VETRA_REPORTING_TOKEN", value: "tok" },
+      { key: "VETRA_LICENSING_URL", value: "https://l" },
+    ]);
+    // broker.ts
+    await service.setEnvVar("t", "VETRA_MODEL", "m");
+    await service.setEnvVar("t", "VETRA_MODEL_FALLBACKS", "a,b");
+    await service.setSecret("t", "OPENROUTER_API_KEY", "or");
+    expect(await service.deleteSecret("t", "OPENROUTER_API_KEY")).toBe(true);
+    // gitops routing of create-env.ts's document env
+    await service.setEnvVar("t", "VETRA_ENVIRONMENT_ID", "doc-1");
+    // claim.ts
+    await service.replaceTenantConfig("t2", [
+      { key: "ADMINS", value: "0xabc", secret: true },
+      { key: "CI", value: "true", secret: false },
+      { key: "VETRA_SESSION_EXPORT_SECRET", value: "x", secret: true },
+    ]);
+
+    expect(await ciphertextOf("t", "VETRA_REPORTING_TOKEN")).toBe("vault:v1:t:tok");
+    expect(await ciphertextOf("t2", "ADMINS")).toBe("vault:v1:t2:0xabc");
+    expect(
+      (await service.listEnvVars("t")).map((r) => r.key),
+    ).toEqual(["VETRA_ENVIRONMENT_ID", "VETRA_MODEL", "VETRA_MODEL_FALLBACKS"]);
+    expect((await service.listEnvVars("t2")).map((r) => r.key)).toEqual(["CI"]);
   });
 });
