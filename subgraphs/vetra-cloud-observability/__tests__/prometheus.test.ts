@@ -115,6 +115,19 @@ describe("PrometheusClient", () => {
       expect(url).toContain("container_memory_working_set_bytes");
       expect(url).toContain("my-tenant");
     });
+
+    it("sums container series only, not the pod-level cgroup that already holds them", async () => {
+      mockFetch.mockResolvedValue({ ok: true, json: async () => makeMatrixResponse([]) });
+
+      await client.memoryUsage("my-tenant", "ONE_HOUR");
+      await client.cpuUsage("my-tenant", "ONE_HOUR");
+
+      for (const [url] of mockFetch.mock.calls as [string][]) {
+        const query = new URL(url).searchParams.get("query") ?? "";
+        expect(query).toContain('container!=""');
+        expect(query).toContain('container!="POD"');
+      }
+    });
   });
 
   describe("podRestartRate", () => {
