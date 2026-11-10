@@ -1,5 +1,6 @@
 import { resolveCallerApp, type AuthContext, type AuthDeps } from "./auth.js";
 import { resolveKind, type AppReads } from "./app-reads.js";
+import { resolveChainKind } from "./channel-override.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
@@ -285,6 +286,15 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
               `licence ${licence.id} is not the newest licence of its chain; upgrade the newest licence`,
             );
           }
+          // As the handler: a canary chain resolves on its own channel (spec 4.2).
+          const channel =
+            (await deps.envRows.forApp(appId)).find(
+              (e) => e.root_license_id === root,
+            )?.channel_override ?? null;
+          const chained = channel
+            ? resolveChainKind(app, licence.kind, channel)
+            : r;
+          if (!chained.ok) throw new InvalidPublisherInputError(chained.reason);
           try {
             const row = await deps.provision(
               {
@@ -293,10 +303,10 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
                 licenseId: licence.id,
                 // The grant row's holder, never the document's.
                 userDid: licence.userDid,
-                templateId: r.template.id,
-                template: r.template.template,
-                templateHash: r.template.templateHash,
-                fusionVersions: r.template.fusionVersions,
+                templateId: chained.template.id,
+                template: chained.template.template,
+                templateHash: chained.template.templateHash,
+                fusionVersions: chained.template.fusionVersions,
                 // As the handler: the project name chosen at issue wins.
                 label: (await deps.grants.chainLabel(root)) ?? a.input.label,
                 now: deps.now(),

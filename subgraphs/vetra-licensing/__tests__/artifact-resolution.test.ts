@@ -366,3 +366,67 @@ describe("rendering a resolved FUSION service", () => {
     });
   });
 });
+
+describe("resolveTemplateArtifacts on a channel override (a canary, spec 4.2)", () => {
+  const artifacts = catalogue(
+    ["1.0.0", "1.1.0"],
+    [
+      { channel: "LATEST", version: "1.0.0" },
+      { channel: "STAGING", version: "1.1.0" },
+    ],
+  );
+
+  it("resolves every service on the override channel and keeps the service's own channel", () => {
+    const resolved = resolveTemplateArtifacts(
+      withImage(),
+      artifacts,
+      "STAGING",
+    );
+    expect(resolved.services[0]).toMatchObject({
+      artifactChannel: "LATEST",
+      resolvedVersion: "1.1.0",
+      resolvedRepository: "cr.vetra.io/app-dtbau/dtbau-psb",
+    });
+    // A service following DEV (or naming no channel) follows the override too.
+    expect(
+      resolveTemplateArtifacts(
+        withImage({ artifactChannel: "DEV" }),
+        artifacts,
+        "STAGING",
+      ).services[0]!.resolvedVersion,
+    ).toBe("1.1.0");
+    expect(
+      resolveTemplateArtifacts(
+        withImage({ artifactChannel: null }),
+        artifacts,
+        "STAGING",
+      ).services[0]!.resolvedVersion,
+    ).toBe("1.1.0");
+  });
+
+  it("hashes like the template's own resolution when both channels point at one version", () => {
+    const same = catalogue(
+      ["1.0.0"],
+      [
+        { channel: "LATEST", version: "1.0.0" },
+        { channel: "STAGING", version: "1.0.0" },
+      ],
+    );
+    expect(
+      templateHash(resolveTemplateArtifacts(withImage(), same, "STAGING")),
+    ).toBe(templateHash(resolveTemplateArtifacts(withImage(), same)));
+    expect(
+      templateHash(resolveTemplateArtifacts(withImage(), artifacts, "STAGING")),
+    ).not.toBe(templateHash(resolveTemplateArtifacts(withImage(), artifacts)));
+  });
+
+  it("refuses an override channel with no build, naming it", () => {
+    const latestOnly = catalogue(
+      ["1.0.0"],
+      [{ channel: "LATEST", version: "1.0.0" }],
+    );
+    expect(() =>
+      resolveTemplateArtifacts(withImage(), latestOnly, "STAGING"),
+    ).toThrow(/has no STAGING build yet/);
+  });
+});

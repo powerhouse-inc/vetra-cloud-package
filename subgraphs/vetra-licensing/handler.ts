@@ -1,5 +1,6 @@
 import type { LicensingConfig } from "./config.js";
-import { resolveKind, type AppDocView } from "./app-reads.js";
+import type { AppDocView, KindResolution } from "./app-reads.js";
+import { resolveChainKind } from "./channel-override.js";
 import {
   planChains,
   type ChainStep,
@@ -169,6 +170,9 @@ function rotate<T>(list: T[], offset: number): T[] {
 }
 
 type ProvisionKind = "create" | "retemplate" | "repoint";
+
+/** A chain's head kind -> template, on the chain's channel override (spec 4.2). */
+type ChainResolver = (kind: string | null, root: string) => KindResolution;
 
 /**
  * AppLicenseHandler: licence -> app.terms[kind] -> app.templates[templateId]
@@ -405,8 +409,14 @@ export class AppLicenseHandler {
       );
     }
     const environments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
-    const resolve = (kind: string | null): PlanResolution => {
-      const r = resolveKind(app, kind);
+    // A canary chain resolves every artifact on its own channel (spec 4.2).
+    const channelOf = new Map(
+      environments.map((e) => [e.root_license_id, e.channel_override ?? null]),
+    );
+    const resolveFor: ChainResolver = (kind, root) =>
+      resolveChainKind(app, kind, channelOf.get(root) ?? null);
+    const resolve = (kind: string | null, root: string): PlanResolution => {
+      const r = resolveFor(kind, root);
       return r.ok
         ? {
             ok: true,
@@ -465,7 +475,8 @@ export class AppLicenseHandler {
     }
     const confirmedEnded = new Set<string>();
     for (const [root, group] of rotate([...groups], this.tickNo)) {
-      if (await this.runChain(app, root, group, provisionKind)) confirmedEnded.add(root);
+      if (await this.runChain(app, root, group, provisionKind, resolveFor))
+        confirmedEnded.add(root);
     }
     if (!held) {
       const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
@@ -497,6 +508,7 @@ export class AppLicenseHandler {
     root: string,
     steps: ChainStep[],
     provisionKind: (step: Extract<ChainStep, { kind: "provision" }>) => ProvisionKind,
+    resolveFor: ChainResolver,
   ): Promise<boolean> {
     const appId = app.id;
     const key = `${appId}:${root}`;
@@ -528,7 +540,7 @@ export class AppLicenseHandler {
         this.retemplateBudget--;
         budgeted = true;
       }
-      const running = this.apply(app, step);
+      const running = this.apply(app, step, resolveFor);
       this.inFlight.add(key);
       const settled = () => this.inFlight.delete(key);
       void running.then(settled, settled);
@@ -603,7 +615,11 @@ export class AppLicenseHandler {
     return out;
   }
 
-  private async apply(app: AppDocView, step: ChainStep): Promise<void> {
+  private async apply(
+    app: AppDocView,
+    step: ChainStep,
+    resolveFor: ChainResolver,
+  ): Promise<void> {
     switch (step.kind) {
       case "hold":
       case "anomaly":
@@ -619,9 +635,9 @@ export class AppLicenseHandler {
         await this.d.onResumed(app.id, step.environmentId);
         return;
       case "provision": {
-        // The same app snapshot the plan resolved from: the planner only
-        // emits a provision for a kind that resolved.
-        const resolved = resolveKind(app, step.licence.kind);
+        // The same app snapshot (and channel) the plan resolved from: the
+        // planner only emits a provision for a kind that resolved.
+        const resolved = resolveFor(step.licence.kind, step.root);
         if (!resolved.ok) {
           throw new Error(`kind ${step.licence.kind ?? "(none)"} no longer resolves: ${resolved.reason}`);
         }

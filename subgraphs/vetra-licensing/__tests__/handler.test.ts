@@ -822,3 +822,74 @@ describe("AppLicenseHandler", () => {
     });
   });
 });
+
+describe("AppLicenseHandler: canary chains (spec 4.2)", () => {
+  const fusionTemplate = {
+    ...tpl("ded", "DEDICATED"),
+    template: {
+      services: [
+        {
+          id: "f",
+          type: "FUSION",
+          prefix: "sektar",
+          artifactName: "host",
+          artifactChannel: "LATEST",
+          resolvedVersion: "1.0.0",
+          resolvedRepository: "cr.vetra.io/p/host",
+        },
+      ],
+      packages: [],
+      size: null,
+      baseDomain: null,
+      packageRegistry: null,
+    },
+  };
+  const WITH_STAGING: AppDocView = {
+    ...APP,
+    templates: [fusionTemplate, tpl("sh", "SHARED")],
+    artifacts: [
+      {
+        kind: "FUSION_IMAGE",
+        name: "host",
+        versions: [
+          { version: "1.0.0", reference: "cr.vetra.io/p/host:1.0.0" },
+          { version: "1.1.0", reference: "cr.vetra.io/p/host:1.1.0" },
+        ],
+        channels: [
+          { channel: "LATEST", version: "1.0.0" },
+          { channel: "STAGING", version: "1.1.0" },
+        ],
+      },
+    ],
+  };
+
+  it("re-templates a canary onto STAGING and leaves a customer on the template's hash alone", async () => {
+    const h = harness(
+      {
+        app: async (id) => (id === "app-1" ? WITH_STAGING : null),
+        environments: async () => [
+          envRow({
+            environment_id: "e1",
+            root_license_id: "l1",
+            license_id: "l1",
+            channel_override: "STAGING",
+          }),
+          envRow({
+            environment_id: "e2",
+            root_license_id: "l2",
+            license_id: "l2",
+          }),
+        ],
+      },
+      [lic("l1", { stage: "e1" }), lic("l2", { stage: "e2" })],
+    );
+    await h.handler.reconcileOnce();
+    expect(h.provisioned).toStrictEqual(["l1"]);
+    const input = vi.mocked(h.deps.provision).mock.calls[0]![0];
+    expect(input.template.services[0]).toMatchObject({
+      artifactChannel: "LATEST",
+      resolvedVersion: "1.1.0",
+    });
+    expect(input.templateHash).not.toBe("h-ded");
+  });
+});
