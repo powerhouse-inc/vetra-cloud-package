@@ -68,6 +68,12 @@ export interface LicenseEnvironments {
   template_id: string | null;
   label: string | null;
   template_hash: string;
+  /**
+   * The channel every artifact of this chain's template resolves on instead
+   * of the template's own (spec 4.2): 'STAGING' marks a canary. Null (or
+   * absent on a row built in code before the column existed): the template's.
+   */
+  channel_override?: string | null;
   /** First moment the keeper saw the chain without an ACTIVE licence. */
   ended_at: string | null;
   stopped_at: string | null;
@@ -206,6 +212,65 @@ export interface AppWarmPool {
   timed_out_at: string | null;
 }
 
+export type ReleasePolicy = "AUTO" | "GATED";
+export type RolloutStatus = "ACTIVE" | "PAUSED" | "SUPERSEDED" | "COMPLETE";
+export type UpdateStatus =
+  | "PENDING"
+  | "APPLYING"
+  | "SUCCEEDED"
+  | "REVERTED"
+  | "RESTORED"
+  | "FAILED"
+  | "SUPERSEDED";
+
+/** Per-app release policy (spec 4.1). No row: AUTO with 72 hours' notice. */
+export interface AppReleaseSettings {
+  app_id: string;
+  policy: ReleasePolicy;
+  default_notice_hours: number;
+  updated_at: string;
+}
+
+/** A promotion of one FUSION artifact version to the app's customers (spec 4.3). */
+export interface AppRollouts {
+  id: string;
+  app_id: string;
+  artifact_name: string;
+  version: string;
+  status: RolloutStatus;
+  /** Customers are updated automatically from here on (promotion + notice). */
+  apply_after: string;
+  /** Lowercased address of the publisher who promoted it. */
+  promoted_by: string;
+  promoted_at: string;
+  paused_at: string | null;
+  paused_reason: string | null;
+}
+
+/**
+ * One FUSION version move of one environment (spec 4.3). rollout_id is null
+ * for a canary's update and for every update of an AUTO app.
+ */
+export interface EnvironmentUpdates {
+  id: string;
+  rollout_id: string | null;
+  environment_id: string;
+  app_id: string;
+  from_version: string;
+  to_version: string;
+  status: UpdateStatus;
+  due_at: string;
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Phase 2 (safe apply): the dump taken before the version was set. */
+  pre_update_dump_id: string | null;
+  error: string | null;
+  /** Set by the publisher's forceEnvironmentUpdate: applies despite a pause or an unordered version. */
+  forced_at: string | null;
+  created_at: string;
+}
+
 export interface VetraLicensingDB {
   app_licensing_state: AppLicensingState;
   app_licensing_intent: AppLicensingIntent;
@@ -222,4 +287,7 @@ export interface VetraLicensingDB {
   licensing_migration_type_map: LicensingMigrationTypeMap;
   licensing_migration_steps: LicensingMigrationSteps;
   license_lifecycle: LicenseLifecycle;
+  app_release_settings: AppReleaseSettings;
+  app_rollouts: AppRollouts;
+  environment_updates: EnvironmentUpdates;
 }
