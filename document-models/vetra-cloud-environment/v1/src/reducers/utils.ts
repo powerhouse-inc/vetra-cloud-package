@@ -2,6 +2,7 @@ import {
   AppLinkSystemOnlyError,
   NotOwnerError,
 } from "../../gen/data-management/error.js";
+import { ManagedByTemplateError } from "../../gen/services/error.js";
 
 type MaybeSigner = {
   context?: {
@@ -78,6 +79,29 @@ export function assertSystemOnly(action: MaybeSigner, opName: string) {
       `AppLinkSystemOnly: ${opName} can only be dispatched by the system, not by ${userAddr.toLowerCase()}`,
     );
   }
+}
+
+/**
+ * Template lock (spec 4.4). On an environment a licence template manages
+ * (state.managedBy, set by the licensing keeper), a user-signed action may not
+ * change what the template owns: the services it declares, their versions and
+ * the FUSION image and auto-update. System actions (no user signer) pass, so
+ * the keeper itself is unaffected. The lock applies only to a service type
+ * the template declares (`serviceType`); every other service stays the
+ * holder's.
+ */
+export function assertNotTemplateManaged(
+  state: { managedBy?: { appId: string; services: readonly string[] } | null },
+  action: MaybeSigner,
+  what: string,
+  serviceType: string,
+) {
+  const managed = state.managedBy;
+  if (!managed || !action.context?.signer?.user?.address) return;
+  if (!managed.services.includes(serviceType)) return;
+  throw new ManagedByTemplateError(
+    `ManagedByTemplate: ${what} is set by the template of app ${managed.appId}`,
+  );
 }
 
 const NO_PENDING_STATUSES = new Set([

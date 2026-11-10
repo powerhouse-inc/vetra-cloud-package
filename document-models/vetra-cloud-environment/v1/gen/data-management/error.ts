@@ -98,4 +98,6 @@ export const errors = {
   ClearAppLink: { AppLinkSystemOnlyError },
 
   SetBackupSchedule: { NotOwnerError },
+
+  SetManagedBy: { AppLinkSystemOnlyError },
 };

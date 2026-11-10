@@ -15,6 +15,7 @@ import type {
   SetDnsRecordsAction,
   SetGenericSubdomainAction,
   SetLabelAction,
+  SetManagedByAction,
   SetOwnerAction,
   SetOwnerOrgAction,
   SetRuntimeConfigAction,
@@ -96,6 +97,11 @@ export interface VetraCloudEnvironmentDataManagementOperations {
   setBackupScheduleOperation: (
     state: VetraCloudEnvironmentGlobalState,
     action: SetBackupScheduleAction,
+    dispatch?: SignalDispatch,
+  ) => void;
+  setManagedByOperation: (
+    state: VetraCloudEnvironmentGlobalState,
+    action: SetManagedByAction,
     dispatch?: SignalDispatch,
   ) => void;
 }

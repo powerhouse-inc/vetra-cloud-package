@@ -216,4 +216,18 @@ export const vetraCloudEnvironmentDataManagementOperations: VetraCloudEnvironmen
       // The schedule is read by the observability subgraph's runner, not the
       // chart, so no markPendingIfDeployed — same as setAutoUpdateChannel.
     },
+    setManagedByOperation(state, action) {
+      // Written only by the licensing keeper: it is what locks the template's
+      // services, versions and image (assertNotTemplateManaged), so no user
+      // (not even the owner) may set it.
+      assertSystemOnly(action, "SET_MANAGED_BY");
+      const { appId, templateId, rootLicenseId, services } = action.input;
+      state.managedBy = {
+        appId,
+        templateId,
+        rootLicenseId,
+        services: [...services],
+      };
+      // Metadata: renders nothing into the chart, so no markPendingIfDeployed.
+    },
   };

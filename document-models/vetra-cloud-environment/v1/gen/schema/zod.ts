@@ -32,6 +32,7 @@ import type {
   SetFusionConfigInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetManagedByInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetPackageVersionInput,
@@ -53,6 +54,7 @@ import type {
   VetraCloudEnvironmentState,
   VetraCloudEnvironmentStatus,
   VetraCloudFusionConfig,
+  VetraCloudManagedBy,
   VetraCloudPackage,
   VetraCloudPackageConfigInput,
   VetraCloudPackageInput,
@@ -354,6 +356,17 @@ export function SetLabelInputSchema(): z.ZodObject<Properties<SetLabelInput>> {
   });
 }
 
+export function SetManagedByInputSchema(): z.ZodObject<
+  Properties<SetManagedByInput>
+> {
+  return z.object({
+    appId: z.string(),
+    rootLicenseId: z.string(),
+    services: z.array(VetraCloudEnvironmentServiceTypeSchema),
+    templateId: z.string(),
+  });
+}
+
 export function SetOwnerInputSchema(): z.ZodObject<Properties<SetOwnerInput>> {
   return z.object({
     address: z
@@ -541,6 +554,7 @@ export function VetraCloudEnvironmentStateSchema(): z.ZodObject<
     genericBaseDomain: z.string().nullish(),
     genericSubdomain: z.string().nullish(),
     label: z.string().nullish(),
+    managedBy: z.lazy(() => VetraCloudManagedBySchema().nullish()),
     orgOperators: z.array(
       z
         .string()
@@ -572,6 +586,18 @@ export function VetraCloudFusionConfigSchema(): z.ZodObject<
     autoUpdateTagPattern: z.string().nullish(),
     env: z.array(z.lazy(() => VetraCloudServiceEnvSchema())),
     image: z.string().nullish(),
+  });
+}
+
+export function VetraCloudManagedBySchema(): z.ZodObject<
+  Properties<VetraCloudManagedBy>
+> {
+  return z.object({
+    __typename: z.literal("VetraCloudManagedBy").optional(),
+    appId: z.string(),
+    rootLicenseId: z.string(),
+    services: z.array(VetraCloudEnvironmentServiceTypeSchema),
+    templateId: z.string(),
   });
 }
 
