@@ -65,3 +65,13 @@ describe("loadLicensingConfig: the update timeout (spec 4.3)", () => {
     expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: "0" }).updateTimeoutMs).toBe(20 * 60 * 1000);
   });
 });
+
+describe("loadLicensingConfig: the update timeout is parsed strictly", () => {
+  it("takes only a positive whole number of milliseconds", () => {
+    for (const v of ["20m", "-5", "abc", "0", "1.5", ""]) {
+      expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: v }).updateTimeoutMs).toBe(20 * 60 * 1000);
+    }
+    expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: "600000" }).updateTimeoutMs).toBe(600_000);
+    expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: " 600000 " }).updateTimeoutMs).toBe(600_000);
+  });
+});

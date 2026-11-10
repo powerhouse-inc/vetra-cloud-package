@@ -14,12 +14,17 @@ export interface ReleaseTrackerDeps {
 }
 
 /**
- * The handler's afterChains release work for one app (spec 4.3): settles its
- * APPLYING updates (a failure pauses the rollout, naming the environment),
- * then completes each ACTIVE rollout that has no PENDING or APPLYING update
- * left, once LATEST points at its version and every live customer
- * environment meets its template (an environment the keeper has not visited
- * since the promotion has no update yet, but is behind).
+ * The handler's afterChains release work for one app (spec 4.3). `rows` must
+ * be ALL of the app's license_environments rows (the handler's full `forApp`
+ * read): an open update whose environment has no live row in it (ended, or
+ * deleted) is closed as SUPERSEDED first, so a partial list would close live
+ * customers' updates. A closed update is not settled, pauses nothing and
+ * does not hold a rollout open. Then it settles the live APPLYING updates
+ * (a failure pauses the rollout, naming the environment), then completes
+ * each ACTIVE rollout that has no PENDING or APPLYING update left, once
+ * LATEST points at its version and every live customer environment meets
+ * its template (an environment the keeper has not visited since the
+ * promotion has no update yet, but is behind).
  *
  * A resumed update whose environment already runs its version (its
  * deployment failed after the version was set: phase 1 does not revert) is
@@ -36,7 +41,26 @@ export async function trackReleases(
   rows: LicenseEnvironments[],
 ): Promise<void> {
   const now = deps.now();
-  for (const u of await deps.store.applyingOf(app.id)) {
+  const live = new Set(
+    rows.filter((r) => r.ended_at === null).map((r) => r.environment_id),
+  );
+  const isLive = (u: { environment_id: string }) => live.has(u.environment_id);
+  const applying = await deps.store.applyingOf(app.id);
+  const pending = await deps.store.pendingOf(app.id);
+  for (const u of [...applying, ...pending].filter((x) => !isLive(x))) {
+    const closed = await deps.store.transitionUpdate(
+      u.id,
+      ["PENDING", "APPLYING"],
+      { status: "SUPERSEDED", finished_at: now, error: "environment ended" },
+    );
+    if (closed) {
+      deps.logger.info(
+        `[licensing] update of environment ${u.environment_id} of app ${app.id} to FUSION ${u.to_version} is closed: the environment ended`,
+      );
+    }
+  }
+
+  for (const u of applying.filter(isLive)) {
     const outcome = updateOutcome(
       u,
       observe(await deps.envState(u.environment_id)),
@@ -83,9 +107,12 @@ export async function trackReleases(
     templateHashes.has(r.template_id) &&
     templateHashes.get(r.template_id) !== r.template_hash;
   const met = new Set(
-    rows.filter((r) => !isBehind(r)).map((r) => r.environment_id),
+    rows
+      .filter((r) => r.ended_at === null && !isBehind(r))
+      .map((r) => r.environment_id),
   );
-  for (const u of await deps.store.pendingOf(app.id)) {
+  // Read before the APPLYING loop, which moves no PENDING row.
+  for (const u of pending) {
     if (!met.has(u.environment_id)) continue;
     const env = observe(await deps.envState(u.environment_id));
     if (env?.fusionVersion !== u.to_version || env.status !== "READY") continue;

@@ -76,6 +76,11 @@ export function loadLicensingConfig(
     if (!v || !/^\d+$/.test(v)) return fallback;
     return Number.parseInt(v, 10);
   };
+  /** Strict: digits only and above 0 ("20m" is not 20 ms), else the fallback. */
+  const positive = (name: string, fallback: number): number => {
+    const n = nonNegative(name, 0);
+    return n > 0 ? n : fallback;
+  };
   const trimmed = (name: string): string | null => {
     const v = env[name]?.trim();
     return v ? v : null;
@@ -106,7 +111,7 @@ export function loadLicensingConfig(
     licensingPublicUrl: trimmed("VETRA_LICENSING_URL"),
     retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),
     stepTimeoutMs: int("LICENSING_STEP_TIMEOUT_MS", 120 * 1000),
-    updateTimeoutMs: int("LICENSING_UPDATE_TIMEOUT_MS", 20 * 60 * 1000),
+    updateTimeoutMs: positive("LICENSING_UPDATE_TIMEOUT_MS", 20 * 60 * 1000),
     tokensPerTick: nonNegative("LICENSING_TOKENS_PER_TICK", 5),
     warmPoolScanIntervalMs: int("APP_WARM_POOL_SCAN_INTERVAL_MS", 30 * 1000),
     warmPoolCreatesPerTick: nonNegative("APP_WARM_POOL_CREATES_PER_TICK", 3),

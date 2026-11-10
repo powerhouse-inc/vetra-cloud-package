@@ -304,10 +304,76 @@ describe("trackReleases: a resumed update whose environment already runs its ver
   });
 });
 
+describe("trackReleases: open updates of environments that are no longer live", () => {
+  const closed = {
+    status: "SUPERSEDED",
+    finished_at: T1,
+    error: "environment ended",
+  };
+
+  it("closes a PENDING update of an ended chain, and the rollout then completes", async () => {
+    await store.promote(rollout());
+    await store.insertUpdate(update({ status: "PENDING", started_at: null }));
+    await trackReleases(deps, APP, [envRow({ ended_at: T0 })]);
+    expect(await store.update("u1")).toMatchObject(closed);
+    expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("environment e1"),
+    );
+  });
+
+  it("closes an APPLYING update of an ended chain past the timeout instead of failing it, and pauses nothing", async () => {
+    await store.promote(rollout());
+    await store.insertUpdate(update());
+    states.set("e1", { status: "DEPLOYING", version: "1.1.0" });
+    clock = LATE;
+    await trackReleases(deps, APP, [envRow({ ended_at: T0 })]);
+    expect(await store.update("u1")).toMatchObject({
+      ...closed,
+      finished_at: LATE,
+    });
+    expect((await store.rollout("r1"))!.status).not.toBe("PAUSED");
+    expect(deps.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("closes an update whose environment row is gone", async () => {
+    await store.promote(rollout());
+    await store.insertUpdate(update({ status: "PENDING", started_at: null }));
+    await trackReleases(deps, APP, []);
+    expect(await store.update("u1")).toMatchObject(closed);
+  });
+
+  it("leaves a live environment's open updates alone", async () => {
+    await store.promote(rollout());
+    const pending = update({ status: "PENDING", started_at: null });
+    const applying = update({ id: "u2", environment_id: "e2" });
+    await store.insertUpdate(pending);
+    await store.insertUpdate(applying);
+    states.set("e1", { status: "READY", version: "1.0.0" });
+    states.set("e2", { status: "DEPLOYING", version: "1.1.0" });
+    await trackReleases(deps, APP, [
+      envRow(),
+      envRow({ environment_id: "e2", root_license_id: "l2" }),
+    ]);
+    expect(await store.update("u1")).toStrictEqual(pending);
+    expect(await store.update("u2")).toStrictEqual(applying);
+    expect((await store.rollout("r1"))!.status).toBe("ACTIVE");
+  });
+
+  it("closes a canary's open update of an ended chain too", async () => {
+    await store.insertUpdate(update({ rollout_id: null }));
+    states.set("e1", { status: "DEPLOYING", version: "1.1.0" });
+    await trackReleases(deps, APP, [
+      envRow({ channel_override: "STAGING", ended_at: T0 }),
+    ]);
+    expect(await store.update("u1")).toMatchObject(closed);
+  });
+});
+
 describe("trackReleases: another writer moved the row first", () => {
   // The real store, with one write reporting that it moved nothing (the gate
   // released or superseded the row, or an overlapping run settled it).
-  const lost = (method: "finishUpdate" | "complete") => {
+  const lost = (method: "finishUpdate" | "complete" | "transitionUpdate") => {
     const spy = vi.fn(async () => false);
     deps.store = { ...store, [method]: spy };
     return spy;
@@ -348,6 +414,26 @@ describe("trackReleases: another writer moved the row first", () => {
     await trackReleases(deps, APP, [envRow()]);
     expect(finish).toHaveBeenCalledWith("u1", "SUCCEEDED", null, T1, "PENDING");
     expect(deps.logger.info).not.toHaveBeenCalled();
+  });
+
+  it("neither logs nor settles an ended chain's update it did not close", async () => {
+    await store.promote(rollout());
+    await store.insertUpdate(update());
+    states.set("e1", { status: "DEPLOYING", version: "1.1.0" });
+    clock = LATE;
+    const transition = lost("transitionUpdate");
+    const finish = vi.fn(store.finishUpdate);
+    deps.store = { ...deps.store, finishUpdate: finish };
+    await trackReleases(deps, APP, [envRow({ ended_at: T0 })]);
+    expect(transition).toHaveBeenCalledWith("u1", ["PENDING", "APPLYING"], {
+      status: "SUPERSEDED",
+      finished_at: LATE,
+      error: "environment ended",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect((await store.rollout("r1"))!.status).toBe("ACTIVE");
+    expect(deps.logger.info).not.toHaveBeenCalled();
+    expect(deps.logger.warn).not.toHaveBeenCalled();
   });
 
   it("does not log a completion it did not record", async () => {
