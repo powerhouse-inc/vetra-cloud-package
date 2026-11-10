@@ -26,7 +26,16 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       if (!state.services) {
         state.services = [];
       }
-      if (!state.services.find((s) => s.type === type)?.enabled) {
+      // CLINT supports multiple entries per env, distinguished by prefix.
+      // Other service types are singletons keyed by type alone — a re-enable
+      // with a different prefix updates the existing entry.
+      const existing =
+        type === "CLINT"
+          ? state.services.find((s) => s.type === type && s.prefix === prefix)
+          : state.services.find((s) => s.type === type);
+      // Looked up like the write below, so a new or re-enabled CLINT entry is
+      // locked even while another CLINT is on.
+      if (!existing?.enabled) {
         assertNotTemplateManaged(state, action, `enabling ${type}`, type);
       }
       const collision = state.services.find(
@@ -60,13 +69,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
               selectedRessource: clintConfig.selectedRessource ?? null,
             }
           : null;
-      // CLINT supports multiple entries per env, distinguished by prefix.
-      // Other service types are singletons keyed by type alone — a re-enable
-      // with a different prefix updates the existing entry.
-      const existing =
-        type === "CLINT"
-          ? state.services.find((s) => s.type === type && s.prefix === prefix)
-          : state.services.find((s) => s.type === type);
       if (existing) {
         existing.enabled = true;
         existing.prefix = prefix;
