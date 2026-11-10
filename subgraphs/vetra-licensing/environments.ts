@@ -184,8 +184,12 @@ export interface ChainEnvDeps {
  * where it is (a gated update not yet due, or a version it cannot order), so
  * the template is not fully met and template_hash did not advance; the next
  * tick provisions the chain again.
+ * `dispatched`: this call executed at least one action on the environment document.
  */
-export type ProvisionResult = LicenseEnvironments & { versionHeld?: true };
+export type ProvisionResult = LicenseEnvironments & {
+  versionHeld?: true;
+  dispatched?: true;
+};
 
 export interface ProvisionChainInput {
   appId: string;
@@ -420,7 +424,12 @@ export async function provisionChain(
     updated_at: input.now,
   };
   await deps.rows.update(row.environment_id, patch);
-  return { ...row, ...patch, ...(held ? { versionHeld: true as const } : {}) };
+  return {
+    ...row,
+    ...patch,
+    ...(held ? { versionHeld: true as const } : {}),
+    ...(actions.length > 0 ? { dispatched: true as const } : {}),
+  };
 }
 
 /** The warm environment cannot be used; it is discarded and the chain built cold. */
@@ -440,7 +449,10 @@ async function claimWarm(
   warmPool: WarmClaimDeps,
   existing: LicenseEnvironments | null,
   input: ProvisionChainInput,
-): Promise<{ done: LicenseEnvironments; row?: never } | { done?: never; row: LicenseEnvironments | null }> {
+): Promise<
+  | { done: ProvisionResult; row?: never }
+  | { done?: never; row: LicenseEnvironments | null }
+> {
   if (existing) {
     if (existing.template_hash !== UNAPPLIED_TEMPLATE_HASH) return { row: existing };
     const warm = await warmPool.store.byEnvironment(existing.environment_id);
@@ -501,7 +513,7 @@ async function finishWarmClaim(
   row: LicenseEnvironments,
   warm: WarmRow,
   input: ProvisionChainInput,
-): Promise<LicenseEnvironments | null> {
+): Promise<ProvisionResult | null> {
   const id = row.environment_id;
   const holder = addressOfDid(input.userDid);
   const log = deps.logger ?? console;
@@ -564,7 +576,8 @@ async function finishWarmClaim(
     updated_at: input.now,
   };
   await deps.rows.update(id, patch);
-  return { ...row, ...patch };
+  // The claim's batch went out above.
+  return { ...row, ...patch, dispatched: true };
 }
 
 /**

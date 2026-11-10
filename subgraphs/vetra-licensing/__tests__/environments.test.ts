@@ -60,6 +60,14 @@ describe("provisionChain", () => {
     expect(await deps.rows.byRoot("l1")).toMatchObject({ template_hash: "h1", license_id: "l1" });
   });
 
+  it("marks a create dispatched, and a repoint that executed nothing not", async () => {
+    expect((await provisionChain(deps, input())).dispatched).toBe(true);
+    expect(
+      (await provisionChain(deps, input({ licenseId: "l2" }))).dispatched,
+    ).toBeUndefined();
+    expect(executed).toHaveLength(1);
+  });
+
   it("is idempotent", async () => {
     await provisionChain(deps, input());
     await provisionChain(deps, input());
@@ -337,6 +345,12 @@ describe("provisionChain claims a warm environment first", () => {
     store = createWarmPoolStore(db);
     handOver = vi.fn(async () => {});
     deps.warmPool = { store, handOver };
+  });
+
+  it("marks a warm claim dispatched", async () => {
+    await seedWarm();
+    expect((await provisionChain(deps, warmInput())).dispatched).toBe(true);
+    expect(executed).toHaveLength(1);
   });
 
   it("claims an AVAILABLE warm environment instead of building one", async () => {
@@ -661,6 +675,40 @@ describe("provisionChain asks the update gate before it moves a FUSION version (
     states.get("env-1")!.packages = [{ registry: "r", name: "@sektar/extra", version: "1.0.0" }];
     await provisionChain(deps, input({ licenseId: "l2", templateHash: "h2", template: v110 }));
     expect(executed).toHaveLength(1);
+  });
+
+  it("marks a re-template that moved the version dispatched", async () => {
+    await live();
+    const row = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(row).toMatchObject({ template_hash: "h2", dispatched: true });
+    expect(row.versionHeld).toBeUndefined();
+  });
+
+  it("marks a held version dispatched only when other actions still went out", async () => {
+    await updates().saveSettings(
+      { appId: "app-1", policy: "GATED", defaultNoticeHours: 72 },
+      "2026-10-08T00:00:00.000Z",
+    );
+    await live();
+    const first = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(executed).toHaveLength(1);
+    expect(first).toMatchObject({ versionHeld: true, dispatched: true });
+    states.get("env-1")!.packages = [
+      { registry: "r", name: "@sektar/extra", version: "1.0.0" },
+    ];
+    const second = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(executed).toHaveLength(1);
+    expect(second.versionHeld).toBe(true);
+    expect(second.dispatched).toBeUndefined();
   });
 
   it("puts an admitted update back to PENDING when its actions were not dispatched", async () => {

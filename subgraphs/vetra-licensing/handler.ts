@@ -64,7 +64,10 @@ export interface HandlerDeps {
    * outcomes, rollout completion, the managed-by marker). Its failure is
    * logged and does not stop afterApp.
    */
-  afterChains?(app: AppDocView, environments: LicenseEnvironments[]): Promise<void>;
+  afterChains?(
+    app: AppDocView,
+    environments: LicenseEnvironments[],
+  ): Promise<void>;
   /**
    * Called once per tick before any app is reconciled, and once after all of
    * them: lets afterApp work share a budget across every app of one tick
@@ -208,6 +211,8 @@ export class AppLicenseHandler {
   private readonly backoff = new Map<string, { failures: number; until: number }>();
   /** Chain keys with a step that has not settled (including timed-out ones). */
   private readonly inFlight = new Set<string>();
+  /** App ids whose afterChains has not settled (it timed out on an earlier tick). */
+  private readonly releaseInFlight = new Set<string>();
 
   constructor(private readonly d: HandlerDeps) {
     this.notices = new Notices(d.logger);
@@ -496,9 +501,19 @@ export class AppLicenseHandler {
           `[licensing] offboarding of environment ${row.environment_id} (chain ${row.root_license_id}) is frozen: this tick did not confirm the chain as ended`,
         );
       }
-      if (this.d.afterChains) {
+      if (this.d.afterChains && this.releaseInFlight.has(appId)) {
+        this.notices.note(
+          `inflight:release:${appId}`,
+          "info",
+          `[licensing] release work of app ${appId} from an earlier tick is still running; skipping`,
+        );
+      } else if (this.d.afterChains) {
         try {
-          await this.timed(this.d.afterChains(app, after), `release work of app ${appId}`);
+          const running = this.d.afterChains(app, after);
+          this.releaseInFlight.add(appId);
+          const settled = () => this.releaseInFlight.delete(appId);
+          void running.then(settled, settled);
+          await this.timed(running, `release work of app ${appId}`);
         } catch (err) {
           this.notices.note(
             `app:${appId}:release`,
@@ -564,9 +579,16 @@ export class AppLicenseHandler {
       const settled = () => this.inFlight.delete(key);
       void running.then(settled, settled);
       try {
-        // A held FUSION version re-templated nothing that needs the budget
-        // (spec 4.3): the chain is provisioned again next tick anyway.
-        if ((await this.timed(running, `${step.kind} of ${root} (app ${appId})`)) === "held" && budgeted) {
+        // A held FUSION version that dispatched nothing re-templated nothing
+        // (spec 4.3): the slot goes back, and the chain is provisioned again
+        // next tick anyway.
+        if (
+          (await this.timed(
+            running,
+            `${step.kind} of ${root} (app ${appId})`,
+          )) === "held" &&
+          budgeted
+        ) {
           this.retemplateBudget++;
         }
       } catch (err) {
@@ -638,7 +660,10 @@ export class AppLicenseHandler {
     return out;
   }
 
-  /** "held": a provision whose FUSION version the gate held (ProvisionResult.versionHeld). */
+  /**
+   * "held": a provision whose FUSION version the gate held and that
+   * dispatched nothing (ProvisionResult.versionHeld without dispatched).
+   */
   private async apply(
     app: AppDocView,
     step: ChainStep,
@@ -680,7 +705,7 @@ export class AppLicenseHandler {
         if (step.licence.stage !== row.environment_id) {
           await this.d.setStage(step.licence.id, row.environment_id);
         }
-        return row.versionHeld ? "held" : undefined;
+        return row.versionHeld && !row.dispatched ? "held" : undefined;
       }
     }
   }
