@@ -10,6 +10,7 @@ import {
   disableService,
   setFusionConfig,
   setServiceVersion,
+  setServiceSize,
   approveChanges,
   type VetraCloudEnvironmentState,
   type VetraCloudRessourceSize,
@@ -61,10 +62,10 @@ export interface TemplateShape {
   services: TemplateService[];
   packages: TemplatePackage[];
   /**
-   * Resource size for a CLINT service. INERT in this slice: only CLINT services
-   * carry `selectedRessource`, and CLINT templates are refused, so nothing
-   * consumes this. It is still validated (a typo must not pass silently) and
-   * still part of the hash, so the field is ready when CLINT lands.
+   * The least resource size the template's FUSION service runs at: new
+   * environments start there, and an existing one below it is raised to it. A
+   * larger size someone chose stays. Validated (a typo must not pass silently)
+   * and part of the hash, so changing it reaches every holder's environment.
    */
   size: string | null;
   baseDomain: string | null;
@@ -126,6 +127,45 @@ function asServiceType(type: string): TemplateServiceType {
   return found;
 }
 
+/**
+ * An App image named `host` is a Powerhouse host (`ph run <host> serve`: its
+ * own switchboard and Connect), not a front-end. The name is the App's own
+ * choice, recorded with every artifact; the environment then runs it in FUSION
+ * host mode (PH_HOST) with the licence holder as its only admin.
+ */
+export const HOST_ARTIFACT = "host";
+
+type FusionEnvEntry = { name: string; value: string | null; isSecret: boolean | null };
+
+/** The FUSION env that makes a host image run as the holder's own instance. */
+export function hostEnv(host: string, owner: string): FusionEnvEntry[] {
+  return [
+    { name: "PH_HOST", value: host, isSecret: false },
+    { name: "ADMINS", value: owner, isSecret: false },
+  ];
+}
+
+/**
+ * The included AI key (spec 3.11): declared on the FUSION service as a secret
+ * with no value, so the chart mounts OPENROUTER_API_KEY by key from the
+ * tenant Secret the LLM broker wrote it to.
+ */
+export const INCLUDED_KEY_ENV: FusionEnvEntry = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
+
+/** `env` declaring the included key; unchanged when it already does. */
+function withIncludedKey(env: FusionEnvEntry[]): FusionEnvEntry[] {
+  const { name } = INCLUDED_KEY_ENV;
+  if (env.some((e) => e.name === name && e.isSecret === true)) return env;
+  return [...env.filter((e) => e.name !== name), INCLUDED_KEY_ENV];
+}
+
+/** `env` with the host settings present (and current), the holder's own entries kept. */
+function withHostEnv(env: FusionEnvEntry[], host: string, owner: string): FusionEnvEntry[] {
+  const wanted = hostEnv(host, owner);
+  const names = new Set(wanted.map((e) => e.name));
+  return [...env.filter((e) => !names.has(e.name)), ...wanted];
+}
+
 /** A template reduced to exactly what the environment document stores. */
 export interface NormalisedTemplate {
   services: {
@@ -134,8 +174,12 @@ export interface NormalisedTemplate {
     /** Set only for a FUSION service: the repository and tag to run. */
     repository?: string;
     version?: string;
+    /** Set when the FUSION image is a Powerhouse host (see HOST_ARTIFACT). */
+    host?: string;
   }[];
   packages: { name: string; version: string }[];
+  /** The FUSION service's least size, null for none. */
+  size: VetraCloudRessourceSize | null;
 }
 
 /**
@@ -143,7 +187,7 @@ export interface NormalisedTemplate {
  * document, so a malformed template cannot leak an environment on every tick.
  */
 export function validateTemplate(t: TemplateShape): NormalisedTemplate {
-  asResourceSize(t.size);
+  const size = asResourceSize(t.size);
 
   const packages = t.packages.map((p) => {
     if (!p.packageName) {
@@ -175,6 +219,7 @@ export function validateTemplate(t: TemplateShape): NormalisedTemplate {
       ...base,
       repository: s.resolvedRepository,
       version: s.resolvedVersion,
+      ...(s.artifactName === HOST_ARTIFACT ? { host: "cli" } : {}),
     };
   });
 
@@ -187,14 +232,38 @@ export function validateTemplate(t: TemplateShape): NormalisedTemplate {
     );
   }
 
-  return { services, packages };
+  return { services, packages, size };
+}
+
+/**
+ * Raises a FUSION service to the template's least size; null when it is there
+ * already or above (someone chose more), or the template names none.
+ */
+function sizeAction(
+  s: NormalisedTemplate["services"][number],
+  size: VetraCloudRessourceSize | null,
+  current: VetraCloudRessourceSize | null | undefined,
+  prefix: string = s.prefix,
+): Action | null {
+  if (s.type !== "FUSION" || !size) return null;
+  if (current && RESOURCE_SIZES.indexOf(current) >= RESOURCE_SIZES.indexOf(size)) {
+    return null;
+  }
+  return setServiceSize({ prefix, size });
 }
 
 export interface CreateRenderInput {
   label: string;
   subdomain: string;
-  owner: string;
+  /** null renders an ownerless (warm) environment: no SET_OWNER, empty ADMINS. */
+  owner: string | null;
   template: TemplateShape;
+  /**
+   * The broker wrote the licence's included AI key (spec 3.11): declare it on
+   * the FUSION service. Ignored without an owner: a warm environment never
+   * holds a key.
+   */
+  includedKey?: boolean;
 }
 
 /**
@@ -215,15 +284,17 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
       genericBaseDomain: t.baseDomain ?? DEFAULT_BASE_DOMAIN,
       defaultPackageRegistry: t.packageRegistry ?? undefined,
     }),
-    setOwner({ address: input.owner }),
   ];
+  if (input.owner) actions.push(setOwner({ address: input.owner }));
 
   for (const p of n.packages) {
     actions.push(addPackage({ packageName: p.name, version: p.version }));
   }
   for (const s of n.services) {
     actions.push(enableService({ type: s.type, prefix: s.prefix }));
-    actions.push(...fusionActions(s));
+    const sized = sizeAction(s, n.size, null);
+    if (sized) actions.push(sized);
+    actions.push(...fusionActions(s, input.owner ?? "", Boolean(input.owner) && input.includedKey === true));
   }
 
   actions.push(approveChanges({}));
@@ -240,12 +311,13 @@ export function renderCreateActions(input: CreateRenderInput): Action[] {
  * hash changes. Letting the environment chase tags on its own would make the
  * template's recorded version a lie.
  */
-function fusionActions(s: NormalisedTemplate["services"][number]): Action[] {
+function fusionActions(s: NormalisedTemplate["services"][number], owner: string, includedKey = false): Action[] {
   if (s.type !== "FUSION" || !s.repository || !s.version) return [];
+  const env = s.host ? hostEnv(s.host, owner) : [];
   return [
     setFusionConfig({
       image: s.repository,
-      env: [],
+      env: includedKey ? withIncludedKey(env) : env,
       autoUpdate: false,
       autoUpdateTagPattern: null,
     }),
@@ -304,7 +376,11 @@ export function renderUpdateActions(input: UpdateRenderInput): Action[] {
     if (s.type === "FUSION") {
       const sameImage = current.fusion?.image === s.repository;
       const sameVersion = have?.version === s.version;
-      if (!sameImage || !sameVersion) actions.push(...fusionActions(s));
+      if (!sameImage || !sameVersion) actions.push(...fusionActions(s, current.owner ?? ""));
+      // A re-enabled service starts at the default size: raise it again too.
+      const reset = !have || !have.enabled || have.prefix !== s.prefix;
+      const sized = sizeAction(s, n.size, reset ? null : have.selectedRessource);
+      if (sized) actions.push(sized);
     }
   }
   for (const c of currentServices) {
@@ -365,10 +441,68 @@ export function isVersionUpgrade(current: string | null, wanted: string): boolea
   return comparePrerelease(w[4], c[4]) > 0;
 }
 
+/**
+ * True when the FUSION image should move from `current` to `wanted`. Two
+ * semver versions compare exactly as isVersionUpgrade. Anything else (CI
+ * records FUSION builds as commit tags, `sha-56e1fd7497fc`, which semver
+ * cannot order) is an upgrade only when both appear in `recorded`, the app's
+ * FUSION artifact versions in recording order (newest last), and `wanted` was
+ * recorded after `current`. No record, a version it does not list, or an
+ * older or equal one: not an upgrade, so the floor never moves an image it
+ * cannot prove is older (a listed `wanted` over an unlisted `current` is
+ * reported instead: isFusionStranded).
+ */
+export function isFusionUpgrade(
+  current: string | null,
+  wanted: string,
+  recorded: readonly string[] | undefined,
+): boolean {
+  if (current === null) return false;
+  if (SEMVER.test(current) && SEMVER.test(wanted)) return isVersionUpgrade(current, wanted);
+  if (!recorded) return false;
+  // The vetra-app reducer keeps versions unique (a re-record replaces in place).
+  const from = recorded.indexOf(current);
+  const to = recorded.indexOf(wanted);
+  return from !== -1 && to !== -1 && to > from;
+}
+
+/**
+ * True when the floor holds a FUSION version it cannot order: the record
+ * lists `wanted` but not `current`, and they are not both semver. The record
+ * keeps only the app's last 50 versions, so `current` may have aged out (and
+ * is then older), but it may as well be a build the holder pinned by hand
+ * that was never recorded (and newer). Moving it could be a downgrade of a
+ * running app whose data a newer version already migrated, so the floor holds
+ * it and the caller says so, for someone to look at.
+ */
+export function isFusionStranded(
+  current: string | null,
+  wanted: string,
+  recorded: readonly string[] | undefined,
+): boolean {
+  if (current === null || current === wanted || !recorded) return false;
+  if (SEMVER.test(current) && SEMVER.test(wanted)) return false;
+  return !recorded.includes(current) && recorded.includes(wanted);
+}
+
 export interface FloorUpdateRenderInput {
   template: TemplateShape;
   /** The environment's current global state, as EnvGateway.getState returns it. */
   current: VetraCloudEnvironmentState;
+  /** The broker wrote the licence's included AI key: declare it on FUSION (spec 3.11). */
+  includedKey?: boolean;
+  /**
+   * The versions of the app artifact the template's FUSION service runs, in
+   * recording order (newest last): what orders commit-tag versions (see
+   * isFusionUpgrade). Deliberately not part of TemplateShape, so it never
+   * reaches templateHash. Absent: a non-semver FUSION version never moves.
+   */
+  fusionVersions?: readonly string[];
+  /**
+   * Called when the FUSION version is held because the record lists the
+   * wanted version but not the current one (see isFusionStranded).
+   */
+  onFusionHeld?: (held: { current: string; wanted: string }) => void;
 }
 
 /**
@@ -377,7 +511,7 @@ export interface FloorUpdateRenderInput {
  * template packages provably older than the template are upgraded, template
  * services that are missing or disabled are enabled, the FUSION image
  * follows the template (keeping the holder's env, secrets and auto-update
- * settings) and the FUSION version only ever moves up. Nothing is ever
+ * settings) and the FUSION version only ever moves up (isFusionUpgrade). Nothing is ever
  * removed, disabled or downgraded, and the label and service prefixes the
  * holder has are left alone. Returns []
  * when the environment already meets the floor, so nothing is dispatched.
@@ -386,33 +520,44 @@ export interface FloorUpdateRenderInput {
  * The FUSION half of the floor. SET_FUSION_CONFIG replaces the whole fusion
  * config, so it is sent only when the image must change, and then carries the
  * holder's env (secret values live outside the document and are untouched),
- * autoUpdate and tag pattern over. The version moves only up, or is set when
- * the service has none (it was missing).
+ * autoUpdate and tag pattern over. The version moves only up (by semver, or
+ * by the artifact's recording order for commit tags), or is set when the
+ * service has none (it was missing).
  */
 function floorFusionActions(
-  repository: string,
-  version: string,
+  s: { repository: string; version: string; host?: string },
   have: VetraCloudEnvironmentState["services"][number] | undefined,
   fusion: VetraCloudEnvironmentState["fusion"],
+  owner: string | null,
+  includedKey: boolean,
+  fusionVersions: readonly string[] | undefined,
+  onFusionHeld: FloorUpdateRenderInput["onFusionHeld"],
 ): Action[] {
+  const { repository, version } = s;
   const actions: Action[] = [];
-  if (fusion?.image !== repository) {
+  const env: FusionEnvEntry[] = (fusion?.env ?? []).map((e) => ({
+    name: e.name,
+    value: e.value ?? null,
+    isSecret: e.isSecret ?? null,
+  }));
+  // A host env missing its settings (or naming another admin) gets them back.
+  const hosted = s.host && owner ? withHostEnv(env, s.host, owner) : env;
+  const wantedEnv = includedKey ? withIncludedKey(hosted) : hosted;
+  if (fusion?.image !== repository || JSON.stringify(wantedEnv) !== JSON.stringify(env)) {
     actions.push(
       setFusionConfig({
         image: repository,
-        env: (fusion?.env ?? []).map((e) => ({
-          name: e.name,
-          value: e.value ?? null,
-          isSecret: e.isSecret ?? null,
-        })),
+        env: wantedEnv,
         autoUpdate: fusion?.autoUpdate ?? false,
         autoUpdateTagPattern: fusion?.autoUpdateTagPattern ?? null,
       }),
     );
   }
   const currentVersion = have?.version ?? null;
-  if (currentVersion === null || isVersionUpgrade(currentVersion, version)) {
+  if (currentVersion === null || isFusionUpgrade(currentVersion, version, fusionVersions)) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (isFusionStranded(currentVersion, version, fusionVersions)) {
+    onFusionHeld?.({ current: currentVersion, wanted: version });
   }
   return actions;
 }
@@ -434,8 +579,21 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
       actions.push(enableService({ type: s.type, prefix: have?.prefix ?? s.prefix }));
     }
     if (s.type === "FUSION" && s.repository && s.version) {
-      actions.push(...floorFusionActions(s.repository, s.version, have, current.fusion));
+      actions.push(
+        ...floorFusionActions(
+          { repository: s.repository, version: s.version, host: s.host },
+          have,
+          current.fusion,
+          current.owner ?? null,
+          input.includedKey === true,
+          input.fusionVersions,
+          input.onFusionHeld,
+        ),
+      );
     }
+    const live = have?.enabled ? have : undefined;
+    const sized = sizeAction(s, n.size, live?.selectedRessource, have?.prefix ?? s.prefix);
+    if (sized) actions.push(sized);
   }
 
   if (actions.length > 0) actions.push(approveChanges({}));

@@ -277,6 +277,7 @@ export function SetTemplateDetailsInputSchema(): z.ZodObject<
     packageRegistry: z.url().nullish(),
     sharedEnvironment: z.string().nullish(),
     size: z.string().nullish(),
+    warmPoolSize: z.number().nullish(),
   });
 }
 
@@ -367,6 +368,7 @@ export function VetraAppEnvironmentTemplateSchema(): z.ZodObject<
     services: z.array(z.lazy(() => TemplateServiceSchema())),
     sharedEnvironment: z.string().nullish(),
     size: z.string().nullish(),
+    warmPoolSize: z.number().nullish(),
   });
 }
 

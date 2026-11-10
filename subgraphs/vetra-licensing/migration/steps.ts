@@ -322,10 +322,10 @@ async function recordOneLifecycle(
  * but only when the environment already meets that template (the floor
  * update would do nothing). Otherwise the legacy hash, which differs, so the
  * handler re-templates it within its per-tick cap; never "unapplied", which
- * the handler would treat as an uncapped create.
+ * the handler would treat as an uncapped create. Exported for its tests.
  */
-async function startingHash(
-  deps: MigrationDeps,
+export async function startingHash(
+  deps: Pick<MigrationDeps, "envState">,
   app: AppDocView | null,
   kind: string | null,
   environmentId: string,
@@ -341,7 +341,11 @@ async function startingHash(
   if (!state) return { hash: legacyHash, templateId: res.template.id, note: "environment document missing; legacy hash kept" };
   let pending: number;
   try {
-    pending = renderFloorUpdateActions({ template: res.template.template, current: state }).length;
+    pending = renderFloorUpdateActions({
+      template: res.template.template,
+      current: state,
+      fusionVersions: res.template.fusionVersions,
+    }).length;
   } catch (err) {
     return { hash: legacyHash, templateId: res.template.id, note: `template does not render (${msg(err)}); legacy hash kept` };
   }

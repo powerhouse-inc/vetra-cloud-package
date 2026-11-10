@@ -12,6 +12,7 @@ import {
   switchboardHasReadyEndpoint,
   effectivePackages,
   SPECKLE_ADDON_PACKAGE_DEFAULT,
+  routedGenericHosts,
 } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
@@ -1725,5 +1726,78 @@ describe("generateValuesYaml — processor cursor keying", () => {
     process.env.TENANT_LEGACY_PROCESSOR_IDS = "yes";
     const yaml = await generateValuesYaml(dbStub, switchboardOnly(), "doc-procids-odd");
     expect(yaml).toContain('REACTOR_LEGACY_PROCESSOR_IDS: "false"');
+  });
+});
+
+describe("routedGenericHosts mirrors the rendered vetra.io hosts", () => {
+  beforeEach(() => vi.stubEnv("FUSION_IMAGE_PROJECTS", "app-sektar"));
+  afterEach(() => vi.unstubAllEnvs());
+
+  const svc = (type: string, prefix: string, extra: Record<string, unknown> = {}) =>
+    ({
+      type,
+      prefix,
+      enabled: true,
+      url: null,
+      status: "ACTIVE",
+      version: null,
+      config: null,
+      selectedRessource: null,
+      ...extra,
+    }) as never;
+  const clintSvc = (prefix = "vetra-agent") =>
+    svc("CLINT", prefix, {
+      config: {
+        package: { registry: "https://registry.dev.vetra.io", name: "vetra-cli", version: "dev" },
+        env: [],
+        serviceCommand: null,
+        selectedRessource: null,
+      },
+    });
+  const fusion = (prefix = "fusion") =>
+    svc("FUSION", prefix, { version: "1.2.3" });
+  const sektarImage = {
+    image: "cr.vetra.io/app-sektar/sektar",
+    env: [],
+    autoUpdate: false,
+    autoUpdateTagPattern: null,
+  };
+  const hostMode = {
+    ...sektarImage,
+    env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+  };
+  const custom = (domain: string) => ({ enabled: true, domain, dnsRecords: [] });
+
+  const cases: Array<[string, Partial<VetraCloudEnvironmentState>]> = [
+    ["switchboard + connect", { services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")] }],
+    ["sole connect at the apex", { services: [svc("CONNECT", "connect")] }],
+    ["pinned apex", { apexService: "SWITCHBOARD", services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")] }],
+    ["sole CLINT studio", { services: [clintSvc()] }],
+    ["two CLINT agents", { services: [clintSvc("a"), clintSvc("b")] }],
+    ["sektar FUSION host", { services: [fusion()], fusion: hostMode }],
+    ["FUSION host beside switchboard/connect", { services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect"), fusion("app")], fusion: hostMode }],
+    ["FUSION app beside switchboard", { services: [svc("SWITCHBOARD", "switchboard"), fusion()], fusion: sektarImage }],
+    ["FUSION without an image", { services: [svc("SWITCHBOARD", "switchboard"), fusion()] }],
+    ["FUSION pinned to a custom apex", { apexService: "FUSION", customDomain: custom("sektar.example.com"), services: [fusion()], fusion: hostMode }],
+    ["connect pinned to a custom apex", { apexService: "CONNECT", customDomain: custom("acme.com"), services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")] }],
+    ["non-apex custom domain", { customDomain: custom("acme.com"), services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")] }],
+    ["disabled services", { services: [svc("SWITCHBOARD", "switchboard", { enabled: false }), svc("CONNECT", "web")] }],
+    ["own base domain", { genericBaseDomain: "example.org", services: [svc("SWITCHBOARD", "switchboard"), svc("CONNECT", "connect")] }],
+  ];
+
+  it.each(cases)("%s", async (_name, overrides) => {
+    const state = envState({ genericSubdomain: "tall-duck-ab12", ...overrides });
+    const base = state.genericBaseDomain ?? "vetra.io";
+    const yaml = await generateValuesYaml(dbStub, state, "doc-hosts");
+    // Hosts of the top-level blocks the chart actually renders (a disabled
+    // switchboard/connect block still carries its host line).
+    const rendered = yaml
+      .split(/\n(?=\S)/)
+      .filter((block) => /^\s+enabled: true$/m.test(block.split("\n")[1] ?? ""))
+      .flatMap((block) => [...block.matchAll(/host: "([^"]+)"/g)].map((m) => m[1]))
+      .filter((h) => h.endsWith(`.${base}`));
+    expect([...routedGenericHosts(state)].sort()).toStrictEqual(
+      [...new Set(rendered)].sort(),
+    );
   });
 });

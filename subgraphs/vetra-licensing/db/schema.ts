@@ -187,6 +187,25 @@ export interface LicenseLifecycle {
   updated_at: string;
 }
 
+export interface AppWarmPool {
+  environment_id: string;
+  app_id: string;
+  template_id: string;
+  template_hash: string;
+  state: "WARMING" | "AVAILABLE" | "CLAIMED";
+  created_at: string;
+  ready_at: string | null;
+  claimed_at: string | null;
+  deleted_at: string | null;
+  root_license_id: string | null;
+  /** When a retired row's environment document was deleted (see warm-pool-db). */
+  env_deleted_at: string | null;
+  /** The pool size the row was created for (see warm-pool-db timeoutStreak). */
+  pool_size: number | null;
+  /** Set when the keeper retired the row as a WARMING timeout. */
+  timed_out_at: string | null;
+}
+
 export interface VetraLicensingDB {
   app_licensing_state: AppLicensingState;
   app_licensing_intent: AppLicensingIntent;
@@ -195,6 +214,7 @@ export interface VetraLicensingDB {
   app_environment_limits: AppEnvironmentLimits;
   license_chain: LicenseChain;
   license_environments: LicenseEnvironments;
+  app_warm_pool: AppWarmPool;
   app_allow_list: AppAllowList;
   invite_codes: InviteCodes;
   invite_redemptions: InviteRedemptions;

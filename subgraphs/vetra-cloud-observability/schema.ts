@@ -44,6 +44,24 @@ export const schema: DocumentNode = gql`
       orgId: String
     ): [VetraCloudEnvironmentSummary!]!
 
+    """
+    Per package name, how many environments currently have it installed
+    (environments that are DESTROYED, ARCHIVED or TERMINATING are left out).
+    Public: aggregates only, no environment ids, owners or names.
+    Sorted by environments descending, then packageName.
+    """
+    packageInstallCounts: [PackageInstallCount!]!
+
+    """
+    Public: whether \`host\` is a generated host of a live Vetra environment
+    (\`<subdomain>.<base>\` or \`<subdomain>-<prefix>.<base>\`, as rendered for
+    its enabled Switchboard, Connect, FUSION app and CLINT agents). Lowercased,
+    one trailing dot and a port are ignored. Custom-domain hosts answer false:
+    nothing proves a typed custom domain routes to Vetra. Answers only the
+    boolean; malformed or unknown hosts answer false, never an error.
+    """
+    vetraEnvironmentHostKnown(host: String!): Boolean!
+
     """Studio products owned or just-claimed by the caller, fully resolved."""
     myStudioProducts: [StudioProduct!]!
 
@@ -369,6 +387,12 @@ export const schema: DocumentNode = gql`
     isAdmin: Boolean!
   }
 
+  type PackageInstallCount {
+    packageName: String!
+    "Distinct environments with this package installed"
+    environments: Int!
+  }
+
   type VetraCloudEnvironmentSummary {
     id: String!
     name: String
@@ -392,6 +416,10 @@ export const schema: DocumentNode = gql`
     appRole: String
     """PR number of an App preview environment."""
     prNumber: Int
+    """Live ArgoCD sync status (same as environmentStatus), null until the watcher has seen the env."""
+    argoSyncStatus: ArgoSyncStatus
+    """Live ArgoCD health (same as environmentStatus), null until the watcher has seen the env."""
+    argoHealthStatus: ArgoHealthStatus
     """Renown organisation owning this environment; null for personal environments."""
     ownerOrgId: String
     """Addresses allowed to sign on an organisation environment (lowercased)."""

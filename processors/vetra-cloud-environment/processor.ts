@@ -5,7 +5,7 @@ import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnv
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
-import type { AppImageProjectResolver } from "./app-image-project.js";
+import type { AppImageProjectResolver, WarmPoolLookup } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
@@ -23,6 +23,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
    */
   private secretsService: SecretsService | null;
   private resolveAppImageProject: AppImageProjectResolver | null;
+  private isWarm: WarmPoolLookup | null;
 
   constructor(
     relationalDb: Kysely<DB>,
@@ -30,7 +31,9 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     documentView: IDocumentView,
     secretsService: SecretsService | null = null,
     resolveAppImageProject: AppImageProjectResolver | null = null,
+    isWarm: WarmPoolLookup | null = null,
   ) {
+    this.isWarm = isWarm;
     this.resolveAppImageProject = resolveAppImageProject;
     this.relationalDb = relationalDb;
     this.dispatch = dispatch;
@@ -165,6 +168,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         subdomain: genericSubdomain ?? null,
         tenantId,
         customDomain: customDomain?.domain ?? null,
+        ...hostColumns(state),
         packages: JSON.stringify(packages ?? []),
         services: JSON.stringify(services ?? []),
         status: status ?? null,
@@ -203,6 +207,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
             documentId,
             this.secretsService,
             this.resolveAppImageProject,
+            this.isWarm,
           );
           logger.info(`Gitops sync completed for "${label}"`);
 
@@ -232,6 +237,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
             documentId,
             this.secretsService,
             this.resolveAppImageProject,
+            this.isWarm,
           );
           logger.info(`Gitops sleep sync completed for "${label}"`);
         } catch (error) {
@@ -336,6 +342,23 @@ export function backupScheduleColumn(state: {
 }): { backupSchedule: string | null } {
   const schedule = state.backupSchedule ?? null;
   return { backupSchedule: schedule ? JSON.stringify(schedule) : null };
+}
+
+/** Columns the public host lookup reads to rebuild an env's generated hosts. */
+export function hostColumns(state: {
+  genericBaseDomain?: string | null;
+  apexService?: string | null;
+  customDomain?: { enabled?: boolean | null } | null;
+}): {
+  genericBaseDomain: string | null;
+  apexService: string | null;
+  customDomainEnabled: boolean;
+} {
+  return {
+    genericBaseDomain: state.genericBaseDomain ?? null,
+    apexService: state.apexService ?? null,
+    customDomainEnabled: state.customDomain?.enabled === true,
+  };
 }
 
 /** Read-model columns mirroring organisation ownership. */

@@ -17,6 +17,9 @@ import {
   TermNotPublishedError,
   UnknownPackageError,
   UnknownServiceError,
+  WarmPoolInvalidSizeError,
+  WarmPoolNotDedicatedError,
+  WarmPoolTooLargeError,
 } from "../../gen/licensing/error.js";
 import {
   findTemplate,
@@ -43,7 +46,8 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
       size: null,
       baseDomain: null,
       packageRegistry: null,
-    });
+      // warmPoolSize stays absent: it keeps the ledger hash of existing apps.
+    } as unknown as (typeof templates)[number]);
   },
   setTemplateDetailsOperation(state, action) {
     const t = findTemplate(state, action.input.id);
@@ -53,7 +57,25 @@ export const vetraAppLicensingOperations: VetraAppLicensingOperations = {
         "a SHARED template provisions nothing; remove its services and packages first",
       );
     }
+    // undefined = unchanged, null = clear (0); the pool applies to DEDICATED only.
+    const pool =
+      action.input.warmPoolSize === undefined
+        ? (t.warmPoolSize ?? 0)
+        : (action.input.warmPoolSize ?? 0);
+    if (pool < 0) {
+      throw new WarmPoolInvalidSizeError("warmPoolSize must not be negative");
+    }
+    if (pool > 10) {
+      throw new WarmPoolTooLargeError("warmPoolSize is at most 10");
+    }
+    if (mode === "SHARED" && pool > 0) {
+      throw new WarmPoolNotDedicatedError(
+        "only a DEDICATED template can keep a warm pool",
+      );
+    }
     t.mode = mode;
+    if (action.input.warmPoolSize !== undefined)
+      t.warmPoolSize = action.input.warmPoolSize ?? null;
     // undefined = unchanged, explicit null = clear.
     if (action.input.name !== undefined) t.name = action.input.name ?? null;
     if (action.input.sharedEnvironment !== undefined)

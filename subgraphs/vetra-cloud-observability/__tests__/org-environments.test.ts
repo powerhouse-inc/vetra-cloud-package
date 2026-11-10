@@ -285,6 +285,26 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
     expect(carol).toMatchObject({ canOperate: false, canView: true });
   });
 
+  it("syncs a platform admin in as operator when the organisation makes them one", async () => {
+    // ADMIN is a platform admin; make them an org ADMIN of o1 as well.
+    members[`o1|${ADMIN}`] = { role: "ADMIN", effectiveScope: { all: true, appDids: [] } };
+    try {
+      await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1", orgOperators: [] });
+      const out = await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(ADMIN));
+      expect(out).toMatchObject({ canOperate: true, canView: true });
+      expect(dispatch).toHaveBeenCalledWith("org-env", "SYNC_ORG_OPERATORS", { operators: [ADMIN] });
+    } finally {
+      delete members[`o1|${ADMIN}`];
+    }
+  });
+
+  it("does not make a platform admin without an organisation role an operator", async () => {
+    await seedEnv({ id: "org-env", owner: OWNER, ownerOrgId: "o1", orgOperators: [] });
+    const out = await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "org-env" }, ctx(ADMIN));
+    expect(out).toMatchObject({ canOperate: true, canView: true });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("answers personal envs without touching Renown", async () => {
     await seedEnv({ id: "personal", owner: OWNER });
     expect(await resolversWithSync().Mutation.syncEnvironmentOrg(null, { environmentId: "personal" }, ctx(OWNER)))

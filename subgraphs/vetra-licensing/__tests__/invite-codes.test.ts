@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { VetraLicensingDB } from "../db/schema.js";
 import {
+  appBudgetForLicence,
   CODE_MAX_LENGTH,
   CODE_MIN_LENGTH,
   CODE_PATTERN,
@@ -262,6 +263,36 @@ describe("invite codes", () => {
     expect(await redeemedCodeOf(d, "lic-a", "did:a")).toBe("code-ddd");
     // Another holder naming the licence gets nothing.
     expect(await redeemedCodeOf(d, "lic-a", "did:b")).toBeNull();
+  });
+
+  it("an app licence's budget: its redeemed code's while the chain is live, else null (spec 3.11)", async () => {
+    const d = await open();
+    const chain = (over: Partial<{ license_id: string; ended_at: string | null }> = {}) =>
+      d.insertInto("license_environments").values({
+        environment_id: "env-1", root_license_id: "root", app_id: "app-1", user_did: "did:a", license_id: "root",
+        template_id: "t", label: null, template_hash: "h", ended_at: null, stopped_at: null, delete_after: null,
+        created_at: NOW, updated_at: NOW, ...over,
+      }).execute();
+    await createInviteCode(d, { ...base, code: "code-eee", llmBudgetUsd: 20 });
+    await reserveRedemption(d, "code-eee", "did:a", NOW);
+    await attachLicence(d, "code-eee", "did:a", "root", null);
+    // No chain row: no environment to key.
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
+    await chain({ license_id: "renewal" });
+    // A renewal without a code of its own keeps the root's budget.
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBe(20);
+    expect(await appBudgetForLicence(d, "root", "did:b")).toBeNull();
+    await d.updateTable("license_environments").set({ ended_at: NOW }).execute();
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
+    await d.updateTable("license_environments").set({ ended_at: null }).execute();
+    await setInviteCodeLlmBudget(d, "app-1", "code-eee", null);
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
+    // The current licence's own code wins over the root's.
+    await setInviteCodeLlmBudget(d, "app-1", "code-eee", 20);
+    await createInviteCode(d, { ...base, code: "code-fff", llmBudgetUsd: 50 });
+    await reserveRedemption(d, "code-fff", "did:a", NOW);
+    await attachLicence(d, "code-fff", "did:a", "renewal", null);
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBe(50);
   });
 
   it("matches migrated legacy codes on lower(trim(input)) only, after an exact miss", async () => {

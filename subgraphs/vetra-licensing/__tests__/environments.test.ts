@@ -12,6 +12,9 @@ import {
   type ChainEnvDeps, type ProvisionChainInput,
 } from "../environments.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
+import { createWarmPoolStore, type WarmPoolStore } from "../warm-pool-db.js";
+import { renderCreateActions } from "../template.js";
+import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
 
 const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
 const OTHER_DID = "did:pkh:eip155:1:0x2222222222222222222222222222222222222222";
@@ -23,7 +26,7 @@ const input = (over: Partial<ProvisionChainInput> = {}): ProvisionChainInput => 
 
 let db: Kysely<VetraLicensingDB>;
 let deps: ChainEnvDeps;
-let states: Map<string, { status: string; packages: never[]; services: never[] }>;
+let states: Map<string, { status: string } & Record<string, unknown>>;
 let executed: { id: string; actions: Action[] }[];
 
 beforeEach(async () => {
@@ -35,7 +38,7 @@ beforeEach(async () => {
   deps = {
     rows: createChainEnvironmentRows(db, { ...loadLicensingConfig({}), defaultMaxEnvironments: 2 }),
     envs: {
-      create: async () => { const id = `env-${++n}`; states.set(id, { status: "DRAFT", packages: [], services: [] }); return id; },
+      create: vi.fn(async () => { const id = `env-${++n}`; states.set(id, { status: "DRAFT", packages: [], services: [] }); return id; }),
       execute: async (id, actions) => { executed.push({ id, actions }); states.get(id)!.status = "CHANGES_APPROVED"; return states.get(id); },
       getState: async (id) => (states.get(id) as never) ?? null,
       delete: vi.fn(async (id: string) => { states.delete(id); }),
@@ -215,6 +218,53 @@ describe("provisionChain", () => {
   });
 });
 
+describe("provisionChain moves a FUSION commit tag up by the app's recording order", () => {
+  const SHA_A = "sha-56e1fd7497fc";
+  const SHA_B = "sha-6141b974fc38";
+  const REPO = "cr.vetra.io/app-sektar/host";
+  // LATEST moved from sha-a to sha-b: the resolved template now names sha-b.
+  const shaTemplate = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", artifactChannel: "LATEST", resolvedRepository: REPO, resolvedVersion: SHA_B }],
+    packages: [], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const liveOnShaA = () => ({
+    status: "READY", owner: "0x1111111111111111111111111111111111111111", label: "My vault", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: SHA_A, selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "0x1111111111111111111111111111111111111111", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+
+  it("brings an existing environment on sha-a up to sha-b", async () => {
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_A, SHA_B] }));
+    expect(executed).toHaveLength(2);
+    expect(executed[1]!.actions.map((a) => a.type)).toStrictEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(executed[1]!.actions[0]!.input).toStrictEqual({ type: "FUSION", version: SHA_B });
+  });
+
+  it("warns, naming the environment and both versions, when the current version has aged out of the record", async () => {
+    const warn = vi.fn();
+    deps.logger = { error: vi.fn(), warn };
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    const row = await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_B] }));
+    expect(executed).toHaveLength(1);
+    expect(row.template_hash).toBe("h2");
+    expect(warn).toHaveBeenCalledOnce();
+    const msg = String(warn.mock.calls[0]![0]);
+    expect(msg).toContain("env-1");
+    expect(msg).toContain(SHA_A);
+    expect(msg).toContain(SHA_B);
+  });
+
+  it("without the order, leaves the version where it is (as before)", async () => {
+    await provisionChain(deps, input());
+    states.set("env-1", liveOnShaA() as never);
+    await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate }));
+    expect(executed).toHaveLength(1);
+  });
+});
+
 describe("provisionChainExclusive (the handler's and the machine API's one path)", () => {
   it("two concurrent callers on one chain create exactly one environment", async () => {
     const create = vi.spyOn(deps.envs, "create");
@@ -248,3 +298,318 @@ describe("provisionChainExclusive (the handler's and the machine API's one path)
     await held;
   });
 });
+
+describe("provisionChain claims a warm environment first", () => {
+  const HOLDER = "0x1111111111111111111111111111111111111111";
+  const OTHER = "0x2222222222222222222222222222222222222222";
+  const REPO = "cr.vetra.io/app-sektar/host";
+  const HOST_TEMPLATE = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", resolvedRepository: REPO, resolvedVersion: "sha-abcdef012345" }],
+    packages: [], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const warmInput = (over: Partial<ProvisionChainInput> = {}) => input({ template: HOST_TEMPLATE, ...over });
+  /** What createWarmEnvironment leaves once the environment is up: no owner, empty ADMINS. */
+  const warmDoc = () => ({
+    status: "READY", owner: null, label: "Sektar (warm)", genericSubdomain: "calm-owl", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: "sha-abcdef012345", selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+  const fusionEnv = (actions: Action[]) =>
+    (actions.find((a) => a.type === "SET_FUSION_CONFIG")?.input as { env: { name: string; value: string }[] } | undefined)?.env;
+  const warmRow = async (id: string) =>
+    db.selectFrom("app_warm_pool").selectAll().where("environment_id", "=", id).executeTakeFirst();
+
+  let store: WarmPoolStore;
+  let handOver: ReturnType<typeof vi.fn<(documentId: string, owner: string) => Promise<void>>>;
+
+  async function seedWarm(id = "warm-1"): Promise<void> {
+    states.set(id, warmDoc());
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
+  }
+
+  beforeEach(() => {
+    store = createWarmPoolStore(db);
+    handOver = vi.fn(async () => {});
+    deps.warmPool = { store, handOver };
+  });
+
+  it("claims an AVAILABLE warm environment instead of building one", async () => {
+    await seedWarm();
+    const row = await provisionChain(deps, warmInput());
+    expect(deps.envs.create).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ environment_id: "warm-1", root_license_id: "l1", template_hash: "h1", label: "My vault" });
+    expect(await deps.rows.byRoot("l1")).toMatchObject({ environment_id: "warm-1", template_hash: "h1" });
+    expect(executed).toHaveLength(1);
+    const actions = executed[0]!.actions;
+    expect(executed[0]!.id).toBe("warm-1");
+    expect(actions.map((a) => a.type)).not.toContain("INITIALIZE");
+    expect(actions.find((a) => a.type === "SET_OWNER")!.input).toStrictEqual({ address: HOLDER });
+    expect(fusionEnv(actions)).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(handOver).toHaveBeenCalledWith("warm-1", HOLDER);
+    expect(await warmRow("warm-1")).toMatchObject({ state: "CLAIMED", root_license_id: "l1", deleted_at: null });
+  });
+
+  it("relabels a claimed environment for the holder and approves it even when the template's floor is already met", async () => {
+    await seedWarm();
+    const doc = states.get("warm-1")!;
+    doc.fusion = { ...(doc.fusion as object), env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: HOLDER, isSecret: false }] };
+    await provisionChain(deps, warmInput());
+    expect(executed[0]!.actions.map((a) => a.type)).toStrictEqual(["SET_OWNER", "SET_LABEL", "APPROVE_CHANGES"]);
+    expect(executed[0]!.actions[1]!.input).toStrictEqual({ label: "My vault" });
+  });
+
+  it("still re-renders (SET_LABEL + APPROVE_CHANGES) when the label is unchanged and the floor is met", async () => {
+    await seedWarm();
+    const doc = states.get("warm-1")!;
+    doc.fusion = { ...(doc.fusion as object), env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: HOLDER, isSecret: false }] };
+    await provisionChain(deps, warmInput({ label: "Sektar (warm)" }));
+    // An unchanged SET_LABEL still moves a deployed environment to
+    // CHANGES_PENDING, so the approve is valid and gitops opens the ingress.
+    expect(executed[0]!.actions.map((a) => a.type)).toStrictEqual(["SET_OWNER", "SET_LABEL", "APPROVE_CHANGES"]);
+    expect(executed[0]!.actions.at(-1)!.type).toBe("APPROVE_CHANGES");
+  });
+
+  it("builds cold, exactly as before, when no warm environment is available", async () => {
+    const row = await provisionChain(deps, warmInput());
+    expect(row).toMatchObject({ environment_id: "env-1", template_hash: "h1" });
+    expect(deps.envs.create).toHaveBeenCalledTimes(1);
+    expect(executed.map((e) => e.id)).toStrictEqual(["env-1"]);
+    expect(executed[0]!.actions.map((a) => a.type)).toContain("INITIALIZE");
+    expect(handOver).not.toHaveBeenCalled();
+  });
+
+  it("discards a warm environment someone already owns and builds cold", async () => {
+    await seedWarm();
+    states.get("warm-1")!.owner = OTHER;
+    const row = await provisionChain(deps, warmInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(deps.envs.delete).toHaveBeenCalledWith("warm-1");
+    expect((await warmRow("warm-1"))!.deleted_at).not.toBeNull();
+    expect(executed.map((e) => e.id)).toStrictEqual(["env-1"]);
+    expect(handOver).not.toHaveBeenCalled();
+    expect(await deps.rows.countForApp("app-1")).toBe(1);
+  });
+
+  it("a claim whose actions are rejected deletes the warm environment, never returns it to the pool, and builds cold", async () => {
+    await seedWarm();
+    const execute = deps.envs.execute;
+    deps.envs.execute = async (id, actions) => {
+      if (id === "warm-1") throw new Error("SET_OWNER rejected");
+      return execute(id, actions);
+    };
+    const row = await provisionChain(deps, warmInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(deps.envs.delete).toHaveBeenCalledWith("warm-1");
+    expect(states.has("warm-1")).toBe(false);
+    const warm = await warmRow("warm-1");
+    expect(warm!.deleted_at).not.toBeNull();
+    expect(warm!.state).toBe("CLAIMED");
+    expect(await deps.rows.byEnvironment("warm-1")).toBeNull();
+    expect((await deps.rows.byRoot("l1"))!.environment_id).toBe("env-1");
+    expect(handOver).not.toHaveBeenCalled();
+  });
+
+  it("rolls a claim forward after a crash between the claim and the owner write", async () => {
+    await seedWarm();
+    // The claim transaction committed (warm row CLAIMED + chain row), then the process died.
+    const claimed = await store.claimForChain(
+      { appId: "app-1", templateId: "t", templateHash: "h1", rootLicenseId: "l1", nowIso: "2026-10-08T00:00:00.000Z" },
+      {
+        root_license_id: "l1", app_id: "app-1", user_did: DID, license_id: "l1", template_id: "t", label: "My vault",
+        template_hash: UNAPPLIED_TEMPLATE_HASH, ended_at: null, stopped_at: null, delete_after: null,
+        created_at: "2026-10-08T00:00:00.000Z", updated_at: "2026-10-08T00:00:00.000Z",
+      },
+    );
+    expect(claimed.warm?.environment_id).toBe("warm-1");
+    expect(executed).toHaveLength(0);
+
+    const row = await provisionChain(deps, warmInput());
+    expect(deps.envs.create).not.toHaveBeenCalled();
+    expect(deps.envs.delete).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ environment_id: "warm-1", template_hash: "h1" });
+    expect(executed[0]!.actions.find((a) => a.type === "SET_OWNER")!.input).toStrictEqual({ address: HOLDER });
+    expect(fusionEnv(executed[0]!.actions)).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(handOver).toHaveBeenCalledWith("warm-1", HOLDER);
+    expect(await deps.rows.byRoot("l1")).toMatchObject({ environment_id: "warm-1", template_hash: "h1" });
+    // And it is settled: the next call does nothing.
+    await provisionChain(deps, warmInput());
+    expect(executed).toHaveLength(1);
+  });
+
+  it("a warm environment recycled between the claim and the re-read leaves the licence with exactly one (cold) environment", async () => {
+    await seedWarm();
+    const claimForChain = store.claimForChain.bind(store);
+    deps.warmPool = {
+      handOver,
+      store: {
+        ...store,
+        claimForChain: async (q, chainRow) => {
+          const r = await claimForChain(q, chainRow);
+          // The keeper's recycle lands now: the document is gone.
+          await store.markDeleted("warm-1", "2026-10-08T00:00:01.000Z");
+          states.delete("warm-1");
+          return r;
+        },
+      },
+    };
+    const row = await provisionChain(deps, warmInput());
+    expect(row.environment_id).toBe("env-1");
+    expect([...states.keys()]).toStrictEqual(["env-1"]);
+    expect(await deps.rows.forApp("app-1")).toHaveLength(1);
+    expect(await deps.rows.byEnvironment("warm-1")).toBeNull();
+    expect(handOver).not.toHaveBeenCalled();
+  });
+
+  it("refuses a claim over the app cap as it refuses a build; the warm environment stays in the pool", async () => {
+    await db.insertInto("app_environment_limits").values({ app_id: "app-1", max_environments: 0 }).execute();
+    await seedWarm();
+    await expect(provisionChain(deps, warmInput())).rejects.toBeInstanceOf(AppEnvironmentCapReachedError);
+    expect(await warmRow("warm-1")).toMatchObject({ state: "AVAILABLE", root_license_id: null, claimed_at: null });
+    expect(executed).toHaveLength(0);
+  });
+});
+describe("the included AI key (spec 3.11)", () => {
+  const HOLDER = "0x1111111111111111111111111111111111111111";
+  const REPO = "cr.vetra.io/app-sektar/host";
+  const HOST_TEMPLATE = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", resolvedRepository: REPO, resolvedVersion: "sha-abcdef012345" }],
+    packages: [], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const keyInput = (over: Partial<ProvisionChainInput> = {}) => input({ template: HOST_TEMPLATE, ...over });
+  const KEY_ENTRY = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
+  const warmDoc = () => ({
+    status: "READY", owner: null, label: "Sektar (warm)", genericSubdomain: "calm-owl", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: "sha-abcdef012345", selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+  const fusionEnv = (actions: Action[]) =>
+    (actions.find((a) => a.type === "SET_FUSION_CONFIG")?.input as { env: unknown[] } | undefined)?.env;
+
+  let store: WarmPoolStore;
+  let order: string[];
+  let appKey: ReturnType<typeof vi.fn<NonNullable<ChainEnvDeps["appKey"]>>>;
+  let releaseAppKey: ReturnType<typeof vi.fn<(environmentId: string) => Promise<void>>>;
+
+  async function seedWarm(id = "warm-1"): Promise<void> {
+    states.set(id, warmDoc());
+    await store.insertWarming({ environmentId: id, appId: "app-1", templateId: "t", templateHash: "h1", poolSize: 1, nowIso: "2026-10-01T00:00:00.000Z" });
+    await store.markAvailable(id, "2026-10-01T00:05:00.000Z");
+  }
+
+  beforeEach(() => {
+    store = createWarmPoolStore(db);
+    order = [];
+    appKey = vi.fn(async (k: { environmentId: string }) => { order.push(`key:${k.environmentId}`); return true; });
+    releaseAppKey = vi.fn(async () => {});
+    const execute = deps.envs.execute;
+    deps.envs.execute = async (id, actions) => { order.push(`execute:${id}`); return execute(id, actions); };
+    deps.warmPool = { store, handOver: async () => {} };
+    deps.appKey = appKey;
+    deps.releaseAppKey = releaseAppKey;
+  });
+
+  it("a claim with a code budget writes the key first and declares it in the same batch as ADMINS", async () => {
+    await seedWarm();
+    await provisionChain(deps, keyInput());
+    expect(appKey).toHaveBeenCalledWith({
+      environmentId: "warm-1", tenantId: getTenantId("calm-owl", "warm-1"), rootLicenseId: "l1", ownerDid: DID,
+    });
+    expect(order).toStrictEqual(["key:warm-1", "execute:warm-1"]);
+    expect(executed).toHaveLength(1);
+    const env = fusionEnv(executed[0]!.actions);
+    expect(env).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(env).toContainEqual(KEY_ENTRY);
+    expect(releaseAppKey).not.toHaveBeenCalled();
+  });
+
+  it("a claim without a budget gets no key and no OPENROUTER_API_KEY entry", async () => {
+    await seedWarm();
+    appKey.mockResolvedValue(false);
+    await provisionChain(deps, keyInput());
+    const env = fusionEnv(executed[0]!.actions)!;
+    expect(env).toContainEqual({ name: "ADMINS", value: HOLDER, isSecret: false });
+    expect(env.some((e) => (e as { name: string }).name === "OPENROUTER_API_KEY")).toBe(false);
+  });
+
+  it("a cold build with a budget gets the key as part of the create", async () => {
+    const row = await provisionChain(deps, keyInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(appKey).toHaveBeenCalledWith({
+      environmentId: "env-1", tenantId: getTenantId("sub-env-1", "env-1"), rootLicenseId: "l1", ownerDid: DID,
+    });
+    expect(order).toStrictEqual(["key:env-1", "execute:env-1"]);
+    expect(executed[0]!.actions.map((a) => a.type)).toContain("INITIALIZE");
+    expect(fusionEnv(executed[0]!.actions)).toContainEqual(KEY_ENTRY);
+  });
+
+  it("a cold build without a budget declares no key", async () => {
+    appKey.mockResolvedValue(false);
+    await provisionChain(deps, keyInput());
+    expect(JSON.stringify(executed[0]!.actions)).not.toContain("OPENROUTER_API_KEY");
+  });
+
+  it("a failing key write releases the key and the claim falls back to cold", async () => {
+    await seedWarm();
+    appKey.mockImplementation(async (k) => {
+      if (k.environmentId === "warm-1") throw new Error("secrets down");
+      return true;
+    });
+    const row = await provisionChain(deps, keyInput());
+    expect(releaseAppKey).toHaveBeenCalledWith("warm-1");
+    expect(row.environment_id).toBe("env-1");
+    expect(states.has("warm-1")).toBe(false);
+    expect(executed.map((e) => e.id)).toStrictEqual(["env-1"]);
+  });
+
+  it("a claim whose batch fails after the key was written releases the key, even when the delete fails", async () => {
+    await seedWarm();
+    const execute = deps.envs.execute;
+    deps.envs.execute = async (id, actions) => {
+      if (id === "warm-1") throw new Error("SET_OWNER rejected");
+      return execute(id, actions);
+    };
+    deps.envs.delete = vi.fn(async () => { throw new Error("reactor down"); });
+    await expect(provisionChain(deps, keyInput())).rejects.toThrow("reactor down");
+    expect(releaseAppKey).toHaveBeenCalledWith("warm-1");
+  });
+
+  it("a failed release is logged, and the discard carries on", async () => {
+    await seedWarm();
+    const error = vi.fn();
+    deps.logger = { error };
+    appKey.mockRejectedValueOnce(new Error("secrets down"));
+    releaseAppKey.mockRejectedValueOnce(new Error("openrouter down"));
+    const row = await provisionChain(deps, keyInput());
+    expect(row.environment_id).toBe("env-1");
+    expect(error.mock.calls.some(([m]) => String(m).includes("openrouter down"))).toBe(true);
+  });
+
+  it("redacts secrets in the claim-failure and release-failure logs", async () => {
+    await seedWarm();
+    const error = vi.fn();
+    deps.logger = { error };
+    appKey.mockRejectedValueOnce(new Error("write failed for sk-or-v1-claimsecret"));
+    releaseAppKey.mockRejectedValueOnce(new Error("release failed for sk-or-v1-releasesecret"));
+    await provisionChain(deps, keyInput());
+    const logged = error.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("write failed for [redacted]");
+    expect(logged).toContain("release failed for [redacted]");
+    expect(logged).not.toContain("sk-or-v1-");
+  });
+
+  it("a template without FUSION never mints a key", async () => {
+    await provisionChain(deps, input());
+    expect(appKey).not.toHaveBeenCalled();
+  });
+
+  it("a warm (unclaimed) environment never gets a key", async () => {
+    await db.insertInto("app_environment_limits").values({ app_id: "app-1", max_environments: 0 }).execute();
+    await seedWarm();
+    await expect(provisionChain(deps, keyInput())).rejects.toBeInstanceOf(AppEnvironmentCapReachedError);
+    expect(appKey).not.toHaveBeenCalled();
+    const warm = renderCreateActions({ label: "Sektar (warm)", subdomain: "calm-owl", owner: null, template: HOST_TEMPLATE, includedKey: true });
+    expect(JSON.stringify(warm)).not.toContain("OPENROUTER_API_KEY");
+  });
+});
+

@@ -457,3 +457,41 @@ describe("vetraSubscriptions: studio", () => {
   });
 });
 
+describe("vetraSubscriptions: provisioning kick", () => {
+  it("kicks provisioning after a successful redeem", async () => {
+    await code(APP_DED, "pro", "kv-kick-01");
+    const onLicenceIssued = vi.fn();
+    deps.onLicenceIssued = onLicenceIssued;
+    try {
+      const s = await redeem({ code: "kv-kick-01" }, asOther);
+      expect(onLicenceIssued).toHaveBeenCalledTimes(1);
+      expect(onLicenceIssued).toHaveBeenCalledWith(s.licenseId);
+    } finally {
+      delete deps.onLicenceIssued;
+    }
+  });
+
+  it("does not kick on a refused code", async () => {
+    const onLicenceIssued = vi.fn();
+    deps.onLicenceIssued = onLicenceIssued;
+    try {
+      expect(await codeOf(redeem({ code: "nope-nope" }, asOther))).toBe("INVALID_CODE");
+      expect(onLicenceIssued).not.toHaveBeenCalled();
+    } finally {
+      delete deps.onLicenceIssued;
+    }
+  });
+
+  it("returns the redeem result even if the kick throws", async () => {
+    await code(APP_DED, "pro", "kv-kick-02");
+    deps.onLicenceIssued = () => {
+      throw new Error("kick failed");
+    };
+    try {
+      const s = await redeem({ code: "kv-kick-02" }, asOther);
+      expect(s.licenseId).toBeTruthy();
+    } finally {
+      delete deps.onLicenceIssued;
+    }
+  });
+});

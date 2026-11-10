@@ -17,7 +17,7 @@ export const documentModel: DocumentModelGlobalState = {
       state: {
         global: {
           schema:
-            "type VetraAppState {\n  name: String\n  slug: String\n  owner: EthereumAddress\n  status: VetraAppStatus!\n  repository: VetraAppRepository\n  identity: VetraAppIdentity\n  productionEnvironmentId: OID\n  previews: VetraAppPreviews\n  artifacts: [VetraAppArtifact!]!\n  templates: [VetraAppEnvironmentTemplate!]!\n  terms: [VetraAppLicenseTerm!]!\n}\n\nenum VetraAppStatus {\n  PENDING_IDENTITY\n  ACTIVE\n  DISCONNECTED\n  DELETED\n}\n\ntype VetraAppRepository {\n  repositoryId: String\n  fullName: String\n  productionBranch: String\n}\n\ntype VetraAppIdentity {\n  did: String\n  expiresAt: DateTime\n}\n\ntype VetraAppPreviews {\n  enabled: Boolean!\n  limit: Int!\n  ttlDays: Int!\n}\n\ntype VetraAppArtifact {\n  id: OID!\n  kind: VetraAppArtifactKind!\n  name: String!\n  versions: [VetraAppArtifactVersion!]!\n  channels: [VetraAppArtifactChannel!]!\n}\n\nenum VetraAppArtifactKind {\n  PACKAGE\n  FUSION_IMAGE\n}\n\ntype VetraAppArtifactVersion {\n  version: String!\n  reference: String!\n  commitSha: String\n  runId: String\n  publishedAt: DateTime!\n}\n\ntype VetraAppArtifactChannel {\n  channel: AutoUpdateChannel!\n  version: String!\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraAppEnvironmentTemplate {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode!\n  sharedEnvironment: PHID\n  services: [TemplateService!]!\n  packages: [TemplatePackage!]!\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n}\n\nenum TemplateInstanceMode {\n  SHARED\n  DEDICATED\n}\n\ntype TemplateService {\n  id: OID!\n  type: TemplateServiceType!\n  prefix: String\n  artifactName: String\n  artifactChannel: AutoUpdateChannel\n}\n\nenum TemplateServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\ntype TemplatePackage {\n  id: OID!\n  packageName: String\n  version: String\n}\n\ntype VetraAppLicenseTerm {\n  id: OID!\n  kind: String!\n  label: String\n  templateId: OID\n  validityDays: Int\n  issuers: [LicenseIssuerKind!]!\n  status: LicenseTermStatus!\n}\n\nenum LicenseTermStatus {\n  DRAFT\n  ACTIVE\n  RETIRED\n}\n\nenum LicenseIssuerKind {\n  INVITE_CODE\n  PUBLISHER_GRANT\n  ACHRA_SUBSCRIPTION\n}",
+            "type VetraAppState {\n  name: String\n  slug: String\n  owner: EthereumAddress\n  status: VetraAppStatus!\n  repository: VetraAppRepository\n  identity: VetraAppIdentity\n  productionEnvironmentId: OID\n  previews: VetraAppPreviews\n  artifacts: [VetraAppArtifact!]!\n  templates: [VetraAppEnvironmentTemplate!]!\n  terms: [VetraAppLicenseTerm!]!\n}\n\nenum VetraAppStatus {\n  PENDING_IDENTITY\n  ACTIVE\n  DISCONNECTED\n  DELETED\n}\n\ntype VetraAppRepository {\n  repositoryId: String\n  fullName: String\n  productionBranch: String\n}\n\ntype VetraAppIdentity {\n  did: String\n  expiresAt: DateTime\n}\n\ntype VetraAppPreviews {\n  enabled: Boolean!\n  limit: Int!\n  ttlDays: Int!\n}\n\ntype VetraAppArtifact {\n  id: OID!\n  kind: VetraAppArtifactKind!\n  name: String!\n  versions: [VetraAppArtifactVersion!]!\n  channels: [VetraAppArtifactChannel!]!\n}\n\nenum VetraAppArtifactKind {\n  PACKAGE\n  FUSION_IMAGE\n}\n\ntype VetraAppArtifactVersion {\n  version: String!\n  reference: String!\n  commitSha: String\n  runId: String\n  publishedAt: DateTime!\n}\n\ntype VetraAppArtifactChannel {\n  channel: AutoUpdateChannel!\n  version: String!\n}\n\nenum AutoUpdateChannel {\n  DEV\n  STAGING\n  LATEST\n}\n\ntype VetraAppEnvironmentTemplate {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode!\n  sharedEnvironment: PHID\n  services: [TemplateService!]!\n  packages: [TemplatePackage!]!\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n  warmPoolSize: Int\n}\n\nenum TemplateInstanceMode {\n  SHARED\n  DEDICATED\n}\n\ntype TemplateService {\n  id: OID!\n  type: TemplateServiceType!\n  prefix: String\n  artifactName: String\n  artifactChannel: AutoUpdateChannel\n}\n\nenum TemplateServiceType {\n  CONNECT\n  SWITCHBOARD\n  FUSION\n  CLINT\n  DOCLING\n  PAPERLESS\n  SPECKLE\n}\n\ntype TemplatePackage {\n  id: OID!\n  packageName: String\n  version: String\n}\n\ntype VetraAppLicenseTerm {\n  id: OID!\n  kind: String!\n  label: String\n  templateId: OID\n  validityDays: Int\n  issuers: [LicenseIssuerKind!]!\n  status: LicenseTermStatus!\n}\n\nenum LicenseTermStatus {\n  DRAFT\n  ACTIVE\n  RETIRED\n}\n\nenum LicenseIssuerKind {\n  INVITE_CODE\n  PUBLISHER_GRANT\n  ACHRA_SUBSCRIPTION\n}",
           initialValue:
             '{\n  "name": null,\n  "slug": null,\n  "owner": null,\n  "status": "PENDING_IDENTITY",\n  "repository": null,\n  "identity": null,\n  "productionEnvironmentId": null,\n  "previews": null,\n  "artifacts": [],\n  "templates": [],\n  "terms": []\n}',
           examples: [],
@@ -173,7 +173,7 @@ export const documentModel: DocumentModelGlobalState = {
                 "input AddTemplateInput {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode!\n}",
               template: "",
               reducer:
-                "const { templates } = licensingLists(state);\nif (templates.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTemplateError(\n    `template ${action.input.id} already exists`,\n  );\n}\ntemplates.push({\n  id: action.input.id,\n  name: action.input.name ?? null,\n  mode: action.input.mode,\n  sharedEnvironment: null,\n  services: [],\n  packages: [],\n  size: null,\n  baseDomain: null,\n  packageRegistry: null,\n});",
+                "const { templates } = licensingLists(state);\nif (templates.some((t) => t.id === action.input.id)) {\n  throw new DuplicateTemplateError(\n    `template ${action.input.id} already exists`,\n  );\n}\ntemplates.push({\n  id: action.input.id,\n  name: action.input.name ?? null,\n  mode: action.input.mode,\n  sharedEnvironment: null,\n  services: [],\n  packages: [],\n  size: null,\n  baseDomain: null,\n  packageRegistry: null,\n  // warmPoolSize stays absent: it keeps the ledger hash of existing apps.\n} as unknown as (typeof templates)[number]);",
               errors: [
                 {
                   id: "err-duplicate-template",
@@ -191,10 +191,10 @@ export const documentModel: DocumentModelGlobalState = {
               name: "SET_TEMPLATE_DETAILS",
               description: "Update a template; absent fields are unchanged.",
               schema:
-                "input SetTemplateDetailsInput {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode\n  sharedEnvironment: PHID\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n}",
+                "input SetTemplateDetailsInput {\n  id: OID!\n  name: String\n  mode: TemplateInstanceMode\n  sharedEnvironment: PHID\n  size: String\n  baseDomain: String\n  packageRegistry: URL\n  warmPoolSize: Int\n}",
               template: "",
               reducer:
-                'const t = findTemplate(state, action.input.id);\nconst mode = action.input.mode ?? t.mode;\nif (mode === "SHARED" && (t.services.length > 0 || t.packages.length > 0)) {\n  throw new SharedTemplateServicesError(\n    "a SHARED template provisions nothing; remove its services and packages first",\n  );\n}\nt.mode = mode;\n// undefined = unchanged, explicit null = clear.\nif (action.input.name !== undefined) t.name = action.input.name ?? null;\nif (action.input.sharedEnvironment !== undefined)\n  t.sharedEnvironment = action.input.sharedEnvironment ?? null;\nif (action.input.size !== undefined) t.size = action.input.size ?? null;\nif (action.input.baseDomain !== undefined)\n  t.baseDomain = action.input.baseDomain ?? null;\nif (action.input.packageRegistry !== undefined)\n  t.packageRegistry = action.input.packageRegistry ?? null;',
+                'const t = findTemplate(state, action.input.id);\nconst mode = action.input.mode ?? t.mode;\nif (mode === "SHARED" && (t.services.length > 0 || t.packages.length > 0)) {\n  throw new SharedTemplateServicesError(\n    "a SHARED template provisions nothing; remove its services and packages first",\n  );\n}\n// undefined = unchanged, null = clear (0); the pool applies to DEDICATED only.\nconst pool =\n  action.input.warmPoolSize === undefined\n    ? (t.warmPoolSize ?? 0)\n    : (action.input.warmPoolSize ?? 0);\nif (pool < 0) {\n  throw new WarmPoolInvalidSizeError("warmPoolSize must not be negative");\n}\nif (pool > 10) {\n  throw new WarmPoolTooLargeError("warmPoolSize is at most 10");\n}\nif (mode === "SHARED" && pool > 0) {\n  throw new WarmPoolNotDedicatedError(\n    "only a DEDICATED template can keep a warm pool",\n  );\n}\nt.mode = mode;\nif (action.input.warmPoolSize !== undefined)\n  t.warmPoolSize = action.input.warmPoolSize ?? null;\n// undefined = unchanged, explicit null = clear.\nif (action.input.name !== undefined) t.name = action.input.name ?? null;\nif (action.input.sharedEnvironment !== undefined)\n  t.sharedEnvironment = action.input.sharedEnvironment ?? null;\nif (action.input.size !== undefined) t.size = action.input.size ?? null;\nif (action.input.baseDomain !== undefined)\n  t.baseDomain = action.input.baseDomain ?? null;\nif (action.input.packageRegistry !== undefined)\n  t.packageRegistry = action.input.packageRegistry ?? null;',
               errors: [
                 {
                   id: "err-template-not-found-details",
@@ -209,6 +209,28 @@ export const documentModel: DocumentModelGlobalState = {
                   code: "SHARED_TEMPLATE_SERVICES",
                   description:
                     "A SHARED template carries no services or packages.",
+                  template: "",
+                },
+                {
+                  id: "err-warm-pool-not-dedicated",
+                  name: "WarmPoolNotDedicatedError",
+                  code: "WARM_POOL_NOT_DEDICATED",
+                  description:
+                    "Only a DEDICATED template can keep a warm pool.",
+                  template: "",
+                },
+                {
+                  id: "err-warm-pool-too-large",
+                  name: "WarmPoolTooLargeError",
+                  code: "WARM_POOL_TOO_LARGE",
+                  description: "warmPoolSize is at most 10.",
+                  template: "",
+                },
+                {
+                  id: "err-warm-pool-invalid-size",
+                  name: "WarmPoolInvalidSizeError",
+                  code: "WARM_POOL_INVALID_SIZE",
+                  description: "warmPoolSize must not be negative.",
                   template: "",
                 },
               ],

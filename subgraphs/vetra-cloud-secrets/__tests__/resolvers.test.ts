@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import { GraphQLError } from "graphql";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -318,6 +319,43 @@ describe("Mutation", () => {
       });
       expect(result).toBe(false);
     });
+  });
+});
+
+describe("platform-managed keys", () => {
+  it("refuses set and delete with code MANAGED_KEY and writes nothing", async () => {
+    for (const call of [
+      () => mutation().setEnvVar(undefined, { tenantId: "t1", key: "VETRA_MODEL", value: "x" }),
+      () => mutation().deleteEnvVar(undefined, { tenantId: "t1", key: "CI" }),
+      () => mutation().setSecret(undefined, { tenantId: "t1", key: "OPENROUTER_API_KEY", value: "x" }),
+      () => mutation().deleteSecret(undefined, { tenantId: "t1", key: "VETRA_REPORTING_TOKEN" }),
+      () =>
+        mutation().deleteEnvVar(undefined, { tenantId: "t1", key: "npm_config_node_linker" }),
+    ]) {
+      const err = await call().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(GraphQLError);
+      expect((err as GraphQLError).extensions.code).toBe("MANAGED_KEY");
+      expect((err as GraphQLError).message).toMatch(/set by Vetra Cloud/);
+    }
+    expect(await db.selectFrom("tenant_env_vars").selectAll().execute()).toEqual([]);
+    expect(await db.selectFrom("tenant_secrets").selectAll().execute()).toEqual([]);
+    expect(mockTransit.encrypt).not.toHaveBeenCalled();
+  });
+
+  it("checks access before the key: a stranger still gets FORBIDDEN", async () => {
+    const strangerCtx = { user: { address: OTHER } };
+    const err = await resolvers.Mutation.setEnvVar(
+      undefined,
+      { tenantId: "t1", key: "VETRA_MODEL", value: "x" },
+      strangerCtx,
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((err as GraphQLError).extensions.code).toBe("FORBIDDEN");
   });
 });
 

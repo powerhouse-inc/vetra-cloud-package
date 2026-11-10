@@ -7,7 +7,7 @@ import { docId, globalState, isDocType, isRec, str } from "./doc-parse.js";
 import { licensingStateHash } from "./licensing-ledger.js";
 import type { AppArtifact, LicenseClientLike } from "./reads.js";
 import { templateHash, type TemplateService, type TemplateShape } from "./template.js";
-import { resolveTemplateArtifacts, templateNeedsArtifacts } from "./artifact-resolution.js";
+import { fusionVersionsOf, resolveTemplateArtifacts, templateNeedsArtifacts } from "./artifact-resolution.js";
 
 export const APP_DOC_TYPE = "powerhouse/vetra-app";
 export type TemplateMode = "SHARED" | "DEDICATED";
@@ -17,10 +17,18 @@ export interface AppTemplateView {
   name: string | null;
   mode: TemplateMode;
   sharedEnvironment: string | null;
+  /** Warm environments kept ready (DEDICATED); 0 = none. Not part of the template hash. */
+  warmPoolSize: number;
   /** RESOLVED: artifact channels replaced by the version they point at. */
   template: TemplateShape;
   templateHash: string;
   resolutionError: string | null;
+  /**
+   * The template's FUSION artifact versions, newest last, for the floor
+   * update to order commit tags by (isFusionUpgrade). Beside the template,
+   * not in it: it is not hashed. Absent without a published FUSION artifact.
+   */
+  fusionVersions?: string[];
 }
 
 export interface AppTermView {
@@ -134,15 +142,18 @@ function parseTemplateView(raw: unknown, artifacts: AppArtifact[]): AppTemplateV
       resolutionError = err instanceof Error ? err.message : String(err);
     }
   }
+  const fusionVersions = fusionVersionsOf(shape, artifacts);
   return {
     id,
     name: str(raw.name),
     mode,
     sharedEnvironment: str(raw.sharedEnvironment),
+    warmPoolSize: typeof raw.warmPoolSize === "number" ? raw.warmPoolSize : 0,
     template,
     // Over the RESOLVED template: a publish moves a channel, which moves the hash.
     templateHash: templateHash(template),
     resolutionError,
+    ...(fusionVersions ? { fusionVersions } : {}),
   };
 }
 

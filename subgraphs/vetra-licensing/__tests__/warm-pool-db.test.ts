@@ -1,0 +1,216 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { PGlite } from "@electric-sql/pglite";
+import { Kysely } from "kysely";
+import { PGliteDialect } from "kysely-pglite-dialect";
+import { up } from "../db/migrations.js";
+import type { VetraLicensingDB } from "../db/schema.js";
+import { createWarmPoolStore } from "../warm-pool-db.js";
+
+describe("warm pool store (real PGlite)", () => {
+  let db: Kysely<VetraLicensingDB> | undefined;
+  const open = async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    return createWarmPoolStore(db);
+  };
+  afterEach(async () => {
+    await db?.destroy();
+    db = undefined;
+  });
+  const ins = (s: Awaited<ReturnType<typeof open>>, id: string, nowIso = "2026-11-01T00:00:00.000Z", hash = "h1") =>
+    s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: hash, poolSize: 1, nowIso });
+  const claim = (s: Awaited<ReturnType<typeof open>>, hash = "h1") =>
+    s.claimOneAvailable({ appId: "app", templateId: "t", templateHash: hash, rootLicenseId: "root-1", nowIso: "2026-11-02T00:00:00.000Z" });
+
+  it("insert gives WARMING, markAvailable gives AVAILABLE", async () => {
+    const s = await open();
+    await ins(s, "e1");
+    expect((await s.live("app", "t")).map((r) => [r.environment_id, r.state])).toEqual([["e1", "WARMING"]]);
+    await s.markAvailable("e1", "2026-11-01T00:05:00.000Z");
+    const [r] = await s.allLive();
+    expect(r.state).toBe("AVAILABLE");
+    expect(r.ready_at).toBe("2026-11-01T00:05:00.000Z");
+  });
+
+  it("claims the oldest-ready matching row and marks it CLAIMED", async () => {
+    const s = await open();
+    await ins(s, "late");
+    await ins(s, "early");
+    await s.markAvailable("late", "2026-11-01T00:10:00.000Z");
+    await s.markAvailable("early", "2026-11-01T00:05:00.000Z");
+    const got = await claim(s);
+    expect(got?.environment_id).toBe("early");
+    expect(got?.state).toBe("CLAIMED");
+    expect(got?.root_license_id).toBe("root-1");
+    expect(got?.claimed_at).toBe("2026-11-02T00:00:00.000Z");
+  });
+
+  it("two concurrent claims get different rows", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await ins(s, "b");
+    await s.markAvailable("a", "2026-11-01T00:05:00.000Z");
+    await s.markAvailable("b", "2026-11-01T00:06:00.000Z");
+    const [x, y] = await Promise.all([claim(s), claim(s)]);
+    expect(x && y).toBeTruthy();
+    expect(x!.environment_id).not.toBe(y!.environment_id);
+  });
+
+  it("a wrong templateHash claims nothing", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await s.markAvailable("a", "2026-11-01T00:05:00.000Z");
+    expect(await claim(s, "other")).toBeNull();
+  });
+
+  it("releaseClaim makes the row claimable again", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await s.markAvailable("a", "2026-11-01T00:05:00.000Z");
+    expect(await claim(s)).not.toBeNull();
+    expect(await claim(s)).toBeNull();
+    await s.releaseClaim("a");
+    const again = await claim(s);
+    expect(again?.environment_id).toBe("a");
+  });
+
+  it("isWarm is null for CLAIMED and deleted rows", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await ins(s, "b");
+    await ins(s, "c");
+    await s.markAvailable("a", "2026-11-01T00:05:00.000Z");
+    expect(await s.isWarm("a")).toEqual({ appId: "app" });
+    expect(await s.isWarm("b")).toEqual({ appId: "app" });
+    await claim(s);
+    expect(await s.isWarm("a")).toBeNull();
+    await s.markDeleted("b", "2026-11-02T00:00:00.000Z");
+    expect(await s.isWarm("b")).toBeNull();
+    expect(await s.isWarm("nope")).toBeNull();
+    expect((await s.allLive()).map((r) => r.environment_id).sort()).toEqual(["c"]);
+  });
+
+  it("warmHours splits a row across a month boundary", async () => {
+    const s = await open();
+    await ins(s, "a", "2026-10-31T22:00:00.000Z");
+    await s.markDeleted("a", "2026-11-01T02:00:00.000Z");
+    const oct = await s.warmHours("app", "t", "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+    const nov = await s.warmHours("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z");
+    expect(oct).toBe(2);
+    expect(nov).toBe(2);
+  });
+
+  it("warmHours stops at claim and runs open rows to now", async () => {
+    const s = await open();
+    await ins(s, "a", "2026-11-01T00:00:00.000Z");
+    await ins(s, "open", "2026-11-01T00:00:00.000Z");
+    await s.markAvailable("a", "2026-11-01T01:00:00.000Z");
+    await claim(s); // claimed_at 2026-11-02T00:00
+    const h = await s.warmHours("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z", "2026-11-01T03:00:00.000Z");
+    expect(h).toBe(24 + 3);
+  });
+  it("claimedBetween counts claims inside [from, to), deleted or not", async () => {
+    const s = await open();
+    await ins(s, "a");
+    await ins(s, "b");
+    await ins(s, "c");
+    for (const id of ["a", "b", "c"]) await s.markAvailable(id, "2026-10-31T00:00:00.000Z");
+    await claim(s); // claimed_at 2026-11-02T00:00
+    await s.claimOneAvailable({ appId: "app", templateId: "t", templateHash: "h1", rootLicenseId: "r2", nowIso: "2026-10-31T12:00:00.000Z" });
+    await s.markDeleted("a", "2026-11-03T00:00:00.000Z");
+    expect(await s.claimedBetween("app", "t", "2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z")).toBe(1);
+    expect(await s.claimedBetween("app", "t", "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z")).toBe(1);
+    expect(await s.claimedBetween("app", "other", "2026-10-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z")).toBe(0);
+  });
+
+  it("markDeletedUnclaimed retires an unclaimed row but never a CLAIMED or deleted one", async () => {
+    const s = await open();
+    await ins(s, "w");
+    await ins(s, "c");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    expect(await s.markDeletedUnclaimed("w", "2026-11-02T01:00:00.000Z")).toBe(true);
+    expect(await s.markDeletedUnclaimed("w", "2026-11-02T02:00:00.000Z")).toBe(false);
+    expect(await s.markDeletedUnclaimed("c", "2026-11-02T01:00:00.000Z")).toBe(false);
+    expect(await s.markDeletedUnclaimed("nope", "2026-11-02T01:00:00.000Z")).toBe(false);
+    expect(await s.allLive()).toEqual([]);
+  });
+
+  it("allLive holds only WARMING and AVAILABLE rows: a CLAIMED row is the licence's for good", async () => {
+    const s = await open();
+    await ins(s, "w", "2026-11-01T00:00:00.000Z");
+    await ins(s, "c", "2026-11-01T00:01:00.000Z");
+    await ins(s, "v", "2026-11-01T00:02:00.000Z");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    await s.markAvailable("v", "2026-11-01T00:06:00.000Z");
+    expect((await s.allLive()).map((r) => [r.environment_id, r.state])).toEqual([
+      ["w", "WARMING"],
+      ["v", "AVAILABLE"],
+    ]);
+  });
+
+  it("awaitingDeletion lists retired unclaimed rows until their environment is deleted", async () => {
+    const s = await open();
+    await ins(s, "retired");
+    await ins(s, "failed");
+    await ins(s, "live");
+    await ins(s, "c");
+    await s.markAvailable("c", "2026-11-01T00:05:00.000Z");
+    await claim(s);
+    expect(await s.markDeletedUnclaimed("retired", "2026-11-02T01:00:00.000Z")).toBe(true);
+    // warm-env's failed create retires its row with markDeleted.
+    await s.markDeleted("failed", "2026-11-02T01:01:00.000Z");
+    // A discarded claim keeps its CLAIMED row: its environment was deleted first.
+    await s.markDeleted("c", "2026-11-02T01:02:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["retired", "failed"]);
+    await s.markEnvDeleted("retired", "2026-11-02T01:05:00.000Z");
+    expect((await s.awaitingDeletion()).map((r) => r.environment_id)).toEqual(["failed"]);
+    expect((await s.byEnvironment("retired"))!.env_deleted_at).toBe("2026-11-02T01:05:00.000Z");
+  });
+
+  it("timeoutStreak counts the newest rows of a hash and size the keeper retired as timed out, back to the first that was not", async () => {
+    const s = await open();
+    const T = (min: number) => new Date(Date.parse("2026-11-01T00:00:00.000Z") + min * 60_000).toISOString();
+    const add = (id: string, min: number, over: { hash?: string; size?: number } = {}) =>
+      s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: over.hash ?? "h1", poolSize: over.size ?? 2, nowIso: T(min) });
+    const timeOut = async (id: string, min: number) => {
+      await add(id, min);
+      expect(await s.markDeletedUnclaimed(id, T(min + 31), { timedOut: true })).toBe(true);
+    };
+    await add("ok", 0);
+    await s.markAvailable("ok", T(3));
+    await timeOut("t1", 10);
+    // Retired for another reason (surplus, a dead status): not a timeout, and it breaks the streak.
+    await add("quick", 50);
+    await s.markDeletedUnclaimed("quick", T(55));
+    expect((await s.byEnvironment("quick"))!.timed_out_at).toBeNull();
+    expect((await s.byEnvironment("t1"))!.timed_out_at).toBe(T(41));
+    await timeOut("t2", 100);
+    await timeOut("t3", 140);
+    // Another hash or size is another streak.
+    await add("other-hash", 150, { hash: "h2" });
+    await add("other-size", 151, { size: 5 });
+    const streak = (hash = "h1", size = 2) =>
+      s.timeoutStreak({ appId: "app", templateId: "t", templateHash: hash, poolSize: size, limit: 3 });
+    expect(await streak()).toBe(2);
+    await timeOut("t4", 180);
+    expect(await streak()).toBe(3);
+    expect(await streak("h2")).toBe(0);
+    expect(await streak("h1", 5)).toBe(0);
+    // A row still WARMING (not yet timed out) is newest: the streak is 0 until it resolves.
+    await add("warming", 220);
+    expect(await streak()).toBe(0);
+  });
+
+  it("timeoutStreak does not count a WARMING row drained, trimmed or retired after an outage, however old", async () => {
+    const s = await open();
+    const T = (min: number) => new Date(Date.parse("2026-11-01T00:00:00.000Z") + min * 60_000).toISOString();
+    for (const [id, min] of [["d1", 0], ["d2", 10], ["d3", 20]] as const) {
+      await s.insertWarming({ environmentId: id, appId: "app", templateId: "t", templateHash: "h1", poolSize: 2, nowIso: T(min) });
+      // Retired hours later, still WARMING, but not as a timeout.
+      expect(await s.markDeletedUnclaimed(id, T(min + 300))).toBe(true);
+    }
+    expect(await s.timeoutStreak({ appId: "app", templateId: "t", templateHash: "h1", poolSize: 2, limit: 3 })).toBe(0);
+  });
+});

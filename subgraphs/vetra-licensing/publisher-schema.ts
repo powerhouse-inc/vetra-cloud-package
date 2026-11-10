@@ -73,6 +73,8 @@ export const publisherSchema: DocumentNode = gql`
     size: String
     baseDomain: String
     packageRegistry: String
+    "Warm environments kept ready (DEDICATED only); 0 = none"
+    warmPoolSize: Int!
     services: [PublisherTemplateService!]!
     packages: [PublisherTemplatePackage!]!
     templateHash: String!
@@ -189,6 +191,8 @@ export const publisherSchema: DocumentNode = gql`
     size: String
     baseDomain: String
     packageRegistry: String
+    "0-10, DEDICATED only; null clears"
+    warmPoolSize: Int
   }
 
   input AddTemplateServiceInput {
@@ -263,6 +267,17 @@ export const publisherSchema: DocumentNode = gql`
     llmBudgetUsd: Float
   }
 
+  "A DEDICATED template's warm pool: live counts, warm hours (UTC calendar months) and the cost estimate."
+  type WarmPool {
+    size: Int!
+    warming: Int!
+    available: Int!
+    claimedThisMonth: Int!
+    warmHoursThisMonth: Float!
+    warmHoursLastMonth: Float!
+    estimatePerEnvironmentEur: Float!
+  }
+
   type VetraPublisherQueries {
     "Your apps, or with orgId the organisation's apps you operate"
     myApps(orgId: String): [PublisherApp!]!
@@ -273,6 +288,7 @@ export const publisherSchema: DocumentNode = gql`
     environments(appId: String!): [PublisherEnvironment!]!
     inviteCodes(appId: String!): [PublisherInviteCode!]!
     allowList(appId: String!): [PublisherAllowListEntry!]!
+    warmPool(appId: String!, templateId: String!): WarmPool!
   }
 
   type VetraPublisherMutations {

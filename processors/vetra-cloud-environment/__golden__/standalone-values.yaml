@@ -91,8 +91,6 @@ switchboard:
     PH_REGISTRY_PACKAGES: "@achra/pkg@1.2.3"
     REACTOR_LEGACY_PROCESSOR_IDS: "false"
     OPENBAO_ADDR: https://openbao.vetra.io
-    PROMETHEUS_URL: http://prometheus-server.monitoring.svc
-    LOKI_URL: http://loki.monitoring.svc:3100
   envConfigMap:
     TENANT_ID: vast-vole-351c8164-8tgxdfjj
     TENANT_NAME: "achra"

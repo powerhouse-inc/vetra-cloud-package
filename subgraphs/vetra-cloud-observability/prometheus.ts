@@ -54,6 +54,13 @@ function parseMatrixResult(result: PrometheusMatrixResult[]): MetricSeries[] {
   });
 }
 
+/**
+ * cAdvisor also exports a pod-level cgroup series (container="") that already
+ * contains every container, plus the pause container ("POD"). Summing by pod
+ * without this filter counted each pod twice.
+ */
+const CONTAINER_SERIES = 'container!="",container!="POD"';
+
 export class PrometheusClient {
   private readonly baseUrl: string;
 
@@ -93,7 +100,7 @@ export class PrometheusClient {
   }
 
   async cpuUsage(tenantId: string, range = "ONE_HOUR"): Promise<MetricSeries[]> {
-    const query = `sum(rate(container_cpu_usage_seconds_total{namespace="${tenantId}"}[${METRIC_RANGE_VALUES[range] ?? "1h"}])) by (pod)`;
+    const query = `sum(rate(container_cpu_usage_seconds_total{namespace="${tenantId}",${CONTAINER_SERIES}}[${METRIC_RANGE_VALUES[range] ?? "1h"}])) by (pod)`;
     return this.queryRange(query, range);
   }
 
@@ -101,7 +108,7 @@ export class PrometheusClient {
     tenantId: string,
     range = "ONE_HOUR",
   ): Promise<MetricSeries[]> {
-    const query = `sum(container_memory_working_set_bytes{namespace="${tenantId}"}) by (pod)`;
+    const query = `sum(container_memory_working_set_bytes{namespace="${tenantId}",${CONTAINER_SERIES}}) by (pod)`;
     return this.queryRange(query, range);
   }
 

@@ -68,6 +68,7 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
         { auth: "public", maxBodyBytes: 256 * 1024 },
       ],
       ["GET", "apps/ci/deployments/:id", { auth: "public" }],
+      ["GET", "apps/directory/v1/environments", { auth: "renown" }],
     ]);
     const res = await routes[0].handler(
       new Request("https://x/api/pkg/github/webhook", {

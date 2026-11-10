@@ -18,6 +18,8 @@ import type { LicenseReads } from "./reads.js";
 import type { LifecycleStore } from "./lifecycle.js";
 import type { GrantRow, GrantStore } from "./grants.js";
 import type { ChainEnvRows } from "./environments.js";
+import type { WarmPoolStore } from "./warm-pool-db.js";
+import { estimateEnvironmentEurPerMonth } from "./warm-cost.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import { KeyStorageUnavailableError, type KeyVault } from "./key-vault.js";
 import type { LicensingConfig } from "./config.js";
@@ -40,6 +42,12 @@ import {
 } from "./publisher-errors.js";
 
 export interface PublisherDeps {
+  /**
+   * Called (fire-and-forget) after a licence is issued, so provisioning can
+   * start at once instead of on the next tick. Its failure never reaches the
+   * caller.
+   */
+  onLicenceIssued?: (licenseId: string) => void;
   auth: PublisherAuthDeps;
   /**
    * The environments the app owns besides its document's production
@@ -62,6 +70,7 @@ export interface PublisherDeps {
     "grantFor" | "grantsForApp" | "allowList" | "addToAllowList" | "removeFromAllowList"
   >;
   envRows: Pick<ChainEnvRows, "forApp">;
+  warmPool: Pick<WarmPoolStore, "live" | "warmHours" | "claimedBetween">;
   codes: Kysely<VetraLicensingDB>;
   /** Null when OPENBAO_ADDR is unset: attached Claude keys are then refused. */
   keyVault: KeyVault | null;
@@ -269,6 +278,28 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
         return apps.map((a) => ({ id: a.id, name: a.name, status: a.status, identityDid: a.identity_did ?? null }));
       }),
 
+      warmPool: withCodes(async (a: { appId: string; templateId: string }, ctx) => {
+        const app = await readable(a.appId, ctx);
+        const tpl = app?.templates.find((t) => t.id === a.templateId);
+        if (!app || !tpl) throw new UnknownTemplateError();
+        const now = new Date(deps.now());
+        const y = now.getUTCFullYear();
+        const mo = now.getUTCMonth();
+        const monthStart = new Date(Date.UTC(y, mo, 1)).toISOString();
+        const lastStart = new Date(Date.UTC(y, mo - 1, 1)).toISOString();
+        const nowIso = now.toISOString();
+        const live = await deps.warmPool.live(app.id, tpl.id);
+        return {
+          size: tpl.warmPoolSize,
+          warming: live.filter((r) => r.state === "WARMING").length,
+          available: live.filter((r) => r.state === "AVAILABLE").length,
+          claimedThisMonth: await deps.warmPool.claimedBetween(app.id, tpl.id, monthStart, nowIso),
+          warmHoursThisMonth: await deps.warmPool.warmHours(app.id, tpl.id, monthStart, nowIso, nowIso),
+          warmHoursLastMonth: await deps.warmPool.warmHours(app.id, tpl.id, lastStart, monthStart, nowIso),
+          estimatePerEnvironmentEur: estimateEnvironmentEurPerMonth(tpl.template.size),
+        };
+      }),
+
       templates: withCodes(async (a: { appId: string }, ctx) => {
         const app = await readable(a.appId, ctx);
         if (!app) return [];
@@ -281,6 +312,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           size: t.template.size,
           baseDomain: t.template.baseDomain,
           packageRegistry: t.template.packageRegistry,
+          warmPoolSize: t.warmPoolSize,
           services: t.template.services.map((s) => ({
             id: s.id,
             type: s.type,
@@ -414,6 +446,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             size?: Opt<string>;
             baseDomain?: Opt<string>;
             packageRegistry?: Opt<string>;
+            warmPoolSize?: Opt<number>;
           }>,
           ctx,
         ) => {
@@ -433,7 +466,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             }
           }
           const fields = present(a.input, [
-            "name", "sharedEnvironment", "size", "baseDomain", "packageRegistry",
+            "name", "sharedEnvironment", "size", "baseDomain", "packageRegistry", "warmPoolSize",
           ] as const);
           // A template always has a mode: null leaves it unchanged.
           const mode = maybeOneOf(MODES, a.input.mode, "mode");
@@ -584,7 +617,7 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
       issueGrant: withCodes(
         async (a: In<{ appId: string; kind: string; user: string; label?: Opt<string> }>, ctx) => {
           const appId = await owned(a.input.appId, ctx, true);
-          return grantLicense(deps.issue, {
+          const licenseId = await grantLicense(deps.issue, {
             appId,
             kind: a.input.kind,
             user: a.input.user,
@@ -592,6 +625,12 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
             label: a.input.label ?? null,
             now: deps.now(),
           });
+          try {
+            deps.onLicenceIssued?.(licenseId);
+          } catch (e) {
+            deps.issue.logger.warn(`[licensing] onLicenceIssued failed for ${licenseId}:`, e);
+          }
+          return licenseId;
         },
       ),
 

@@ -184,6 +184,7 @@ export type SetTemplateDetailsInput = {
   packageRegistry?: InputMaybe<Scalars["URL"]["input"]>;
   sharedEnvironment?: InputMaybe<Scalars["PHID"]["input"]>;
   size?: InputMaybe<Scalars["String"]["input"]>;
+  warmPoolSize?: InputMaybe<Scalars["Int"]["input"]>;
 };
 
 export type SetTermDetailsInput = {
@@ -253,6 +254,7 @@ export type VetraAppEnvironmentTemplate = {
   services: Array<TemplateService>;
   sharedEnvironment: Maybe<Scalars["PHID"]["output"]>;
   size: Maybe<Scalars["String"]["output"]>;
+  warmPoolSize: Maybe<Scalars["Int"]["output"]>;
 };
 
 export type VetraAppIdentity = {

@@ -46,6 +46,7 @@ type EnvSeed = {
   appId?: string | null;
   appRole?: string | null;
   prNumber?: number | null;
+  tenantId?: string | null;
 };
 
 async function seedEnv(env: EnvSeed): Promise<void> {
@@ -55,7 +56,7 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       id: env.id,
       name: env.id,
       subdomain: env.subdomain ?? null,
-      tenantId: null,
+      tenantId: env.tenantId ?? null,
       customDomain: null,
       packages: env.packages ?? null,
       services: env.services ?? null,
@@ -95,6 +96,36 @@ afterEach(async () => {
 });
 
 describe("myEnvironments", () => {
+  it("carries the live Argo health and sync status, null when nothing is known yet", async () => {
+    await seedEnv({ id: "live", owner: ME, tenantId: "t-live" });
+    await seedEnv({ id: "new", owner: ME, tenantId: "t-new" });
+    await seedEnv({ id: "draft", owner: ME });
+    await db
+      .insertInto("environment_status")
+      .values({
+        tenantId: "t-live",
+        argoSyncStatus: "SYNCED",
+        argoHealthStatus: "DEGRADED",
+        argoLastSyncedAt: null,
+        argoMessage: null,
+        configDriftDetected: 0,
+        tlsCertValid: null,
+        tlsCertExpiresAt: null,
+        domainResolves: null,
+        updatedAt: "2026-10-28T10:00:00Z",
+      })
+      .execute();
+    const out = (await makeResolvers().Query.myEnvironments(
+      null,
+      { scope: "MINE" },
+      { user: { address: ME } },
+    )) as Array<{ id: string; argoHealthStatus: string | null; argoSyncStatus: string | null }>;
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+    expect(byId.live).toMatchObject({ argoHealthStatus: "DEGRADED", argoSyncStatus: "SYNCED" });
+    expect(byId.new).toMatchObject({ argoHealthStatus: null, argoSyncStatus: null });
+    expect(byId.draft).toMatchObject({ argoHealthStatus: null, argoSyncStatus: null });
+  });
+
   it("exposes the App link (appId / appRole / prNumber), null for standalone envs", async () => {
     await seedEnv({ id: "standalone", owner: ME });
     await seedEnv({ id: "prod", owner: ME, appId: "app-1", appRole: "PRODUCTION" });

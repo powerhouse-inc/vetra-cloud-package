@@ -27,6 +27,8 @@ describe("GraphQL schema", () => {
     expect(fields).toContain("httpLatency");
     expect(fields).toContain("logs");
     expect(fields).toContain("errorLogs");
+    expect(fields).toContain("packageInstallCounts");
+    expect(fields).toContain("vetraEnvironmentHostKnown");
   });
 
   it("has all expected enums", () => {

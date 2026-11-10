@@ -15,7 +15,11 @@ import type { DB } from "./schema.js";
 import { MANAGED_MARKER, computeOrphanTenantDirs, isManagedValues } from "./gc.js";
 import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
-import type { AppImageProjectResolver } from "./app-image-project.js";
+import {
+  lookupWarm,
+  type AppImageProjectResolver,
+  type WarmPoolLookup,
+} from "./app-image-project.js";
 import {
   WORKFLOWS_MASTER_KEY,
   type SecretsService,
@@ -469,7 +473,7 @@ type ResourceSpec = {
  * today's powerhouse-chart default — preventing regression on next sync for
  * any environment that hasn't yet picked a size.
  */
-const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
+export const APP_RESOURCE_MAP: Record<VetraCloudRessourceSize, ResourceSpec> = {
   VETRA_AGENT_S: {
     requests: { cpu: "250m", memory: "512Mi" },
     limits: { cpu: "1", memory: "1Gi" },
@@ -563,6 +567,9 @@ const CONNECT_RESOURCES: ResourceSpec = {
   nodeMaxOldSpaceMb: 384,
 };
 
+/** The size a service runs at when none was selected. */
+export const DEFAULT_RESOURCE_SIZE: VetraCloudRessourceSize = "VETRA_AGENT_S";
+
 /**
  * Resolve the effective t-shirt size for a service. Reads the top-level
  * `selectedRessource` first, falls back to the legacy CLINT
@@ -571,11 +578,11 @@ const CONNECT_RESOURCES: ResourceSpec = {
 function readServiceSize(
   svc: VetraCloudEnvironmentService | undefined,
 ): VetraCloudRessourceSize {
-  if (!svc) return "VETRA_AGENT_S";
+  if (!svc) return DEFAULT_RESOURCE_SIZE;
   return (
     svc.selectedRessource ??
     svc.config?.selectedRessource ??
-    "VETRA_AGENT_S"
+    DEFAULT_RESOURCE_SIZE
   );
 }
 
@@ -1041,6 +1048,141 @@ export function switchboardHasReadyEndpoint(tag: string): boolean {
  */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Vite's extra allowed host (one), read by its dev and preview servers. */
+const VITE_ALLOWED_HOST = "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS";
+
+function hostOf(url: string | undefined): string | null {
+  try {
+    return url ? new URL(url).hostname : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Port a host image's Connect serves on (powerhouse.config.json studio.port). */
+const HOST_DEFAULT_PORT = 6540;
+
+/**
+ * A FUSION image that is a whole Powerhouse host (`ph run <host> serve`: its
+ * own switchboard plus a Connect that proxies it on one origin), not a
+ * front-end. Declared by the owner's `PH_HOST` env entry, which the image's
+ * entrypoint reads to pick the host. It gets the tenant database, a data
+ * volume, `PUBLIC_URL` and the Connect port instead of the NEXT_PUBLIC_* set.
+ */
+export function isFusionHost(state: VetraCloudEnvironmentState): boolean {
+  const service = (state.services ?? []).find(
+    (s) => s.type === "FUSION" && s.enabled,
+  );
+  if (!service) return false;
+  return (state.fusion?.env ?? []).some(
+    (e) => e.name === "PH_HOST" && !e.isSecret && Boolean(e.value?.trim()),
+  );
+}
+
+/** The state fields an env's generated `.vetra.io` hosts depend on. */
+export type GenericHostState = Pick<
+  VetraCloudEnvironmentState,
+  | "genericSubdomain"
+  | "genericBaseDomain"
+  | "apexService"
+  | "services"
+  | "customDomain"
+  | "fusion"
+>;
+
+/**
+ * Every generated (`<subdomain>[-<prefix>].<baseDomain>`) ingress host
+ * generateValuesYaml renders for this state, and only those: Switchboard and
+ * Connect (left out when a FUSION host replaces them), the FUSION app (with an
+ * image and version), and each CLINT agent with a package. A service pinned to
+ * the apex of an enabled custom domain has no generated host. Not mirrored:
+ * the FUSION image allowlist (process env + async App/licence resolver).
+ * Speckle's dedicated host belongs to the chart and is not included.
+ */
+export function routedGenericHosts(hostState: GenericHostState): string[] {
+  const state = hostState as VetraCloudEnvironmentState;
+  const subdomain = state.genericSubdomain;
+  if (!subdomain) return [];
+  const base = state.genericBaseDomain ?? "vetra.io";
+  const services = state.services ?? [];
+  const customDomain = state.customDomain?.enabled
+    ? (state.customDomain.domain ?? null)
+    : null;
+  const apexService = readApexService(state);
+  const onCustomApex = (type: "SWITCHBOARD" | "CONNECT" | "FUSION") =>
+    !!customDomain && apexService === type;
+  const hosts: string[] = [];
+
+  if (!isFusionHost(state)) {
+    for (const [type, fallback] of [
+      ["SWITCHBOARD", "switchboard"],
+      ["CONNECT", "connect"],
+    ] as const) {
+      if (!services.some((s) => s.type === type && s.enabled)) continue;
+      if (onCustomApex(type)) continue;
+      const service = services.find((s) => s.type === type);
+      hosts.push(
+        resolveGenericHost(
+          subdomain,
+          service?.prefix ?? fallback,
+          isTypeAtApex(state, type),
+          base,
+        ),
+      );
+    }
+  }
+
+  const fusion = services.find((s) => s.type === "FUSION" && s.enabled);
+  if (fusion && state.fusion?.image && fusion.version && !onCustomApex("FUSION")) {
+    hosts.push(
+      resolveGenericHost(
+        subdomain,
+        fusion.prefix || "fusion",
+        isTypeAtApex(state, "FUSION"),
+        base,
+      ),
+    );
+  }
+
+  for (const svc of services) {
+    if (svc.type !== "CLINT" || !svc.enabled || !svc.config?.package) continue;
+    hosts.push(
+      resolveGenericHost(subdomain, svc.prefix, isTypeAtApex(state, "CLINT"), base),
+    );
+  }
+  return hosts;
+}
+
+/** `PH_HOST_PORT` from the owner's env, else the Connect default. */
+function hostPort(state: VetraCloudEnvironmentState): number {
+  const raw = (state.fusion?.env ?? []).find(
+    (e) => e.name === "PH_HOST_PORT" && !e.isSecret,
+  )?.value;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 && port < 65536
+    ? port
+    : HOST_DEFAULT_PORT;
+}
+
+const NEXT_STATIC_CACHE = `  # Chunks keep their names but change content when NEXT_PUBLIC_* change
+  # (placeholder swap at start) — override Next's 1-year immutable caching.
+  staticCacheMaxAge: 3600`;
+
+/**
+ * The tenant database and a kept data volume (PH_USER_DATA_DIR: the server's
+ * identity key pair, attachments). Previews keep none: a kept PVC would
+ * outlive the preview's cascade delete, as for the switchboard.
+ */
+function hostBlock(preview: boolean): string {
+  return `  database:
+    enabled: true
+  persistence:
+    enabled: ${!preview}
+    storageClass: longhorn
+    size: 10Gi
+    mountPath: /data`;
+}
+
 export function generateFusionBlock(
   state: VetraCloudEnvironmentState,
   opts: {
@@ -1053,6 +1195,8 @@ export function generateFusionBlock(
     connectHost: string | null;
     /** Harbor project of the env's App, confirmed by vetra-apps (never the doc's own claim). */
     appImageProject?: string | null;
+    /** A warm (unclaimed) environment: the chart renders its ingress closed (`ingress.closed: true`) until claimed. */
+    warm?: boolean;
   },
 ): string {
   const service = (state.services ?? []).find(
@@ -1095,17 +1239,28 @@ export function generateFusionBlock(
     ? `fusion-${apexDomain.replace(/\./g, "-")}-tls`
     : `fusion-${opts.subdomain}-tls`;
 
-  const env = new Map<string, string>([
-    ["PORT", "3000"],
-    ["HOSTNAME", "0.0.0.0"],
-    ["NODE_ENV", "production"],
-  ]);
-  if (opts.switchboardHost)
-    env.set("NEXT_PUBLIC_SWITCHBOARD_URL", `https://${opts.switchboardHost}/graphql`);
-  if (opts.connectHost)
-    env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
-  env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
-  env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  const hostMode = isFusionHost(state);
+  const port = hostMode ? hostPort(state) : 3000;
+  // A host runs its migrations before Connect answers: its probes allow minutes.
+  const resources = APP_RESOURCE_MAP[effectiveAppSize(state, service)];
+  const env = new Map<string, string>();
+  if (hostMode) {
+    // The host builds absolute links (OAuth callbacks) from PUBLIC_URL, and
+    // runs both servers in one process: the heap follows the size.
+    env.set("NODE_ENV", "production");
+    env.set("PUBLIC_URL", `https://${host}`);
+    env.set("NODE_OPTIONS", `--max-old-space-size=${resources.nodeMaxOldSpaceMb}`);
+  } else {
+    env.set("PORT", "3000");
+    env.set("HOSTNAME", "0.0.0.0");
+    env.set("NODE_ENV", "production");
+    if (opts.switchboardHost)
+      env.set("NEXT_PUBLIC_SWITCHBOARD_URL", `https://${opts.switchboardHost}/graphql`);
+    if (opts.connectHost)
+      env.set("NEXT_PUBLIC_CONNECT_URL", `https://${opts.connectHost}`);
+    env.set("NEXT_PUBLIC_RENOWN_URL", "https://www.renown.id");
+    env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
+  }
   const secretNames: string[] = [];
   for (const e of state.fusion?.env ?? []) {
     if (!ENV_NAME.test(e.name)) continue; // names become YAML keys
@@ -1115,8 +1270,13 @@ export function generateFusionBlock(
     }
     env.set(e.name, e.value ?? "");
   }
+  // A host's Connect is served by Vite's preview server, which refuses a Host
+  // header it does not know: allow the public one (PUBLIC_URL, as finally set).
+  if (hostMode && !env.has(VITE_ALLOWED_HOST)) {
+    const publicHost = hostOf(env.get("PUBLIC_URL"));
+    if (publicHost) env.set(VITE_ALLOWED_HOST, publicHost);
+  }
 
-  const resources = APP_RESOURCE_MAP[effectiveAppSize(state, service)];
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
     .join("\n");
@@ -1142,10 +1302,10 @@ export function generateFusionBlock(
   service:
     type: ClusterIP
     port: 80
-    targetPort: 3000
+    targetPort: ${port}
   ingress:
     enabled: true
-    className: traefik
+    className: traefik${opts.warm ? "\n    closed: true" : ""}
     host: ${yamlQuote(host)}
     additionalHosts: []
     tls:
@@ -1160,9 +1320,7 @@ ${envLines}
 ${secretEnvBlock}
   podLabels:
     powerhouse.io/service: fusion
-  # Chunks keep their names but change content when NEXT_PUBLIC_* change
-  # (placeholder swap at start) — override Next's 1-year immutable caching.
-  staticCacheMaxAge: 3600
+${hostMode ? hostBlock(isPreviewEnv(state)) : NEXT_STATIC_CACHE}
   resources:
     requests:
       cpu: ${yamlQuote(resources.requests.cpu)}
@@ -1174,16 +1332,16 @@ ${secretEnvBlock}
     enabled: true
     httpGet:
       path: /
-      port: 3000
-    initialDelaySeconds: 30
+      port: ${port}
+    initialDelaySeconds: ${hostMode ? 60 : 30}
     periodSeconds: 15
     timeoutSeconds: 5
-    failureThreshold: 6
+    failureThreshold: ${hostMode ? 20 : 6}
   readinessProbe:
     enabled: true
     httpGet:
       path: /
-      port: 3000
+      port: ${port}
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 5
@@ -1213,16 +1371,20 @@ export async function generateValuesYaml(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
   const name = toKebabCase(state.label ?? "unnamed");
-  const switchboardEnabled = state.services.some(
-    (s) => s.type === "SWITCHBOARD" && s.enabled,
-  );
-  const connectEnabled = state.services.some(
-    (s) => s.type === "CONNECT" && s.enabled,
-  );
+  // A FUSION host image is the env's switchboard and Connect, on the tenant
+  // database: the platform ones would migrate the same database beside it.
+  const fusionHost = isFusionHost(state);
+  const switchboardEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "SWITCHBOARD" && s.enabled);
+  const connectEnabled =
+    !fusionHost &&
+    state.services.some((s) => s.type === "CONNECT" && s.enabled);
   const clintEnabled = state.services.some(
     (s) => s.type === "CLINT" && s.enabled,
   );
@@ -1281,7 +1443,7 @@ export async function generateValuesYaml(
   // (e.g. admin-style apex deployments) can skip the ~60-90s CNPG bootstrap
   // and the associated 50Gi Hetzner volume. Toggling Switchboard on later
   // flips this back to true and CNPG comes up then.
-  const databaseEnabled = switchboardEnabled;
+  const databaseEnabled = switchboardEnabled || fusionHost;
   // PR previews: small throwaway DB (empty data, no backups), see isPreviewEnv.
   const preview = isPreviewEnv(state);
   // Previews need no durable attachments: the chart's attachments PVC is
@@ -1354,6 +1516,8 @@ export async function generateValuesYaml(
     connectApexDomain,
   );
 
+  // One warm-pool lookup per render, shared with the image resolver.
+  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
   const fusionBlock = generateFusionBlock(state, {
     tenantId,
     subdomain,
@@ -1364,10 +1528,15 @@ export async function generateValuesYaml(
       ? (switchboardApexDomain ?? switchboardGenericHost)
       : null,
     connectHost: connectEnabled ? (connectApexDomain ?? connectGenericHost) : null,
-    appImageProject:
-      state.app && resolveAppImageProject
-        ? await resolveAppImageProject(state, documentId)
-        : null,
+    // Asked for every env: an App-linked one may run its App's project, and so
+    // may one Vetra provisioned for a licence (no App link; the resolver reads
+    // license_environments).
+    appImageProject: resolveAppImageProject
+      ? await (warm === undefined
+          ? resolveAppImageProject(state, documentId)
+          : resolveAppImageProject(state, documentId, warm))
+      : null,
+    warm: warm != null,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
@@ -1541,8 +1710,6 @@ switchboard:
     PH_REGISTRY_PACKAGES: ${yamlQuote(phPackages)}
     REACTOR_LEGACY_PROCESSOR_IDS: ${yamlQuote(tenantLegacyProcessorIds())}
     OPENBAO_ADDR: https://openbao.vetra.io
-    PROMETHEUS_URL: http://prometheus-server.monitoring.svc
-    LOKI_URL: http://loki.monitoring.svc:3100
   envConfigMap:
     TENANT_ID: ${tenantId}
     TENANT_NAME: ${tenantName}
@@ -1702,6 +1869,7 @@ export async function syncEnvironment(
   documentId: string,
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
+  isWarm: WarmPoolLookup | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -1722,6 +1890,7 @@ export async function syncEnvironment(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
   } finally {
     gitMutex.release();
@@ -1857,6 +2026,7 @@ async function syncEnvironmentEphemeral(
   documentId: string,
   secretsService: SecretsService | null,
   resolveAppImageProject: AppImageProjectResolver | null,
+  isWarm: WarmPoolLookup | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1885,6 +2055,7 @@ async function syncEnvironmentEphemeral(
       documentId,
       secretsService,
       resolveAppImageProject,
+      isWarm,
     );
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);

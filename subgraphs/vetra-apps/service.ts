@@ -3590,8 +3590,13 @@ async function ensurePreview(
       gitRef,
       imageProject: app.harbor_project,
     }),
-    enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
-    enableService({ type: "CONNECT", prefix: "connect" }),
+    // A host image (PH_HOST) is the preview's switchboard and Connect.
+    ...(fusionEnvTemplate.some((e) => e.name === "PH_HOST" && e.value?.trim())
+      ? []
+      : [
+          enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
+          enableService({ type: "CONNECT", prefix: "connect" }),
+        ]),
   ];
   const nowIso = deps.now().toISOString();
   const preview: PreviewRow = {

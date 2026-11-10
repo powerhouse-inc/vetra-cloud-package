@@ -1,6 +1,9 @@
 import type { Action } from "document-model";
 import type { Kysely } from "kysely";
 import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment";
+import { approveChanges, setLabel, setOwner } from "document-models/vetra-cloud-environment";
+import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
+import { redactSecrets } from "../../shared/redact.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { addressOfDid } from "./did.js";
@@ -11,6 +14,7 @@ import {
   validateTemplate,
   type TemplateShape,
 } from "./template.js";
+import type { WarmPoolStore, WarmRow } from "./warm-pool-db.js";
 
 export class AppEnvironmentCapReachedError extends Error {
   override name = "AppEnvironmentCapReachedError";
@@ -125,6 +129,23 @@ export function createChainEnvironmentRows(
   };
 }
 
+/**
+ * What a claim of a warm environment needs. Without it provisionChain only
+ * ever builds cold.
+ */
+export interface WarmClaimDeps {
+  store: WarmPoolStore;
+  /** Hands the document's protection to its new owner (protectForOwner). */
+  handOver(documentId: string, owner: string): Promise<void>;
+}
+
+export interface AppKeyInput {
+  environmentId: string;
+  tenantId: string;
+  rootLicenseId: string;
+  ownerDid: string;
+}
+
 export interface ChainEnvDeps {
   rows: ChainEnvRows;
   envs: {
@@ -134,7 +155,19 @@ export interface ChainEnvDeps {
     delete(id: string): Promise<void>;
   };
   generateSubdomain(id: string): string;
-  logger?: Pick<Console, "error">;
+  logger?: Pick<Console, "error"> & Partial<Pick<Console, "warn">>;
+  /** Claim a warm environment before building one (DEDICATED templates only). */
+  warmPool?: WarmClaimDeps;
+  /**
+   * The licence's included AI key (spec 3.11), for a warm claim and a cold
+   * build alike: mints it and writes the tenant secret when the licence's code
+   * carries a budget. Resolves true when a key was written (the environment
+   * must then declare it), false when the licence has none. Absent (no broker
+   * in this process): no environment gets a key.
+   */
+  appKey?: (input: AppKeyInput) => Promise<boolean>;
+  /** Releases an environment's included key (a failed claim); idempotent. */
+  releaseAppKey?: (environmentId: string) => Promise<void>;
 }
 
 export interface ProvisionChainInput {
@@ -146,8 +179,37 @@ export interface ProvisionChainInput {
   templateId: string;
   template: TemplateShape;
   templateHash: string;
+  /**
+   * The template's FUSION artifact versions, newest last (AppTemplateView's
+   * fusionVersions): lets a re-template move a commit-tag image up. Absent:
+   * such a version stays where it is.
+   */
+  fusionVersions?: readonly string[];
   label: string;
   now: string;
+}
+
+/**
+ * Write the licence's included key into the environment's tenant before the
+ * batch that declares it, so the one rollout that batch causes mounts a
+ * secret that is already there. Only a template that runs FUSION (the only
+ * service that mounts it) gets one.
+ */
+async function writeIncludedKey(
+  deps: ChainEnvDeps,
+  environmentId: string,
+  subdomain: string,
+  rootLicenseId: string,
+  input: ProvisionChainInput,
+): Promise<boolean> {
+  if (!deps.appKey) return false;
+  if (!validateTemplate(input.template).services.some((s) => s.type === "FUSION")) return false;
+  return deps.appKey({
+    environmentId,
+    tenantId: getTenantId(subdomain, environmentId),
+    rootLicenseId,
+    ownerDid: input.userDid,
+  });
 }
 
 /** Statuses a template must not be applied in: asleep, going away, or gone. */
@@ -206,6 +268,11 @@ export async function provisionChain(
   validateTemplate(input.template);
 
   let row = existing;
+  if (deps.warmPool) {
+    const warm = await claimWarm(deps, deps.warmPool, existing, input);
+    if (warm.done) return warm.done;
+    row = warm.row;
+  }
   if (!row) {
     const fresh = await deps.envs.create();
     const claim = deps.rows.claim({
@@ -274,15 +341,30 @@ export async function provisionChain(
   // list was rejected leaves behind, so that retry is a create. A live
   // environment is only brought UP TO the template (a floor): its label, its
   // extra packages and its other services are the holder's.
-  const actions =
-    state.status !== "DRAFT"
-      ? renderFloorUpdateActions({ template: input.template, current: state })
-      : renderCreateActions({
-          label: input.label,
-          subdomain: deps.generateSubdomain(row.environment_id),
-          owner: addressOfDid(input.userDid),
-          template: input.template,
-        });
+  // A create carries the included key (spec 3.11); a live environment's key
+  // was given when it was created or claimed.
+  let actions: Action[];
+  if (state.status !== "DRAFT") {
+    actions = renderFloorUpdateActions({
+      template: input.template,
+      current: state,
+      fusionVersions: input.fusionVersions,
+      onFusionHeld: ({ current, wanted }) => {
+        const msg = `[licensing] environment ${row.environment_id} of chain ${row.root_license_id} stays on FUSION ${current}: the app's record no longer lists it (only its last 50 versions are kept, or it was pinned by hand), so it cannot be proven older than ${wanted}; move it by hand if it should follow the template`;
+        if (deps.logger?.warn) deps.logger.warn(msg);
+        else (deps.logger ?? console).error(msg);
+      },
+    });
+  } else {
+    const subdomain = deps.generateSubdomain(row.environment_id);
+    actions = renderCreateActions({
+      label: input.label,
+      subdomain,
+      owner: addressOfDid(input.userDid),
+      template: input.template,
+      includedKey: await writeIncludedKey(deps, row.environment_id, subdomain, row.root_license_id, input),
+    });
+  }
   if (actions.length > 0) await deps.envs.execute(row.environment_id, actions);
 
   // The row's label is the one the environment was created with.
@@ -294,6 +376,183 @@ export async function provisionChain(
   };
   await deps.rows.update(row.environment_id, patch);
   return { ...row, ...patch };
+}
+
+/** The warm environment cannot be used; it is discarded and the chain built cold. */
+class WarmEnvironmentUnusableError extends Error {
+  override name = "WarmEnvironmentUnusableError";
+}
+
+/**
+ * Claim a warm environment for the chain, or finish one a crashed call
+ * claimed (a row still UNAPPLIED whose environment is this chain's CLAIMED
+ * warm row: roll forward, never a second environment). `done` is the
+ * claimed chain's row; otherwise `row` is what the caller carries on with
+ * (null: build cold).
+ */
+async function claimWarm(
+  deps: ChainEnvDeps,
+  warmPool: WarmClaimDeps,
+  existing: LicenseEnvironments | null,
+  input: ProvisionChainInput,
+): Promise<{ done: LicenseEnvironments; row?: never } | { done?: never; row: LicenseEnvironments | null }> {
+  if (existing) {
+    if (existing.template_hash !== UNAPPLIED_TEMPLATE_HASH) return { row: existing };
+    const warm = await warmPool.store.byEnvironment(existing.environment_id);
+    if (warm?.state !== "CLAIMED" || warm.root_license_id !== existing.root_license_id) {
+      return { row: existing };
+    }
+    const done = await finishWarmClaim(deps, warmPool, existing, warm, input);
+    return done ? { done } : { row: null };
+  }
+
+  // Claimed and the chain's row written in one transaction (see claimForChain).
+  const claim = await warmPool.store.claimForChain(
+    {
+      appId: input.appId,
+      templateId: input.templateId,
+      templateHash: input.templateHash,
+      rootLicenseId: input.root,
+      nowIso: input.now,
+    },
+    {
+      root_license_id: input.root,
+      app_id: input.appId,
+      user_did: input.userDid,
+      license_id: input.licenseId,
+      template_id: input.templateId,
+      label: input.label,
+      template_hash: UNAPPLIED_TEMPLATE_HASH,
+      ended_at: null,
+      stopped_at: null,
+      delete_after: null,
+      created_at: input.now,
+      updated_at: input.now,
+    },
+  );
+  if (!claim.warm) {
+    // None available (build cold), or another caller holds the chain: adopt
+    // its row as a lost cold claim would.
+    if (!claim.row) return { row: null };
+    assertSameOwner(claim.row, input);
+    if (claim.row.template_hash === input.templateHash) return { done: claim.row };
+    return { row: claim.row };
+  }
+  const done = await finishWarmClaim(deps, warmPool, claim.row, claim.warm, input);
+  return done ? { done } : { row: null };
+}
+
+/**
+ * Steps 3-4 of a claim (spec §3.5), idempotent so a crashed claim can be
+ * rolled forward: re-read the document, give it to the holder (SET_OWNER and
+ * the template's floor, whose ADMINS follows the owner, in one batch), the
+ * included key, protection, then record the template hash. On any failure
+ * the environment is discarded, never returned to the pool (it may carry a
+ * partial owner write), and null tells the caller to build cold.
+ */
+async function finishWarmClaim(
+  deps: ChainEnvDeps,
+  warmPool: WarmClaimDeps,
+  row: LicenseEnvironments,
+  warm: WarmRow,
+  input: ProvisionChainInput,
+): Promise<LicenseEnvironments | null> {
+  const id = row.environment_id;
+  const holder = addressOfDid(input.userDid);
+  const log = deps.logger ?? console;
+  try {
+    if (warm.deleted_at !== null) {
+      throw new WarmEnvironmentUnusableError(`warm environment ${id} was recycled`);
+    }
+    const state = await deps.envs.getState(id);
+    if (!state) throw new WarmEnvironmentUnusableError(`warm environment ${id} has no document`);
+    const owner = state.owner?.toLowerCase() ?? null;
+    if (owner === holder && NOT_APPLICABLE.has(state.status)) {
+      // A rolled-forward claim whose owner write landed: the environment is
+      // the holder's now. Hold, as for any chain environment.
+      throw new EnvironmentNotReadyError(`environment ${id} is ${state.status}`);
+    }
+    if (owner !== null && owner !== holder) {
+      throw new WarmEnvironmentUnusableError(`warm environment ${id} is already owned by ${owner}`);
+    }
+    if (owner === null && state.status !== "READY") {
+      throw new WarmEnvironmentUnusableError(`warm environment ${id} is ${state.status}, not READY`);
+    }
+    // The included key is written to the tenant first and declared in the
+    // batch below, so the one rollout mounts it (spec 3.11).
+    if (deps.appKey && !state.genericSubdomain) {
+      throw new WarmEnvironmentUnusableError(`warm environment ${id} has no subdomain to key`);
+    }
+    const includedKey = state.genericSubdomain
+      ? await writeIncludedKey(deps, id, state.genericSubdomain, row.root_license_id, input)
+      : false;
+    // One batch: gitops re-renders once and the app restarts once. The warm
+    // label ("<App> (warm)") becomes the holder's, as a cold build's would.
+    const label = row.label ?? input.label;
+    const floor = renderFloorUpdateActions({
+      template: input.template,
+      current: { ...state, owner: holder },
+      includedKey,
+      fusionVersions: input.fusionVersions,
+    });
+    // The claim must always re-render (the ingress opens once the row is
+    // CLAIMED). SET_LABEL, even an unchanged one, leaves a deployed environment
+    // CHANGES_PENDING, so unless the floor already ends approved it is sent
+    // and approved, even when the label and the floor are already met.
+    const floorApproves = floor.at(-1)?.type === "APPROVE_CHANGES";
+    const relabel = state.label !== label || !floorApproves ? [setLabel({ label })] : [];
+    const approve = floorApproves ? [] : [approveChanges({})];
+    await deps.envs.execute(id, [setOwner({ address: holder }), ...relabel, ...floor, ...approve]);
+    await warmPool.handOver(id, holder);
+  } catch (err) {
+    if (err instanceof EnvironmentNotReadyError) throw err;
+    log.error(
+      `[licensing] claim of warm environment ${id} for chain ${row.root_license_id} failed; discarding it and building cold: ${redactSecrets(String(err))}`,
+    );
+    await discardWarmClaim(deps, warmPool, id, input.now);
+    return null;
+  }
+  const patch = {
+    license_id: input.licenseId,
+    template_id: input.templateId,
+    template_hash: input.templateHash,
+    updated_at: input.now,
+  };
+  await deps.rows.update(id, patch);
+  return { ...row, ...patch };
+}
+
+/**
+ * Undo a failed claim: the included key released (first, and whatever the
+ * rest does: a failed claim never keeps a key it minted), the environment
+ * deleted, its warm row deleted, the chain's row removed.
+ * Any step failing rethrows with the chain row still in place, so the next
+ * call rolls the claim forward or discards it again; never a second
+ * environment alongside it.
+ */
+async function discardWarmClaim(
+  deps: ChainEnvDeps,
+  warmPool: WarmClaimDeps,
+  id: string,
+  now: string,
+): Promise<void> {
+  if (deps.releaseAppKey) {
+    // A failed release is left to the environment's deletion (which releases
+    // its key) and the vetra-llm sweeper.
+    await deps.releaseAppKey(id).catch((err: unknown) => {
+      (deps.logger ?? console).error(
+        `[licensing] included key of discarded warm environment ${id} not released: ${redactSecrets(String(err))}`,
+      );
+    });
+  }
+  try {
+    await deps.envs.delete(id);
+  } catch (err) {
+    // Already gone (a recycle) is what we wanted.
+    if ((await deps.envs.getState(id)) !== null) throw err;
+  }
+  await warmPool.store.markDeleted(id, now);
+  await deps.rows.remove(id);
 }
 
 /**

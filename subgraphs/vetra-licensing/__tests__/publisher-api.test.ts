@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { actions as appActions } from "document-models/vetra-app";
 import { actions as licenseActions } from "document-models/app-owner-license";
 import {
@@ -101,6 +101,18 @@ describe("vetraPublisher end to end", () => {
     await m("setTemplateDetails", { input: { appId: APP, templateId, size: null } });
     [t] = (await q("templates", { appId: APP })) as TemplateOut[];
     expect(t).toMatchObject({ size: null, baseDomain: "vetra.io" });
+  });
+
+  it("sets and reads the warm pool size", async () => {
+    expect(await m("setTemplateDetails", { input: { appId: APP, templateId, warmPoolSize: 2 } })).toBe(true);
+    let [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(2);
+    await m("setTemplateDetails", { input: { appId: APP, templateId, name: "Pro" } });
+    [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(2);
+    await m("setTemplateDetails", { input: { appId: APP, templateId, warmPoolSize: null } });
+    [t] = (await q("templates", { appId: APP })) as (TemplateOut & { warmPoolSize: number })[];
+    expect(t!.warmPoolSize).toBe(0);
   });
 
   it("a SHARED template may only point at one of the app's own environments", async () => {
@@ -444,6 +456,31 @@ describe("vetraPublisher end to end", () => {
       h.cfg.enabled = true;
     }
   });
+
+  it("warmPool reports live counts, claims, warm hours and the cost estimate", async () => {
+    const tid = (await m("addTemplate", { input: { appId: APP, name: "Warm", mode: "DEDICATED" } })) as string;
+    await m("setTemplateDetails", { input: { appId: APP, templateId: tid, warmPoolSize: 3, size: "VETRA_AGENT_XXL" } });
+    const row = (environment_id: string, state: "WARMING" | "AVAILABLE" | "CLAIMED", created_at: string, claimed_at: string | null) => ({
+      environment_id, app_id: APP, template_id: tid, template_hash: "h", state, created_at,
+      ready_at: null, claimed_at, deleted_at: null, root_license_id: claimed_at ? `root-${environment_id}` : null,
+    });
+    await h.db.insertInto("app_warm_pool").values([
+      row("w1", "WARMING", "2026-10-07T22:00:00.000Z", null),
+      row("a1", "AVAILABLE", "2026-10-07T00:00:00.000Z", null),
+      row("c1", "CLAIMED", "2026-09-30T00:00:00.000Z", "2026-10-02T00:00:00.000Z"),
+    ]).execute();
+    expect(await q("warmPool", { appId: APP, templateId: tid })).toStrictEqual({
+      size: 3,
+      warming: 1,
+      available: 1,
+      claimedThisMonth: 1,
+      warmHoursThisMonth: 50,
+      warmHoursLastMonth: 24,
+      estimatePerEnvironmentEur: 120,
+    });
+    expect(await codeOf(q("warmPool", { appId: APP, templateId: "nope" }))).toBe("NOT_FOUND");
+  });
+
 });
 
 describe("a tampered app", () => {
@@ -477,5 +514,30 @@ describe("a tampered app", () => {
     expect(await h.revisionOf(HELD)).toBe(before);
     expect(await h.db.selectFrom("invite_codes").select("code").where("app_id", "=", HELD).execute()).toStrictEqual([]);
     expect(((await q("templates", { appId: HELD })) as { name: string | null }[])[0]!.name).toBe("forged");
+  });
+});
+
+describe("vetraPublisher: provisioning kick", () => {
+  const grant = (res: Resolvers, user: string) =>
+    res.VetraPublisherMutations.issueGrant!({}, { input: { appId: APP, kind: "2026-pro", user } }, asOwner);
+
+  it("kicks provisioning after a successful grantLicense", async () => {
+    const onLicenceIssued = vi.fn();
+    const id = await grant(h.build({ onLicenceIssued }), OTHER);
+    expect(onLicenceIssued).toHaveBeenCalledTimes(1);
+    expect(onLicenceIssued).toHaveBeenCalledWith(id);
+  });
+
+  it("does not kick on a refused grant", async () => {
+    const onLicenceIssued = vi.fn();
+    const res = h.build({ onLicenceIssued });
+    expect(await codeOf(res.VetraPublisherMutations.issueGrant!({}, { input: { appId: APP, kind: "nope", user: OTHER } }, asOwner))).toBe("TERM_NOT_ISSUABLE");
+    expect(await codeOf(grant(res, "did:key:z6Mk"))).toBe("UNSUPPORTED_DID");
+    expect(onLicenceIssued).not.toHaveBeenCalled();
+  });
+
+  it("returns the grant even if the kick throws", async () => {
+    const id = await grant(h.build({ onLicenceIssued: () => { throw new Error("kick failed"); } }), OTHER);
+    expect(id).toBeTruthy();
   });
 });

@@ -400,3 +400,30 @@ export async function redeemedCodeOf(
   const keyed = rows.find((r) => r.ciphertext !== null && live(r.access_expires));
   return (keyed ?? rows.at(0))?.code ?? null;
 }
+
+/**
+ * An app licence's monthly LLM budget (USD), for its environment's included
+ * OpenRouter key (spec 3.11): while the chain is live (its environment row
+ * exists and has not ended), the budget of the code the holder redeemed for
+ * the chain's current licence, else for its root (a renewal through a code
+ * without a budget keeps what the chain started with). Null when the chain
+ * has no environment or has ended, or no redeemed code carries a budget.
+ */
+export async function appBudgetForLicence(
+  db: Kysely<VetraLicensingDB>,
+  rootLicenseId: string,
+  userDid: string,
+): Promise<number | null> {
+  const chain = await db
+    .selectFrom("license_environments")
+    .select(["license_id", "ended_at"])
+    .where("root_license_id", "=", rootLicenseId)
+    .executeTakeFirst();
+  if (!chain || chain.ended_at !== null) return null;
+  for (const licenseId of new Set([chain.license_id, rootLicenseId])) {
+    const code = await redeemedCodeOf(db, licenseId, userDid);
+    const budget = code ? await llmBudgetForCode(db, code) : null;
+    if (budget !== null) return budget;
+  }
+  return null;
+}

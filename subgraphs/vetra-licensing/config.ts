@@ -43,7 +43,19 @@ export interface LicensingConfig {
   tokensPerTick: number;
   /** A handler step (or read) that takes longer fails, so a hung call cannot stall every later tick. */
   stepTimeoutMs: number;
+  /** How often the app warm pool keeper runs (APP_WARM_POOL_SCAN_INTERVAL_MS). */
+  warmPoolScanIntervalMs: number;
+  /** Warm environments created per keeper tick, across all pools (APP_WARM_POOL_CREATES_PER_TICK). 0 pauses filling. */
+  warmPoolCreatesPerTick: number;
+  /**
+   * Per-template ceiling on a warm pool (APP_WARM_POOL_MAX_PER_TEMPLATE). May
+   * only lower the document model's maximum: clamped to it.
+   */
+  warmPoolMaxPerTemplate: number;
 }
+
+/** The document model's maximum warmPoolSize (WarmPoolTooLargeError). */
+export const WARM_POOL_MODEL_MAX = 10;
 
 export function loadLicensingConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -90,5 +102,11 @@ export function loadLicensingConfig(
     retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),
     stepTimeoutMs: int("LICENSING_STEP_TIMEOUT_MS", 120 * 1000),
     tokensPerTick: nonNegative("LICENSING_TOKENS_PER_TICK", 5),
+    warmPoolScanIntervalMs: int("APP_WARM_POOL_SCAN_INTERVAL_MS", 30 * 1000),
+    warmPoolCreatesPerTick: nonNegative("APP_WARM_POOL_CREATES_PER_TICK", 3),
+    warmPoolMaxPerTemplate: Math.min(
+      nonNegative("APP_WARM_POOL_MAX_PER_TEMPLATE", WARM_POOL_MODEL_MAX),
+      WARM_POOL_MODEL_MAX,
+    ),
   };
 }

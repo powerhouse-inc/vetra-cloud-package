@@ -247,3 +247,227 @@ describe("generateValuesYaml — FUSION", () => {
     expect(appBlock(await render(envState()))).toBe("app:\n  enabled: false");
   });
 });
+
+describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
+  const hostState = (
+    env: { name: string; value: string; isSecret: boolean }[] = [],
+    overrides: Partial<VetraCloudEnvironmentState> = {},
+  ) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }, ...env],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      ...overrides,
+    });
+
+  /** The top-level `database:` block's `cnpg.enabled`. */
+  const databaseEnabled = (yaml: string) =>
+    /^database:\n  cnpg:\n    enabled: (true|false)/m.exec(yaml)?.[1];
+
+  it("serves Connect's port with PUBLIC_URL instead of the NEXT_PUBLIC_* set", async () => {
+    const app = appBlock(await render(hostState()));
+    expect(app).toContain("    targetPort: 6540");
+    // the only service: served at the generic apex
+    expect(app).toContain(`    "PUBLIC_URL": "https://${SUB}.vetra.io"`);
+    expect(app).toContain(`    "PH_HOST": "cli"`);
+    expect(app).toMatch(/"NODE_OPTIONS": "--max-old-space-size=\d+"/);
+    // Vite's preview server must accept the public Host header
+    expect(app).toContain(`    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "${SUB}.vetra.io"`);
+    expect(app).not.toContain("NEXT_PUBLIC_");
+    expect(app).not.toContain(`"PORT"`);
+    expect(app).not.toContain("staticCacheMaxAge");
+    expect(app.match(/      port: 6540/g)).toHaveLength(2); // liveness + readiness
+  });
+
+  it("gives the host the tenant database and a kept /data volume", async () => {
+    const yaml = await render(hostState());
+    const app = appBlock(yaml);
+    expect(app).toContain("  database:\n    enabled: true");
+    expect(app).toContain("  persistence:\n    enabled: true");
+    expect(app).toContain("    mountPath: /data");
+    // the platform switchboard is off, the database is on for the host
+    expect(databaseEnabled(yaml)).toBe("true");
+  });
+
+  it("keeps no volume for a preview", async () => {
+    const app = appBlock(
+      await render(
+        hostState([], {
+          app: {
+            appId: "app-1",
+            role: "PREVIEW",
+            prNumber: 3,
+            gitRef: "refs/pull/3/merge",
+            imageProject: null,
+          },
+        }),
+      ),
+    );
+    expect(app).toContain("  persistence:\n    enabled: false");
+  });
+
+  it("takes the port from PH_HOST_PORT", async () => {
+    const app = appBlock(
+      await render(hostState([{ name: "PH_HOST_PORT", value: "3000", isSecret: false }])),
+    );
+    expect(app).toContain("    targetPort: 3000");
+  });
+
+  it("lets the owner override PUBLIC_URL", async () => {
+    const app = appBlock(
+      await render(
+        hostState([{ name: "PUBLIC_URL", value: "https://sektar.example", isSecret: false }]),
+      ),
+    );
+    expect(app).toContain(`    "PUBLIC_URL": "https://sektar.example"`);
+    expect(app).toContain(`    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "sektar.example"`);
+  });
+
+  it("is a plain front-end without PH_HOST, or with PH_HOST as a secret", async () => {
+    for (const state of [
+      envState({ services: [svc("FUSION", "fusion", "sha-1234567")] }),
+      envState({
+        services: [svc("FUSION", "fusion", "sha-1234567")],
+        fusion: {
+          image: FUSION_IMAGE,
+          env: [{ name: "PH_HOST", value: "cli", isSecret: true }],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+    ]) {
+      const yaml = await render(state);
+      const app = appBlock(yaml);
+      expect(app).toContain("    targetPort: 3000");
+      expect(app).not.toContain("  database:");
+      expect(databaseEnabled(yaml)).toBe("false");
+    }
+  });
+});
+
+describe("generateValuesYaml — the included AI key on a FUSION-only host (spec 3.11)", () => {
+  const host = (env: { name: string; value: string | null; isSecret: boolean }[]) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }, ...env],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+    });
+
+  it("mounts OPENROUTER_API_KEY by key from the tenant Secret and turns the secrets controller on", async () => {
+    const yaml = await render(host([{ name: "OPENROUTER_API_KEY", value: null, isSecret: true }]));
+    const app = appBlock(yaml);
+    expect(app).toContain(`    - name: "OPENROUTER_API_KEY"\n      secretName: ${TENANT}-secrets\n      key: "OPENROUTER_API_KEY"`);
+    expect(app).not.toContain(`    "OPENROUTER_API_KEY":`);
+    expect(yaml).toContain("tenantSecretsController:\n  enabled: true");
+  });
+
+  it("without the key: no secretEnv and no secrets controller", async () => {
+    const yaml = await render(host([{ name: "ADMINS", value: "0xabc", isSecret: false }]));
+    expect(appBlock(yaml)).toContain("  secretEnv: []");
+    expect(yaml).not.toContain("tenantSecretsController:");
+  });
+});
+
+describe("generateValuesYaml — FUSION host beside platform services", () => {
+  it("renders neither the platform switchboard nor Connect next to a host", async () => {
+    const yaml = await render(
+      envState({
+        fusion: {
+          image: FUSION_IMAGE,
+          env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+    );
+    expect(yaml).toMatch(/^switchboard:\n  enabled: false/m);
+    expect(yaml).toMatch(/^connect:\n  enabled: false/m);
+    expect(appBlock(yaml)).toContain("  database:\n    enabled: true");
+  });
+});
+
+describe("generateValuesYaml — licensed env (no App link) running its App's image", () => {
+  it("asks the resolver even without an App link, and renders the image it allows", async () => {
+    const state = envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: "cr.vetra.io/app-sektar/host",
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      app: null,
+    });
+    const resolver = vi.fn(async () => "app-sektar");
+    const yaml = await generateValuesYaml(dbStub, state, DOC_ID, null, resolver);
+    expect(resolver).toHaveBeenCalledWith(state, DOC_ID);
+    expect(appBlock(yaml)).toContain("  enabled: true");
+    expect(appBlock(yaml)).toContain(`    repository: "cr.vetra.io/app-sektar/host"`);
+  });
+});
+
+describe("generateValuesYaml — warm environment is closed", () => {
+  const warmState = () =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: "cr.vetra.io/app-sektar/host",
+        env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+      app: null,
+    });
+  const allow = vi.fn(async () => "app-sektar");
+
+  it("sets ingress.closed on the FUSION ingress, keeping TLS and cert-manager", async () => {
+    const isWarm = vi.fn(async () => ({ appId: "app-1" }));
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(isWarm).toHaveBeenCalledWith(DOC_ID);
+    const block = appBlock(yaml);
+    expect(block).toContain("    closed: true");
+    expect(block).toContain("      cert-manager.io/cluster-issuer:");
+    expect(block).toContain("      enabled: true\n      secretName:");
+    await expect(yaml).toMatchFileSnapshot("./__golden__/warm-values.yaml");
+  });
+
+  it("leaves a non-warm environment untouched", async () => {
+    const isWarm = vi.fn(async () => null);
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(yaml).not.toContain("closed:");
+    expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
+  });
+
+  it("looks the warm pool up once per render and hands the result to the image resolver", async () => {
+    const isWarm = vi.fn(async () => ({ appId: "app-1" }));
+    const resolver = vi.fn(async () => "app-sektar");
+    await generateValuesYaml(dbStub, warmState(), DOC_ID, null, resolver, isWarm);
+    expect(isWarm).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(expect.anything(), DOC_ID, { appId: "app-1" });
+  });
+
+  it("renders a normal environment as not warm when the warm-pool table is missing (42P01)", async () => {
+    const isWarm = vi.fn(async () => {
+      throw Object.assign(new Error('relation "app_warm_pool" does not exist'), { code: "42P01" });
+    });
+    const yaml = await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm);
+    expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
+  });
+
+  it("fails the render on any other warm-pool lookup error (a warm env fails closed)", async () => {
+    const isWarm = vi.fn(async () => {
+      throw Object.assign(new Error("connection reset"), { code: "08006" });
+    });
+    await expect(
+      generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm),
+    ).rejects.toThrow("connection reset");
+  });
+});

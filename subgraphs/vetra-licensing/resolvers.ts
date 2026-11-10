@@ -296,6 +296,7 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
                 templateId: r.template.id,
                 template: r.template.template,
                 templateHash: r.template.templateHash,
+                fusionVersions: r.template.fusionVersions,
                 // As the handler: the project name chosen at issue wins.
                 label: (await deps.grants.chainLabel(root)) ?? a.input.label,
                 now: deps.now(),

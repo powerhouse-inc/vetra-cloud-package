@@ -9,6 +9,7 @@ import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
 import { getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
+import { redactSecrets } from "../../shared/redact.js";
 import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
@@ -32,6 +33,14 @@ import {
 } from "./license-gateway.js";
 import { createLifecycleStore } from "./lifecycle.js";
 import { LicenseKeeper } from "./keeper.js";
+import { AppWarmPoolKeeper } from "./warm-pool-keeper.js";
+import { createWarmPoolStore } from "./warm-pool-db.js";
+import { createWarmEnvironment } from "./warm-env.js";
+import {
+  protectForOwner,
+  protectUnownedForService,
+  vetraServiceAddress,
+} from "../vetra-cloud-observability/env-protection.js";
 import { AppLicenseHandler } from "./handler.js";
 import {
   createChainEnvironmentRows,
@@ -65,6 +74,12 @@ import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
 import { loadAppsConfig } from "../vetra-apps/config.js";
+import { up as ensureLlmTables } from "../vetra-llm/db/migrations.js";
+import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
+import { createProcessBroker } from "../vetra-llm/factory.js";
+import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { StudioAccessDeps } from "./studio-access.js";
+import { appBudgetForLicence } from "./invite-codes.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
@@ -114,6 +129,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
   additionalContextFields = {};
   private keeper: LicenseKeeper | null = null;
   private handler: AppLicenseHandler | null = null;
+  private warmPool: AppWarmPoolKeeper | null = null;
   private stats: RenownStatsClient | null = null;
   private migration: { stop(): void } | null = null;
 
@@ -226,7 +242,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       migrationComplete,
       logger: console,
     };
+    // Late-bound: the handler is built after the resolvers. A no-op until then.
+    let kick: (licenseId: string) => void = () => {};
+    const onLicenceIssued = (licenseId: string) => kick(licenseId);
     const publisherResolvers = createPublisherResolvers({
+      onLicenceIssued,
       // Ownership of environments comes from the apps tables, never documents.
       appEnvironments: async (appId) => {
         const [row, previews] = await Promise.all([
@@ -248,6 +268,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       },
       auth: { ...ownerLookup, orgs: defaultRenownOrgs() },
       appPublisher: defaultRenownOrgs(),
+      warmPool: createWarmPoolStore(db),
       apps: appReads,
       appWriter,
       licences: reads,
@@ -293,6 +314,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       "vetra-cloud-environments",
     )) as unknown as Kysely<{ environments: { tenantId: string | null; owner: string | null } }>;
     const subscriptionResolvers = createSubscriptionResolvers({
+      onLicenceIssued,
       issuer: {
         ...issueDeps,
         db,
@@ -323,7 +345,25 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
 
     // Provisioning, shared by the handler and the machine API: one DEDICATED
     // environment per licence chain, under the chain's lock.
-    const chainEnvDeps: ChainEnvDeps = { rows: chainRows, envs, generateSubdomain };
+    // Warm environments are claimed first only when their protection can be
+    // handed to the holder (the same permission service the keeper protects
+    // them with); otherwise every chain is built cold.
+    const warmStore = createWarmPoolStore(db);
+    const appKeys = await this.appKeyDeps(transit, secretsService, studio, db);
+    const chainEnvDeps: ChainEnvDeps = {
+      ...appKeys,
+      rows: chainRows,
+      envs,
+      generateSubdomain,
+      ...(perm
+        ? {
+            warmPool: {
+              store: warmStore,
+              handOver: (documentId: string, owner: string) => protectForOwner(perm, documentId, owner),
+            },
+          }
+        : {}),
+    };
     const offboarding: OffboardingDeps = {
       rows: chainRows,
       envStatus: async (id) => (await envs.getState(id))?.status ?? null,
@@ -537,7 +577,51 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       logger: console,
       now: () => new Date().toISOString(),
     });
+    const handler = this.handler;
+    kick = () => handler.kick();
     this.handler.start();
+
+    // App warm pools: ownerless environments kept ready per DEDICATED
+    // template (warmPoolSize). Gated like the handler (cfg.enabled, dryRun
+    // logs only); with every template at 0 it only lists. Warm environments
+    // must be protected for the Vetra service identity at creation, so
+    // without a permission service there is no keeper.
+    if (perm) {
+      const trustedAppIds = appsTrustedIds(appsDb);
+      this.warmPool = new AppWarmPoolKeeper(
+        {
+          appIds: async () => [...(await trustedAppIds())],
+          apps: appReads,
+          store: warmStore,
+          envStatus: async (id) => (await envs.getState(id))?.status ?? null,
+          deleteEnv: (id) => envs.delete(id),
+          createWarm: (input) =>
+            createWarmEnvironment(
+              {
+                envs,
+                protect: (documentId) =>
+                  protectUnownedForService(perm, documentId, vetraServiceAddress()),
+                generateSubdomain,
+                store: warmStore,
+                logger: console,
+              },
+              input,
+            ),
+          now: () => new Date().toISOString(),
+          logger: console,
+        },
+        {
+          enabled: cfg.enabled,
+          dryRun: cfg.dryRun,
+          scanIntervalMs: cfg.warmPoolScanIntervalMs,
+          createsPerTick: cfg.warmPoolCreatesPerTick,
+          maxPerTemplate: cfg.warmPoolMaxPerTemplate,
+        },
+      );
+      this.warmPool.start();
+    } else {
+      console.warn("[warm-pool] no document permission service: app warm pools are off");
+    }
 
     // cfg.enabled gates the whole write path: the keeper below, and every
     // mutation in createResolvers (they refuse with LicensingDisabledError).
@@ -555,6 +639,53 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper.start();
   }
 
+  /**
+   * The included AI key of app licence environments (spec 3.11), through the
+   * vetra-llm broker in-process (its tables ensured here: boot order is not
+   * fixed). Without OpenRouter, key storage or tenant secrets nothing is
+   * wired, and environments are built and claimed exactly as before, keyless.
+   */
+  private async appKeyDeps(
+    transit: OpenBaoTransitClient | null,
+    secrets: SecretsService | null,
+    studio: StudioAccessDeps,
+    db: Kysely<VetraLicensingDB>,
+  ): Promise<Pick<ChainEnvDeps, "appKey" | "releaseAppKey">> {
+    if (!transit || !secrets) return {};
+    // An optional feature: its setup failing never fails the licensing setup.
+    try {
+      const llmDb = (await this.relationalDb.createNamespace("vetra-llm")) as unknown as Kysely<VetraLlmDB>;
+      await ensureLlmTables(llmDb as Kysely<any>);
+      const appBudget = (rootLicenseId: string, ownerDid: string) => appBudgetForLicence(db, rootLicenseId, ownerDid);
+      const { broker, openrouter, keyVault } = createProcessBroker({
+        db: llmDb,
+        transit,
+        secrets,
+        studio,
+        appBudget,
+        env: process.env,
+      });
+      if (!openrouter || !keyVault) {
+        console.warn("[licensing] OPENROUTER_MANAGEMENT_KEY unset — app environments get no included AI key");
+        return {};
+      }
+      return {
+        // Only a licence whose code carries a budget is keyed (provisionVetraKey
+        // re-reads it under the env's key lock).
+        appKey: async (k) =>
+          (await appBudget(k.rootLicenseId, k.ownerDid)) === null
+            ? false
+            : (await broker.provisionVetraKey(k)).connected,
+        releaseAppKey: (environmentId) => broker.releaseVetraKey(environmentId),
+      };
+    } catch (err) {
+      console.warn(
+        `[licensing] included AI key unavailable, app environments are built keyless: ${redactSecrets(String(err))}`,
+      );
+      return {};
+    }
+  }
+
   async onDisconnect(): Promise<void> {
     this.migration?.stop();
     this.migration = null;
@@ -562,6 +693,9 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     this.keeper = null;
     this.handler?.stop();
     this.handler = null;
+    // Waits for a tick in flight: no warm create or delete after disconnect.
+    await this.warmPool?.stop();
+    this.warmPool = null;
     if (this.stats) {
       const stats = this.stats;
       this.stats = null;

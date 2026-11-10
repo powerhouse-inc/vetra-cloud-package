@@ -12,6 +12,8 @@ import {
   type RestartResolverDeps,
 } from "./restart.js";
 import { createPackageRegistryResolver } from "./package-registry.js";
+import { isKnownEnvironmentHost } from "./host-lookup.js";
+import { countPackageInstalls } from "./package-install-counts.js";
 import { callerIsAdmin } from "../../shared/admins.js";
 import { OWNER_ONLY_ACCESS, parseOperators, type EnvAccess } from "./env-access.js";
 import {
@@ -166,9 +168,32 @@ export function createResolvers(
   );
   const packageRegistryResolvers = createPackageRegistryResolver({ envDb, dispatch, access });
 
+  /** Throws UNAUTHENTICATED / ENV_NOT_FOUND / FORBIDDEN unless the caller may view the tenant's environment. */
+  async function assertCanView(ctx: AuthAwareContext | undefined, tenantId: string): Promise<void> {
+    const callerAddress = ctx?.user?.address?.toLowerCase();
+    if (!callerAddress) throw new Error("UNAUTHENTICATED");
+    const isAdmin = callerIsAdmin(ctx ?? {}, callerAddress);
+
+    const envRow = (await envDb
+      .selectFrom("environments")
+      .select(["owner", "ownerOrgId", "appId"])
+      .where("tenantId", "=", tenantId)
+      .executeTakeFirst()) as EnvAccessFields | undefined;
+    if (!envRow) throw new Error("ENV_NOT_FOUND");
+
+    if (!(await access.canView({ address: callerAddress, isAdmin }, envRow))) {
+      throw new Error("FORBIDDEN");
+    }
+  }
+
   return {
     Query: {
-      environmentStatus: async (_parent: unknown, { tenantId }: { tenantId: string }) => {
+      environmentStatus: async (
+        _parent: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: AuthAwareContext,
+      ) => {
+        await assertCanView(ctx, tenantId);
         const row = await db
           .selectFrom("environment_status")
           .selectAll()
@@ -185,7 +210,12 @@ export function createResolvers(
         };
       },
 
-      environmentPods: async (_parent: unknown, { tenantId }: { tenantId: string }) => {
+      environmentPods: async (
+        _parent: unknown,
+        { tenantId }: { tenantId: string },
+        ctx?: AuthAwareContext,
+      ) => {
+        await assertCanView(ctx, tenantId);
         const rows = await db
           .selectFrom("environment_pods")
           .selectAll()
@@ -202,7 +232,9 @@ export function createResolvers(
       environmentEvents: async (
         _parent: unknown,
         { tenantId, limit }: { tenantId: string; limit?: number | null },
+        ctx?: AuthAwareContext,
       ) => {
+        await assertCanView(ctx, tenantId);
         const cappedLimit = Math.min(limit ?? 50, 200);
 
         return db
@@ -366,16 +398,43 @@ export function createResolvers(
             .execute();
         }
 
+        // Live Argo health per tenant (same source as environmentStatus), so the
+        // env list shows the same Healthy / Degraded / Down as the detail page.
+        // One query for the whole list; null where the watcher has no row yet.
+        const tenantIds = rows
+          .map((row) => row.tenantId as string | null)
+          .filter((id): id is string => !!id);
+        const health = new Map<string, { argoSyncStatus: string; argoHealthStatus: string }>();
+        if (tenantIds.length > 0) {
+          const statusRows = await db
+            .selectFrom("environment_status")
+            .select(["tenantId", "argoSyncStatus", "argoHealthStatus"])
+            .where("tenantId", "in", tenantIds)
+            .execute();
+          for (const status of statusRows) health.set(status.tenantId, status);
+        }
+
         // packages/services are stored as JSON text; parse them into the
         // arrays the summary type declares so env cards can render package
         // counts + service lists (mirrors myStudioProducts' parsing).
         return rows.map((row) => ({
           ...row,
+          argoSyncStatus: health.get(row.tenantId as string)?.argoSyncStatus ?? null,
+          argoHealthStatus: health.get(row.tenantId as string)?.argoHealthStatus ?? null,
           packages: parseEnvSummaryPackages(row.packages as string | null),
           services: parseEnvSummaryServices(row.services as string | null),
           orgOperators: parseOperators(row.orgOperators as string | null),
         }));
       },
+
+      // Public on purpose: only per-package counts, nothing identifying.
+      packageInstallCounts: async () => countPackageInstalls(envDb),
+
+      // Public (no caller needed): the Sektar OAuth relay's host check.
+      vetraEnvironmentHostKnown: async (
+        _parent: unknown,
+        args: { host?: unknown },
+      ) => isKnownEnvironmentHost(envDb, args.host),
 
       myStudioProducts: async (
         _parent: unknown,
@@ -634,16 +693,22 @@ export function createResolvers(
         }
         const operate = await access.canOperate(who, env);
         const view = operate || (await access.canView(who, env));
-        // Admins operate through the admin bypass, not as org operators.
+        // The reducer only accepts signatures of org operators; the admin
+        // bypass does not reach it. So a platform admin is synced in when the
+        // organisation itself makes them an operator, like any member, and
+        // otherwise operates through the server-side bypass only.
+        const orgOperate = isAdmin
+          ? await access.canOperate({ address: caller, isAdmin: false }, env)
+          : operate;
         let canOperateNow = operate;
         // The mode is part of the key: a viewer promoted to publisher syncs at once.
-        const key = `${caller}|${env.id}|${operate ? "operate" : "view"}`;
-        if (config.orgSync && !isAdmin && view && !orgSyncLimiter.limited(key)) {
+        const key = `${caller}|${env.id}|${orgOperate ? "operate" : "view"}`;
+        if (config.orgSync && (!isAdmin || orgOperate) && view && !orgSyncLimiter.limited(key)) {
           try {
-            if (operate) {
+            if (orgOperate) {
               const out = await syncEnvironmentOrgOnce(config.orgSync, env, [caller]);
               // Not synced (outage): only an existing operator may sign now.
-              if (out.result === "SKIPPED") canOperateNow = out.operators.includes(caller);
+              if (out.result === "SKIPPED") canOperateNow = isAdmin || out.operators.includes(caller);
               else orgSyncLimiter.mark(key);
             } else {
               await grantViewer(config.orgSync, env, caller);
@@ -651,7 +716,8 @@ export function createResolvers(
             }
           } catch (err) {
             console.warn(`[org-sync] syncEnvironmentOrg ${env.id}:`, err);
-            if (operate) canOperateNow = parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
+            if (orgOperate)
+              canOperateNow = isAdmin || parseOperators(env.orgOperators).map((a) => a.toLowerCase()).includes(caller);
           }
         }
         return { environmentId, ownerOrgId: env.ownerOrgId, canOperate: canOperateNow, canView: view };

@@ -9,6 +9,7 @@ import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
 import { VetraCloudEnvironmentProcessor } from "./processor.js";
 import { up } from "./migrations.js";
+import { createWarmPoolStore } from "../../subgraphs/vetra-licensing/warm-pool-db.js";
 import { createAppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsDB } from "../../subgraphs/vetra-cloud-secrets/db/schema.js";
@@ -74,12 +75,24 @@ export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
     const appsDb = (await module.relationalDb.createNamespace(
       "vetra-apps",
     )) as unknown as Kysely<any>;
+    const licensingDb = (await module.relationalDb.createNamespace(
+      "vetra-licensing",
+    )) as unknown as Kysely<any>;
+    const isWarm = (documentId: string) =>
+      createWarmPoolStore(licensingDb).isWarm(documentId);
     const processor = new VetraCloudEnvironmentProcessor(
       db,
       module.dispatch,
       documentView,
       secretsService,
-      createAppImageProjectResolver(appsDb),
+      createAppImageProjectResolver(
+        appsDb,
+        // Licence-provisioned envs (vetra-licensing) run their App's image too,
+        // and so do warm-pool envs (no licence row until claimed).
+        licensingDb,
+        isWarm,
+      ),
+      isWarm,
     );
 
     return [
