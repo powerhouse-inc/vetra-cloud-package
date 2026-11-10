@@ -51,9 +51,17 @@ export function strandedError(move: FusionMove): string {
   return `FUSION ${move.from} is not in the app's record (it keeps the last 50 versions, or it was pinned by hand), so it cannot be proven older than ${move.to}; the publisher can force the update`;
 }
 
+// Times fail closed: one that does not parse is never due.
 const at = (iso: string): number => Date.parse(iso);
-const earlier = (a: string, b: string | null): string =>
-  b !== null && at(b) < at(a) ? b : a;
+const readable = (iso: string): boolean => !Number.isNaN(at(iso));
+const isDue = (due: string, now: string): boolean =>
+  readable(due) && readable(now) && at(due) <= at(now);
+/** The earlier deadline; one that does not parse loses to one that does. */
+const earlier = (a: string, b: string | null): string => {
+  if (b === null || !readable(b)) return a;
+  if (!readable(a)) return b;
+  return at(b) < at(a) ? b : a;
+};
 
 /**
  * Pure. May the keeper move this live environment's FUSION version now, and
@@ -117,7 +125,7 @@ export function decideRelease(i: GateInput): GateDecision {
     reason = stranded;
   } else if (gated) {
     const requested = pending !== null && pending.requested_at !== null;
-    if (rolledOut && !forced && !requested && at(dueAt) > at(i.now))
+    if (rolledOut && !forced && !requested && !isDue(dueAt, i.now))
       reason = `due at ${dueAt}`;
     else if (rolledOut && !forced && i.rollout?.status !== "ACTIVE")
       reason = "its rollout is paused";

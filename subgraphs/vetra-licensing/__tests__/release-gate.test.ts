@@ -309,3 +309,72 @@ describe("decideRelease: GATED canaries", () => {
     ).toStrictEqual([{ kind: "start", id: "u1" }]);
   });
 });
+
+describe("decideRelease: a time it cannot read holds, never releases", () => {
+  it("holds an update whose due_at does not parse", () => {
+    expect(gate({ existing: row({ due_at: "not a time" }) })).toMatchObject({
+      version: "hold",
+      writes: [],
+      reason: "due at not a time",
+    });
+  });
+
+  it("holds when now does not parse", () => {
+    expect(
+      gate({ existing: row({ due_at: BEFORE }), now: "not a time" }),
+    ).toMatchObject({ version: "hold", writes: [] });
+  });
+
+  it("keeps the superseded deadline it can read, and holds when it can read neither", () => {
+    // An unreadable old deadline: the rollout's own, still in the future.
+    expect(
+      inserted(
+        gate({
+          open: row({ id: "older", to_version: "1.0.5", due_at: "bad" }),
+        }),
+      ),
+    ).toMatchObject({ due_at: LATER, status: "PENDING" });
+    // An unreadable apply_after: the old deadline, which has passed.
+    expect(
+      inserted(
+        gate({
+          rollout: rollout({ apply_after: "bad" }),
+          open: row({ id: "older", to_version: "1.0.5", due_at: BEFORE }),
+        }),
+      ),
+    ).toMatchObject({ due_at: BEFORE, status: "APPLYING" });
+    const neither = gate({
+      rollout: rollout({ apply_after: "bad" }),
+      open: row({ id: "older", to_version: "1.0.5", due_at: "worse" }),
+    });
+    expect(neither.version).toBe("hold");
+    expect(inserted(neither)).toMatchObject({ status: "PENDING" });
+  });
+
+  it("compares times of differing precision and offset as times", () => {
+    // Equal instants: due.
+    expect(
+      gate({
+        existing: row({ due_at: "2026-11-10T12:00:00Z" }),
+        now: "2026-11-10T12:00:00.000+00:00",
+      }).version,
+    ).toBe("floor");
+    // 13:00+02:00 is 11:00Z: past, though it sorts after NOW as text.
+    expect(
+      gate({ existing: row({ due_at: "2026-11-10T13:00:00+02:00" }) }).version,
+    ).toBe("floor");
+    // The earlier of two deadlines by time, not by text.
+    expect(
+      inserted(
+        gate({
+          rollout: rollout({ apply_after: "2026-11-13T13:30:00+02:00" }),
+          open: row({
+            id: "older",
+            to_version: "1.0.5",
+            due_at: "2026-11-13T12:00:00.000Z",
+          }),
+        }),
+      )?.due_at,
+    ).toBe("2026-11-13T13:30:00+02:00");
+  });
+});
