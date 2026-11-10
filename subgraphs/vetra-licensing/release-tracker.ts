@@ -2,6 +2,7 @@ import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-env
 import type { AppDocView } from "./app-reads.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
+import { NOT_APPLICABLE } from "./environments.js";
 import type { RolloutStore } from "./rollout-db.js";
 import { observe, updateOutcome } from "./update-outcome.js";
 
@@ -24,7 +25,9 @@ export interface ReleaseTrackerDeps {
  * each ACTIVE rollout that has no PENDING or APPLYING update left, once
  * LATEST points at its version and every live customer environment meets
  * its template (an environment the keeper has not visited since the
- * promotion has no update yet, but is behind).
+ * promotion has no update yet, but is behind). One the keeper cannot
+ * provision now (no document, or asleep or going away) does not hold it
+ * open.
  *
  * A resumed update whose environment already runs its version (its
  * deployment failed after the version was set: phase 1 does not revert) is
@@ -35,6 +38,22 @@ export interface ReleaseTrackerDeps {
  * waited included). Only the run whose write moved a row logs it, or pauses
  * its rollout: another writer may have moved it first.
  */
+/**
+ * Whether the keeper could move any of these environments now: one whose
+ * document is missing, or whose status provisionChain refuses (asleep,
+ * going away), is not waited for.
+ */
+async function anyProvisionable(
+  deps: ReleaseTrackerDeps,
+  rows: LicenseEnvironments[],
+): Promise<boolean> {
+  for (const r of rows) {
+    const state = await deps.envState(r.environment_id);
+    if (state && !NOT_APPLICABLE.has(state.status)) return true;
+  }
+  return false;
+}
+
 export async function trackReleases(
   deps: ReleaseTrackerDeps,
   app: AppDocView,
@@ -125,21 +144,21 @@ export async function trackReleases(
     );
   }
 
-  if (
-    rows.some(
-      (r) =>
-        r.ended_at === null &&
-        (r.channel_override ?? null) === null &&
-        isBehind(r),
-    )
-  )
-    return;
+  const behind = rows.filter(
+    (r) =>
+      r.ended_at === null &&
+      (r.channel_override ?? null) === null &&
+      isBehind(r),
+  );
+  // Read once, and only when a rollout could otherwise complete.
+  let waitsForBehind: Promise<boolean> | undefined;
   for (const r of await deps.store.activeRollouts(app.id)) {
     const latest = app.artifacts
       .find((a) => a.kind === "FUSION_IMAGE" && a.name === r.artifact_name)
       ?.channels.find((c) => c.channel === "LATEST")?.version;
     if (latest !== r.version || (await deps.store.openCount(r.id)) > 0)
       continue;
+    if (await (waitsForBehind ??= anyProvisionable(deps, behind))) continue;
     if (!(await deps.store.complete(r.id))) continue;
     deps.logger.info(
       `[licensing] rollout ${r.id} of app ${app.id} (${r.artifact_name} ${r.version}) is complete`,

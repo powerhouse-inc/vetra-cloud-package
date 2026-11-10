@@ -233,8 +233,11 @@ async function writeIncludedKey(
   });
 }
 
-/** Statuses a template must not be applied in: asleep, going away, or gone. */
-const NOT_APPLICABLE = new Set(["STOPPED", "TERMINATING", "DESTROYED", "ARCHIVED"]);
+/**
+ * Statuses a template must not be applied in: asleep, going away, or gone.
+ * provisionChain refuses them; the release tracker does not wait for them.
+ */
+export const NOT_APPLICABLE: ReadonlySet<string> = new Set(["STOPPED", "TERMINATING", "DESTROYED", "ARCHIVED"]);
 
 function assertSameOwner(row: LicenseEnvironments, input: ProvisionChainInput): void {
   if (row.app_id !== input.appId || row.user_did !== input.userDid) {

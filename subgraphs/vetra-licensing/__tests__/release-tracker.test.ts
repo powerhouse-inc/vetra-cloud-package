@@ -225,7 +225,9 @@ describe("trackReleases", () => {
     expect(
       await store.transitionUpdate("u1", "PENDING", { status: "SUCCEEDED" }),
     ).toBe(true);
-    // An environment the keeper has not visited since the promotion.
+    // An environment the keeper has not visited since the promotion (and
+    // could provision now).
+    states.set("e2", { status: "READY", version: "1.0.0" });
     await trackReleases(deps, APP, [
       envRow(),
       envRow({
@@ -251,6 +253,59 @@ describe("trackReleases", () => {
         ended_at: T0,
       }),
     ]);
+    expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+  });
+
+  it("completes a rollout while a customer environment that is behind cannot be provisioned", async () => {
+    // No document, or a status provisionChain refuses: the keeper cannot
+    // move it now, so it must not hold the rollout open.
+    for (const state of [null, "STOPPED", "TERMINATING"] as const) {
+      await db.deleteFrom("app_rollouts").execute();
+      await store.promote(rollout());
+      if (state) states.set("e2", { status: state, version: "1.0.0" });
+      else states.delete("e2");
+      await trackReleases(deps, APP, [
+        envRow(),
+        envRow({
+          environment_id: "e2",
+          root_license_id: "l2",
+          template_hash: "h-old",
+        }),
+      ]);
+      expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+    }
+  });
+
+  it("reads the documents of environments that are behind only once a rollout could otherwise complete", async () => {
+    const read = vi.fn(deps.envState);
+    deps.envState = read;
+    const behind = [
+      envRow(),
+      envRow({
+        environment_id: "e2",
+        root_license_id: "l2",
+        template_hash: "h-old",
+      }),
+    ];
+    // Nothing to complete: no ACTIVE rollout.
+    await trackReleases(deps, APP, behind);
+    // A rollout that still has an open update.
+    await store.promote(rollout());
+    await store.insertUpdate(
+      update({ environment_id: "e3", status: "PENDING", started_at: null }),
+    );
+    await trackReleases(deps, APP, [
+      ...behind,
+      envRow({ environment_id: "e3", root_license_id: "l3" }),
+    ]);
+    expect(read).not.toHaveBeenCalledWith("e2");
+    // Nothing behind: nothing to read.
+    expect(
+      await store.transitionUpdate("u1", "PENDING", { status: "SUCCEEDED" }),
+    ).toBe(true);
+    read.mockClear();
+    await trackReleases(deps, APP, [envRow()]);
+    expect(read).not.toHaveBeenCalled();
     expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
   });
 
