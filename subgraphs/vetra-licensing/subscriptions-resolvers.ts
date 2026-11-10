@@ -26,6 +26,7 @@ import {
   UnknownTenantError,
   toLicensingGraphQLError,
 } from "./publisher-errors.js";
+import { appDirectory, cachedFor, type DirectoryDeps } from "./directory.js";
 import type { LicenseReads } from "./reads.js";
 import { studioAccess, studioKeyForDid, type StudioAccessDeps } from "./studio-access.js";
 
@@ -42,6 +43,8 @@ export interface SubscriptionDeps {
   /** The recording gateway: a cancel also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   studio: StudioAccessDeps;
+  /** The public app directory's reads. */
+  directory: DirectoryDeps;
   /**
    * Called (fire-and-forget) after a licence is issued, so provisioning can
    * start at once instead of on the next tick. Its failure never reaches the
@@ -170,7 +173,11 @@ export async function subscriptionFor(
  * caller's normalised DID, whatever its document says. Statuses and ends are
  * the recorded lifecycle's.
  */
+/** How long one directory listing is served before the apps are read again. */
+const DIRECTORY_CACHE_MS = 60_000;
+
 export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<string, unknown> {
+  const directory = cachedFor(DIRECTORY_CACHE_MS, () => Date.parse(deps.now()), () => appDirectory(deps.directory));
   const did = (ctx: Ctx): string => {
     const d = callerDid(ctx);
     if (!d) throw new UnauthenticatedError("sign in with Renown");
@@ -256,6 +263,9 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
     Mutation: { vetraSubscriptions: () => ({}) },
 
     VetraSubscriptionsQueries: {
+      // Public, counts only: who holds an app is never listed.
+      directory: withCodes(() => directory()),
+
       // Public. Every way a code can be unusable (unknown, paused, expired,
       // used up, or its term/app unable to issue it) is the same answer.
       inviteCode: withCodes(async (a: { code: string }) => {

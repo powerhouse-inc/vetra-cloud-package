@@ -67,7 +67,21 @@ export const subscriptionsSchema: DocumentNode = gql`
     upgrades: String
   }
 
+  "An app anyone can get, for the public directory. Counts only: no holder is named."
+  type DirectoryApp {
+    appId: String!
+    name: String!
+    "The app's identity, which its Renown profile is keyed by; null without one."
+    appDid: String
+    "Distinct users holding an ACTIVE licence."
+    holders: Int!
+    "Published plans."
+    plans: Int!
+  }
+
   type VetraSubscriptionsQueries {
+    "Public, unauthenticated; ranked by holders. Cached for a minute."
+    directory: [DirectoryApp!]!
     "Public, unauthenticated; rate-limited by ingress."
     inviteCode(code: String!): InviteCodeCheck!
     mySubscriptions: [Subscription!]!

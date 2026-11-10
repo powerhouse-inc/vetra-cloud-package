@@ -69,7 +69,7 @@ import { createKeyVault } from "./key-vault.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
-import { createHolderLicences } from "./licence-view.js";
+import { authorisedLicences, createHolderLicences } from "./licence-view.js";
 import { appsTrustedIds, buildStudioAccessDeps, createLicensingAppReads } from "./studio-access-factory.js";
 import { createSubscriptionResolvers } from "./subscriptions-resolvers.js";
 import { getTenantId } from "../../processors/vetra-cloud-environment/gitops.js";
@@ -325,6 +325,17 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const envDb = (await this.relationalDb.createNamespace(
       "vetra-cloud-environments",
     )) as unknown as Kysely<{ environments: { tenantId: string | null; owner: string | null } }>;
+    // The apps row; the studio app (no row) from configuration.
+    const appIdentity = createAppIdentityLookup({
+      row: async (appId) =>
+        (await appsDb
+          .selectFrom("apps")
+          .select(["identity_did", "status"])
+          .where("id", "=", appId)
+          .executeTakeFirst()) ?? null,
+      studioIdentityDid: cfg.studioIdentityDid,
+      logger: console,
+    });
     const subscriptionResolvers = createSubscriptionResolvers({
       onLicenceIssued,
       issuer: {
@@ -341,6 +352,12 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       envState: (id) => envs.getState(id),
       licenseGateway: gateway,
       studio,
+      directory: {
+        appIds: appsTrustedIds(appsDb),
+        app: (id) => appReads.app(id),
+        identity: (id) => appIdentity(id),
+        licencesOf: async (id) => authorisedLicences({ licences: reads, lifecycle }, await grants.grantsForApp(id)),
+      },
       secrets: secretsService,
       // A missing table (42P01) propagates: applyStudioKey fails closed.
       tenantOwners: async (tenantId) =>
@@ -444,17 +461,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       grants,
       lifecycle,
       apps: appReads,
-      // The apps row; the studio app (no row) from configuration.
-      appIdentity: createAppIdentityLookup({
-        row: async (appId) =>
-          (await appsDb
-            .selectFrom("apps")
-            .select(["identity_did", "status"])
-            .where("id", "=", appId)
-            .executeTakeFirst()) ?? null,
-        studioIdentityDid: cfg.studioIdentityDid,
-        logger: console,
-      }),
+      appIdentity,
       stats,
       logger: console,
       now: () => new Date().toISOString(),

@@ -179,6 +179,12 @@ beforeAll(async () => {
     tenantOwners: async (t) => tenants.get(t) ?? [],
     // Short here; the polling itself is covered with fake timers in apply-studio-key.test.ts.
     tenantWait: { timeoutMs: 20, intervalMs: 5 },
+    directory: {
+      appIds: async () => new Set([APP_DED, APP_SH, APP_STUDIO]),
+      app: (id) => h.apps.app(id),
+      identity: async (id) => ({ identityDid: `did:key:${id}`, status: "ACTIVE" }),
+      licencesOf: async (id) => authorisedLicences(licenceDeps, await grants.grantsForApp(id)),
+    },
     now: () => clock,
   };
   sub = createSubscriptionResolvers(deps) as unknown as typeof sub;
@@ -513,5 +519,19 @@ describe("vetraSubscriptions: provisioning kick", () => {
     } finally {
       delete deps.onLicenceIssued;
     }
+  });
+});
+
+describe("vetraSubscriptions: directory", () => {
+  it("lists the apps you can get to anyone, ranked by holders, naming no holder", async () => {
+    const list = (await q("directory", {}, anon)) as { appId: string; holders: number; plans: number; appDid: string | null }[];
+    const ded = list.find((a) => a.appId === APP_DED);
+    expect(ded).toMatchObject({ appDid: `did:key:${APP_DED}` });
+    expect(ded!.holders).toBeGreaterThan(0);
+    expect(ded!.plans).toBeGreaterThan(0);
+    expect(list.map((a) => a.holders)).toStrictEqual([...list.map((a) => a.holders)].sort((a, b) => b - a));
+    const raw = JSON.stringify(list).toLowerCase();
+    expect(raw).not.toContain(HOLDER.toLowerCase());
+    expect(raw).not.toContain(OTHER.toLowerCase());
   });
 });
