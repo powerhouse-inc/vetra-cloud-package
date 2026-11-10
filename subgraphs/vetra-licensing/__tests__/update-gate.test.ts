@@ -9,7 +9,11 @@ import {
   type RolloutQueries,
   type RolloutStore,
 } from "../rollout-db.js";
-import { createUpdateGate, type UpdateGate } from "../update-gate.js";
+import {
+  activeUpdateGate,
+  createUpdateGate,
+  type UpdateGate,
+} from "../update-gate.js";
 
 const NOW = "2026-11-10T12:00:00.000Z";
 const LATER = "2026-11-13T12:00:00.000Z";
@@ -248,5 +252,20 @@ describe("createUpdateGate", () => {
       status: "FAILED",
       started_at: null,
     });
+  });
+});
+
+describe("activeUpdateGate", () => {
+  const gate: UpdateGate = {
+    admit: () => Promise.resolve({ version: "floor", updateId: null }),
+    release: () => Promise.resolve(),
+  };
+
+  it("wires the gate when the keeper applies", () => {
+    expect(activeUpdateGate({ dryRun: false }, gate)).toBe(gate);
+  });
+
+  it("wires no gate in dry run, so nothing is left APPLYING", () => {
+    expect(activeUpdateGate({ dryRun: true }, gate)).toBeUndefined();
   });
 });

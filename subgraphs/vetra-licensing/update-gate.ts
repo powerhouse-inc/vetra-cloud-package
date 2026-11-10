@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { decideRelease } from "./release-gate.js";
 import type { RolloutStore } from "./rollout-db.js";
@@ -100,4 +101,18 @@ export function createUpdateGate(deps: {
       await deps.store.releaseApplying(updateId);
     },
   };
+}
+
+/**
+ * The gate provisionChain is given: none while the keeper is in dry run
+ * (provisionChain then moves FUSION ungated, as before the gate). Dry run
+ * applies nothing, so no update could ever settle there: an admission made
+ * on the machine API's real provision would stay APPLYING, and hold every
+ * other environment of a gated app.
+ */
+export function activeUpdateGate(
+  cfg: Pick<LicensingConfig, "dryRun">,
+  gate: UpdateGate,
+): UpdateGate | undefined {
+  return cfg.dryRun ? undefined : gate;
 }
