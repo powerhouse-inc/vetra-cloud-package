@@ -5,6 +5,7 @@ import { PGliteDialect } from "kysely-pglite-dialect";
 import type { Action } from "document-model";
 import { up } from "../db/migrations.js";
 import type {
+  AppRollouts,
   EnvironmentUpdates,
   LicenseEnvironments,
   VetraLicensingDB,
@@ -12,6 +13,8 @@ import type {
 import type { AppDocView } from "../app-reads.js";
 import { loadLicensingConfig } from "../config.js";
 import { createChainEnvironmentRows } from "../environments.js";
+import { UnknownAppError } from "../publisher-auth.js";
+import { UnknownEnvironmentError } from "../publisher-errors.js";
 import { createRolloutStore } from "../rollout-db.js";
 import {
   environmentRelease,
@@ -37,6 +40,19 @@ let app: AppDocView;
 let written: Action[];
 let states: Map<string, { status: string; version: string | null }>;
 let kicks: number;
+
+/** Points the artifact's `channel` at `version`, as SET_ARTIFACT_CHANNEL does. */
+const point = (channel: string, version: string, name = "host") => {
+  const artifact = app.artifacts.find((a) => a.name === name)!;
+  const c = artifact.channels.find((x) => x.channel === channel);
+  if (c) c.version = version;
+  else artifact.channels.push({ channel, version });
+};
+const channelOps = () =>
+  written
+    .filter((a) => a.type === "SET_ARTIFACT_CHANNEL")
+    .map((a) => a.input as { channel: string; version: string })
+    .map((i) => `${i.channel} ${i.version}`);
 
 const envRow = (
   environment_id: string,
@@ -122,6 +138,15 @@ beforeEach(async () => {
     appWriter: {
       appendLicensingOps: async (_id, actions) => {
         written.push(...actions);
+        for (const a of actions) {
+          if (a.type !== "SET_ARTIFACT_CHANNEL") continue;
+          const i = a.input as {
+            name: string;
+            channel: string;
+            version: string;
+          };
+          point(i.channel, i.version, i.name);
+        }
       },
     },
     envState: async (id) => {
@@ -164,8 +189,9 @@ describe("setReleasePolicy", () => {
     expect((await deps.store.settings("a")).policy).toBe("AUTO");
   });
 
-  it("gates with a canary and points STAGING at LATEST where it has no pointer", async () => {
+  it("gates with a canary, keeping the notice when none is given", async () => {
     await markCanary();
+    written.length = 0;
     expect(
       await setReleasePolicy(deps, {
         appId: "a",
@@ -173,19 +199,9 @@ describe("setReleasePolicy", () => {
         defaultNoticeHours: 24,
       }),
     ).toStrictEqual({ appId: "a", policy: "GATED", defaultNoticeHours: 24 });
-    expect(written.map((a) => [a.type, a.input])).toStrictEqual([
-      [
-        "SET_ARTIFACT_CHANNEL",
-        {
-          kind: "FUSION_IMAGE",
-          name: "host",
-          channel: "STAGING",
-          version: "1.0.0",
-        },
-      ],
-    ]);
-    app.artifacts[0]!.channels.push({ channel: "STAGING", version: "1.1.0" });
-    written.length = 0;
+    // The mark already brought STAGING up to LATEST.
+    expect(written).toStrictEqual([]);
+    point("STAGING", "1.1.0");
     await setReleasePolicy(deps, { appId: "a", policy: "GATED" });
     expect(written).toStrictEqual([]);
     expect((await deps.store.settings("a")).defaultNoticeHours).toBe(24);
@@ -446,7 +462,7 @@ describe("resumeRollout, forceEnvironmentUpdate and requestUpdateNow", () => {
 describe("the read side", () => {
   it("lists each FUSION image's STAGING, LATEST and what the canaries run", async () => {
     await markCanary();
-    app.artifacts[0]!.channels.push({ channel: "STAGING", version: "1.1.0" });
+    point("STAGING", "1.1.0");
     states.set("mine", { status: "READY", version: "1.1.0" });
     expect(await releaseCandidates(deps, "a")).toStrictEqual([
       {
@@ -526,10 +542,297 @@ describe("the read side", () => {
 describe("a tampered app", () => {
   it("is never written to", async () => {
     await markCanary();
+    written.length = 0;
     app = { ...app, tampered: true, tamperReason: "x" };
     await expect(
       setReleasePolicy(deps, { appId: "a", policy: "GATED" }),
     ).rejects.toThrow(/held/);
+    await expect(markCanary()).rejects.toThrow(/held/);
     expect(written).toStrictEqual([]);
+  });
+});
+
+const rolloutRow = (over: Partial<AppRollouts> = {}): AppRollouts => ({
+  id: "r1",
+  app_id: "a",
+  artifact_name: "host",
+  version: "1.1.0",
+  status: "ACTIVE",
+  apply_after: NOW,
+  promoted_by: "0xp",
+  promoted_at: NOW,
+  paused_at: null,
+  paused_reason: null,
+  ...over,
+});
+const gate = async () => {
+  await markCanary();
+  await setReleasePolicy(deps, { appId: "a", policy: "GATED" });
+};
+const promoteIt = (
+  over: { appId?: string; version?: string; noticeHours?: number | null } = {},
+) =>
+  promoteRelease(deps, {
+    appId: "a",
+    artifactName: "host",
+    version: "1.1.0",
+    promotedBy: "0xp",
+    ...over,
+  });
+const publisherEnv = (id: string, over: Partial<LicenseEnvironments> = {}) =>
+  db
+    .insertInto("license_environments")
+    .values(envRow(id, PUBLISHER, over))
+    .execute();
+const canaryOf = async (id: string) =>
+  (await deps.envRows.byEnvironment(id))!.channel_override;
+
+describe("leaving gating", () => {
+  it.each([
+    [
+      "ACTIVE",
+      /the release of host 1\.1\.0 is still rolling out and must finish first/,
+    ],
+    ["PAUSED", /the release of host 1\.1\.0 is paused and must finish first/],
+  ] as const)("is refused while a rollout is %s", async (status, message) => {
+    await gate();
+    await deps.store.promote(rolloutRow({ status }));
+    await expect(
+      setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ).rejects.toThrow(message);
+    expect((await deps.store.settings("a")).policy).toBe("GATED");
+    expect(await canaryOf("mine")).toBe("STAGING");
+  });
+
+  it("is allowed once every rollout is COMPLETE or SUPERSEDED, and unmarks the canaries", async () => {
+    await publisherEnv("mine2");
+    await gate();
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine2",
+      canary: true,
+      callerDid: PUBLISHER,
+    });
+    await deps.store.promote(rolloutRow({ id: "r1" }));
+    await deps.store.promote(rolloutRow({ id: "r2" }));
+    await deps.store.complete("r2");
+    expect(
+      await setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ).toMatchObject({ policy: "AUTO" });
+    expect([await canaryOf("mine"), await canaryOf("mine2")]).toStrictEqual([
+      null,
+      null,
+    ]);
+    expect((await deps.store.settings("a")).policy).toBe("AUTO");
+  });
+
+  it("AUTO to AUTO touches nothing but the notice", async () => {
+    await markCanary();
+    written.length = 0;
+    expect(
+      await setReleasePolicy(deps, {
+        appId: "a",
+        policy: "AUTO",
+        defaultNoticeHours: 12,
+      }),
+    ).toStrictEqual({ appId: "a", policy: "AUTO", defaultNoticeHours: 12 });
+    expect(await canaryOf("mine")).toBe("STAGING");
+    expect(written).toStrictEqual([]);
+  });
+});
+
+describe("STAGING follows LATEST up when a canary starts following it", () => {
+  it("is seeded at LATEST when a canary is marked and it has no pointer", async () => {
+    await markCanary();
+    expect(channelOps()).toStrictEqual(["STAGING 1.0.0"]);
+  });
+
+  it("moves up to LATEST when it is provably older", async () => {
+    point("LATEST", "1.1.0");
+    point("STAGING", "1.0.0");
+    await markCanary();
+    expect(channelOps()).toStrictEqual(["STAGING 1.1.0"]);
+  });
+
+  it("is left alone when it is newer than LATEST, or the order cannot be proven", async () => {
+    point("STAGING", "1.1.0");
+    await markCanary();
+    point("STAGING", "sha-unrecorded");
+    await markCanary();
+    expect(channelOps()).toStrictEqual([]);
+  });
+
+  it("is left alone on an artifact with no LATEST", async () => {
+    app.artifacts[0]!.channels = [];
+    expect(await markCanary()).toBe(true);
+    expect(written).toStrictEqual([]);
+  });
+
+  it("moves up when the app is gated with a stale STAGING", async () => {
+    await markCanary();
+    point("LATEST", "1.1.0");
+    written.length = 0;
+    await setReleasePolicy(deps, { appId: "a", policy: "GATED" });
+    expect(channelOps()).toStrictEqual(["STAGING 1.1.0"]);
+  });
+});
+
+describe("promote is forward-only", () => {
+  beforeEach(gate);
+
+  it("refuses a version older than LATEST and writes nothing", async () => {
+    point("LATEST", "1.1.0");
+    states.set("mine", { status: "READY", version: "1.0.0" });
+    written.length = 0;
+    await expect(promoteIt({ version: "1.0.0" })).rejects.toThrow(
+      "host 1.0.0 is older than its LATEST 1.1.0: releases only move forward",
+    );
+    expect(written).toStrictEqual([]);
+    expect(await deps.store.rolloutsOf("a")).toStrictEqual([]);
+  });
+
+  it("allows the version LATEST already points at", async () => {
+    point("LATEST", "1.1.0");
+    states.set("mine", { status: "READY", version: "1.1.0" });
+    expect(await promoteIt()).toMatchObject({ version: "1.1.0" });
+  });
+
+  it("allows a version whose order to LATEST cannot be proven", async () => {
+    app.artifacts[0]!.versions.push({
+      version: "sha-new",
+      reference: "cr.vetra.io/p/host:sha-new",
+    });
+    point("LATEST", "sha-unrecorded");
+    states.set("mine", { status: "READY", version: "sha-new" });
+    expect(await promoteIt({ version: "sha-new" })).toMatchObject({
+      version: "sha-new",
+    });
+  });
+});
+
+describe("promote's canary and notice checks", () => {
+  beforeEach(gate);
+
+  it("refuses an ended canary, another app's canary and a canary READY on another version", async () => {
+    await deps.envRows.update("mine", { ended_at: NOW });
+    states.set("mine", { status: "READY", version: "1.1.0" });
+    await expect(promoteIt()).rejects.toThrow(/no canary environment/);
+    await deps.envRows.update("mine", { ended_at: null });
+    states.delete("mine");
+    await publisherEnv("other", { app_id: "b", channel_override: "STAGING" });
+    states.set("other", { status: "READY", version: "1.1.0" });
+    await expect(promoteIt()).rejects.toThrow(/no canary environment/);
+    states.set("mine", { status: "READY", version: "1.0.0" });
+    await expect(promoteIt()).rejects.toThrow(/no canary environment/);
+    expect(await deps.store.rolloutsOf("a")).toStrictEqual([]);
+  });
+
+  it("takes a whole notice from 0 to 720 hours", async () => {
+    states.set("mine", { status: "READY", version: "1.1.0" });
+    for (const noticeHours of [-1, 1.5, 721]) {
+      await expect(promoteIt({ noticeHours })).rejects.toThrow(/noticeHours/);
+    }
+    expect((await promoteIt({ noticeHours: 0 })).apply_after).toBe(NOW);
+    expect((await promoteIt({ noticeHours: 720 })).apply_after).toBe(
+      "2026-12-10T12:00:00.000Z",
+    );
+  });
+
+  it("refuses an app without a readable document as NOT_FOUND", async () => {
+    await deps.store.saveSettings(
+      { appId: "b", policy: "GATED", defaultNoticeHours: 0 },
+      NOW,
+    );
+    await expect(promoteIt({ appId: "b" })).rejects.toBeInstanceOf(
+      UnknownAppError,
+    );
+  });
+});
+
+describe("force's refusals", () => {
+  it("treats another app's environment as missing", async () => {
+    await deps.store.insertUpdate(update({ status: "FAILED" }));
+    await expect(
+      forceEnvironmentUpdate(deps, { appId: "b", environmentId: "cust" }),
+    ).rejects.toBeInstanceOf(UnknownEnvironmentError);
+  });
+
+  it.each(["SUCCEEDED", "APPLYING"] as const)(
+    "refuses when the latest update is %s",
+    async (status) => {
+      await deps.store.insertUpdate(update({ status }));
+      await expect(
+        forceEnvironmentUpdate(deps, { appId: "a", environmentId: "cust" }),
+      ).rejects.toThrow(/no update/);
+      expect((await deps.store.update("u1"))!.forced_at).toBeNull();
+    },
+  );
+});
+
+describe("one release decision of an app at a time", () => {
+  it("two concurrent unmarks cannot leave a gated app without a canary", async () => {
+    await publisherEnv("mine2");
+    await gate();
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine2",
+      canary: true,
+      callerDid: PUBLISHER,
+    });
+    const unmark = (environmentId: string) =>
+      setCanaryEnvironment(deps, {
+        appId: "a",
+        environmentId,
+        canary: false,
+        callerDid: PUBLISHER,
+      });
+    const results = await Promise.allSettled([unmark("mine"), unmark("mine2")]);
+    expect(results.map((r) => r.status)).toStrictEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(await canaryOf("mine2")).toBe("STAGING");
+  });
+
+  it("a promotion and leaving gating cannot both go through", async () => {
+    await gate();
+    states.set("mine", { status: "READY", version: "1.1.0" });
+    const results = await Promise.allSettled([
+      promoteIt(),
+      setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ]);
+    expect(results.map((r) => r.status)).toStrictEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect((await deps.store.settings("a")).policy).toBe("GATED");
+  });
+
+  it("two concurrent promotions cannot move LATEST backwards", async () => {
+    await publisherEnv("mine2");
+    app.artifacts[0]!.versions.push({
+      version: "1.2.0",
+      reference: "cr.vetra.io/p/host:1.2.0",
+    });
+    await gate();
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine2",
+      canary: true,
+      callerDid: PUBLISHER,
+    });
+    states.set("mine", { status: "READY", version: "1.2.0" });
+    states.set("mine2", { status: "READY", version: "1.1.0" });
+    const results = await Promise.allSettled([
+      promoteIt({ version: "1.2.0" }),
+      promoteIt({ version: "1.1.0" }),
+    ]);
+    expect(results.map((r) => r.status)).toStrictEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(
+      app.artifacts[0]!.channels.find((c) => c.channel === "LATEST")!.version,
+    ).toBe("1.2.0");
   });
 });

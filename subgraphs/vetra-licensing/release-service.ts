@@ -1,3 +1,4 @@
+import type { Action } from "document-model";
 import { actions as appActions } from "document-models/vetra-app";
 import type { VetraCloudEnvironmentState } from "document-models/vetra-cloud-environment";
 import type { AppDocView, AppReads } from "./app-reads.js";
@@ -10,7 +11,9 @@ import type {
   UpdateStatus,
 } from "./db/schema.js";
 import type { ChainEnvRows } from "./environments.js";
+import { keyedMutex } from "./keyed-mutex.js";
 import type { AppLicensingWriter } from "./licensing-ledger.js";
+import { UnknownAppError } from "./publisher-auth.js";
 import {
   AppTamperedError,
   ForbiddenError,
@@ -20,6 +23,8 @@ import {
   UnknownRolloutError,
 } from "./publisher-errors.js";
 import type { ReleaseSettings, RolloutStore } from "./rollout-db.js";
+import { isFusionUpgrade } from "./template.js";
+import type { AppArtifact } from "./reads.js";
 
 /** The longest notice a promotion may give: 30 days. */
 export const MAX_NOTICE_HOURS = 24 * 30;
@@ -40,7 +45,23 @@ export interface ReleaseServiceDeps {
   now(): string;
 }
 
+/**
+ * One release decision (policy, canary, promote) of an app at a time, so a
+ * check and the write it justifies are never split by another caller's. In
+ * process, as withChainLock and for the same reason: the subgraph runs as a
+ * single replica. Not the store's lockApp transaction: each decision also
+ * reads and writes licence rows and the app document on their own
+ * connections, which wait forever behind an open transaction on a
+ * one-connection database (PGlite, as in local development and the tests).
+ */
+const withAppRelease = keyedMutex();
+
 const POLICIES: readonly ReleasePolicy[] = ["AUTO", "GATED"];
+/**
+ * The environment's FUSION version. The module assumes one FUSION image per
+ * app template: the first FUSION service's version stands for the
+ * environment's, which is what promote compares against the version.
+ */
 const fusionVersionOf = (
   state: VetraCloudEnvironmentState | null,
 ): string | null =>
@@ -49,6 +70,11 @@ const isCanary = (row: LicenseEnvironments): boolean =>
   (row.channel_override ?? null) !== null;
 const addHours = (iso: string, hours: number): string =>
   new Date(Date.parse(iso) + hours * 3_600_000).toISOString();
+const pointerOf = (artifact: AppArtifact, channel: string): string | null =>
+  artifact.channels.find((c) => c.channel === channel)?.version ?? null;
+/** The artifact's recorded versions, newest last: what orders commit tags (isFusionUpgrade). */
+const recordedOf = (artifact: AppArtifact): string[] =>
+  artifact.versions.map((v) => v.version);
 
 function noticeHours(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value > MAX_NOTICE_HOURS) {
@@ -64,12 +90,37 @@ async function writableApp(
   appId: string,
 ): Promise<AppDocView> {
   const app = await deps.apps.app(appId);
-  if (!app)
-    throw new InvalidPublisherInputError(
-      `app ${appId} has no readable document`,
-    );
+  if (!app) throw new UnknownAppError("no such app");
   if (app.tampered) throw new AppTamperedError(app.id);
   return app;
+}
+
+/**
+ * Brings STAGING up to LATEST on every FUSION image where it has no pointer
+ * or LATEST is provably newer, so a canary that starts following STAGING
+ * resolves its template and is not left behind. Never moves STAGING back,
+ * nor where the order cannot be proven; an image without LATEST is left.
+ */
+async function bringStagingUp(
+  deps: ReleaseServiceDeps,
+  app: AppDocView,
+): Promise<void> {
+  const ops: Action[] = app.artifacts.flatMap((a) => {
+    const latest = pointerOf(a, "LATEST");
+    const staging = pointerOf(a, CANARY_CHANNEL);
+    if (a.kind !== "FUSION_IMAGE" || latest === null) return [];
+    if (staging !== null && !isFusionUpgrade(staging, latest, recordedOf(a)))
+      return [];
+    return [
+      appActions.setArtifactChannel({
+        kind: "FUSION_IMAGE",
+        name: a.name,
+        channel: CANARY_CHANNEL,
+        version: latest,
+      }),
+    ];
+  });
+  if (ops.length > 0) await deps.appWriter.appendLicensingOps(app.id, ops);
 }
 
 const liveCanaries = async (
@@ -105,10 +156,11 @@ export const releaseSettings = (
 ): Promise<ReleaseSettings> => deps.store.settings(appId);
 
 /**
- * Sets the app's release policy (spec 4.1). GATED needs a live canary, and
- * points STAGING at LATEST's version for every FUSION image that has no
- * STAGING yet, so the canary keeps its image. `defaultNoticeHours` absent:
- * unchanged.
+ * Sets the app's release policy (spec 4.1). GATED needs a live canary and
+ * brings STAGING up to LATEST. Leaving GATED is refused while a rollout is
+ * ACTIVE or PAUSED (AUTO would move every held customer at once, past the
+ * notice and past a pause), and unmarks the canaries: CI stops moving
+ * STAGING for an AUTO app. `defaultNoticeHours` absent: unchanged.
  */
 export async function setReleasePolicy(
   deps: ReleaseServiceDeps,
@@ -119,51 +171,57 @@ export async function setReleasePolicy(
     throw new InvalidPublisherInputError(
       `policy must be one of ${POLICIES.join(", ")}`,
     );
-  const current = await deps.store.settings(input.appId);
-  const next: ReleaseSettings = {
-    appId: input.appId,
-    policy,
-    defaultNoticeHours:
-      input.defaultNoticeHours === null ||
-      input.defaultNoticeHours === undefined
-        ? current.defaultNoticeHours
-        : noticeHours(input.defaultNoticeHours),
-  };
-  if (policy === "GATED") {
-    if ((await liveCanaries(deps, input.appId)).length === 0) {
-      throw new OperationRejectedError(
-        "mark one of your environments as a canary before gating releases",
+  const hours =
+    input.defaultNoticeHours === null || input.defaultNoticeHours === undefined
+      ? null
+      : noticeHours(input.defaultNoticeHours);
+  const next = await withAppRelease(input.appId, async () => {
+    const current = await deps.store.settings(input.appId);
+    const next: ReleaseSettings = {
+      appId: input.appId,
+      policy,
+      defaultNoticeHours: hours ?? current.defaultNoticeHours,
+    };
+    const leaving = policy === "AUTO" && current.policy === "GATED";
+    if (policy === "GATED") {
+      if ((await liveCanaries(deps, input.appId)).length === 0) {
+        throw new OperationRejectedError(
+          "mark one of your environments as a canary before gating releases",
+        );
+      }
+      await bringStagingUp(deps, await writableApp(deps, input.appId));
+    } else if (leaving) {
+      const open = (await deps.store.rolloutsOf(input.appId)).find(
+        (r) => r.status === "ACTIVE" || r.status === "PAUSED",
       );
+      if (open) {
+        const state = open.status === "PAUSED" ? "paused" : "still rolling out";
+        throw new OperationRejectedError(
+          `the release of ${open.artifact_name} ${open.version} is ${state} and must finish first`,
+        );
+      }
     }
-    const app = await writableApp(deps, input.appId);
-    const seed = app.artifacts.flatMap((a) => {
-      const latest = a.channels.find((c) => c.channel === "LATEST");
-      if (
-        a.kind !== "FUSION_IMAGE" ||
-        !latest ||
-        a.channels.some((c) => c.channel === "STAGING")
-      )
-        return [];
-      return [
-        appActions.setArtifactChannel({
-          kind: "FUSION_IMAGE",
-          name: a.name,
-          channel: "STAGING",
-          version: latest.version,
-        }),
-      ];
-    });
-    if (seed.length > 0) await deps.appWriter.appendLicensingOps(app.id, seed);
-  }
-  await deps.store.saveSettings(next, deps.now());
+    await deps.store.saveSettings(next, deps.now());
+    if (leaving) {
+      for (const row of await deps.envRows.forApp(input.appId)) {
+        if (!isCanary(row)) continue;
+        await deps.envRows.update(row.environment_id, {
+          channel_override: null,
+          updated_at: deps.now(),
+        });
+      }
+    }
+    return next;
+  });
   kick(deps);
   return next;
 }
 
 /**
  * Marks (or unmarks) a canary (spec 4.2): the caller's own environment of the
- * app, which then follows STAGING. The last canary of a GATED app cannot be
- * unmarked: its releases would have nowhere to go.
+ * app, which then follows STAGING (brought up to LATEST first). The last
+ * canary of a GATED app cannot be unmarked: its releases would have nowhere
+ * to go.
  */
 export async function setCanaryEnvironment(
   deps: ReleaseServiceDeps,
@@ -174,29 +232,32 @@ export async function setCanaryEnvironment(
     callerDid: string;
   },
 ): Promise<boolean> {
-  const row = await envOf(deps, input.appId, input.environmentId);
-  if (input.canary && row.user_did !== input.callerDid) {
-    throw new ForbiddenError(
-      "only an environment you hold yourself can be a canary",
-    );
-  }
-  if (
-    !input.canary &&
-    isCanary(row) &&
-    (await deps.store.settings(input.appId)).policy === "GATED"
-  ) {
-    const others = (await liveCanaries(deps, input.appId)).filter(
-      (r) => r.environment_id !== row.environment_id,
-    );
-    if (others.length === 0) {
-      throw new OperationRejectedError(
-        "a gated app needs a canary: switch the policy to AUTO first, or mark another",
+  await withAppRelease(input.appId, async () => {
+    const row = await envOf(deps, input.appId, input.environmentId);
+    if (input.canary && row.user_did !== input.callerDid) {
+      throw new ForbiddenError(
+        "only an environment you hold yourself can be a canary",
       );
     }
-  }
-  await deps.envRows.update(row.environment_id, {
-    channel_override: input.canary ? CANARY_CHANNEL : null,
-    updated_at: deps.now(),
+    if (input.canary) {
+      await bringStagingUp(deps, await writableApp(deps, input.appId));
+    } else if (
+      isCanary(row) &&
+      (await deps.store.settings(input.appId)).policy === "GATED"
+    ) {
+      const others = (await liveCanaries(deps, input.appId)).filter(
+        (r) => r.environment_id !== row.environment_id,
+      );
+      if (others.length === 0) {
+        throw new OperationRejectedError(
+          "a gated app needs a canary: switch the policy to AUTO first, or mark another",
+        );
+      }
+    }
+    await deps.envRows.update(row.environment_id, {
+      channel_override: input.canary ? CANARY_CHANNEL : null,
+      updated_at: deps.now(),
+    });
   });
   kick(deps);
   return true;
@@ -204,9 +265,11 @@ export async function setCanaryEnvironment(
 
 /**
  * Promotes a version the canary runs to the app's customers (spec 4.3):
- * refused unless the app is GATED and a canary is READY on it; LATEST moves
- * to it, any ACTIVE or PAUSED rollout of the artifact is superseded, and the
- * customers are due `noticeHours` (default: the app's) from now.
+ * refused unless the app is GATED, a canary is READY on it and it is not
+ * provably older than LATEST (upgrades only move forward; LATEST's own
+ * version may be promoted again); LATEST moves to it, any ACTIVE or PAUSED
+ * rollout of the artifact is superseded, and the customers are due
+ * `noticeHours` (default: the app's) from now.
  */
 export async function promoteRelease(
   deps: ReleaseServiceDeps,
@@ -218,60 +281,77 @@ export async function promoteRelease(
     promotedBy: string;
   },
 ): Promise<AppRollouts> {
-  const settings = await deps.store.settings(input.appId);
-  if (settings.policy !== "GATED") {
-    throw new OperationRejectedError(
-      "releases of this app are not gated: CI moves LATEST itself",
-    );
-  }
-  const hours =
+  const given =
     input.noticeHours === null || input.noticeHours === undefined
-      ? settings.defaultNoticeHours
+      ? null
       : noticeHours(input.noticeHours);
-  const app = await writableApp(deps, input.appId);
-  const artifact = app.artifacts.find(
-    (a) => a.kind === "FUSION_IMAGE" && a.name === input.artifactName,
-  );
-  if (!artifact?.versions.some((v) => v.version === input.version)) {
-    throw new InvalidPublisherInputError(
-      `${input.artifactName} has no published version ${input.version}`,
+  // Held across the document write on purpose: a second promotion must see
+  // the LATEST this one set before it checks its own version against it.
+  const rollout = await withAppRelease(input.appId, async () => {
+    const settings = await deps.store.settings(input.appId);
+    if (settings.policy !== "GATED") {
+      throw new OperationRejectedError(
+        "releases of this app are not gated: CI moves LATEST itself",
+      );
+    }
+    const hours = given ?? settings.defaultNoticeHours;
+    const app = await writableApp(deps, input.appId);
+    const artifact = app.artifacts.find(
+      (a) => a.kind === "FUSION_IMAGE" && a.name === input.artifactName,
     );
-  }
-  let healthy = false;
-  for (const canary of await liveCanaries(deps, app.id)) {
-    const state = await deps.envState(canary.environment_id);
-    if (state?.status === "READY" && fusionVersionOf(state) === input.version)
-      healthy = true;
-  }
-  if (!healthy)
-    throw new OperationRejectedError(
-      `no canary environment of this app is READY on ${input.version}`,
-    );
+    if (!artifact?.versions.some((v) => v.version === input.version)) {
+      throw new InvalidPublisherInputError(
+        `${input.artifactName} has no published version ${input.version}`,
+      );
+    }
+    const latest = pointerOf(artifact, "LATEST");
+    if (
+      latest !== null &&
+      isFusionUpgrade(input.version, latest, recordedOf(artifact))
+    ) {
+      throw new OperationRejectedError(
+        `${input.artifactName} ${input.version} is older than its LATEST ${latest}: releases only move forward`,
+      );
+    }
+    // One FUSION image per template (fusionVersionOf): the canary's FUSION
+    // version is its version of this artifact.
+    let healthy = false;
+    for (const canary of await liveCanaries(deps, app.id)) {
+      const state = await deps.envState(canary.environment_id);
+      if (state?.status === "READY" && fusionVersionOf(state) === input.version)
+        healthy = true;
+    }
+    if (!healthy)
+      throw new OperationRejectedError(
+        `no canary environment of this app is READY on ${input.version}`,
+      );
 
-  // LATEST first: should the rollout insert then fail, customers wait (an
-  // unpromoted version is held) and promoting again finishes it.
-  await deps.appWriter.appendLicensingOps(app.id, [
-    appActions.setArtifactChannel({
-      kind: "FUSION_IMAGE",
-      name: input.artifactName,
-      channel: "LATEST",
+    // LATEST first: should the rollout insert then fail, customers wait (an
+    // unpromoted version is held) and promoting again finishes it.
+    await deps.appWriter.appendLicensingOps(app.id, [
+      appActions.setArtifactChannel({
+        kind: "FUSION_IMAGE",
+        name: input.artifactName,
+        channel: "LATEST",
+        version: input.version,
+      }),
+    ]);
+    const now = deps.now();
+    const rollout: AppRollouts = {
+      id: deps.newId(),
+      app_id: app.id,
+      artifact_name: input.artifactName,
       version: input.version,
-    }),
-  ]);
-  const now = deps.now();
-  const rollout: AppRollouts = {
-    id: deps.newId(),
-    app_id: app.id,
-    artifact_name: input.artifactName,
-    version: input.version,
-    status: "ACTIVE",
-    apply_after: addHours(now, hours),
-    promoted_by: input.promotedBy.toLowerCase(),
-    promoted_at: now,
-    paused_at: null,
-    paused_reason: null,
-  };
-  await deps.store.promote(rollout);
+      status: "ACTIVE",
+      apply_after: addHours(now, hours),
+      promoted_by: input.promotedBy.toLowerCase(),
+      promoted_at: now,
+      paused_at: null,
+      paused_reason: null,
+    };
+    await deps.store.promote(rollout);
+    return rollout;
+  });
   kick(deps);
   return rollout;
 }
