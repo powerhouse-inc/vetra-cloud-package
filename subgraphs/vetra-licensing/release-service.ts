@@ -531,24 +531,52 @@ export async function environmentUpdate(
   };
 }
 
-/** PublisherEnvironment's release fields (spec 4.5). */
+/**
+ * PublisherEnvironment's release fields (spec 4.5), each from its own read
+ * and each read at most once: `isCanary` (non-null) needs only the chain row,
+ * so a document that cannot be read fails `runningVersion` alone and never
+ * the whole environment list.
+ */
+export function environmentReleaseFields(
+  deps: ReleaseServiceDeps,
+  environmentId: string,
+) {
+  const once = <T>(read: () => Promise<T>) => {
+    let p: Promise<T> | undefined;
+    return () => (p ??= read());
+  };
+  return {
+    runningVersion: once(async () =>
+      fusionVersionOf(await deps.envState(environmentId)),
+    ),
+    isCanary: once(async () => {
+      const row = await deps.envRows.byEnvironment(environmentId);
+      return row ? isCanary(row) : false;
+    }),
+    update: once(async () => {
+      const update = await deps.store.latest(environmentId);
+      return (
+        update && {
+          status: update.status,
+          toVersion: update.to_version,
+          dueAt: update.due_at,
+          error: update.error,
+        }
+      );
+    }),
+  };
+}
+
+/** All three of environmentReleaseFields at once. */
 export async function environmentRelease(
   deps: ReleaseServiceDeps,
   environmentId: string,
 ) {
-  const [row, state, update] = await Promise.all([
-    deps.envRows.byEnvironment(environmentId),
-    deps.envState(environmentId),
-    deps.store.latest(environmentId),
+  const fields = environmentReleaseFields(deps, environmentId);
+  const [runningVersion, isCanary, update] = await Promise.all([
+    fields.runningVersion(),
+    fields.isCanary(),
+    fields.update(),
   ]);
-  return {
-    runningVersion: fusionVersionOf(state),
-    isCanary: row ? isCanary(row) : false,
-    update: update && {
-      status: update.status,
-      toVersion: update.to_version,
-      dueAt: update.due_at,
-      error: update.error,
-    },
-  };
+  return { runningVersion, isCanary, update };
 }

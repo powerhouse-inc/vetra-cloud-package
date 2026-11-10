@@ -17,7 +17,7 @@ import {
   type PublisherAuthDeps,
 } from "./publisher-auth.js";
 import {
-  environmentRelease,
+  environmentReleaseFields,
   environmentUpdate,
   forceEnvironmentUpdate,
   promoteRelease,
@@ -39,6 +39,7 @@ export interface ReleaseResolverDeps extends ReleaseServiceDeps {
 }
 
 type Ctx = AuthContext & { isAdmin?: (a: string) => boolean };
+type ReleaseFields = ReturnType<typeof environmentReleaseFields>;
 type Opt<T> = T | null | undefined;
 
 const rolloutOut = (r: AppRollouts | RolloutView) => ({
@@ -119,17 +120,20 @@ export function createReleaseResolvers(
     return row;
   };
 
-  /** One read of an environment's release fields per parent object (one request). */
-  const releases = new WeakMap<object, ReturnType<typeof environmentRelease>>();
-  const releaseOf = (p: { environmentId: string }) => {
-    let r = releases.get(p);
-    if (!r) releases.set(p, (r = environmentRelease(deps, p.environmentId)));
-    return r;
-  };
-  /** releaseOf, with its failures masked like every other field's. */
-  const released = async (p: { environmentId: string }) => {
+  /** An environment's release fields per parent object (one request), each read once. */
+  const releases = new WeakMap<object, ReleaseFields>();
+  /** One release field, with its failures masked like every other field's. */
+  const released = async <T>(
+    p: { environmentId: string },
+    read: (fields: ReleaseFields) => Promise<T>,
+  ): Promise<T> => {
+    let fields = releases.get(p);
+    if (!fields) {
+      fields = environmentReleaseFields(deps, p.environmentId);
+      releases.set(p, fields);
+    }
     try {
-      return await releaseOf(p);
+      return await read(fields);
     } catch (err) {
       throw toLicensingGraphQLError(err);
     }
@@ -236,12 +240,11 @@ export function createReleaseResolvers(
 
     // Reached only through vetraPublisher.environments, which authorised the app.
     PublisherEnvironment: {
-      runningVersion: async (p: { environmentId: string }) =>
-        (await released(p)).runningVersion,
-      isCanary: async (p: { environmentId: string }) =>
-        (await released(p)).isCanary,
-      update: async (p: { environmentId: string }) =>
-        (await released(p)).update,
+      runningVersion: (p: { environmentId: string }) =>
+        released(p, (f) => f.runningVersion()),
+      isCanary: (p: { environmentId: string }) =>
+        released(p, (f) => f.isCanary()),
+      update: (p: { environmentId: string }) => released(p, (f) => f.update()),
     },
   };
 }

@@ -4,7 +4,9 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import {
   buildASTSchema,
+  graphql,
   type GraphQLError,
+  type GraphQLFieldResolver,
   type GraphQLObjectType,
 } from "graphql";
 import { up } from "../db/migrations.js";
@@ -426,7 +428,9 @@ describe("vetraReleases environment fields: the holder, or the app's owner", () 
         },
       }) as unknown as Resolvers;
       expect(
-        await codeOf(r.PublisherEnvironment.update!({ environmentId: "cust" })),
+        await codeOf(
+          r.PublisherEnvironment.runningVersion!({ environmentId: "cust" }),
+        ),
       ).toBe("INTERNAL");
       expect(error.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
         "ECONNREFUSED",
@@ -437,6 +441,13 @@ describe("vetraReleases environment fields: the holder, or the app's owner", () 
   });
 
   it("resolves PublisherEnvironment's release fields from one read per environment", async () => {
+    const rows = vi.spyOn(deps.envRows, "byEnvironment");
+    const documents = vi.fn(async () => null);
+    const latest = vi.spyOn(deps.store, "latest");
+    r = createReleaseResolvers({
+      ...deps,
+      envState: documents,
+    }) as unknown as Resolvers;
     const parent = { environmentId: "cust" };
     expect(await r.PublisherEnvironment.isCanary!(parent)).toBe(false);
     expect(await r.PublisherEnvironment.runningVersion!(parent)).toBeNull();
@@ -446,5 +457,67 @@ describe("vetraReleases environment fields: the holder, or the app's owner", () 
       dueAt: NOW,
       error: null,
     });
+    // A field asked for twice (an alias) reads nothing again.
+    expect(await r.PublisherEnvironment.isCanary!(parent)).toBe(false);
+    expect(rows.mock.calls).toStrictEqual([["cust"]]);
+    expect(documents.mock.calls).toStrictEqual([["cust"]]);
+    expect(latest.mock.calls).toStrictEqual([["cust"]]);
+  });
+
+  it("keeps the publisher's environment list when one environment's document cannot be read", async () => {
+    await deps.envRows.update("mine", { channel_override: "STAGING" });
+    const release = createReleaseResolvers({
+      ...deps,
+      envState: async (id) => {
+        if (id === "mine") throw new Error("reactor down");
+        return {
+          status: "READY",
+          services: [{ type: "FUSION", version: "1.0.0" }],
+        } as never;
+      },
+    }) as Record<string, Record<string, unknown>>;
+    const resolvers: Record<string, Record<string, unknown>> = {
+      ...release,
+      Query: { ...release.Query, vetraPublisher: () => ({}) },
+      VetraPublisherQueries: {
+        environments: async () =>
+          (await deps.envRows.forApp("a")).map((e) => ({
+            environmentId: e.environment_id,
+          })),
+      },
+    };
+    const served = buildASTSchema(schema);
+    for (const [typeName, fields] of Object.entries(resolvers)) {
+      const type = served.getType(typeName) as GraphQLObjectType;
+      for (const [field, resolve] of Object.entries(fields))
+        type.getFields()[field]!.resolve = resolve as GraphQLFieldResolver<
+          unknown,
+          unknown
+        >;
+    }
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await graphql({
+        schema: served,
+        source: `{ vetraPublisher { environments(appId: "a") {
+          environmentId isCanary runningVersion
+        } } }`,
+      });
+      expect(result.errors?.map((e) => e.path)).toStrictEqual([
+        ["vetraPublisher", "environments", 1, "runningVersion"],
+      ]);
+      const listed = (
+        result.data as {
+          vetraPublisher: { environments: Record<string, unknown>[] };
+        }
+      ).vetraPublisher.environments;
+      // graphql-js builds results without a prototype: compared with toEqual.
+      expect(listed).toEqual([
+        { environmentId: "cust", isCanary: false, runningVersion: "1.0.0" },
+        { environmentId: "mine", isCanary: true, runningVersion: null },
+      ]);
+    } finally {
+      error.mockRestore();
+    }
   });
 });
