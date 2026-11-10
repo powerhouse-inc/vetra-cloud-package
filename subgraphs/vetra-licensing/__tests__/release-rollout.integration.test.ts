@@ -57,7 +57,11 @@ import {
 } from "../environments.js";
 import { AppLicenseHandler } from "../handler.js";
 import { createLifecycleStore } from "../lifecycle.js";
-import { markEnded, type OffboardingDeps } from "../offboarding.js";
+import {
+  markEnded,
+  markResumed,
+  type OffboardingDeps,
+} from "../offboarding.js";
 import { createWarmPoolStore } from "../warm-pool-db.js";
 import { createRolloutStore, releasePolicyOf } from "../rollout-db.js";
 import { activeUpdateGate, createUpdateGate } from "../update-gate.js";
@@ -82,13 +86,15 @@ import {
  * with the release policy, as vetra-apps/index.ts wires it), the handler
  * wired as vetra-licensing/index.ts wires it with the keeper applying (the
  * update gate; release tracking and the managed-by marker through runAll;
- * markEnded on a chain's end) and the release operations. Only gitops and
- * ArgoCD are played by the test (deploy / fail below).
+ * markEnded on a chain's end, markResumed on its resumption) and the release
+ * operations. Only gitops and ArgoCD are played by the test (deploy / fail
+ * below), and the housekeeping that puts an environment to sleep and wakes
+ * it (the model's own SLEEP_ENVIRONMENT and WAKE_ENVIRONMENT).
  *
  * Not proven here, because it differs from vetra-licensing/index.ts:
- * provision and onEnded run without the chain lock (provisionChain, not
- * provisionChainExclusive; no underChainOf); onResumed and afterApp
- * (offboarding, reporting tokens) are no-ops; there is no warm pool; the
+ * provision, onEnded and onResumed run without the chain lock
+ * (provisionChain, not provisionChainExclusive; no underChainOf); afterApp
+ * (offboarding, reporting tokens) is a no-op; there is no warm pool; the
  * release mutations are called on the service directly, not through the
  * vetraReleases resolvers (only the publisher's read goes through the
  * resolver map); publisher auth has no Renown organisation lookups.
@@ -199,6 +205,33 @@ describe("app release rollout against a real reactor + real database", () => {
   const latestUpdate = (environmentId: string) =>
     rollouts.latest(environmentId);
   const tick = () => handler.reconcileOnce();
+  /** Ticks until `done` (the keeper backs a chain off after a failed step). */
+  const tickUntil = async (done: () => Promise<boolean>) => {
+    for (let i = 0; i < 40; i++) {
+      await tick();
+      if (await done()) return;
+    }
+    throw new Error("the keeper never got there");
+  };
+  /**
+   * Ticks until every environment's update of the rollout SUCCEEDED,
+   * deploying each once its version is set, and checks on every tick that
+   * at most one of them is applying.
+   */
+  const applyOneAtATime = async (rolloutId: string, ids: string[]) => {
+    const statusOf = async (id: string) =>
+      (await rollouts.updateFor(rolloutId, id))?.status;
+    await tickUntil(async () => {
+      const applying: string[] = [];
+      for (const id of ids)
+        if ((await statusOf(id)) === "APPLYING") applying.push(id);
+      expect(applying.length).toBeLessThanOrEqual(1);
+      if (applying[0]) await deploy(applying[0]);
+      for (const id of ids)
+        if ((await statusOf(id)) !== "SUCCEEDED") return false;
+      return true;
+    });
+  };
   const issue = (holder: string) =>
     issueLicense(issueDeps, {
       appId: APP,
@@ -400,7 +433,7 @@ describe("app release rollout against a real reactor + real database", () => {
       setStage: (licenseId, stage) =>
         licenseGateway.execute(licenseId, [licenseActions.setStage({ stage })]),
       onEnded: (_appId, env) => markEnded(offboarding, env),
-      onResumed: async () => {},
+      onResumed: (_appId, env) => markResumed(offboarding, env),
       afterChains: (app, after) =>
         runAll([
           () => trackReleases(releaseTracking, app, after),
@@ -809,5 +842,119 @@ describe("app release rollout against a real reactor + real database", () => {
       ],
       managedBy: [],
     });
+  });
+  it("customers asleep when a release is promoted catch up after it completes, one at a time", async () => {
+    const canary = envOf[did(PUBLISHER)]!;
+    const one = envOf[did(CUSTOMER_1)]!;
+    const asleep = [envOf[did(CUSTOMER_2)]!, envOf[did(CUSTOMER_3)]!];
+    await publish("1.3.0", "LATEST");
+    await tick();
+    expect(await fusionVersion(canary)).toBe("1.3.0");
+    await deploy(canary);
+    for (const id of asleep) await envs.execute(id, [sleepEnvironment({})]);
+    const rollout = await promoteRelease(service, {
+      appId: APP,
+      artifactName: "web",
+      version: "1.3.0",
+      noticeHours: 0,
+      promotedBy: PUBLISHER,
+    });
+    // The awake customer updates; the stopped ones cannot be provisioned,
+    // and do not hold the rollout open.
+    await applyOneAtATime(rollout.id, [one]);
+    expect(await fusionVersion(one)).toBe("1.3.0");
+    expect((await rollouts.rollout(rollout.id))!.status).toBe("COMPLETE");
+    for (const id of asleep) {
+      expect(await fusionVersion(id)).toBe("1.1.0");
+      expect(await rollouts.updateFor(rollout.id, id)).toBeNull();
+    }
+    // Woken (and redeployed as they were): they catch up under the
+    // COMPLETE rollout, one at a time.
+    for (const id of asleep) {
+      await envs.execute(id, [wakeEnvironment({})]);
+      await deploy(id);
+    }
+    await applyOneAtATime(rollout.id, asleep);
+    for (const id of asleep) {
+      expect(await fusionVersion(id)).toBe("1.3.0");
+      expect(await latestUpdate(id)).toMatchObject({
+        rollout_id: rollout.id,
+        status: "SUCCEEDED",
+        from_version: "1.1.0",
+        to_version: "1.3.0",
+      });
+    }
+    expect((await rollouts.rollout(rollout.id))!.status).toBe("COMPLETE");
+  });
+
+  it("a customer whose chain ends during the notice and is resumed has its update revived and applied", async () => {
+    const canary = envOf[did(PUBLISHER)]!;
+    const customers = [CUSTOMER_1, CUSTOMER_2, CUSTOMER_3].map(
+      (c) => envOf[did(c)]!,
+    );
+    const one = customers[0]!;
+    await publish("1.4.0", "LATEST");
+    await tick();
+    await deploy(canary);
+    const rollout = await promoteRelease(service, {
+      appId: APP,
+      artifactName: "web",
+      version: "1.4.0",
+      noticeHours: 24,
+      promotedBy: PUBLISHER,
+    });
+    await tickUntil(async () => {
+      for (const id of customers)
+        if ((await rollouts.updateFor(rollout.id, id))?.status !== "PENDING")
+          return false;
+      return true;
+    });
+    const waiting = (await rollouts.updateFor(rollout.id, one))!;
+    expect(waiting.due_at).toBe(rollout.apply_after);
+    // Its licence ends during the notice: the update is closed.
+    const ending = (await rows()).find((r) => r.environment_id === one)!;
+    await licenseGateway.execute(ending.license_id, [
+      licenseActions.revokeLicense({ reason: "card declined" }),
+    ]);
+    await tick();
+    expect(await rollouts.updateFor(rollout.id, one)).toMatchObject({
+      status: "SUPERSEDED",
+      error: "environment ended",
+    });
+    // Re-licensed on the same chain: it resumes, and its update is revived
+    // with its deadline.
+    await issueLicense(issueDeps, {
+      appId: APP,
+      user: did(CUSTOMER_1),
+      kind: "pro",
+      issuer: "PUBLISHER_GRANT",
+      details: {},
+      issuedBy: PUBLISHER,
+      upgrades: ending.license_id,
+      now: now(),
+    });
+    await tickUntil(
+      async () =>
+        (await rollouts.updateFor(rollout.id, one))?.status === "PENDING",
+    );
+    expect(
+      (await rows()).find((r) => r.environment_id === one)!.ended_at,
+    ).toBeNull();
+    expect(await rollouts.updateFor(rollout.id, one)).toMatchObject({
+      id: waiting.id,
+      due_at: waiting.due_at,
+      error: null,
+      finished_at: null,
+    });
+    expect(await fusionVersion(one)).toBe("1.3.0");
+    // Past the notice: all three apply, one at a time, and it completes.
+    clock += 25 * HOUR;
+    await applyOneAtATime(rollout.id, customers);
+    for (const id of customers) expect(await fusionVersion(id)).toBe("1.4.0");
+    expect(await rollouts.updateFor(rollout.id, one)).toMatchObject({
+      id: waiting.id,
+      status: "SUCCEEDED",
+    });
+    expect((await rollouts.rollout(rollout.id))!.status).toBe("COMPLETE");
   });
 }, 300_000);
