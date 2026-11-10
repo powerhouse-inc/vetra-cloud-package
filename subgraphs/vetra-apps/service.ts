@@ -184,6 +184,12 @@ export interface AppsDeps {
     | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
+  /**
+   * The App's release policy (vetra-licensing's app_release_settings, through
+   * releasePolicyOf). GATED: a FUSION image CI aims at LATEST moves STAGING
+   * instead. Absent: every App is AUTO, as before.
+   */
+  releasePolicy?: ((appId: string) => Promise<"AUTO" | "GATED">) | null;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
   onPreviewRemoved?: (
     app: AppRow,
@@ -4559,6 +4565,17 @@ export async function ciRecordArtifact(
     throw appsError("BAD_USER_INPUT", "channel must be DEV, STAGING or LATEST");
   if (!deps.docs) throw notConfigured("The App document store");
 
+  // A gated App's build reaches customers only when its publisher promotes
+  // it (spec 4.1): a FUSION image aimed at LATEST moves STAGING, which the
+  // App's canary environments follow. Any other kind or channel is unchanged.
+  const requested = input.channel ?? null;
+  const channel =
+    requested === "LATEST" &&
+    input.kind === "FUSION_IMAGE" &&
+    (await deps.releasePolicy?.(app.id)) === "GATED"
+      ? "STAGING"
+      : requested;
+
   const actions: Action[] = [
     recordArtifactVersion({
       kind: input.kind,
@@ -4570,12 +4587,12 @@ export async function ciRecordArtifact(
       publishedAt: deps.now().toISOString(),
     }),
   ];
-  if (input.channel != null) {
+  if (channel !== null) {
     actions.push(
       setArtifactChannel({
         kind: input.kind,
         name: input.name.trim(),
-        channel: input.channel,
+        channel,
         version: input.version.trim(),
       }),
     );
@@ -4590,7 +4607,8 @@ export async function ciRecordArtifact(
 
   deps.logger.info(
     `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +
-      (input.channel ? ` and pointed ${input.channel} at it` : ""),
+      (channel ? ` and pointed ${channel} at it` : "") +
+      (channel !== requested ? ` (the App is gated; ${requested} moves on promotion)` : ""),
   );
   return { appId: app.id, recorded: true as const };
 }
