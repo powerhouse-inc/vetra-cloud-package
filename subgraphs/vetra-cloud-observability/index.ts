@@ -192,7 +192,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
             listEnvs: async () =>
               (await envDb
                 .selectFrom("environments")
-                .select(["id", "name", "tenantId", "status", "services", "fusion", "appId"])
+                .select(["id", "name", "tenantId", "status", "services", "fusion", "appId", "managedBy"])
                 .where("fusion", "is not", null)
                 .where("appId", "is", null)
                 .execute()) as FusionEnvRow[],

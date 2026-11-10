@@ -972,14 +972,14 @@ export function createResolvers(
         const matched = new Map<string, EnvForBump>();
         const byChannel = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services"])
+          .select(["id", "name", "tenantId", "status", "services", "managedBy"])
           .where("autoUpdateChannel", "=", channel)
           .execute()) as EnvForBump[];
         for (const r of byChannel) matched.set(r.id, r);
         if (targetDomain) {
           const byDomain = (await envDb
             .selectFrom("environments")
-            .select(["id", "name", "tenantId", "status", "services"])
+            .select(["id", "name", "tenantId", "status", "services", "managedBy"])
             .where("customDomain", "=", targetDomain)
             .execute()) as EnvForBump[];
           for (const r of byDomain) if (!matched.has(r.id)) matched.set(r.id, r);
@@ -1022,6 +1022,7 @@ export function createResolvers(
             "autoUpdateChannel",
             "ownerOrgId",
             "appId",
+            "managedBy",
           ])
           .where("id", "=", documentId)
           .executeTakeFirst()) as
@@ -1093,7 +1094,7 @@ export function createResolvers(
 
         const envRow = (await envDb
           .selectFrom("environments")
-          .select(["id", "name", "tenantId", "status", "services", "owner", "ownerOrgId", "appId"])
+          .select(["id", "name", "tenantId", "status", "services", "owner", "ownerOrgId", "appId", "managedBy"])
           .where("id", "=", documentId)
           .executeTakeFirst()) as (EnvForBump & EnvAccessFields) | undefined;
         if (!envRow) throw new Error("ENV_NOT_FOUND");
@@ -1195,6 +1196,8 @@ export type EnvForBump = {
   tenantId: string | null;
   status: string | null;
   services: string | null;
+  /** Raw managedBy column: the service types its template owns (see parseManagedBy). */
+  managedBy?: string | null;
 };
 
 function parseEnvServices(
@@ -1360,8 +1363,11 @@ export async function bumpEnvToTag(
   if (env.status && RELEASED_STATUSES.has(env.status)) return false;
 
   const services = parseEnvServices(env.services);
+  // A service type the app's template declares moves only through the
+  // keeper's release gate, never through this helper.
+  const templateOwned = new Set(parseManagedBy(env.managedBy ?? null)?.services ?? []);
   const enabledMatching = services.filter(
-    (s) => s.enabled && serviceTypes.has(s.type),
+    (s) => s.enabled && serviceTypes.has(s.type) && !templateOwned.has(s.type),
   );
   if (enabledMatching.length === 0) return false;
 

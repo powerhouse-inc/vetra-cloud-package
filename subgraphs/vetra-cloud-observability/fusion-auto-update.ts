@@ -5,6 +5,8 @@
  * only push images; nothing in their CI needs a platform credential.
  */
 
+import { parseManagedBy } from "./resolvers.js";
+
 export const DEFAULT_FUSION_TAG_PATTERN = "^sha-[0-9a-f]{7,40}$";
 export const FUSION_AUTO_UPDATE_INTERVAL_MS = 120_000;
 
@@ -29,6 +31,8 @@ export type FusionEnvRow = {
   fusion: string | null;
   /** Set for Vetra App envs (state.app): those deploy only via deployApp. */
   appId?: string | null;
+  /** Raw managedBy column: set for template-managed (licensed) envs. */
+  managedBy?: string | null;
 };
 
 type FusionConfig = {
@@ -92,6 +96,8 @@ export async function runFusionAutoUpdateOnce(deps: {
   for (const env of await deps.listEnvs()) {
     if (!env.status || !BUMPABLE_STATUSES.has(env.status)) continue;
     if (env.appId) continue; // App envs deploy explicitly (deployApp)
+    // Template-managed envs get their FUSION version from the keeper's release gate.
+    if (parseManagedBy(env.managedBy ?? null)?.services.includes("FUSION")) continue;
     const fusion = parseJson<FusionConfig>(env.fusion);
     if (!fusion?.autoUpdate || !fusion.image) continue;
     const service = (

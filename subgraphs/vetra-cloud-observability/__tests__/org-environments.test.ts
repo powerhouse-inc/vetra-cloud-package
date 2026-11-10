@@ -4,7 +4,7 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
-import { createResolvers } from "../resolvers.js";
+import { bumpEnvToTag, createResolvers } from "../resolvers.js";
 import { createEnvAccess } from "../env-access.js";
 import { createRestartResolver } from "../restart.js";
 import { createPackageRegistryResolver } from "../package-registry.js";
@@ -66,6 +66,7 @@ async function createEnvTable(database: Kysely<any>): Promise<void> {
     .addColumn("autoUpdateChannel", "varchar(64)")
     .addColumn("ownerOrgId", "varchar(255)")
     .addColumn("orgOperators", "text")
+    .addColumn("managedBy", "text")
     .ifNotExists()
     .execute();
 }
@@ -77,6 +78,9 @@ type EnvSeed = {
   ownerOrgId?: string | null;
   orgOperators?: string[];
   status?: string;
+  services?: Array<{ type: string; enabled: boolean; version: string | null }>;
+  autoUpdateChannel?: string | null;
+  managedBy?: string | null;
 };
 
 async function seedEnv(env: EnvSeed): Promise<void> {
@@ -89,7 +93,7 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       tenantId: `t-${env.id}`,
       customDomain: null,
       packages: null,
-      services: null,
+      services: env.services ? JSON.stringify(env.services) : null,
       status: env.status ?? "DRAFT",
       owner: env.owner ?? null,
       createdBy: null,
@@ -97,9 +101,10 @@ async function seedEnv(env: EnvSeed): Promise<void> {
       appId: env.appId ?? null,
       appRole: null,
       prNumber: null,
-      autoUpdateChannel: null,
+      autoUpdateChannel: env.autoUpdateChannel ?? null,
       ownerOrgId: env.ownerOrgId ?? null,
       orgOperators: JSON.stringify(env.orgOperators ?? []),
+      managedBy: env.managedBy ?? null,
     })
     .execute();
 }
@@ -464,5 +469,175 @@ describe("syncEnvironmentOrg / setEnvironmentOrg", () => {
     } finally {
       await reactor.db.destroy();
     }
+  });
+});
+
+describe("template-owned versions are left to the keeper", () => {
+  const marker = (services: string[]) =>
+    JSON.stringify({ appId: "app-1", templateId: "tpl-1", rootLicenseId: "lic-1", services });
+  const bothOnV1 = [
+    { type: "CONNECT", enabled: true, version: "v1" },
+    { type: "SWITCHBOARD", enabled: true, version: "v1" },
+  ];
+  const envRow = async (id: string) =>
+    await envDb
+      .selectFrom("environments")
+      .select(["id", "name", "tenantId", "status", "services", "managedBy"])
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+  const history = async () =>
+    await db.selectFrom("release_history").select(["documentId", "service", "fromTag", "toTag"]).execute();
+
+  describe("bumpEnvToTag", () => {
+    it("does not dispatch or record a service type the template declares", async () => {
+      await seedEnv({ id: "managed", status: "READY", services: bothOnV1, managedBy: marker(["CONNECT"]) });
+      const dispatch = vi.fn(async () => undefined);
+      const bumped = await bumpEnvToTag(
+        { db, envDb, dispatch },
+        await envRow("managed"),
+        new Set(["CONNECT"]),
+        "v2",
+        "MANUAL",
+        "DEV",
+        "",
+      );
+      expect(bumped).toBe(false);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await history()).toStrictEqual([]);
+    });
+
+    it("moves only the type the template does not declare", async () => {
+      await seedEnv({ id: "managed", status: "READY", services: bothOnV1, managedBy: marker(["CONNECT"]) });
+      const dispatch = vi.fn(async () => undefined);
+      const bumped = await bumpEnvToTag(
+        { db, envDb, dispatch },
+        await envRow("managed"),
+        new Set(["CONNECT", "SWITCHBOARD"]),
+        "v2",
+        "MANUAL",
+        "DEV",
+        "",
+      );
+      expect(bumped).toBe(true);
+      expect(dispatch.mock.calls).toStrictEqual([
+        ["managed", "SET_SERVICE_VERSION", { type: "SWITCHBOARD", version: "v2" }],
+      ]);
+      expect(await history()).toStrictEqual([
+        { documentId: "managed", service: "SWITCHBOARD", fromTag: "v1", toTag: "v2" },
+      ]);
+    });
+
+    it("bumps an unmanaged environment (managedBy null) as before", async () => {
+      await seedEnv({ id: "plain", status: "READY", services: bothOnV1, managedBy: null });
+      const dispatch = vi.fn(async () => undefined);
+      const bumped = await bumpEnvToTag(
+        { db, envDb, dispatch },
+        await envRow("plain"),
+        new Set(["CONNECT"]),
+        "v2",
+        "MANUAL",
+        "DEV",
+        "",
+      );
+      expect(bumped).toBe(true);
+      expect(dispatch.mock.calls).toStrictEqual([
+        ["plain", "SET_SERVICE_VERSION", { type: "CONNECT", version: "v2" }],
+      ]);
+      expect(await history()).toStrictEqual([
+        { documentId: "plain", service: "CONNECT", fromTag: "v1", toTag: "v2" },
+      ]);
+    });
+  });
+
+  describe("release endpoints", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("notifyNewImageRelease leaves a template-declared service where it is", async () => {
+      vi.stubEnv("CLOUD_AUTO_UPDATE_SECRET", "s3cret");
+      await seedEnv({
+        id: "managed",
+        owner: OWNER,
+        status: "READY",
+        services: bothOnV1,
+        autoUpdateChannel: "DEV",
+        managedBy: marker(["CONNECT"]),
+      });
+      const dispatch = vi.fn(async () => undefined);
+      const result = await resolvers(dispatch).Mutation.notifyNewImageRelease(null, {
+        input: { secret: "s3cret", tag: "v2", channel: "dev", images: ["connect"] },
+      });
+      expect(result).toStrictEqual({ updatedEnvironments: [] });
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await history()).toStrictEqual([]);
+    });
+
+    it("updateEnvironmentToLatest moves only the services the template does not declare", async () => {
+      await seedEnv({
+        id: "managed",
+        owner: OWNER,
+        status: "READY",
+        services: bothOnV1,
+        autoUpdateChannel: "DEV",
+        managedBy: marker(["CONNECT"]),
+      });
+      const publishedAt = new Date().toISOString();
+      await db
+        .insertInto("release_index")
+        .values([
+          { id: "DEV/CONNECT", channel: "DEV", image: "CONNECT", tag: "v2", publishedAt, releaseUrl: null },
+          { id: "DEV/SWITCHBOARD", channel: "DEV", image: "SWITCHBOARD", tag: "v2", publishedAt, releaseUrl: null },
+        ])
+        .execute();
+      const dispatch = vi.fn(async () => undefined);
+      const result = await resolvers(dispatch).Mutation.updateEnvironmentToLatest(
+        null,
+        { documentId: "managed" },
+        ctx(OWNER),
+      );
+      expect(result).toStrictEqual({ updatedEnvironments: ["managed"] });
+      expect(dispatch.mock.calls).toStrictEqual([
+        ["managed", "SET_SERVICE_VERSION", { type: "SWITCHBOARD", version: "v2" }],
+        ["managed", "APPROVE_CHANGES", {}],
+      ]);
+      expect(await history()).toStrictEqual([
+        { documentId: "managed", service: "SWITCHBOARD", fromTag: "v1", toTag: "v2" },
+      ]);
+    });
+
+    it("rollbackEnvironmentRelease does not roll back a template-declared service", async () => {
+      await seedEnv({
+        id: "managed",
+        owner: OWNER,
+        status: "READY",
+        services: [{ type: "CONNECT", enabled: true, version: "v2" }],
+        managedBy: marker(["CONNECT"]),
+      });
+      await db
+        .insertInto("release_history")
+        .values({
+          id: "managed/CONNECT/2026-11-01T00:00:00.000Z",
+          documentId: "managed",
+          tenantId: "t-managed",
+          service: "CONNECT",
+          fromTag: "v1",
+          toTag: "v2",
+          trigger: "MANUAL",
+          channel: "DEV",
+          at: "2026-11-01T00:00:00.000Z",
+          releaseUrl: null,
+        })
+        .execute();
+      const dispatch = vi.fn(async () => undefined);
+      const result = await resolvers(dispatch).Mutation.rollbackEnvironmentRelease(
+        null,
+        { documentId: "managed" },
+        ctx(OWNER),
+      );
+      expect(result).toStrictEqual({ updatedEnvironments: [] });
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await history()).toHaveLength(1);
+    });
   });
 });
