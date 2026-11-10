@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AppRollouts, EnvironmentUpdates } from "../db/schema.js";
 import {
   decideRelease,
+  ENVIRONMENT_ENDED,
   strandedError,
   type GateInput,
 } from "../release-gate.js";
@@ -389,6 +390,54 @@ describe("decideRelease: GATED customers", () => {
         reason: `its update to 1.1.0 is ${status}`,
       });
     }
+  });
+
+  it("revives an update closed because its environment ended, and starts it in the same decision when due", () => {
+    const ended = row({
+      status: "SUPERSEDED",
+      error: ENVIRONMENT_ENDED,
+      due_at: BEFORE,
+      finished_at: BEFORE,
+    });
+    expect(gate({ existing: ended })).toStrictEqual({
+      version: "floor",
+      updateId: "u1",
+      writes: [
+        { kind: "revive", id: "u1" },
+        { kind: "start", id: "u1" },
+      ],
+      reason: null,
+    });
+    // Not due yet: revived, and waits out its deadline.
+    expect(gate({ existing: { ...ended, due_at: LATER } })).toStrictEqual({
+      version: "hold",
+      updateId: null,
+      writes: [{ kind: "revive", id: "u1" }],
+      reason: `due at ${LATER}`,
+    });
+    // Due, but another environment is updating: revived, then waits.
+    expect(gate({ existing: ended, otherApplying: true })).toMatchObject({
+      version: "hold",
+      writes: [{ kind: "revive", id: "u1" }],
+      reason: "another environment of the app is updating",
+    });
+  });
+
+  it("holds any other SUPERSEDED update, writing nothing", () => {
+    expect(
+      gate({
+        existing: row({
+          status: "SUPERSEDED",
+          error: "no longer a canary",
+          due_at: BEFORE,
+        }),
+      }),
+    ).toStrictEqual({
+      version: "hold",
+      updateId: null,
+      writes: [],
+      reason: "its update to 1.1.0 is SUPERSEDED",
+    });
   });
 
   it("keeps a FAILED update failed until the rollout is resumed", () => {

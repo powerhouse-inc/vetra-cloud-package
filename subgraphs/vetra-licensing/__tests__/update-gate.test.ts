@@ -185,6 +185,80 @@ describe("createUpdateGate", () => {
     expect(await store.history("e1", 20)).toStrictEqual([]);
   });
 
+  it("revives the update of a customer whose chain ended and was resumed, and starts it", async () => {
+    await gated();
+    await promote({ apply_after: NOW });
+    await store.insertUpdate({
+      id: "u0",
+      rollout_id: "r1",
+      environment_id: "e1",
+      app_id: "a",
+      from_version: "1.0.0",
+      to_version: "1.1.0",
+      status: "SUPERSEDED",
+      due_at: NOW,
+      requested_at: null,
+      started_at: null,
+      finished_at: NOW,
+      pre_update_dump_id: null,
+      error: "environment ended",
+      forced_at: null,
+      created_at: NOW,
+    });
+    expect(
+      await gate.admit({ row: envRow(), move: MOVE, now: LATER }),
+    ).toStrictEqual({ version: "floor", updateId: "u0" });
+    expect(await store.update("u0")).toMatchObject({
+      status: "APPLYING",
+      due_at: NOW,
+      started_at: LATER,
+      finished_at: null,
+      error: null,
+    });
+    expect(await store.history("e1", 20)).toHaveLength(1);
+  });
+
+  it("revives nothing when the ended update moved on after it was read", async () => {
+    await gated();
+    await promote({ apply_after: NOW });
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    await store.finishUpdate("u1", "SUCCEEDED", null, NOW);
+    const transitions: unknown[][] = [];
+    const racing = createUpdateGate({
+      store: wrapped((q) => ({
+        ...q,
+        updateFor: async (rolloutId, environmentId) => {
+          const read = await q.updateFor(rolloutId, environmentId);
+          return (
+            read && {
+              ...read,
+              status: "SUPERSEDED",
+              error: "environment ended",
+            }
+          );
+        },
+        transitionUpdate: (...args) => {
+          transitions.push(args);
+          return q.transitionUpdate(...args);
+        },
+      })),
+      logger: { warn },
+      newId: () => "u2",
+    });
+    expect(
+      await racing.admit({ row: envRow(), move: MOVE, now: LATER }),
+    ).toStrictEqual({ version: "hold", updateId: null });
+    // The revive was attempted, found the row moved on, and rolled back.
+    expect(transitions).toStrictEqual([
+      [
+        "u1",
+        "SUPERSEDED",
+        { status: "PENDING", error: null, started_at: null, finished_at: null },
+      ],
+    ]);
+    expect(await store.update("u1")).toMatchObject({ status: "SUCCEEDED" });
+  });
+
   it("lets a canary of a gated app through without a rollout", async () => {
     await gated();
     expect(

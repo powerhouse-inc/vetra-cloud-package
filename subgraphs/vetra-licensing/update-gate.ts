@@ -23,10 +23,13 @@ export interface UpdateGate {
   release(updateId: string): Promise<void>;
 }
 
-/** Thrown inside admit's transaction when its start is lost, to roll the decision back. */
-class StartLostRollback extends Error {
+/**
+ * Thrown inside admit's transaction when its start or revive is lost (the
+ * row left the status it was read in), to roll the decision back.
+ */
+class TransitionLostRollback extends Error {
   constructor() {
-    super("update start lost");
+    super("update transition lost");
   }
 }
 
@@ -95,7 +98,17 @@ export function createUpdateGate(deps: {
               });
               // The row left PENDING after it was read: it is not moving,
               // and nothing this decision wrote (a supersede) is kept.
-              if (!started) throw new StartLostRollback();
+              if (!started) throw new TransitionLostRollback();
+            } else if (w.kind === "revive") {
+              const revived = await q.transitionUpdate(w.id, "SUPERSEDED", {
+                status: "PENDING",
+                error: null,
+                started_at: null,
+                finished_at: null,
+              });
+              // Read as an ended update, now something else: decided on
+              // a row that is gone, so nothing of it is kept.
+              if (!revived) throw new TransitionLostRollback();
             } else if (w.kind === "supersede") {
               // A lost transition is harmless: the row has already moved on.
               await q.transitionUpdate(w.id, ["PENDING", "APPLYING"], {
@@ -110,7 +123,7 @@ export function createUpdateGate(deps: {
           return { version: d.version, updateId: d.updateId };
         });
       } catch (err) {
-        if (err instanceof StartLostRollback)
+        if (err instanceof TransitionLostRollback)
           return { version: "hold", updateId: null };
         throw err;
       }

@@ -3,6 +3,7 @@ import type { AppDocView } from "./app-reads.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { NOT_APPLICABLE } from "./environments.js";
+import { ENVIRONMENT_ENDED } from "./release-gate.js";
 import type { RolloutStore } from "./rollout-db.js";
 import { observe, updateOutcome } from "./update-outcome.js";
 
@@ -71,7 +72,7 @@ export async function trackReleases(
     const closed = await deps.store.transitionUpdate(
       u.id,
       ["PENDING", "APPLYING"],
-      { status: "SUPERSEDED", finished_at: now, error: "environment ended" },
+      { status: "SUPERSEDED", finished_at: now, error: ENVIRONMENT_ENDED },
     );
     if (closed) {
       deps.logger.info(

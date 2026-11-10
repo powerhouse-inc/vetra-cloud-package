@@ -37,6 +37,12 @@ export type GateWrite =
   /** PENDING -> APPLYING, started now. */
   | { kind: "start"; id: string }
   | { kind: "supersede"; id: string }
+  /**
+   * SUPERSEDED -> PENDING, waiting again (error, started_at and
+   * finished_at cleared, due_at kept): the update the tracker closed when
+   * its environment ended, now that the chain was resumed.
+   */
+  | { kind: "revive"; id: string }
   /** A PENDING row gets (or changes) its error: logged once, shown as "needs attention". */
   | { kind: "note"; id: string; error: string };
 
@@ -48,6 +54,12 @@ export interface GateDecision {
   /** Why the version waits; null when it moves. */
   reason: string | null;
 }
+
+/**
+ * The error of an update the tracker closed because its environment was no
+ * longer live: the gate revives exactly such an update if the chain resumes.
+ */
+export const ENVIRONMENT_ENDED = "environment ended";
 
 /** The error a stranded move's update carries (and the keeper logs once per version). */
 export function strandedError(move: FusionMove): string {
@@ -79,7 +91,9 @@ const earlier = (a: string, b: string | null): string => {
  * publisher's force under either policy, its update carrying the error. A
  * forced update skips the deadline, the pause and the stranded hold, never
  * the one-at-a-time rule. A new version supersedes a PENDING update of an
- * older one and keeps its earlier deadline (decision 9).
+ * older one and keeps its earlier deadline (decision 9). An update closed
+ * because its environment ended is revived when the gate decides for that
+ * environment again (its chain resumed); any other SUPERSEDED update holds.
  */
 export function decideRelease(i: GateInput): GateDecision {
   const gated = i.policy === "GATED";
@@ -102,7 +116,23 @@ export function decideRelease(i: GateInput): GateDecision {
   if (rolledOut && !i.rollout)
     return hold(`${i.move.to} has not been promoted`);
 
-  const existing = i.existing;
+  let existing = i.existing;
+  if (
+    rolledOut &&
+    existing?.status === "SUPERSEDED" &&
+    existing.error === ENVIRONMENT_ENDED
+  ) {
+    // Closed when its chain ended; the chain is live again. Decided on as
+    // the PENDING row the revive makes it.
+    writes.push({ kind: "revive", id: existing.id });
+    existing = {
+      ...existing,
+      status: "PENDING",
+      error: null,
+      started_at: null,
+      finished_at: null,
+    };
+  }
   if (existing?.status === "APPLYING") {
     // In flight (a re-send after a crash is harmless): the tracker settles it.
     const version =
