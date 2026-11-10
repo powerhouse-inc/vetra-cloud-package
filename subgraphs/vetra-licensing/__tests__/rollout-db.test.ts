@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+} from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -175,8 +182,60 @@ describe("rollouts", () => {
       { status: "SUCCEEDED", count: 1 },
     ]);
     await store.pause("r1", "x", T1);
-    await store.complete("r1");
+    expect(await store.complete("r1")).toBe(false);
     expect((await store.rollout("r1"))!.status).toBe("PAUSED");
+    await store.resume("r1");
+    expect(await store.complete("r1")).toBe(true);
+    expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+  });
+
+  it("breaks a promoted_at tie by id, newest (larger) first", async () => {
+    await db
+      .insertInto("app_rollouts")
+      .values([rollout({ id: "r1" }), rollout({ id: "r2" })])
+      .execute();
+    await store.promote(rollout({ id: "r0", artifact_name: "api" }));
+    expect((await store.openRollout("a", "web", "1.1.0"))!.id).toBe("r2");
+    expect((await store.activeRollouts("a")).map((r) => r.id)).toStrictEqual([
+      "r2",
+      "r1",
+      "r0",
+    ]);
+  });
+
+  it("promotes inside a transaction, and rolls back with it", async () => {
+    await store.promote(rollout({ id: "r1" }));
+    await expect(
+      store.inTransaction(async (q) => {
+        await q.promote(rollout({ id: "r2", version: "1.2.0" }));
+        expect((await q.rollout("r1"))!.status).toBe("SUPERSEDED");
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect((await store.rollout("r1"))!.status).toBe("ACTIVE");
+    expect(await store.rollout("r2")).toBeNull();
+    await store.inTransaction((q) =>
+      q.promote(rollout({ id: "r2", version: "1.2.0" })),
+    );
+    expect((await store.rollout("r1"))!.status).toBe("SUPERSEDED");
+    expect((await store.rollout("r2"))!.status).toBe("ACTIVE");
+  });
+
+  it("resumes inside a transaction, and rolls back with it", async () => {
+    await store.promote(rollout());
+    await store.insertUpdate(update({ id: "u1", status: "FAILED" }));
+    await store.pause("r1", "boom", T1);
+    await expect(
+      store.inTransaction(async (q) => {
+        expect(await q.resume("r1")).toBe(true);
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect((await store.rollout("r1"))!.status).toBe("PAUSED");
+    expect((await store.update("u1"))!.status).toBe("FAILED");
+    expect(await store.inTransaction((q) => q.resume("r1"))).toBe(true);
+    expect((await store.rollout("r1"))!.status).toBe("ACTIVE");
+    expect((await store.update("u1"))!.status).toBe("PENDING");
   });
 });
 
@@ -229,27 +288,100 @@ describe("environment updates", () => {
     ]);
     // Same created_at: the larger id is newest.
     expect((await store.latest("e1"))!.id).toBe("r1e1");
-    expect((await store.history("e1", 2)).map((u) => u.id)).toHaveLength(2);
+    expect((await store.history("e1", 2)).map((u) => u.id)).toStrictEqual([
+      "r1e1",
+      "canary",
+    ]);
   });
 
   it("releases only an APPLYING update, and finishes only an APPLYING one", async () => {
     await store.insertUpdate(
       update({ id: "u1", status: "APPLYING", started_at: T0 }),
     );
-    await store.releaseApplying("u1");
+    expect(await store.releaseApplying("u1")).toBe(true);
     expect(await store.update("u1")).toMatchObject({
       status: "PENDING",
       started_at: null,
     });
-    await store.finishUpdate("u1", "SUCCEEDED", null, T1);
-    expect((await store.update("u1"))!.status).toBe("PENDING");
-    await store.patchUpdate("u1", { status: "APPLYING", started_at: T0 });
-    await store.finishUpdate("u1", "FAILED", "deployment failed", T1);
+    expect(await store.releaseApplying("u1")).toBe(false);
+    expect(await store.finishUpdate("u1", "SUCCEEDED", null, T1)).toBe(false);
+    expect(await store.update("u1")).toMatchObject({
+      status: "PENDING",
+      finished_at: null,
+    });
+    await store.transitionUpdate("u1", "PENDING", {
+      status: "APPLYING",
+      started_at: T0,
+    });
+    expect(
+      await store.finishUpdate("u1", "FAILED", "deployment failed", T1),
+    ).toBe(true);
     expect(await store.update("u1")).toMatchObject({
       status: "FAILED",
       error: "deployment failed",
       finished_at: T1,
     });
+  });
+
+  it("transitions only from a listed status, and applies the patch when it wins", async () => {
+    await store.insertUpdate(update({ id: "u1", status: "PENDING" }));
+    expect(
+      await store.transitionUpdate("u1", ["FAILED", "PENDING"], {
+        status: "APPLYING",
+        started_at: T1,
+      }),
+    ).toBe(true);
+    expect(await store.update("u1")).toMatchObject({
+      status: "APPLYING",
+      started_at: T1,
+    });
+    expect(
+      await store.transitionUpdate("u1", "PENDING", {
+        status: "SUCCEEDED",
+        finished_at: T1,
+      }),
+    ).toBe(false);
+    expect(await store.transitionUpdate("u1", [], { error: "x" })).toBe(false);
+    expect(await store.update("u1")).toMatchObject({
+      status: "APPLYING",
+      started_at: T1,
+      finished_at: null,
+    });
+  });
+
+  it("patches an update's fields but never its status", async () => {
+    await store.insertUpdate(update({ id: "u1" }));
+    await store.patchUpdate("u1", {
+      requested_at: T1,
+      pre_update_dump_id: "d1",
+    });
+    expect(await store.update("u1")).toMatchObject({
+      status: "PENDING",
+      requested_at: T1,
+      pre_update_dump_id: "d1",
+    });
+    type Patch = Parameters<RolloutStore["patchUpdate"]>[1];
+    // @ts-expect-error status changes only through a guarded transition
+    expectTypeOf<Patch>().toHaveProperty("status");
+  });
+
+  it("takes the app lock inside a transaction, re-entrantly", async () => {
+    // PGlite is a single connection, so two transactions cannot contend for
+    // the lock here: this only shows lockApp runs, may be taken again by the
+    // same transaction (promote takes it too) and is released at commit.
+    // Mutual exclusion between connections is Postgres's guarantee, not
+    // something this test proves.
+    expect(
+      await store.inTransaction(async (q) => {
+        await q.lockApp("a");
+        await q.lockApp("a");
+        await q.lockApp("b");
+        await q.promote(rollout());
+        return "done";
+      }),
+    ).toBe("done");
+    await store.inTransaction((q) => q.lockApp("a"));
+    expect((await store.rollout("r1"))!.status).toBe("ACTIVE");
   });
 
   it("runs gate writes in one transaction: a failure leaves nothing behind", async () => {

@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type {
   AppRollouts,
   EnvironmentUpdates,
@@ -45,15 +45,29 @@ export async function releasePolicyOf(
 
 const OPEN: UpdateStatus[] = ["PENDING", "APPLYING"];
 
+/**
+ * First key of this module's two-int advisory locks ("roll"), so an app's
+ * lock cannot collide with another module's keys. No other advisory lock is
+ * taken in this repo.
+ */
+const ROLLOUT_LOCK_NAMESPACE = 0x726f6c6c;
+
+/** Every field but the status: a status changes only through a guarded transition. */
 type UpdatePatch = Partial<
-  Omit<EnvironmentUpdates, "id" | "environment_id" | "app_id" | "rollout_id">
+  Omit<
+    EnvironmentUpdates,
+    "id" | "environment_id" | "app_id" | "rollout_id" | "status"
+  >
 >;
 
 /** The store's queries, over the database or over one transaction. */
 export type RolloutQueries = ReturnType<typeof rolloutQueries>;
 
 export type RolloutStore = RolloutQueries & {
-  /** fn over the queries bound to one transaction. Not re-entrant: promote and resume open their own. */
+  /**
+   * fn over the queries bound to one transaction. Not nestable, but promote
+   * and resume called on those queries join it rather than opening their own.
+   */
   inTransaction<T>(fn: (queries: RolloutQueries) => Promise<T>): Promise<T>;
 };
 
@@ -70,6 +84,32 @@ export function createRolloutStore(db: Kysely<VetraLicensingDB>): RolloutStore {
 }
 
 function rolloutQueries(db: Kysely<VetraLicensingDB>) {
+  /** fn on the current transaction, or on a new one when there is none. */
+  const atomically = <T>(fn: (trx: Kysely<VetraLicensingDB>) => Promise<T>) =>
+    db.isTransaction ? fn(db) : db.transaction().execute(fn);
+  const lockApp = async (
+    trx: Kysely<VetraLicensingDB>,
+    appId: string,
+  ): Promise<void> => {
+    await sql`select pg_advisory_xact_lock(${ROLLOUT_LOCK_NAMESPACE}::int, hashtext(${appId}))`.execute(
+      trx,
+    );
+  };
+  const transitionUpdate = async (
+    id: string,
+    from: UpdateStatus | readonly UpdateStatus[],
+    patch: Partial<Omit<EnvironmentUpdates, "id">>,
+  ): Promise<boolean> => {
+    const statuses = typeof from === "string" ? [from] : from;
+    if (statuses.length === 0) return false;
+    const r = await db
+      .updateTable("environment_updates")
+      .set(patch)
+      .where("id", "=", id)
+      .where("status", "in", statuses)
+      .executeTakeFirst();
+    return Number(r.numUpdatedRows) > 0;
+  };
   const updates = () =>
     db
       .selectFrom("environment_updates")
@@ -79,6 +119,16 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
   const first = (q: Promise<EnvironmentUpdates | undefined>) =>
     q.then((r) => r ?? null);
   return {
+    /**
+     * Holds the app's transaction-scoped advisory lock until commit or
+     * rollback, so writers of one app (the keeper on one chain, the machine
+     * API on another) serialise across connections. Only meaningful inside
+     * inTransaction: on its own it is released as soon as it is taken.
+     * Transaction-scoped on purpose: production reaches Postgres through
+     * pgbouncer in transaction mode, where session locks leak (see
+     * withChainLock in environments.ts).
+     */
+    lockApp: (appId: string): Promise<void> => lockApp(db, appId),
     async settings(appId: string): Promise<ReleaseSettings> {
       const row = await db
         .selectFrom("app_release_settings")
@@ -125,6 +175,7 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .where("version", "=", version)
         .where("status", "in", ["ACTIVE", "PAUSED"])
         .orderBy("promoted_at", "desc")
+        .orderBy("id", "desc")
         .executeTakeFirst()
         .then((r) => r ?? null),
     /** Newest promotion first. */
@@ -136,21 +187,26 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .orderBy("promoted_at", "desc")
         .orderBy("id", "desc")
         .execute(),
+    /** Newest promotion first. */
     activeRollouts: (appId: string): Promise<AppRollouts[]> =>
       db
         .selectFrom("app_rollouts")
         .selectAll()
         .where("app_id", "=", appId)
         .where("status", "=", "ACTIVE")
+        .orderBy("promoted_at", "desc")
+        .orderBy("id", "desc")
         .execute(),
     /**
      * Every ACTIVE or PAUSED rollout of the artifact becomes SUPERSEDED and
-     * `row` is inserted, in one transaction. Their PENDING updates stay: the
-     * keeper supersedes each when it inserts its successor, keeping the
-     * earlier deadline (decision 9).
+     * `row` is inserted, in one transaction (the caller's, if any), under
+     * the app's lock so two promotions serialise and the later supersedes
+     * the earlier. Their PENDING updates stay: the keeper supersedes each
+     * when it inserts its successor, keeping the earlier deadline (decision 9).
      */
     async promote(row: AppRollouts): Promise<void> {
-      await db.transaction().execute(async (trx) => {
+      await atomically(async (trx) => {
+        await lockApp(trx, row.app_id);
         await trx
           .updateTable("app_rollouts")
           .set({ status: "SUPERSEDED" })
@@ -171,9 +227,9 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .executeTakeFirst();
       return Number(r.numUpdatedRows) > 0;
     },
-    /** PAUSED -> ACTIVE, and its FAILED updates back to PENDING, in one transaction. */
+    /** PAUSED -> ACTIVE, and its FAILED updates back to PENDING, in one transaction (the caller's, if any). */
     async resume(id: string): Promise<boolean> {
-      return db.transaction().execute(async (trx) => {
+      return atomically(async (trx) => {
         const r = await trx
           .updateTable("app_rollouts")
           .set({ status: "ACTIVE", paused_at: null, paused_reason: null })
@@ -195,13 +251,15 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         return true;
       });
     },
-    async complete(id: string): Promise<void> {
-      await db
+    /** ACTIVE -> COMPLETE; false when it was not ACTIVE. */
+    async complete(id: string): Promise<boolean> {
+      const r = await db
         .updateTable("app_rollouts")
         .set({ status: "COMPLETE" })
         .where("id", "=", id)
         .where("status", "=", "ACTIVE")
-        .execute();
+        .executeTakeFirst();
+      return Number(r.numUpdatedRows) > 0;
     },
     /** PENDING and APPLYING updates of the rollout. */
     openCount: async (rolloutId: string): Promise<number> =>
@@ -321,29 +379,22 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .where("id", "=", id)
         .execute();
     },
+    /**
+     * The row from one of `from` to `patch` (which may set the status), in
+     * one guarded UPDATE; false when the row was in no status of `from`.
+     */
+    transitionUpdate,
     /** APPLYING -> PENDING: an admitted update whose actions never went out. */
-    async releaseApplying(id: string): Promise<void> {
-      await db
-        .updateTable("environment_updates")
-        .set({ status: "PENDING", started_at: null })
-        .where("id", "=", id)
-        .where("status", "=", "APPLYING")
-        .execute();
-    },
-    /** `from` (APPLYING unless given) -> SUCCEEDED or FAILED. */
-    async finishUpdate(
+    releaseApplying: (id: string): Promise<boolean> =>
+      transitionUpdate(id, "APPLYING", { status: "PENDING", started_at: null }),
+    /** `from` (APPLYING unless given) -> SUCCEEDED or FAILED; false when it was not in `from`. */
+    finishUpdate: (
       id: string,
       status: "SUCCEEDED" | "FAILED",
       error: string | null,
       now: string,
       from: UpdateStatus = "APPLYING",
-    ): Promise<void> {
-      await db
-        .updateTable("environment_updates")
-        .set({ status, error, finished_at: now })
-        .where("id", "=", id)
-        .where("status", "=", from)
-        .execute();
-    },
+    ): Promise<boolean> =>
+      transitionUpdate(id, from, { status, error, finished_at: now }),
   };
 }
