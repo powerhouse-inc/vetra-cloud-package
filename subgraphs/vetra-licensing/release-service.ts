@@ -123,6 +123,28 @@ async function bringStagingUp(
   if (ops.length > 0) await deps.appWriter.appendLicensingOps(app.id, ops);
 }
 
+/**
+ * Closes the waiting (PENDING) update without a rollout of an environment
+ * that stops being a canary, so it does not linger as the holder's open
+ * update. Guarded: one that moved on meanwhile is left. An APPLYING one is
+ * left to the tracker: its version is deploying, and closing it would let
+ * another environment of the app start alongside.
+ */
+async function closeCanaryUpdate(
+  deps: ReleaseServiceDeps,
+  row: LicenseEnvironments,
+): Promise<void> {
+  for (const u of await deps.store.pendingOf(row.app_id)) {
+    if (u.environment_id !== row.environment_id || u.rollout_id !== null)
+      continue;
+    await deps.store.transitionUpdate(u.id, "PENDING", {
+      status: "SUPERSEDED",
+      finished_at: deps.now(),
+      error: "no longer a canary",
+    });
+  }
+}
+
 const liveCanaries = async (
   deps: ReleaseServiceDeps,
   appId: string,
@@ -214,6 +236,8 @@ export async function setReleasePolicy(
     if (leaving) {
       for (const row of await deps.envRows.forApp(input.appId)) {
         if (!isCanary(row)) continue;
+        // Before the unmark: a retry skips an environment already unmarked.
+        await closeCanaryUpdate(deps, row);
         await deps.envRows.update(row.environment_id, {
           channel_override: null,
           updated_at: deps.now(),
@@ -264,6 +288,7 @@ export async function setCanaryEnvironment(
         );
       }
     }
+    if (!input.canary && isCanary(row)) await closeCanaryUpdate(deps, row);
     await deps.envRows.update(row.environment_id, {
       channel_override: input.canary ? CANARY_CHANNEL : null,
       updated_at: deps.now(),

@@ -651,7 +651,7 @@ describe("provisionChain asks the update gate before it moves a FUSION version (
   };
 
   beforeEach(() => {
-    deps.updates = createUpdateGate({ store: createRolloutStore(db), logger: { warn: () => {} } });
+    deps.updates = createUpdateGate({ store: createRolloutStore(db), logger: { warn: () => {}, info: () => {} } });
   });
 
   it("an AUTO app moves the version as before, records the update and advances the hash", async () => {

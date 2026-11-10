@@ -264,6 +264,21 @@ describe("decideRelease: GATED customers", () => {
     expect(inserted(takes)).toMatchObject({ due_at: LATER, status: "PENDING" });
   });
 
+  it("does not take the deadline of a superseded update that has no rollout", () => {
+    // A canary-era or AUTO-era update, due "now" when it was written.
+    const d = gate({
+      open: row({
+        id: "older",
+        rollout_id: null,
+        to_version: "1.0.5",
+        due_at: BEFORE,
+      }),
+    });
+    expect(d.writes[0]).toStrictEqual({ kind: "supersede", id: "older" });
+    expect(inserted(d)).toMatchObject({ due_at: LATER, status: "PENDING" });
+    expect(d).toMatchObject({ version: "hold", reason: `due at ${LATER}` });
+  });
+
   it("starts an update when it is due, or when the holder asked", () => {
     expect(gate({ existing: row({ due_at: BEFORE }) })).toMatchObject({
       version: "floor",

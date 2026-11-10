@@ -35,10 +35,24 @@ class TransitionLostRollback extends Error {
 
 export function createUpdateGate(deps: {
   store: RolloutStore;
-  logger: Pick<Console, "warn">;
+  logger: Pick<Console, "info" | "warn">;
   newId?: () => string;
 }): UpdateGate {
   const newId = deps.newId ?? randomUUID;
+  /** environment id -> why it waits, as last logged. */
+  const waiting = new Map<string, string>();
+  // Once per environment and reason: a customer waiting out its notice is
+  // logged when it starts waiting, and again only when the reason changes.
+  const infoWaits = (
+    row: LicenseEnvironments,
+    move: FusionMove,
+    reason: string,
+  ) => {
+    const message = `[licensing] environment ${row.environment_id} of chain ${row.root_license_id} waits for FUSION ${move.to}: ${reason}`;
+    if (waiting.get(row.environment_id) === message) return;
+    waiting.set(row.environment_id, message);
+    deps.logger.info(message);
+  };
   // Once per version: logged when the error is first written to the update.
   const warnHeld = (
     row: LicenseEnvironments,
@@ -52,7 +66,9 @@ export function createUpdateGate(deps: {
     admit: async ({ row, move, now }) => {
       // Logged once the transaction has committed the errors they report.
       const held: string[] = [];
-      let admitted: Awaited<ReturnType<UpdateGate["admit"]>>;
+      let admitted: Awaited<ReturnType<UpdateGate["admit"]>> & {
+        reason: string | null;
+      };
       try {
         admitted = await deps.store.inTransaction(async (q) => {
           // Before any read: the decision reads "is another update of this app
@@ -120,7 +136,7 @@ export function createUpdateGate(deps: {
               held.push(w.error);
             }
           }
-          return { version: d.version, updateId: d.updateId };
+          return { version: d.version, updateId: d.updateId, reason: d.reason };
         });
       } catch (err) {
         if (err instanceof TransitionLostRollback)
@@ -128,7 +144,9 @@ export function createUpdateGate(deps: {
         throw err;
       }
       for (const error of held) warnHeld(row, move, error);
-      return admitted;
+      if (admitted.reason !== null) infoWaits(row, move, admitted.reason);
+      else waiting.delete(row.environment_id);
+      return { version: admitted.version, updateId: admitted.updateId };
     },
     release: async (updateId) => {
       await deps.store.releaseApplying(updateId);

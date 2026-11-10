@@ -47,6 +47,7 @@ let db: Kysely<VetraLicensingDB>;
 let store: RolloutStore;
 let gate: UpdateGate;
 let warn: ReturnType<typeof vi.fn>;
+let info: ReturnType<typeof vi.fn>;
 let n: number;
 beforeEach(async () => {
   db = new Kysely<VetraLicensingDB>({
@@ -55,8 +56,13 @@ beforeEach(async () => {
   await up(db as Kysely<any>);
   store = createRolloutStore(db);
   warn = vi.fn();
+  info = vi.fn();
   n = 0;
-  gate = createUpdateGate({ store, logger: { warn }, newId: () => `u${++n}` });
+  gate = createUpdateGate({
+    store,
+    logger: { warn, info },
+    newId: () => `u${++n}`,
+  });
 });
 afterEach(async () => {
   await db.destroy();
@@ -242,7 +248,7 @@ describe("createUpdateGate", () => {
           return q.transitionUpdate(...args);
         },
       })),
-      logger: { warn },
+      logger: { warn, info },
       newId: () => "u2",
     });
     expect(
@@ -294,6 +300,37 @@ describe("createUpdateGate", () => {
     expect(await store.history("e1", 20)).toHaveLength(1);
   });
 
+  it("logs why an environment waits once per reason, and again once its update has started", async () => {
+    await gated();
+    await promote();
+    const waits = (reason: string) =>
+      `[licensing] environment e1 of chain l1 waits for FUSION 1.1.0: ${reason}`;
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    expect(info.mock.calls).toStrictEqual([[waits(`due at ${LATER}`)]]);
+    // The reason changes: logged again.
+    await store.pause("r1", "environment e9: boom", NOW);
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    await store.resume("r1");
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    expect(info.mock.calls).toStrictEqual([
+      [waits(`due at ${LATER}`)],
+      [waits("its rollout is paused")],
+      [waits(`due at ${LATER}`)],
+    ]);
+    // It starts (asked for), and is handed back: the same reason is news again.
+    await store.patchUpdate("u1", { requested_at: NOW });
+    expect(
+      (await gate.admit({ row: envRow(), move: MOVE, now: NOW })).version,
+    ).toBe("floor");
+    await gate.release("u1");
+    await store.patchUpdate("u1", { requested_at: null });
+    await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    expect(info).toHaveBeenCalledTimes(4);
+    expect(info).toHaveBeenLastCalledWith(waits(`due at ${LATER}`));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("puts a released update back to PENDING", async () => {
     const { updateId } = await gate.admit({
       row: envRow(),
@@ -323,7 +360,7 @@ describe("createUpdateGate", () => {
             },
           }),
       ),
-      logger: { warn },
+      logger: { warn, info },
       newId: () => "u1",
     });
     await spied.admit({ row: envRow(), move: MOVE, now: NOW });
@@ -346,7 +383,7 @@ describe("createUpdateGate", () => {
           return read && { ...read, status: "PENDING" };
         },
       })),
-      logger: { warn },
+      logger: { warn, info },
       newId: () => "u2",
     });
     expect(
@@ -397,7 +434,7 @@ describe("createUpdateGate commits a decision whole, or nothing of it", () => {
         unrolledUpdate: async (e, to) => stale(await q.unrolledUpdate(e, to)),
         openExcept: async (e, except) => stale(await q.openExcept(e, except)),
       })),
-      logger: { warn },
+      logger: { warn, info },
       newId: () => "unused",
     });
   };
@@ -455,7 +492,7 @@ describe("createUpdateGate commits a decision whole, or nothing of it", () => {
             throw new Error("commit failed");
           }),
       },
-      logger: { warn },
+      logger: { warn, info },
       newId: () => "u1",
     });
     await expect(

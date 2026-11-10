@@ -91,7 +91,8 @@ const earlier = (a: string, b: string | null): string => {
  * publisher's force under either policy, its update carrying the error. A
  * forced update skips the deadline, the pause and the stranded hold, never
  * the one-at-a-time rule. A new version supersedes a PENDING update of an
- * older one and keeps its earlier deadline (decision 9). An update closed
+ * older one and keeps its earlier deadline (decision 9), when that one
+ * belonged to a rollout. An update closed
  * because its environment ended is revived when the gate decides for that
  * environment again (its chain resumed); any other SUPERSEDED update holds.
  */
@@ -148,11 +149,13 @@ export function decideRelease(i: GateInput): GateDecision {
   const forced = pending !== null && pending.forced_at !== null;
   const stranded = i.move.stranded ? strandedError(i.move) : null;
   const openPending = i.open?.status === "PENDING" ? i.open : null;
+  // Only a rollout's update lends its deadline: one without (a canary's, or
+  // AUTO's) was due "now", which would skip this rollout's notice.
+  const lentDue =
+    openPending && openPending.rollout_id !== null ? openPending.due_at : null;
   const dueAt =
     pending?.due_at ??
-    (rolledOut && i.rollout
-      ? earlier(i.rollout.apply_after, openPending?.due_at ?? null)
-      : i.now);
+    (rolledOut && i.rollout ? earlier(i.rollout.apply_after, lentDue) : i.now);
 
   let reason: string | null = null;
   if (stranded && !forced) {

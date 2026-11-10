@@ -729,6 +729,55 @@ describe("leaving gating", () => {
   });
 });
 
+describe("an unmarked canary's update without a rollout", () => {
+  const closed = {
+    status: "SUPERSEDED",
+    finished_at: NOW,
+    error: "no longer a canary",
+  };
+
+  it("is closed when the canary is unmarked, leaving others alone", async () => {
+    await markCanary();
+    await deps.store.insertUpdate(
+      update({ environment_id: "mine", status: "PENDING" }),
+    );
+    await deps.store.insertUpdate(
+      update({ id: "u2", environment_id: "cust", status: "PENDING" }),
+    );
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine",
+      canary: false,
+      callerDid: PUBLISHER,
+    });
+    expect(await deps.store.update("u1")).toMatchObject(closed);
+    expect((await deps.store.update("u2"))!.status).toBe("PENDING");
+  });
+
+  it("is left to the tracker while it is applying: its version is deploying", async () => {
+    await markCanary();
+    await deps.store.insertUpdate(
+      update({ environment_id: "mine", status: "APPLYING", started_at: NOW }),
+    );
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine",
+      canary: false,
+      callerDid: PUBLISHER,
+    });
+    expect((await deps.store.update("u1"))!.status).toBe("APPLYING");
+  });
+
+  it("is closed when leaving gating unmarks the canaries", async () => {
+    await gate();
+    await deps.store.insertUpdate(
+      update({ environment_id: "mine", status: "PENDING" }),
+    );
+    await setReleasePolicy(deps, { appId: "a", policy: "AUTO" });
+    expect(await deps.store.update("u1")).toMatchObject(closed);
+  });
+});
+
 describe("STAGING follows LATEST up when a canary starts following it", () => {
   it("is seeded at LATEST when a canary is marked and it has no pointer", async () => {
     await markCanary();
