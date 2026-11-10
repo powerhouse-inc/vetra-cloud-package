@@ -130,6 +130,25 @@ describe("decideRelease: AUTO keeps today's behaviour", () => {
       reason: null,
     });
   });
+  it("moves a forced update while another environment of the app is applying", () => {
+    const d = gate({
+      policy: "AUTO",
+      rollout: null,
+      move: STRANDED,
+      otherApplying: true,
+      existing: row({
+        rollout_id: null,
+        to_version: STRANDED.to,
+        forced_at: NOW,
+        requested_at: NOW,
+      }),
+    });
+    expect(d).toMatchObject({
+      version: "force",
+      updateId: "u1",
+      writes: [{ kind: "start", id: "u1" }],
+    });
+  });
 });
 
 describe("decideRelease: a stranded version waits for the publisher (both policies)", () => {
@@ -219,6 +238,31 @@ describe("decideRelease: GATED customers", () => {
     expect(d.version).toBe("floor");
   });
 
+  it("keeps the superseded deadline while it is still ahead, or the rollout's when that is earlier", () => {
+    const MID = "2026-11-11T12:00:00.000Z";
+    const FAR = "2026-11-20T12:00:00.000Z";
+    const keeps = gate({
+      open: row({
+        id: "older",
+        rollout_id: "r0",
+        to_version: "1.0.5",
+        due_at: MID,
+      }),
+    });
+    expect(keeps.writes[0]).toStrictEqual({ kind: "supersede", id: "older" });
+    expect(inserted(keeps)).toMatchObject({ due_at: MID, status: "PENDING" });
+    expect(keeps).toMatchObject({ version: "hold", reason: `due at ${MID}` });
+    const takes = gate({
+      open: row({
+        id: "older",
+        rollout_id: "r0",
+        to_version: "1.0.5",
+        due_at: FAR,
+      }),
+    });
+    expect(inserted(takes)).toMatchObject({ due_at: LATER, status: "PENDING" });
+  });
+
   it("starts an update when it is due, or when the holder asked", () => {
     expect(gate({ existing: row({ due_at: BEFORE }) })).toMatchObject({
       version: "floor",
@@ -247,6 +291,20 @@ describe("decideRelease: GATED customers", () => {
         existing: row({ forced_at: NOW, requested_at: NOW }),
       }).version,
     ).toBe("floor");
+  });
+
+  it("holds an update the holder asked for while the rollout is paused", () => {
+    expect(
+      gate({
+        rollout: rollout({ status: "PAUSED" }),
+        existing: row({ requested_at: NOW }),
+      }),
+    ).toStrictEqual({
+      version: "hold",
+      updateId: null,
+      writes: [],
+      reason: "its rollout is paused",
+    });
   });
 
   it("names the pause, not the deadline, when a paused update is not yet due", () => {
@@ -278,6 +336,29 @@ describe("decideRelease: GATED customers", () => {
       writes: [],
       reason: "its update to 1.0.5 is still applying",
     });
+  });
+
+  it("leaves an update in flight to the tracker on a later tick, starting nothing", () => {
+    expect(
+      gate({ existing: row({ status: "APPLYING", started_at: BEFORE }) }),
+    ).toStrictEqual({
+      version: "floor",
+      updateId: "u1",
+      writes: [],
+      reason: null,
+    });
+  });
+
+  it("holds a SUCCEEDED or SUPERSEDED update, writing nothing", () => {
+    for (const status of ["SUCCEEDED", "SUPERSEDED"] as const) {
+      const existing = row({ status, due_at: BEFORE });
+      expect(gate({ existing })).toStrictEqual({
+        version: "hold",
+        updateId: null,
+        writes: [],
+        reason: `its update to 1.1.0 is ${status}`,
+      });
+    }
   });
 
   it("keeps a FAILED update failed until the rollout is resumed", () => {
