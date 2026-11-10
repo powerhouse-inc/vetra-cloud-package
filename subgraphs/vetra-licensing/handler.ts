@@ -13,6 +13,7 @@ import {
   EnvironmentNotReadyError,
   EnvironmentOwnershipMismatchError,
   type ProvisionChainInput,
+  type ProvisionResult,
 } from "./environments.js";
 import type { GrantProvenance } from "./grants.js";
 import type { LifecycleRecord } from "./lifecycle.js";
@@ -40,7 +41,7 @@ export interface HandlerDeps {
   app(appId: string): Promise<AppDocView | null>;
   environments(appId: string): Promise<LicenseEnvironments[]>;
   environmentAppIds(): Promise<string[]>;
-  provision(input: ProvisionChainInput): Promise<LicenseEnvironments>;
+  provision(input: ProvisionChainInput): Promise<ProvisionResult>;
   setStage(licenseId: string, stage: string): Promise<void>;
   /** Task 10 wires the offboarding clock here; until then they only log. */
   onEnded(appId: string, environmentId: string): Promise<void>;
@@ -57,6 +58,13 @@ export interface HandlerDeps {
     environments: LicenseEnvironments[],
     confirmedEndedRoots: ReadonlySet<string>,
   ): Promise<void>;
+  /**
+   * Runs after an app's chains, before afterApp, never for a held app: the
+   * release work that reads the environments the chains just moved (update
+   * outcomes, rollout completion, the managed-by marker). Its failure is
+   * logged and does not stop afterApp.
+   */
+  afterChains?(app: AppDocView, environments: LicenseEnvironments[]): Promise<void>;
   /**
    * Called once per tick before any app is reconciled, and once after all of
    * them: lets afterApp work share a budget across every app of one tick
@@ -488,6 +496,17 @@ export class AppLicenseHandler {
           `[licensing] offboarding of environment ${row.environment_id} (chain ${row.root_license_id}) is frozen: this tick did not confirm the chain as ended`,
         );
       }
+      if (this.d.afterChains) {
+        try {
+          await this.timed(this.d.afterChains(app, after), `release work of app ${appId}`);
+        } catch (err) {
+          this.notices.note(
+            `app:${appId}:release`,
+            "warn",
+            `[licensing] release work of app ${appId} failed: ${String(err)}`,
+          );
+        }
+      }
       await this.timed(
         this.d.afterApp(appId, after, confirmedEnded),
         `after-app work of app ${appId}`,
@@ -545,7 +564,11 @@ export class AppLicenseHandler {
       const settled = () => this.inFlight.delete(key);
       void running.then(settled, settled);
       try {
-        await this.timed(running, `${step.kind} of ${root} (app ${appId})`);
+        // A held FUSION version re-templated nothing that needs the budget
+        // (spec 4.3): the chain is provisioned again next tick anyway.
+        if ((await this.timed(running, `${step.kind} of ${root} (app ${appId})`)) === "held" && budgeted) {
+          this.retemplateBudget++;
+        }
       } catch (err) {
         // Refused before anything was dispatched: the budget was not spent.
         if (
@@ -615,11 +638,12 @@ export class AppLicenseHandler {
     return out;
   }
 
+  /** "held": a provision whose FUSION version the gate held (ProvisionResult.versionHeld). */
   private async apply(
     app: AppDocView,
     step: ChainStep,
     resolveFor: ChainResolver,
-  ): Promise<void> {
+  ): Promise<"held" | void> {
     switch (step.kind) {
       case "hold":
       case "anomaly":
@@ -656,7 +680,7 @@ export class AppLicenseHandler {
         if (step.licence.stage !== row.environment_id) {
           await this.d.setStage(step.licence.id, row.environment_id);
         }
-        return;
+        return row.versionHeld ? "held" : undefined;
       }
     }
   }

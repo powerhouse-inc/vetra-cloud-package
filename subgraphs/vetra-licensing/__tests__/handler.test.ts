@@ -903,3 +903,66 @@ describe("AppLicenseHandler: canary chains (spec 4.2)", () => {
     );
   });
 });
+
+describe("AppLicenseHandler: release work (spec 4.3)", () => {
+  /** Two live chains whose environments are behind the template. */
+  const behind = () => ({
+    licences: [lic("l0", { stage: "e0" }), lic("l1", { stage: "e1" })],
+    envs: [
+      envRow({ environment_id: "e0", root_license_id: "l0", license_id: "l0", template_hash: "old" }),
+      envRow({ environment_id: "e1", root_license_id: "l1", license_id: "l1", template_hash: "old" }),
+    ],
+  });
+
+  it("gives the re-template budget back for a chain whose FUSION version was held", async () => {
+    const { licences, envs } = behind();
+    const provision = vi.fn(async (input: { root: string }) => ({ environment_id: `e${input.root.slice(1)}`, versionHeld: true }) as LicenseEnvironments & { versionHeld: true });
+    const h = harness({
+      environments: async () => envs,
+      provision,
+      cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+    }, licences);
+    await h.handler.reconcileOnce();
+    expect(provision).toHaveBeenCalledTimes(2);
+    expect(h.logger.info).not.toHaveBeenCalledWith(expect.stringContaining("deferred to later ticks"));
+  });
+
+  it("still spends it on a chain that re-templated", async () => {
+    const { licences, envs } = behind();
+    const h = harness({
+      environments: async () => envs,
+      cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+    }, licences);
+    await h.handler.reconcileOnce();
+    expect(h.provisioned).toHaveLength(1);
+  });
+
+  it("runs afterChains with the app and its re-read rows, before afterApp", async () => {
+    const order: string[] = [];
+    const rows = [envRow({ environment_id: "e1", root_license_id: "l1", license_id: "l1", template_hash: "h-ded" })];
+    const afterChains = vi.fn(async () => { order.push("chains"); });
+    const h = harness({
+      environments: async () => rows,
+      afterChains,
+      afterApp: vi.fn(async () => { order.push("app"); }),
+    }, [lic("l1", { stage: "e1" })]);
+    await h.handler.reconcileOnce();
+    expect(afterChains).toHaveBeenCalledWith(APP, rows);
+    expect(order).toStrictEqual(["chains", "app"]);
+  });
+
+  it("logs a failing afterChains once and still runs afterApp", async () => {
+    const h = harness({ afterChains: async () => { throw new Error("db down"); } });
+    await h.handler.reconcileOnce();
+    await h.handler.reconcileOnce();
+    expect(h.deps.afterApp).toHaveBeenCalledTimes(2);
+    expect(h.logger.warn.mock.calls.filter(([m]) => String(m).includes("release work of app app-1 failed: Error: db down"))).toHaveLength(1);
+  });
+
+  it("never runs afterChains for a held app", async () => {
+    const afterChains = vi.fn(async () => {});
+    const h = harness({ app: async () => ({ ...APP, tampered: true, tamperReason: "x" }), afterChains });
+    await h.handler.reconcileOnce();
+    expect(afterChains).not.toHaveBeenCalled();
+  });
+});
