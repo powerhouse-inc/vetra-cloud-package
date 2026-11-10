@@ -233,13 +233,14 @@ describe("createUpdateGate", () => {
     await gated();
     await promote();
     await gate.admit({ row: envRow(), move: MOVE, now: NOW });
+    // Another writer settled the row after the gate read it PENDING.
+    await store.finishUpdate("u1", "FAILED", "settled", LATER, "PENDING");
     const racing = createUpdateGate({
       store: wrapped((q) => ({
         ...q,
-        // Another writer settles the row between the gate's read and its start.
-        transitionUpdate: async (id, from, patch) => {
-          await q.finishUpdate(id, "FAILED", "settled", LATER, "PENDING");
-          return q.transitionUpdate(id, from, patch);
+        updateFor: async (rolloutId, environmentId) => {
+          const read = await q.updateFor(rolloutId, environmentId);
+          return read && { ...read, status: "PENDING" };
         },
       })),
       logger: { warn },
@@ -252,6 +253,116 @@ describe("createUpdateGate", () => {
       status: "FAILED",
       started_at: null,
     });
+  });
+});
+
+describe("createUpdateGate commits a decision whole, or nothing of it", () => {
+  const update = (
+    id: string,
+    to: string,
+    status: "PENDING" | "APPLYING" | "SUCCEEDED" | "FAILED",
+    created: string,
+  ) =>
+    store.insertUpdate({
+      id,
+      rollout_id: null,
+      environment_id: "e1",
+      app_id: "a",
+      from_version: "1.0.0",
+      to_version: to,
+      status,
+      due_at: created,
+      requested_at: null,
+      started_at: status === "APPLYING" ? created : null,
+      finished_at: null,
+      pre_update_dump_id: null,
+      error: null,
+      forced_at: null,
+      created_at: created,
+    });
+  const EARLIER = "2026-11-09T12:00:00.000Z";
+  /** The gate over the store, reading `id` as `status` whatever it holds. */
+  const staleGate = (
+    id: string,
+    status: "PENDING" | "APPLYING",
+  ): UpdateGate => {
+    const stale = <T extends { id: string } | null>(read: T): T =>
+      read && read.id === id ? { ...read, status } : read;
+    return createUpdateGate({
+      store: wrapped((q) => ({
+        ...q,
+        unrolledUpdate: async (e, to) => stale(await q.unrolledUpdate(e, to)),
+        openExcept: async (e, except) => stale(await q.openExcept(e, except)),
+      })),
+      logger: { warn },
+      newId: () => "unused",
+    });
+  };
+
+  it("keeps nothing of a decision whose start is lost, not even its supersede", async () => {
+    // u2 (to 1.1.0) was read PENDING but had already failed; the decision
+    // also supersedes u1, still applying.
+    await update("u1", "1.0.5", "APPLYING", EARLIER);
+    await update("u2", "1.1.0", "FAILED", NOW);
+    expect(
+      await staleGate("u2", "PENDING").admit({
+        row: envRow(),
+        move: MOVE,
+        now: LATER,
+      }),
+    ).toStrictEqual({ version: "hold", updateId: null });
+    expect(await store.update("u1")).toMatchObject({
+      status: "APPLYING",
+      finished_at: null,
+    });
+    expect(await store.update("u2")).toMatchObject({ status: "FAILED" });
+  });
+
+  it("decides on when the update it supersedes has already settled", async () => {
+    // u1 was read APPLYING but had already succeeded.
+    await update("u1", "1.0.5", "SUCCEEDED", EARLIER);
+    await update("u2", "1.1.0", "PENDING", NOW);
+    expect(
+      await staleGate("u1", "APPLYING").admit({
+        row: envRow(),
+        move: MOVE,
+        now: LATER,
+      }),
+    ).toStrictEqual({ version: "floor", updateId: "u2" });
+    expect(await store.update("u1")).toMatchObject({ status: "SUCCEEDED" });
+    expect(await store.update("u2")).toMatchObject({
+      status: "APPLYING",
+      started_at: LATER,
+    });
+  });
+
+  it("logs a held version only once its error is committed", async () => {
+    const stranded = {
+      artifactName: "host",
+      from: "sha-aaaaaaaaaaaa",
+      to: "sha-bbbbbbbbbbbb",
+      stranded: true,
+    };
+    const failing = createUpdateGate({
+      store: {
+        ...store,
+        inTransaction: (fn) =>
+          store.inTransaction(async (q) => {
+            await fn(q);
+            throw new Error("commit failed");
+          }),
+      },
+      logger: { warn },
+      newId: () => "u1",
+    });
+    await expect(
+      failing.admit({ row: envRow(), move: stranded, now: NOW }),
+    ).rejects.toThrow("commit failed");
+    expect(warn).not.toHaveBeenCalled();
+    expect(await store.history("e1", 20)).toStrictEqual([]);
+    // Nothing was recorded, so the next admission records and logs it.
+    await gate.admit({ row: envRow(), move: stranded, now: LATER });
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
 
