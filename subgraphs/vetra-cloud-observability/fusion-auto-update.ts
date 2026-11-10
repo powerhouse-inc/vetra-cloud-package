@@ -5,6 +5,7 @@
  * only push images; nothing in their CI needs a platform credential.
  */
 
+import type { VetraCloudEnvironmentStatus } from "document-models/vetra-cloud-environment";
 import { parseManagedBy } from "./resolvers.js";
 
 export const DEFAULT_FUSION_TAG_PATTERN = "^sha-[0-9a-f]{7,40}$";
@@ -14,8 +15,13 @@ export const FUSION_AUTO_UPDATE_INTERVAL_MS = 120_000;
  * Only settled envs are bumped: bumping approves, and approving a DRAFT or
  * CHANGES_PENDING env would ship the owner's unapproved edits. In-flight
  * deploys and sleeping/released envs catch up on a later tick.
+ * "DEPLOYMENt_FAILED" is not a typo to fix here: it is the environment
+ * model's own (misspelt) status value, and `satisfies` keeps the two in step.
  */
-const BUMPABLE_STATUSES = new Set(["READY", "DEPLOYMENt_FAILED"]);
+const BUMPABLE_STATUSES = new Set<string>([
+  "READY",
+  "DEPLOYMENt_FAILED",
+] satisfies VetraCloudEnvironmentStatus[]);
 
 export type HarborArtifact = {
   push_time: string;
