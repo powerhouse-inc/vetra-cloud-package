@@ -127,7 +127,7 @@ describe("subgraph schema composition", () => {
     const names = definedNames(parse(sdl));
     expect(names).toStrictEqual([
       "InviteCodeCheck", "Subscription", "SubscriptionWarning", "StudioAccess",
-      "RedeemInviteCodeInput", "VetraSubscriptionsQueries", "VetraSubscriptionsMutations",
+      "RedeemInviteCodeInput", "DirectoryApp", "VetraSubscriptionsQueries", "VetraSubscriptionsMutations",
     ]);
     for (const n of names) expect(shape(built, n)).toStrictEqual(shape(contract, n));
   });
