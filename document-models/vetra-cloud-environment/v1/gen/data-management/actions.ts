@@ -14,6 +14,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetManagedByInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetRuntimeConfigInput,
@@ -81,6 +82,10 @@ export type SetBackupScheduleAction = Action & {
   type: "SET_BACKUP_SCHEDULE";
   input: SetBackupScheduleInput;
 };
+export type SetManagedByAction = Action & {
+  type: "SET_MANAGED_BY";
+  input: SetManagedByInput;
+};
 
 export type VetraCloudEnvironmentDataManagementAction =
   | SetOwnerAction
@@ -97,4 +102,5 @@ export type VetraCloudEnvironmentDataManagementAction =
   | SetStudioInstanceAction
   | SetAppLinkAction
   | ClearAppLinkAction
-  | SetBackupScheduleAction;
+  | SetBackupScheduleAction
+  | SetManagedByAction;

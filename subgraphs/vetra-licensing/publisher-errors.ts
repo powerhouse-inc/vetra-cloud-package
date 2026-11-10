@@ -54,6 +54,19 @@ export class UnknownTermError extends Error {
     super("no such term");
   }
 }
+/** An environment id that is not a chain environment the caller may reach (spec 4.5). */
+export class UnknownEnvironmentError extends Error {
+  override name = "UnknownEnvironmentError";
+  constructor() {
+    super("no such environment");
+  }
+}
+export class UnknownRolloutError extends Error {
+  override name = "UnknownRolloutError";
+  constructor() {
+    super("no such rollout");
+  }
+}
 export class UnknownInviteCodeError extends Error {
   override name = "UnknownInviteCodeError";
   constructor() {
@@ -179,6 +192,8 @@ const byCode = (): Array<[string, Array<abstract new (...a: never[]) => Error>]>
       UnknownTermError,
       UnknownInviteCodeError,
       UnknownTenantError,
+      UnknownEnvironmentError,
+      UnknownRolloutError,
     ],
   ],
   ["FORBIDDEN", [ForbiddenError, UnknownAppIdentityError]],

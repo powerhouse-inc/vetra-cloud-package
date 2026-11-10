@@ -85,6 +85,12 @@ import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
 import { adoptPersonAppsViaVetraApps } from "../../shared/person-app-adoption.js";
 import { ensureAppsOrgColumn } from "../vetra-apps/db/migrations.js";
 import { createRenownStatsClient, type RenownStatsClient } from "./renown-stats.js";
+import { createRolloutStore } from "./rollout-db.js";
+import { activeUpdateGate, createUpdateGate } from "./update-gate.js";
+import { trackReleases, type ReleaseTrackerDeps } from "./release-tracker.js";
+import { createManagedBySync } from "./managed-by.js";
+import { createReleaseResolvers } from "./releases-resolvers.js";
+import { runAll } from "./run-all.js";
 import {
   createReportingTokenIssuer,
   deleteReportingToken,
@@ -243,8 +249,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       logger: console,
     };
     // Late-bound: the handler is built after the resolvers. A no-op until then.
-    let kick: (licenseId: string) => void = () => {};
+    // The licence id is optional: a release decision names no licence.
+    let kick: (licenseId?: string) => void = () => {};
     const onLicenceIssued = (licenseId: string) => kick(licenseId);
+    // App release rollout (spec 2026-11-10 §4): policy, canaries, rollouts
+    // and every environment's FUSION version moves.
+    const rollouts = createRolloutStore(db);
+    // One ownership check for vetraPublisher and vetraReleases.
+    const publisherAuth = { ...ownerLookup, orgs: defaultRenownOrgs() };
     const publisherResolvers = createPublisherResolvers({
       onLicenceIssued,
       // Ownership of environments comes from the apps tables, never documents.
@@ -266,7 +278,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           ...previews.map((p) => p.environment_id),
         ];
       },
-      auth: { ...ownerLookup, orgs: defaultRenownOrgs() },
+      auth: publisherAuth,
       appPublisher: defaultRenownOrgs(),
       warmPool: createWarmPoolStore(db),
       apps: appReads,
@@ -350,11 +362,20 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // them with); otherwise every chain is built cold.
     const warmStore = createWarmPoolStore(db);
     const appKeys = await this.appKeyDeps(transit, secretsService, studio, db);
+    // Release gating (spec 4.3) only while the keeper applies. In dry run it
+    // applies nothing, so notice periods and due updates cannot work, and an
+    // update the machine API's real provision admitted would never settle
+    // (afterChains does not run): provisionChain moves FUSION ungated instead.
+    const updates = activeUpdateGate(cfg, createUpdateGate({ store: rollouts, logger: console }));
+    if (!updates) {
+      console.info("[licensing] release gating is inactive while the keeper is in dry run");
+    }
     const chainEnvDeps: ChainEnvDeps = {
       ...appKeys,
       rows: chainRows,
       envs,
       generateSubdomain,
+      updates,
       ...(perm
         ? {
             warmPool: {
@@ -465,9 +486,23 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     };
     const machineResolvers = createResolvers(machineDeps) as Record<string, Record<string, unknown>>;
 
+    const releaseResolvers = createReleaseResolvers({
+      auth: publisherAuth,
+      cfg,
+      store: rollouts,
+      envRows: chainRows,
+      apps: appReads,
+      appWriter,
+      envState: (id) => envs.getState(id),
+      // A canary flag, a promotion or an "update now" is acted on at once.
+      kick: () => kick(),
+      newId: () => randomUUID(),
+      now: () => new Date().toISOString(),
+    }) as Record<string, Record<string, unknown>>;
+
     this.resolvers = mergeResolvers(
-      mergeResolvers(machineResolvers, publisherResolvers),
-      subscriptionResolvers,
+      mergeResolvers(mergeResolvers(machineResolvers, publisherResolvers), subscriptionResolvers),
+      releaseResolvers,
     );
 
     // vetra-app and licence documents are system-write-only. Protect every
@@ -544,6 +579,17 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       console.warn(`[licensing] migration not started: ${String(err)}`);
     }
 
+    // The managed-by marker (spec 4.4) on every chain environment.
+    const markManaged = createManagedBySync({ envs, logger: console });
+    // Update outcomes and rollout completion, from the environment documents.
+    const releaseTracking: ReleaseTrackerDeps = {
+      store: rollouts,
+      envState: (id) => envs.getState(id),
+      cfg,
+      logger: console,
+      now: () => new Date().toISOString(),
+    };
+
     // Provisioning: one DEDICATED environment per licence chain. Inert unless
     // cfg.enabled (default false); dry-run (default true) only logs. It does
     // nothing at all until the startup migration has recorded `complete`.
@@ -565,6 +611,10 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),
       onEnded: (_appId, env) => underChainOf(env, () => markEnded(offboarding, env)),
       onResumed: (_appId, env) => underChainOf(env, () => markResumed(offboarding, env)),
+      // `rows` are all of the app's rows, ended ones included (trackReleases
+      // needs them). One failing never skips the other; the handler logs it.
+      afterChains: (app, rows) =>
+        runAll([() => trackReleases(releaseTracking, app, rows), () => markManaged(app, rows)]),
       afterApp: async (_appId, rows, confirmedEndedRoots) => {
         await tickOffboarding(offboarding, confirmedEndedRows(rows, confirmedEndedRoots));
         // Live environments only; failures are caught per environment.

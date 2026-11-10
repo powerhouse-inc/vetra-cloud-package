@@ -1,5 +1,6 @@
 import type { LicensingConfig } from "./config.js";
-import { resolveKind, type AppDocView } from "./app-reads.js";
+import type { AppDocView, KindResolution } from "./app-reads.js";
+import { resolveChainKind } from "./channel-override.js";
 import {
   planChains,
   type ChainStep,
@@ -12,6 +13,7 @@ import {
   EnvironmentNotReadyError,
   EnvironmentOwnershipMismatchError,
   type ProvisionChainInput,
+  type ProvisionResult,
 } from "./environments.js";
 import type { GrantProvenance } from "./grants.js";
 import type { LifecycleRecord } from "./lifecycle.js";
@@ -39,7 +41,7 @@ export interface HandlerDeps {
   app(appId: string): Promise<AppDocView | null>;
   environments(appId: string): Promise<LicenseEnvironments[]>;
   environmentAppIds(): Promise<string[]>;
-  provision(input: ProvisionChainInput): Promise<LicenseEnvironments>;
+  provision(input: ProvisionChainInput): Promise<ProvisionResult>;
   setStage(licenseId: string, stage: string): Promise<void>;
   /** Task 10 wires the offboarding clock here; until then they only log. */
   onEnded(appId: string, environmentId: string): Promise<void>;
@@ -55,6 +57,16 @@ export interface HandlerDeps {
     appId: string,
     environments: LicenseEnvironments[],
     confirmedEndedRoots: ReadonlySet<string>,
+  ): Promise<void>;
+  /**
+   * Runs after an app's chains, before afterApp, never for a held app: the
+   * release work that reads the environments the chains just moved (update
+   * outcomes, rollout completion, the managed-by marker). Its failure is
+   * logged and does not stop afterApp.
+   */
+  afterChains?(
+    app: AppDocView,
+    environments: LicenseEnvironments[],
   ): Promise<void>;
   /**
    * Called once per tick before any app is reconciled, and once after all of
@@ -170,6 +182,9 @@ function rotate<T>(list: T[], offset: number): T[] {
 
 type ProvisionKind = "create" | "retemplate" | "repoint";
 
+/** A chain's head kind -> template, on the chain's channel override (spec 4.2). */
+type ChainResolver = (kind: string | null, root: string) => KindResolution;
+
 /**
  * AppLicenseHandler: licence -> app.terms[kind] -> app.templates[templateId]
  * -> by mode. Timer-driven, re-entrancy guarded, every app (and every step)
@@ -196,6 +211,8 @@ export class AppLicenseHandler {
   private readonly backoff = new Map<string, { failures: number; until: number }>();
   /** Chain keys with a step that has not settled (including timed-out ones). */
   private readonly inFlight = new Set<string>();
+  /** App ids whose afterChains has not settled (it timed out on an earlier tick). */
+  private readonly releaseInFlight = new Set<string>();
 
   constructor(private readonly d: HandlerDeps) {
     this.notices = new Notices(d.logger);
@@ -405,8 +422,14 @@ export class AppLicenseHandler {
       );
     }
     const environments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
-    const resolve = (kind: string | null): PlanResolution => {
-      const r = resolveKind(app, kind);
+    // A canary chain resolves every artifact on its own channel (spec 4.2).
+    const channelOf = new Map(
+      environments.map((e) => [e.root_license_id, e.channel_override ?? null]),
+    );
+    const resolveFor: ChainResolver = (kind, root) =>
+      resolveChainKind(app, kind, channelOf.get(root) ?? null);
+    const resolve = (kind: string | null, root: string): PlanResolution => {
+      const r = resolveFor(kind, root);
       return r.ok
         ? {
             ok: true,
@@ -465,7 +488,8 @@ export class AppLicenseHandler {
     }
     const confirmedEnded = new Set<string>();
     for (const [root, group] of rotate([...groups], this.tickNo)) {
-      if (await this.runChain(app, root, group, provisionKind)) confirmedEnded.add(root);
+      if (await this.runChain(app, root, group, provisionKind, resolveFor))
+        confirmedEnded.add(root);
     }
     if (!held) {
       const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
@@ -476,6 +500,27 @@ export class AppLicenseHandler {
           "warn",
           `[licensing] offboarding of environment ${row.environment_id} (chain ${row.root_license_id}) is frozen: this tick did not confirm the chain as ended`,
         );
+      }
+      if (this.d.afterChains && this.releaseInFlight.has(appId)) {
+        this.notices.note(
+          `inflight:release:${appId}`,
+          "info",
+          `[licensing] release work of app ${appId} from an earlier tick is still running; skipping`,
+        );
+      } else if (this.d.afterChains) {
+        try {
+          const running = this.d.afterChains(app, after);
+          this.releaseInFlight.add(appId);
+          const settled = () => this.releaseInFlight.delete(appId);
+          void running.then(settled, settled);
+          await this.timed(running, `release work of app ${appId}`);
+        } catch (err) {
+          this.notices.note(
+            `app:${appId}:release`,
+            "warn",
+            `[licensing] release work of app ${appId} failed: ${String(err)}`,
+          );
+        }
       }
       await this.timed(
         this.d.afterApp(appId, after, confirmedEnded),
@@ -497,6 +542,7 @@ export class AppLicenseHandler {
     root: string,
     steps: ChainStep[],
     provisionKind: (step: Extract<ChainStep, { kind: "provision" }>) => ProvisionKind,
+    resolveFor: ChainResolver,
   ): Promise<boolean> {
     const appId = app.id;
     const key = `${appId}:${root}`;
@@ -528,12 +574,23 @@ export class AppLicenseHandler {
         this.retemplateBudget--;
         budgeted = true;
       }
-      const running = this.apply(app, step);
+      const running = this.apply(app, step, resolveFor);
       this.inFlight.add(key);
       const settled = () => this.inFlight.delete(key);
       void running.then(settled, settled);
       try {
-        await this.timed(running, `${step.kind} of ${root} (app ${appId})`);
+        // A held FUSION version that dispatched nothing re-templated nothing
+        // (spec 4.3): the slot goes back, and the chain is provisioned again
+        // next tick anyway.
+        if (
+          (await this.timed(
+            running,
+            `${step.kind} of ${root} (app ${appId})`,
+          )) === "held" &&
+          budgeted
+        ) {
+          this.retemplateBudget++;
+        }
       } catch (err) {
         // Refused before anything was dispatched: the budget was not spent.
         if (
@@ -603,7 +660,15 @@ export class AppLicenseHandler {
     return out;
   }
 
-  private async apply(app: AppDocView, step: ChainStep): Promise<void> {
+  /**
+   * "held": a provision whose FUSION version the gate held and that
+   * dispatched nothing (ProvisionResult.versionHeld without dispatched).
+   */
+  private async apply(
+    app: AppDocView,
+    step: ChainStep,
+    resolveFor: ChainResolver,
+  ): Promise<"held" | void> {
     switch (step.kind) {
       case "hold":
       case "anomaly":
@@ -619,9 +684,9 @@ export class AppLicenseHandler {
         await this.d.onResumed(app.id, step.environmentId);
         return;
       case "provision": {
-        // The same app snapshot the plan resolved from: the planner only
-        // emits a provision for a kind that resolved.
-        const resolved = resolveKind(app, step.licence.kind);
+        // The same app snapshot (and channel) the plan resolved from: the
+        // planner only emits a provision for a kind that resolved.
+        const resolved = resolveFor(step.licence.kind, step.root);
         if (!resolved.ok) {
           throw new Error(`kind ${step.licence.kind ?? "(none)"} no longer resolves: ${resolved.reason}`);
         }
@@ -640,7 +705,7 @@ export class AppLicenseHandler {
         if (step.licence.stage !== row.environment_id) {
           await this.d.setStage(step.licence.id, row.environment_id);
         }
-        return;
+        return row.versionHeld && !row.dispatched ? "held" : undefined;
       }
     }
   }

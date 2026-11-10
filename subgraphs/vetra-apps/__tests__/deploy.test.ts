@@ -287,6 +287,71 @@ describe("deployApp PRODUCTION", () => {
   });
 });
 
+describe("deployApp to a template-managed production env", () => {
+  const deploymentCount = async () =>
+    (await h.db.selectFrom("app_deployments").select("id").execute()).length;
+
+  it("refuses a target managed by an app's licence template: nothing dispatched, no deployment recorded", async () => {
+    await h.envs.manage(app.production_environment_id);
+    const before = h.envs.executed.length;
+    await expect(
+      deployApp(h.deps, owner, prod({ imageTag: "sha-abcdef123456" })),
+    ).rejects.toMatchObject({
+      message:
+        "Production environment is managed by an app's licence template; its version moves only through the release gate",
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+    expect(
+      await code(
+        deployAsCi(
+          h.deps,
+          claim("refs/heads/main"),
+          prod({ imageTag: "sha-abcdef123456" }),
+        ),
+      ),
+    ).toBe("BAD_USER_INPUT");
+    expect(h.envs.executed.slice(before)).toStrictEqual([]);
+    expect(await deploymentCount()).toBe(0);
+    const env = await h.envs.getState(app.production_environment_id);
+    expect(env?.fusion).toBeNull();
+    expect(env?.packages).toStrictEqual([]);
+  });
+
+  it("refuses to roll back onto a target managed by an app's licence template", async () => {
+    const good = await deployApp(h.deps, owner, prod());
+    await h.db
+      .updateTable("app_deployments")
+      .set({ status: "READY" })
+      .where("id", "=", good.id)
+      .execute();
+    h.envs.setStatus(app.production_environment_id, "READY");
+    await h.envs.manage(app.production_environment_id);
+    const before = h.envs.executed.length;
+    await expect(rollbackApp(h.deps, owner, good.id)).rejects.toMatchObject({
+      message:
+        "Production environment is managed by an app's licence template; its version moves only through the release gate",
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+    expect(h.envs.executed.slice(before)).toStrictEqual([]);
+    expect(await deploymentCount()).toBe(1);
+  });
+
+  it("deploys to a target whose document predates managedBy as before", async () => {
+    h.envs.dropManagedBy(app.production_environment_id);
+    const d = await deployApp(
+      h.deps,
+      owner,
+      prod({ imageTag: "sha-abcdef123456" }),
+    );
+    expect(d.status).toBe("DEPLOYING");
+    const env = await h.envs.getState(app.production_environment_id);
+    expect(env!.services.find((s) => s.type === "FUSION")).toMatchObject({
+      enabled: true,
+      version: "sha-abcdef123456",
+    });
+  });
+});
+
 describe("deployApp PREVIEW", () => {
   it("creates a slim preview env on the first deploy and reuses it afterwards", async () => {
     const d1 = await deployAsCi(h.deps, claim("refs/pull/7/merge"), preview(7));

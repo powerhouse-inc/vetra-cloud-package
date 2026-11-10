@@ -38,6 +38,7 @@ type VetraCloudEnvironmentState {
   fusion: VetraCloudFusionConfig
   app: VetraCloudAppLink
   backupSchedule: BackupSchedule
+  managedBy: VetraCloudManagedBy
 }
 
 type BackupSchedule {
@@ -159,6 +160,13 @@ enum AppEnvironmentRole {
   PREVIEW
 }
 
+type VetraCloudManagedBy {
+  appId: String!
+  templateId: String!
+  rootLicenseId: String!
+  services: [VetraCloudEnvironmentServiceType!]!
+}
+
 # data_management
 
 input SetOwnerInput {
@@ -233,6 +241,13 @@ input SetBackupScheduleInput {
   enabled: Boolean!
   cadence: BackupCadence!
   retention: Int!
+}
+
+input SetManagedByInput {
+  appId: String!
+  templateId: String!
+  rootLicenseId: String!
+  services: [VetraCloudEnvironmentServiceType!]!
 }
 
 # services

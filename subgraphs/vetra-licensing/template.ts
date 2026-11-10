@@ -485,6 +485,51 @@ export function isFusionStranded(
   return !recorded.includes(current) && recorded.includes(wanted);
 }
 
+/**
+ * What the floor does with a live environment's FUSION version (spec 4.3):
+ * "floor" moves it only up (isFusionUpgrade); "hold" leaves it (a gated
+ * update not yet due); "force" also sets a version the floor cannot order
+ * (isFusionStranded; the publisher's forceEnvironmentUpdate), but never one
+ * provably older than the current.
+ */
+export type FusionVersionMode = "floor" | "hold" | "force";
+
+/** A FUSION version move the floor would make on a live environment (fusionMoveOf). */
+export interface FusionMove {
+  /** The app artifact the template's FUSION service runs. */
+  artifactName: string | null;
+  from: string;
+  to: string;
+  /** The record lists `to` but not `from`: the floor cannot prove `from` older (isFusionStranded). */
+  stranded: boolean;
+}
+
+/**
+ * The FUSION version move the floor would make, or null when it moves none:
+ * the template runs no FUSION, the service has no version yet (the floor
+ * sets one; nothing is updated), the version is current, or it is newer or
+ * cannot be ordered at all. Pure; the template must validate.
+ */
+export function fusionMoveOf(
+  template: TemplateShape,
+  current: VetraCloudEnvironmentState,
+  fusionVersions?: readonly string[],
+): FusionMove | null {
+  const wanted = validateTemplate(template).services.find(
+    (s) => s.type === "FUSION",
+  )?.version;
+  const from =
+    current.services.find((s) => s.type === "FUSION")?.version ?? null;
+  if (!wanted || from === null) return null;
+  const artifactName =
+    template.services.find((s) => s.type === "FUSION")?.artifactName ?? null;
+  if (isFusionUpgrade(from, wanted, fusionVersions))
+    return { artifactName, from, to: wanted, stranded: false };
+  if (isFusionStranded(from, wanted, fusionVersions))
+    return { artifactName, from, to: wanted, stranded: true };
+  return null;
+}
+
 export interface FloorUpdateRenderInput {
   template: TemplateShape;
   /** The environment's current global state, as EnvGateway.getState returns it. */
@@ -503,26 +548,16 @@ export interface FloorUpdateRenderInput {
    * wanted version but not the current one (see isFusionStranded).
    */
   onFusionHeld?: (held: { current: string; wanted: string }) => void;
+  /** What to do with the FUSION version (FusionVersionMode); default "floor". */
+  fusionVersion?: FusionVersionMode;
 }
 
-/**
- * The action list that brings an existing, live environment UP TO a template,
- * treating the template as a floor: missing template packages are added,
- * template packages provably older than the template are upgraded, template
- * services that are missing or disabled are enabled, the FUSION image
- * follows the template (keeping the holder's env, secrets and auto-update
- * settings) and the FUSION version only ever moves up (isFusionUpgrade). Nothing is ever
- * removed, disabled or downgraded, and the label and service prefixes the
- * holder has are left alone. Returns []
- * when the environment already meets the floor, so nothing is dispatched.
- */
 /**
  * The FUSION half of the floor. SET_FUSION_CONFIG replaces the whole fusion
  * config, so it is sent only when the image must change, and then carries the
  * holder's env (secret values live outside the document and are untouched),
- * autoUpdate and tag pattern over. The version moves only up (by semver, or
- * by the artifact's recording order for commit tags), or is set when the
- * service has none (it was missing).
+ * autoUpdate and tag pattern over. The version moves as `mode` says
+ * (FusionVersionMode), or is set when the service has none (it was missing).
  */
 function floorFusionActions(
   s: { repository: string; version: string; host?: string },
@@ -532,6 +567,7 @@ function floorFusionActions(
   includedKey: boolean,
   fusionVersions: readonly string[] | undefined,
   onFusionHeld: FloorUpdateRenderInput["onFusionHeld"],
+  mode: FusionVersionMode,
 ): Action[] {
   const { repository, version } = s;
   const actions: Action[] = [];
@@ -554,14 +590,43 @@ function floorFusionActions(
     );
   }
   const currentVersion = have?.version ?? null;
-  if (currentVersion === null || isFusionUpgrade(currentVersion, version, fusionVersions)) {
+  if (currentVersion === null) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
-  } else if (isFusionStranded(currentVersion, version, fusionVersions)) {
+  } else if (
+    mode !== "hold" &&
+    isFusionUpgrade(currentVersion, version, fusionVersions)
+  ) {
+    actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (
+    mode === "force" &&
+    currentVersion !== version &&
+    !isFusionUpgrade(version, currentVersion, fusionVersions)
+  ) {
+    actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (
+    mode === "floor" &&
+    isFusionStranded(currentVersion, version, fusionVersions)
+  ) {
     onFusionHeld?.({ current: currentVersion, wanted: version });
   }
   return actions;
 }
 
+/**
+ * The action list that brings an existing, live environment UP TO a template,
+ * treating the template as a floor: missing template packages are added,
+ * template packages provably older than the template are upgraded, template
+ * services that are missing or disabled are enabled, and the FUSION image
+ * follows the template (keeping the holder's env, secrets and auto-update
+ * settings). The FUSION version goes as `fusionVersion` says
+ * (FusionVersionMode): "floor" moves it only up (isFusionUpgrade), "hold"
+ * never moves it, and "force" may also move it to a version whose order is
+ * unknown, never to one provably older; a service with no version yet gets
+ * the template's in every mode. Nothing is ever removed or disabled,
+ * no package is downgraded, and the label and service prefixes the holder
+ * has are left alone. Returns [] when the environment already meets the
+ * floor, so nothing is dispatched.
+ */
 export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[] {
   const n = validateTemplate(input.template);
   const current = input.current;
@@ -588,6 +653,7 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
           input.includedKey === true,
           input.fusionVersions,
           input.onFusionHeld,
+          input.fusionVersion ?? "floor",
         ),
       );
     }

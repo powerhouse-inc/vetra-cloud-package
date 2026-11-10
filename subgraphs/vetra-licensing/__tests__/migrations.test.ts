@@ -307,3 +307,70 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe("vetra-licensing migrations: app release rollout tables", () => {
+  let db: Kysely<VetraLicensingDB> | undefined;
+  afterEach(async () => {
+    await db?.destroy();
+    db = undefined;
+  });
+  const update = (id: string, rollout_id: string | null, environment_id = "e1") => ({
+    id, rollout_id, environment_id, app_id: "a", from_version: "1.0.0", to_version: "1.1.0", status: "PENDING" as const,
+    due_at: "t", requested_at: null, started_at: null, finished_at: null, pre_update_dump_id: null, error: null,
+    forced_at: null, created_at: "t",
+  });
+
+  it("defaults a settings row to AUTO with 72 hours' notice", async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await (db as Kysely<any>).insertInto("app_release_settings").values({ app_id: "a", updated_at: "t" }).execute();
+    expect(await db.selectFrom("app_release_settings").selectAll().executeTakeFirstOrThrow())
+      .toStrictEqual({ app_id: "a", policy: "AUTO", default_notice_hours: 72, updated_at: "t" });
+  });
+
+  it("adds channel_override to license_environments, null on existing rows", async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    // A database from before the column: the row exists when up() adds it.
+    await db.schema.alterTable("license_environments").dropColumn("channel_override").execute();
+    await db.insertInto("license_environments").values({
+      environment_id: "e", root_license_id: "l", app_id: "a", user_did: "u", license_id: "l", template_id: null,
+      label: null, template_hash: "h", ended_at: null, stopped_at: null, delete_after: null, created_at: "t", updated_at: "t",
+    }).execute();
+    await up(db as Kysely<any>);
+    const row = await db.selectFrom("license_environments").selectAll().executeTakeFirstOrThrow();
+    expect(row.channel_override).toBeNull();
+  });
+
+  it("allows one update per (rollout, environment), and any number without a rollout", async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await db.insertInto("environment_updates").values(update("u1", "r1")).execute();
+    await expect(db.insertInto("environment_updates").values(update("u2", "r1")).execute())
+      .rejects.toThrow(/duplicate key|unique/i);
+    await db.insertInto("environment_updates").values(update("u3", "r1", "e2")).execute();
+    await db.insertInto("environment_updates").values(update("u4", null)).execute();
+    await db.insertInto("environment_updates").values(update("u5", null)).execute();
+    expect(await db.selectFrom("environment_updates").select("id").execute()).toHaveLength(4);
+  });
+
+  it("drops the release tables on down() and recreates them on up()", async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await db.insertInto("app_release_settings")
+      .values({ app_id: "a", policy: "GATED", default_notice_hours: 24, updated_at: "t" }).execute();
+    await db.insertInto("app_rollouts").values({
+      id: "r1", app_id: "a", artifact_name: "host", version: "1.1.0", status: "ACTIVE", apply_after: "t",
+      promoted_by: "p", promoted_at: "t", paused_at: null, paused_reason: null,
+    }).execute();
+    await db.insertInto("environment_updates").values(update("u1", "r1")).execute();
+    for (const t of ["app_release_settings", "app_rollouts", "environment_updates"] as const) {
+      expect(await db.selectFrom(t).selectAll().execute()).toHaveLength(1);
+    }
+    await down(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    for (const t of ["app_release_settings", "app_rollouts", "environment_updates"] as const) {
+      expect(await db.selectFrom(t).selectAll().execute()).toHaveLength(0);
+    }
+  });
+});

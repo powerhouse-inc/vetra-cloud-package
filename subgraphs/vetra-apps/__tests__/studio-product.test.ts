@@ -518,6 +518,33 @@ describe("adopting an existing env (F28)", () => {
     expect(h.harbor.projects).toStrictEqual(["app-shop"]);
   });
 
+  it("refuses an env managed by an app's licence template: nothing is linked or made", async () => {
+    const studio = await seedStudio();
+    const managed = await h.envs.seedStandalone(OWNER);
+    await h.envs.manage(managed);
+    const before = h.envs.executed.length;
+    const envs = h.envs.docs.size;
+    await expect(
+      ensure({ studioEnvironmentId: studio.id, name: "My Shop", adoptEnvironmentId: managed }),
+    ).rejects.toMatchObject({
+      message: "This environment cannot become the product's: it is managed by an app's licence template",
+      extensions: { code: "ADOPT_NOT_ALLOWED" },
+    });
+    expect(h.envs.executed.slice(before)).toStrictEqual([]);
+    expect(h.envs.docs.size).toBe(envs);
+    expect((await h.envs.getState(managed))!.app).toBeNull();
+    expect(await appCount()).toBe(0);
+  });
+
+  it("adopts an env whose document predates managedBy as before", async () => {
+    const studio = await seedStudio();
+    const old = await h.envs.seedStandalone(OWNER);
+    h.envs.dropManagedBy(old);
+    const app = await ensure({ studioEnvironmentId: studio.id, name: "My Shop", adoptEnvironmentId: old });
+    expect(app.production_environment_id).toBe(old);
+    expect((await h.envs.getState(old))!.app).toMatchObject({ appId: app.id, role: "PRODUCTION" });
+  });
+
   it("an adopted env is never swept", async () => {
     const studio = await seedStudio();
     const old = await h.envs.seedStandalone(OWNER);

@@ -203,6 +203,13 @@ export type SetLabelInput = {
   label: Scalars["String"]["input"];
 };
 
+export type SetManagedByInput = {
+  appId: Scalars["String"]["input"];
+  rootLicenseId: Scalars["String"]["input"];
+  services: Array<VetraCloudEnvironmentServiceType>;
+  templateId: Scalars["String"]["input"];
+};
+
 export type SetOwnerInput = {
   address: Scalars["EthereumAddress"]["input"];
 };
@@ -311,6 +318,7 @@ export type VetraCloudEnvironmentState = {
   genericBaseDomain: Maybe<Scalars["String"]["output"]>;
   genericSubdomain: Maybe<Scalars["String"]["output"]>;
   label: Maybe<Scalars["String"]["output"]>;
+  managedBy: Maybe<VetraCloudManagedBy>;
   orgOperators: Array<Scalars["EthereumAddress"]["output"]>;
   owner: Maybe<Scalars["EthereumAddress"]["output"]>;
   ownerOrgId: Maybe<Scalars["String"]["output"]>;
@@ -339,6 +347,13 @@ export type VetraCloudFusionConfig = {
   autoUpdateTagPattern: Maybe<Scalars["String"]["output"]>;
   env: Array<VetraCloudServiceEnv>;
   image: Maybe<Scalars["String"]["output"]>;
+};
+
+export type VetraCloudManagedBy = {
+  appId: Scalars["String"]["output"];
+  rootLicenseId: Scalars["String"]["output"];
+  services: Array<VetraCloudEnvironmentServiceType>;
+  templateId: Scalars["String"]["output"];
 };
 
 export type VetraCloudPackage = {

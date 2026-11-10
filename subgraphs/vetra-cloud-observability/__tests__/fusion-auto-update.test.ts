@@ -163,3 +163,48 @@ describe("runFusionAutoUpdateOnce", () => {
     expect(bump).toHaveBeenCalled();
   });
 });
+
+describe("runFusionAutoUpdateOnce on template-managed environments", () => {
+  const newest = [art("2026-10-01T12:00:00Z", "sha-bbbbbbbbbbbb")];
+  const marker = (services: string[]) =>
+    JSON.stringify({ appId: "app-1", templateId: "tpl-1", rootLicenseId: "lic-1", services });
+
+  it("leaves a FUSION version the template declares to the keeper, without asking Harbor", async () => {
+    const bump = vi.fn(async () => true);
+    const listArtifacts = vi.fn(async () => newest);
+    const bumped = await runFusionAutoUpdateOnce({
+      listEnvs: async () => [env({ managedBy: marker(["FUSION", "CONNECT"]) })],
+      listArtifacts,
+      bump,
+    });
+    expect(bump).not.toHaveBeenCalled();
+    expect(listArtifacts).not.toHaveBeenCalled();
+    expect(bumped).toStrictEqual([]);
+  });
+
+  it("still bumps a managed environment whose template does not declare FUSION", async () => {
+    const bump = vi.fn(async () => true);
+    const bumped = await runFusionAutoUpdateOnce({
+      listEnvs: async () => [env({ managedBy: marker(["CONNECT"]) })],
+      listArtifacts: async () => newest,
+      bump,
+    });
+    expect(bump).toHaveBeenCalledWith(expect.objectContaining({ id: "doc-1" }), "sha-bbbbbbbbbbbb");
+    expect(bumped).toStrictEqual(["doc-1"]);
+  });
+
+  it.each([
+    ["null", { managedBy: null }],
+    ["absent", {}],
+    ["malformed JSON", { managedBy: "{not json" }],
+  ])("bumps as before when managedBy is %s", async (_label, over) => {
+    const bump = vi.fn(async () => true);
+    const bumped = await runFusionAutoUpdateOnce({
+      listEnvs: async () => [env(over)],
+      listArtifacts: async () => newest,
+      bump,
+    });
+    expect(bump).toHaveBeenCalledWith(expect.objectContaining({ id: "doc-1" }), "sha-bbbbbbbbbbbb");
+    expect(bumped).toStrictEqual(["doc-1"]);
+  });
+});

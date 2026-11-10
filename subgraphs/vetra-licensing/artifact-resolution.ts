@@ -21,10 +21,15 @@ const DEFAULT_CHANNEL = "LATEST";
  * Throws when a reference cannot be resolved. The caller holds the licence
  * rather than provisioning something arbitrary: an environment running last
  * week's image because this week's is missing is worse than one that waits.
+ *
+ * `channelOverride` (a canary's, spec 4.2) replaces every service's channel
+ * for the lookup only: the service keeps its own artifactChannel, so the hash
+ * of the result differs from the template's exactly when the versions do.
  */
 export function resolveTemplateArtifacts(
   template: TemplateShape,
   artifacts: AppArtifact[],
+  channelOverride: string | null = null,
 ): TemplateShape {
   const services = template.services.map((s) => {
     if (!s.artifactName) return s;
@@ -38,7 +43,7 @@ export function resolveTemplateArtifacts(
       );
     }
 
-    const channel = s.artifactChannel ?? DEFAULT_CHANNEL;
+    const channel = channelOverride ?? s.artifactChannel ?? DEFAULT_CHANNEL;
     const pointer = artifact.channels.find((c) => c.channel === channel);
     if (!pointer) {
       throw new UnresolvableArtifactError(

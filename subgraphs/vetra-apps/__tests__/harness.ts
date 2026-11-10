@@ -12,6 +12,7 @@ import {
   enableService,
   approveChanges,
   setAppLink,
+  setManagedBy,
 } from "../../../document-models/vetra-cloud-environment/v1/index.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { up } from "../db/migrations.js";
@@ -205,6 +206,29 @@ export class FakeEnvs implements EnvGateway {
     return this.execute(id, [
       setAppLink({ appId, role, prNumber, gitRef: null, imageProject: null }),
     ]);
+  }
+
+  /** Mark the env as a licence chain's, as the licensing keeper does. */
+  manage(id: string) {
+    return this.execute(id, [
+      setManagedBy({
+        appId: "licensed-app",
+        templateId: "template-1",
+        rootLicenseId: "license-1",
+        services: ["FUSION"],
+      }),
+    ]);
+  }
+
+  /** A document from before managedBy existed: the field is absent. */
+  dropManagedBy(id: string) {
+    const doc = this.docs.get(id)!;
+    const global: Partial<VetraCloudEnvironmentState> = { ...doc.state.global };
+    delete global.managedBy;
+    this.docs.set(id, {
+      ...doc,
+      state: { ...doc.state, global: global as VetraCloudEnvironmentState },
+    });
   }
 }
 

@@ -283,10 +283,63 @@ export async function up(db: Kysely<any>): Promise<void> {
 
   // Also created by vetra-apps, which writes the ledger too (licensing-ledger.ts).
   await ensureLedgerTables(db);
+
+  // App release rollout (spec 2026-11-10 §4): the release policy, the canary
+  // flag, promotions and every environment's FUSION version moves.
+  await db.schema.createTable("app_release_settings")
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("policy", "varchar(16)", (c) => c.notNull().defaultTo("AUTO"))
+    .addColumn("default_notice_hours", "integer", (c) => c.notNull().defaultTo(72))
+    .addColumn("updated_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("app_release_settings_pkey", ["app_id"])
+    .ifNotExists().execute();
+  await addColumnIfMissing(db, "license_environments", "channel_override", "varchar(255)");
+  await db.schema.createTable("app_rollouts")
+    .addColumn("id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("artifact_name", "varchar(255)", (c) => c.notNull())
+    .addColumn("version", "varchar(255)", (c) => c.notNull())
+    .addColumn("status", "varchar(16)", (c) => c.notNull())
+    .addColumn("apply_after", "varchar(255)", (c) => c.notNull())
+    .addColumn("promoted_by", "varchar(255)", (c) => c.notNull())
+    .addColumn("promoted_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("paused_at", "varchar(255)")
+    .addColumn("paused_reason", "text")
+    .addPrimaryKeyConstraint("app_rollouts_pkey", ["id"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("app_rollouts_artifact_idx").on("app_rollouts")
+    .columns(["app_id", "artifact_name", "status"]).ifNotExists().execute();
+  await db.schema.createTable("environment_updates")
+    .addColumn("id", "varchar(255)", (c) => c.notNull())
+    .addColumn("rollout_id", "varchar(255)")
+    .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+    .addColumn("from_version", "varchar(255)", (c) => c.notNull())
+    .addColumn("to_version", "varchar(255)", (c) => c.notNull())
+    .addColumn("status", "varchar(16)", (c) => c.notNull())
+    .addColumn("due_at", "varchar(255)", (c) => c.notNull())
+    .addColumn("requested_at", "varchar(255)")
+    .addColumn("started_at", "varchar(255)")
+    .addColumn("finished_at", "varchar(255)")
+    .addColumn("pre_update_dump_id", "varchar(255)")
+    .addColumn("error", "text")
+    .addColumn("forced_at", "varchar(255)")
+    .addColumn("created_at", "varchar(255)", (c) => c.notNull())
+    .addPrimaryKeyConstraint("environment_updates_pkey", ["id"])
+    // NULL rollout ids are distinct: a canary or AUTO app may have many.
+    .addUniqueConstraint("environment_updates_rollout_env_key", ["rollout_id", "environment_id"])
+    .ifNotExists().execute();
+  await db.schema.createIndex("environment_updates_env_idx").on("environment_updates")
+    .columns(["environment_id", "created_at"]).ifNotExists().execute();
+  await db.schema.createIndex("environment_updates_app_status_idx").on("environment_updates")
+    .columns(["app_id", "status"]).ifNotExists().execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
   for (const t of [
+    "environment_updates",
+    "app_rollouts",
+    "app_release_settings",
     "license_lifecycle",
     "app_licensing_intent",
     "app_licensing_state",

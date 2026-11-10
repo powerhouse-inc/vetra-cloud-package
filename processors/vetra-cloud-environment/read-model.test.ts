@@ -3,7 +3,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "./migrations.js";
-import { appLinkColumns, backupScheduleColumn, hostColumns, orgColumns } from "./processor.js";
+import { appLinkColumns, backupScheduleColumn, hostColumns, managedByColumn, orgColumns } from "./processor.js";
 import type { DB } from "./schema.js";
 
 describe("environments read model — App link columns", () => {
@@ -154,5 +154,25 @@ describe("environments read model — host lookup columns", () => {
       apexService: null,
       customDomainEnabled: false,
     });
+  });
+});
+
+describe("environments read model — managedBy column", () => {
+  const MANAGED = { appId: "app-1", templateId: "t-1", rootLicenseId: "l-1", services: ["FUSION" as const] };
+
+  it("adds managedBy (idempotently) and round-trips it", async () => {
+    const db = new Kysely<DB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    await db.insertInto("environments").values({ id: "e1", ...managedByColumn({ managedBy: MANAGED }) } as never).execute();
+    const row = await db.selectFrom("environments").select(["managedBy"]).where("id", "=", "e1").executeTakeFirstOrThrow();
+    expect(JSON.parse(row.managedBy!)).toStrictEqual(MANAGED);
+    await db.destroy();
+  });
+
+  it("serializes state.managedBy, NULL when unset", () => {
+    expect(managedByColumn({ managedBy: MANAGED })).toStrictEqual({ managedBy: JSON.stringify(MANAGED) });
+    expect(managedByColumn({ managedBy: null })).toStrictEqual({ managedBy: null });
+    expect(managedByColumn({})).toStrictEqual({ managedBy: null });
   });
 });

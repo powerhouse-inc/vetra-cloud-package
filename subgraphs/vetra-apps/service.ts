@@ -184,6 +184,12 @@ export interface AppsDeps {
     | null;
   /** Called after a deployment row changes state (GitHub feedback). Best effort. */
   onDeploymentChanged?: (deploymentId: string) => Promise<void>;
+  /**
+   * The App's release policy (vetra-licensing's app_release_settings, through
+   * releasePolicyOf). GATED: a FUSION image CI aims at LATEST moves STAGING
+   * instead. Absent: every App is AUTO, as before.
+   */
+  releasePolicy?: ((appId: string) => Promise<"AUTO" | "GATED">) | null;
   /** Called after a preview was removed (sticky PR comment → Removed). Best effort. */
   onPreviewRemoved?: (
     app: AppRow,
@@ -736,6 +742,14 @@ export async function createApp(
       );
     if (RELEASED_STATUSES.has(attachEnvState.status)) {
       throw appsError("BAD_USER_INPUT", "Environment is terminated");
+    }
+    // A licence chain's env: its version moves only through the keeper's
+    // release gate, never through an App's deploys (spec 4.3).
+    if (attachEnvState.managedBy) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Environment is managed by an app's licence template and cannot be an App's production environment",
+      );
     }
   }
 
@@ -1401,6 +1415,8 @@ async function adoptableEnv(
   if (!state) throw refuse("it does not exist");
   if (isStudioState(state)) throw refuse("it is a Studio");
   if (RELEASED_STATUSES.has(state.status)) throw refuse("it is terminated");
+  if (state.managedBy)
+    throw refuse("it is managed by an app's licence template");
   const studioOrg = studio.ownerOrgId ?? null;
   const envOrg = state.ownerOrgId ?? null;
   const sameOwner =
@@ -3692,7 +3708,12 @@ interface DeployTarget {
   fusionEnvTemplate: FusionEnvInput[];
 }
 
-/** The production env, checked: it exists and is linked to the App as its production env. */
+/**
+ * The production env, checked: it exists, is linked to the App as its
+ * production env, and is no licence chain's (one linked before attach and
+ * adopt refused those, or marked after): only the keeper's release gate
+ * moves that one's version (spec 4.3).
+ */
 function assertProductionEnv(
   app: AppRow,
   state: VetraCloudEnvironmentState | null,
@@ -3702,6 +3723,12 @@ function assertProductionEnv(
     throw appsError(
       "BAD_USER_INPUT",
       "Production environment is not linked to this App",
+    );
+  }
+  if (state.managedBy) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Production environment is managed by an app's licence template; its version moves only through the release gate",
     );
   }
   return state;
@@ -4559,6 +4586,17 @@ export async function ciRecordArtifact(
     throw appsError("BAD_USER_INPUT", "channel must be DEV, STAGING or LATEST");
   if (!deps.docs) throw notConfigured("The App document store");
 
+  // A gated App's build reaches customers only when its publisher promotes
+  // it (spec 4.1): a FUSION image aimed at LATEST moves STAGING, which the
+  // App's canary environments follow. Any other kind or channel is unchanged.
+  const requested = input.channel ?? null;
+  const channel =
+    requested === "LATEST" &&
+    input.kind === "FUSION_IMAGE" &&
+    (await deps.releasePolicy?.(app.id)) === "GATED"
+      ? "STAGING"
+      : requested;
+
   const actions: Action[] = [
     recordArtifactVersion({
       kind: input.kind,
@@ -4570,12 +4608,12 @@ export async function ciRecordArtifact(
       publishedAt: deps.now().toISOString(),
     }),
   ];
-  if (input.channel != null) {
+  if (channel !== null) {
     actions.push(
       setArtifactChannel({
         kind: input.kind,
         name: input.name.trim(),
-        channel: input.channel,
+        channel,
         version: input.version.trim(),
       }),
     );
@@ -4590,7 +4628,8 @@ export async function ciRecordArtifact(
 
   deps.logger.info(
     `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +
-      (input.channel ? ` and pointed ${input.channel} at it` : ""),
+      (channel ? ` and pointed ${channel} at it` : "") +
+      (channel !== requested ? ` (the App is gated; ${requested} moves on promotion)` : ""),
   );
   return { appId: app.id, recorded: true as const };
 }

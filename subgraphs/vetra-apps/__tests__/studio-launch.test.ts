@@ -584,6 +584,46 @@ describe("fix round 1", () => {
   });
 });
 
+describe("a template-managed production env takes no Studio launch", () => {
+  it("a launch is refused before anything is queued", async () => {
+    const p = await seedProduct();
+    await h.envs.manage(p.envId);
+    const before = h.envs.executed.length;
+    expect(await code(launch(p, launchInput(p, 1, SHA1)))).toBe("BAD_USER_INPUT");
+    expect(await deploymentCount()).toBe(0);
+    expect(h.envs.executed.length).toBe(before);
+  });
+
+  it("the product's drive is refused: nothing recorded, nothing written", async () => {
+    const p = await seedProduct();
+    h.envs.setStatus(p.envId, "READY");
+    await h.envs.manage(p.envId);
+    const before = h.envs.executed.length;
+    expect(await code(setStudioProductDrive(h.deps, agent, p.app.id, "drive-1", p.secret))).toBe("BAD_USER_INPUT");
+    await expect(setStudioProductDrive(h.deps, agent, p.app.id, "drive-1", p.secret)).rejects.toThrow(
+      "Production environment is managed by an app's licence template; its version moves only through the release gate",
+    );
+    expect((await getApp(h.db, p.app.id))!.product_drive_id).toBeNull();
+    expect(h.envs.executed.length).toBe(before);
+  });
+
+  it("a launch queued before the env was marked fails at the watcher: nothing dispatched, nothing restored", async () => {
+    const p = await seedProduct();
+    await launchToReady(p, launchInput(p, 1, SHA1));
+    const v2 = await launch(p, launchInput(p, 2, SHA2));
+    await h.envs.manage(p.envId);
+    const before = h.envs.executed.length;
+    await runDeploymentWatcherOnce(h.deps);
+    expect(await getDeployment(h.db, v2.id)).toMatchObject({
+      status: "FAILED",
+      error:
+        "Production environment is managed by an app's licence template; its version moves only through the release gate",
+    });
+    expect(h.envs.executed.length).toBe(before);
+    expect(await h.db.selectFrom("app_deployments").select("id").where("actor_github", "=", RESTORE_ACTOR).execute()).toHaveLength(0);
+  });
+});
+
 describe("fix round 2", () => {
   it("a failed launch that changed a kept package puts its earlier version back", async () => {
     const p = await seedProduct();

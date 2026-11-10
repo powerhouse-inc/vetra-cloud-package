@@ -7,6 +7,7 @@ import {
   ServiceNotFoundError,
 } from "../../gen/services/error.js";
 import {
+  assertNotTemplateManaged,
   assertOwner,
   markPendingIfDeployed,
   regenerateDnsRecords,
@@ -24,6 +25,18 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
       }
       if (!state.services) {
         state.services = [];
+      }
+      // CLINT supports multiple entries per env, distinguished by prefix.
+      // Other service types are singletons keyed by type alone — a re-enable
+      // with a different prefix updates the existing entry.
+      const existing =
+        type === "CLINT"
+          ? state.services.find((s) => s.type === type && s.prefix === prefix)
+          : state.services.find((s) => s.type === type);
+      // Looked up like the write below, so a new or re-enabled CLINT entry is
+      // locked even while another CLINT is on.
+      if (!existing?.enabled) {
+        assertNotTemplateManaged(state, action, `enabling ${type}`, type);
       }
       const collision = state.services.find(
         (s) => s.prefix === prefix && s.type !== type,
@@ -56,13 +69,6 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
               selectedRessource: clintConfig.selectedRessource ?? null,
             }
           : null;
-      // CLINT supports multiple entries per env, distinguished by prefix.
-      // Other service types are singletons keyed by type alone — a re-enable
-      // with a different prefix updates the existing entry.
-      const existing =
-        type === "CLINT"
-          ? state.services.find((s) => s.type === type && s.prefix === prefix)
-          : state.services.find((s) => s.type === type);
       if (existing) {
         existing.enabled = true;
         existing.prefix = prefix;
@@ -100,6 +106,9 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         type === "CLINT" && prefix
           ? state.services.find((s) => s.type === type && s.prefix === prefix)
           : state.services.find((s) => s.type === type);
+      if (service?.enabled) {
+        assertNotTemplateManaged(state, action, `disabling ${type}`, type);
+      }
       if (service) {
         service.enabled = false;
         regenerateDnsRecords(state);
@@ -114,6 +123,12 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           "Service " + action.input.type + " not found",
         );
       }
+      assertNotTemplateManaged(
+        state,
+        action,
+        `toggling ${service.type}`,
+        service.type,
+      );
       service.enabled = !service.enabled;
       regenerateDnsRecords(state);
       markPendingIfDeployed(state);
@@ -158,6 +173,12 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
           "Service " + action.input.type + " not found",
         );
       }
+      assertNotTemplateManaged(
+        state,
+        action,
+        `the ${service.type} version`,
+        service.type,
+      );
       service.version = action.input.version;
       markPendingIfDeployed(state);
     },
@@ -227,6 +248,20 @@ export const vetraCloudEnvironmentServicesOperations: VetraCloudEnvironmentServi
         }
       }
       const pattern = autoUpdateTagPattern?.trim() || null;
+      // The holder keeps the env (and its secrets); the image and how it
+      // follows new tags belong to the template.
+      if (
+        (state.fusion?.image ?? null) !== repo ||
+        (state.fusion?.autoUpdate ?? false) !== autoUpdate ||
+        (state.fusion?.autoUpdateTagPattern ?? null) !== pattern
+      ) {
+        assertNotTemplateManaged(
+          state,
+          action,
+          "the FUSION image and auto-update",
+          "FUSION",
+        );
+      }
       if (pattern !== null) {
         // The poller runs this on the shared switchboard: keep it short and
         // free of nested quantifiers (catastrophic backtracking).

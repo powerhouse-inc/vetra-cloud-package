@@ -1,7 +1,7 @@
 import type { IProcessor, IProcessorHostModule, OperationWithContext } from "@powerhousedao/reactor-browser";
 import type { IDocumentView } from "@powerhousedao/reactor";
 import type { Kysely } from "kysely";
-import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink, type BackupSchedule } from "../../document-models/vetra-cloud-environment/index.js";
+import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnvironmentDocument, type VetraCloudEnvironmentState, type VetraCloudAppLink, type BackupSchedule, type VetraCloudManagedBy } from "../../document-models/vetra-cloud-environment/index.js";
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
@@ -179,6 +179,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
         ...appLinkColumns(state),
         ...orgColumns(state),
         ...backupScheduleColumn(state),
+        ...managedByColumn(state),
       };
 
       // createdBy is INSERT-only — never overwritten by later updates.
@@ -342,6 +343,17 @@ export function backupScheduleColumn(state: {
 }): { backupSchedule: string | null } {
   const schedule = state.backupSchedule ?? null;
   return { backupSchedule: schedule ? JSON.stringify(schedule) : null };
+}
+
+/**
+ * Read-model column mirroring the system-only `state.managedBy` as JSON. Read
+ * by myEnvironments; NULL for an environment no licence template manages.
+ */
+export function managedByColumn(state: {
+  managedBy?: VetraCloudManagedBy | null;
+}): { managedBy: string | null } {
+  const managed = state.managedBy ?? null;
+  return { managedBy: managed ? JSON.stringify(managed) : null };
 }
 
 /** Columns the public host lookup reads to rebuild an env's generated hosts. */

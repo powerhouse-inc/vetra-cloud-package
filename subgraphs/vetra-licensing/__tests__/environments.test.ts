@@ -13,6 +13,8 @@ import {
 } from "../environments.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "../environments.js";
 import { createWarmPoolStore, type WarmPoolStore } from "../warm-pool-db.js";
+import { createRolloutStore } from "../rollout-db.js";
+import { createUpdateGate } from "../update-gate.js";
 import { renderCreateActions } from "../template.js";
 import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
 
@@ -56,6 +58,14 @@ describe("provisionChain", () => {
     expect(types).toContain("INITIALIZE");
     expect(executed[0]!.actions.find((a) => a.type === "SET_OWNER")!.input).toStrictEqual({ address: "0x1111111111111111111111111111111111111111" });
     expect(await deps.rows.byRoot("l1")).toMatchObject({ template_hash: "h1", license_id: "l1" });
+  });
+
+  it("marks a create dispatched, and a repoint that executed nothing not", async () => {
+    expect((await provisionChain(deps, input())).dispatched).toBe(true);
+    expect(
+      (await provisionChain(deps, input({ licenseId: "l2" }))).dispatched,
+    ).toBeUndefined();
+    expect(executed).toHaveLength(1);
   });
 
   it("is idempotent", async () => {
@@ -249,7 +259,10 @@ describe("provisionChain moves a FUSION commit tag up by the app's recording ord
     states.set("env-1", liveOnShaA() as never);
     const row = await provisionChain(deps, input({ templateHash: "h2", template: shaTemplate, fusionVersions: [SHA_B] }));
     expect(executed).toHaveLength(1);
-    expect(row.template_hash).toBe("h2");
+    // Held, so not applied: the hash stays, and the next call retries (spec 4.3).
+    expect(row.template_hash).toBe("h1");
+    expect(row.versionHeld).toBe(true);
+    expect((await deps.rows.byRoot("l1"))!.template_hash).toBe("h1");
     expect(warn).toHaveBeenCalledOnce();
     const msg = String(warn.mock.calls[0]![0]);
     expect(msg).toContain("env-1");
@@ -332,6 +345,12 @@ describe("provisionChain claims a warm environment first", () => {
     store = createWarmPoolStore(db);
     handOver = vi.fn(async () => {});
     deps.warmPool = { store, handOver };
+  });
+
+  it("marks a warm claim dispatched", async () => {
+    await seedWarm();
+    expect((await provisionChain(deps, warmInput())).dispatched).toBe(true);
+    expect(executed).toHaveLength(1);
   });
 
   it("claims an AVAILABLE warm environment instead of building one", async () => {
@@ -613,3 +632,119 @@ describe("the included AI key (spec 3.11)", () => {
   });
 });
 
+describe("provisionChain asks the update gate before it moves a FUSION version (spec 4.3)", () => {
+  const REPO = "cr.vetra.io/app-sektar/host";
+  const v110 = {
+    services: [{ id: "h", type: "FUSION", prefix: "sektar", artifactName: "host", artifactChannel: "LATEST", resolvedRepository: REPO, resolvedVersion: "1.1.0" }],
+    packages: [{ id: "p", packageName: "@sektar/extra", version: "1.0.0" }], size: null, baseDomain: null, packageRegistry: null,
+  };
+  const liveOn100 = () => ({
+    status: "READY", owner: "0x1111111111111111111111111111111111111111", label: "My vault", packages: [],
+    services: [{ type: "FUSION", prefix: "sektar", enabled: true, version: "1.0.0", selectedRessource: null }],
+    fusion: { image: REPO, env: [{ name: "PH_HOST", value: "cli", isSecret: false }, { name: "ADMINS", value: "0x1111111111111111111111111111111111111111", isSecret: false }], autoUpdate: false, autoUpdateTagPattern: null },
+  });
+  const updates = () => createRolloutStore(db);
+  const live = async () => {
+    await provisionChain(deps, input());
+    states.set("env-1", liveOn100() as never);
+    executed.length = 0;
+  };
+
+  beforeEach(() => {
+    deps.updates = createUpdateGate({ store: createRolloutStore(db), logger: { warn: () => {}, info: () => {} } });
+  });
+
+  it("an AUTO app moves the version as before, records the update and advances the hash", async () => {
+    await live();
+    const row = await provisionChain(deps, input({ templateHash: "h2", template: v110 }));
+    expect(executed[0]!.actions.map((a) => a.type)).toStrictEqual(["ADD_PACKAGE", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(row).toMatchObject({ template_hash: "h2" });
+    expect(row.versionHeld).toBeUndefined();
+    expect(await updates().latest("env-1")).toMatchObject({ status: "APPLYING", from_version: "1.0.0", to_version: "1.1.0", rollout_id: null });
+  });
+
+  it("a held version applies everything else, keeps the hash and repoints the row", async () => {
+    await updates().saveSettings({ appId: "app-1", policy: "GATED", defaultNoticeHours: 72 }, "2026-10-08T00:00:00.000Z");
+    await live();
+    const row = await provisionChain(deps, input({ licenseId: "l2", templateHash: "h2", template: v110 }));
+    expect(executed[0]!.actions.map((a) => a.type)).toStrictEqual(["ADD_PACKAGE", "APPROVE_CHANGES"]);
+    expect(row).toMatchObject({ template_hash: "h1", license_id: "l2", versionHeld: true });
+    expect(await deps.rows.byRoot("l1")).toMatchObject({ template_hash: "h1", license_id: "l2" });
+    // Not promoted: nothing recorded yet, and the next call (floor met) dispatches nothing.
+    expect(await updates().latest("env-1")).toBeNull();
+    states.get("env-1")!.packages = [{ registry: "r", name: "@sektar/extra", version: "1.0.0" }];
+    await provisionChain(deps, input({ licenseId: "l2", templateHash: "h2", template: v110 }));
+    expect(executed).toHaveLength(1);
+  });
+
+  it("marks a re-template that moved the version dispatched", async () => {
+    await live();
+    const row = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(row).toMatchObject({ template_hash: "h2", dispatched: true });
+    expect(row.versionHeld).toBeUndefined();
+  });
+
+  it("marks a held version dispatched only when other actions still went out", async () => {
+    await updates().saveSettings(
+      { appId: "app-1", policy: "GATED", defaultNoticeHours: 72 },
+      "2026-10-08T00:00:00.000Z",
+    );
+    await live();
+    const first = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(executed).toHaveLength(1);
+    expect(first).toMatchObject({ versionHeld: true, dispatched: true });
+    states.get("env-1")!.packages = [
+      { registry: "r", name: "@sektar/extra", version: "1.0.0" },
+    ];
+    const second = await provisionChain(
+      deps,
+      input({ templateHash: "h2", template: v110 }),
+    );
+    expect(executed).toHaveLength(1);
+    expect(second.versionHeld).toBe(true);
+    expect(second.dispatched).toBeUndefined();
+  });
+
+  it("puts an admitted update back to PENDING when its actions were not dispatched", async () => {
+    await live();
+    deps.envs.execute = async () => { throw new Error("reactor down"); };
+    await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("reactor down");
+    expect(await updates().latest("env-1")).toMatchObject({ status: "PENDING", started_at: null });
+    expect((await deps.rows.byRoot("l1"))!.template_hash).toBe("h1");
+  });
+
+  it("leaves an admitted update APPLYING when the execute failed after the version went out", async () => {
+    await live();
+    // The gateway applied the batch (the version first), then threw.
+    deps.envs.execute = async (id) => {
+      (states.get(id) as ReturnType<typeof liveOn100>).services[0]!.version = "1.1.0";
+      throw new Error("approve rejected");
+    };
+    await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("approve rejected");
+    expect(await updates().latest("env-1")).toMatchObject({ status: "APPLYING", to_version: "1.1.0" });
+  });
+
+  it("leaves an admitted update APPLYING when the environment cannot be re-read after a failed execute", async () => {
+    await live();
+    const getState = deps.envs.getState;
+    deps.envs.execute = async () => {
+      deps.envs.getState = async () => { throw new Error("read failed"); };
+      throw new Error("reactor down");
+    };
+    await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("reactor down");
+    deps.envs.getState = getState;
+    expect(await updates().latest("env-1")).toMatchObject({ status: "APPLYING" });
+  });
+
+  it("never asks the gate for a new environment", async () => {
+    const admit = vi.spyOn(deps.updates!, "admit");
+    await provisionChain(deps, input({ template: v110 }));
+    expect(admit).not.toHaveBeenCalled();
+  });
+});

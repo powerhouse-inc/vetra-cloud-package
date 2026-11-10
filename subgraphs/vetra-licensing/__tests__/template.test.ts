@@ -11,6 +11,7 @@ import {
   renderFloorUpdateActions,
   isVersionUpgrade,
   isFusionUpgrade,
+  fusionMoveOf,
   templateHash,
   validateTemplate,
   MissingPackageNameError,
@@ -729,5 +730,157 @@ describe("renderCreateActions without an owner", () => {
     expect(types(actions)).not.toContain("SET_OWNER");
     const cfg = actions.find((a) => a.type === "SET_FUSION_CONFIG") as any;
     expect(cfg.input.env).toContainEqual({ name: "ADMINS", value: "", isSecret: false });
+  });
+});
+
+describe("the floor's FUSION version modes and fusionMoveOf (spec 4.3)", () => {
+  const SHA_A = "sha-56e1fd7497fc";
+  const SHA_B = "sha-6141b974fc38";
+  const shaTemplate: TemplateShape = {
+    ...template,
+    size: null,
+    services: [
+      ...template.services,
+      {
+        id: "f",
+        type: "FUSION",
+        prefix: "sektar",
+        artifactName: "app",
+        artifactChannel: "LATEST",
+        resolvedRepository: "registry/app",
+        resolvedVersion: SHA_B,
+      },
+    ],
+  };
+  const onFusion = (version: string | null): VetraCloudEnvironmentState => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "sektar"), version });
+    current.fusion = {
+      image: "registry/app",
+      env: [],
+      autoUpdate: false,
+      autoUpdateTagPattern: null,
+    };
+    return current;
+  };
+  const render = (
+    current: VetraCloudEnvironmentState,
+    fusionVersions: string[] | undefined,
+    fusionVersion?: "floor" | "hold" | "force",
+  ) =>
+    types(
+      renderFloorUpdateActions({
+        template: shaTemplate,
+        current,
+        fusionVersions,
+        fusionVersion,
+      }),
+    );
+
+  it("names the move the floor would make, and whether it cannot order it", () => {
+    expect(
+      fusionMoveOf(shaTemplate, onFusion(SHA_A), [SHA_A, SHA_B]),
+    ).toStrictEqual({
+      artifactName: "app",
+      from: SHA_A,
+      to: SHA_B,
+      stranded: false,
+    });
+    expect(fusionMoveOf(shaTemplate, onFusion(SHA_A), [SHA_B])).toStrictEqual({
+      artifactName: "app",
+      from: SHA_A,
+      to: SHA_B,
+      stranded: true,
+    });
+  });
+
+  it("names no move when the version is current, newer, unordered, missing, or not FUSION", () => {
+    expect(
+      fusionMoveOf(shaTemplate, onFusion(SHA_B), [SHA_A, SHA_B]),
+    ).toBeNull();
+    expect(
+      fusionMoveOf(shaTemplate, onFusion(SHA_A), [SHA_B, SHA_A]),
+    ).toBeNull();
+    expect(fusionMoveOf(shaTemplate, onFusion(SHA_A), undefined)).toBeNull();
+    expect(
+      fusionMoveOf(shaTemplate, onFusion(null), [SHA_A, SHA_B]),
+    ).toBeNull();
+    expect(fusionMoveOf(template, deployedState())).toBeNull();
+  });
+
+  it("hold leaves the version where it is and applies everything else", () => {
+    const current = onFusion(SHA_A);
+    current.packages = [];
+    expect(render(current, [SHA_A, SHA_B], "hold")).toEqual([
+      "ADD_PACKAGE",
+      "APPROVE_CHANGES",
+    ]);
+    expect(render(onFusion(SHA_A), [SHA_A, SHA_B], "hold")).toEqual([]);
+    // A service with no version yet still gets one: nothing runs to protect.
+    expect(render(onFusion(null), [SHA_A, SHA_B], "hold")).toEqual([
+      "SET_SERVICE_VERSION",
+      "APPROVE_CHANGES",
+    ]);
+  });
+
+  it("hold reports nothing for a version the record no longer lists", () => {
+    const held = vi.fn();
+    expect(
+      types(
+        renderFloorUpdateActions({
+          template: shaTemplate,
+          current: onFusion(SHA_A),
+          fusionVersions: [SHA_B],
+          fusionVersion: "hold",
+          onFusionHeld: held,
+        }),
+      ),
+    ).toEqual([]);
+    expect(held).not.toHaveBeenCalled();
+  });
+
+  it("force sets a commit tag even with no recording order", () => {
+    expect(render(onFusion(SHA_A), undefined, "force")).toEqual([
+      "SET_SERVICE_VERSION",
+      "APPROVE_CHANGES",
+    ]);
+  });
+
+  it("force sets a version the floor cannot order, and never one provably older", () => {
+    const held = vi.fn();
+    expect(
+      types(
+        renderFloorUpdateActions({
+          template: shaTemplate,
+          current: onFusion(SHA_A),
+          fusionVersions: [SHA_B],
+          fusionVersion: "force",
+          onFusionHeld: held,
+        }),
+      ),
+    ).toEqual(["SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(held).not.toHaveBeenCalled();
+    expect(render(onFusion(SHA_A), [SHA_A, SHA_B], "force")).toEqual([
+      "SET_SERVICE_VERSION",
+      "APPROVE_CHANGES",
+    ]);
+    // Current recorded after the template's: a downgrade, refused even forced.
+    expect(render(onFusion(SHA_A), [SHA_B, SHA_A], "force")).toEqual([]);
+    expect(render(onFusion(SHA_B), [SHA_A, SHA_B], "force")).toEqual([]);
+    const semver: TemplateShape = {
+      ...shaTemplate,
+      services: shaTemplate.services.map((s) =>
+        s.type === "FUSION" ? { ...s, resolvedVersion: "1.0.0" } : s,
+      ),
+    };
+    expect(
+      types(
+        renderFloorUpdateActions({
+          template: semver,
+          current: onFusion("2.0.0"),
+          fusionVersion: "force",
+        }),
+      ),
+    ).toEqual([]);
   });
 });

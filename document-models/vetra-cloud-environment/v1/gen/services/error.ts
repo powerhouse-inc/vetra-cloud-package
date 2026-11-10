@@ -2,6 +2,7 @@ export type ErrorCode =
   | "NotOwnerError"
   | "ClintConfigRequiredError"
   | "PrefixInUseError"
+  | "ManagedByTemplateError"
   | "ServiceNotFoundError"
   | "NotClintServiceError"
   | "InvalidFusionConfigError";
@@ -31,6 +32,13 @@ export class PrefixInUseError extends Error implements ReducerError {
   }
 }
 
+export class ManagedByTemplateError extends Error implements ReducerError {
+  errorCode = "ManagedByTemplateError" as ErrorCode;
+  constructor(message = "ManagedByTemplateError") {
+    super(message);
+  }
+}
+
 export class ServiceNotFoundError extends Error implements ReducerError {
   errorCode = "ServiceNotFoundError" as ErrorCode;
   constructor(message = "ServiceNotFoundError") {
@@ -53,21 +61,34 @@ export class InvalidFusionConfigError extends Error implements ReducerError {
 }
 
 export const errors = {
-  EnableService: { NotOwnerError, ClintConfigRequiredError, PrefixInUseError },
+  EnableService: {
+    NotOwnerError,
+    ClintConfigRequiredError,
+    PrefixInUseError,
+    ManagedByTemplateError,
+  },
 
   SetServiceConfig: { ServiceNotFoundError, NotClintServiceError },
 
-  DisableService: { NotOwnerError },
+  DisableService: { NotOwnerError, ManagedByTemplateError },
 
-  ToggleService: { ServiceNotFoundError, NotOwnerError },
+  ToggleService: {
+    ServiceNotFoundError,
+    NotOwnerError,
+    ManagedByTemplateError,
+  },
 
   UpdateServicePrefix: { ServiceNotFoundError, NotOwnerError },
 
   SetServiceStatus: { ServiceNotFoundError, NotOwnerError },
 
-  SetServiceVersion: { ServiceNotFoundError, NotOwnerError },
+  SetServiceVersion: {
+    ServiceNotFoundError,
+    NotOwnerError,
+    ManagedByTemplateError,
+  },
 
   SetServiceSize: { ServiceNotFoundError, NotOwnerError },
 
-  SetFusionConfig: { InvalidFusionConfigError },
+  SetFusionConfig: { InvalidFusionConfigError, ManagedByTemplateError },
 };

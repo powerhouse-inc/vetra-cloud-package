@@ -66,6 +66,7 @@ export const SYSTEM_ONLY_OPERATIONS = [
   ...ORG_SYSTEM_OPERATIONS,
   "SET_APP_LINK",
   "CLEAR_APP_LINK",
+  "SET_MANAGED_BY",
 ] as const;
 
 /**

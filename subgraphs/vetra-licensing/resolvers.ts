@@ -1,5 +1,6 @@
 import { resolveCallerApp, type AuthContext, type AuthDeps } from "./auth.js";
 import { resolveKind, type AppReads } from "./app-reads.js";
+import { resolveChainKind } from "./channel-override.js";
 import type { LicensingConfig } from "./config.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
@@ -267,8 +268,17 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
           }
           const app = await deps.apps.app(appId);
           if (!app) throw new InvalidPublisherInputError(`app ${appId} has no readable document`);
+          const root = await deps.grants.chainRootOf(licence.id);
+          // As the handler: a canary chain resolves on its own channel (spec
+          // 4.2). Read before the chain lock is taken: an override changed in
+          // between gets one stale provision, which the keeper corrects on its
+          // next tick.
+          const channel =
+            (await deps.envRows.forApp(appId)).find(
+              (e) => e.root_license_id === root,
+            )?.channel_override ?? null;
           // A tampered app does not resolve; an unverified one is held, as by the handler.
-          const r = resolveKind(app, licence.kind);
+          const r = resolveChainKind(app, licence.kind, channel);
           if (!r.ok) throw new InvalidPublisherInputError(r.reason);
           if (app.unverified) {
             throw new InvalidPublisherInputError(
@@ -278,7 +288,6 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
           if (r.template.mode !== "DEDICATED") {
             throw new InvalidPublisherInputError("a SHARED licence has no environment of its own");
           }
-          const root = await deps.grants.chainRootOf(licence.id);
           // As the handler: only the chain's newest authorised licence is served.
           if ((await deps.grants.chainHead(root)) !== licence.id) {
             throw new InvalidPublisherInputError(

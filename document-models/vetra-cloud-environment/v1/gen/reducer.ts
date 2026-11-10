@@ -33,6 +33,7 @@ import {
   SetFusionConfigInputSchema,
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
+  SetManagedByInputSchema,
   SetOwnerInputSchema,
   SetOwnerOrgInputSchema,
   SetPackageVersionInputSchema,
@@ -232,6 +233,18 @@ const stateReducer: StateReducer<VetraCloudEnvironmentPHState> = (
       SetBackupScheduleInputSchema().parse(action.input);
 
       vetraCloudEnvironmentDataManagementOperations.setBackupScheduleOperation(
+        (state as any)[action.scope],
+        action as any,
+        dispatch,
+      );
+
+      break;
+    }
+
+    case "SET_MANAGED_BY": {
+      SetManagedByInputSchema().parse(action.input);
+
+      vetraCloudEnvironmentDataManagementOperations.setManagedByOperation(
         (state as any)[action.scope],
         action as any,
         dispatch,

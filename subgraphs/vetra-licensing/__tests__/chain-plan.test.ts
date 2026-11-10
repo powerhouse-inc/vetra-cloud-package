@@ -327,3 +327,37 @@ describe("planChains: app integrity", () => {
     expect(withApp(app, [L("l1")], [], true)).toStrictEqual(plan([L("l1")]));
   });
 });
+
+describe("planChains: per-chain resolution (a canary, spec 4.2)", () => {
+  it("resolves each chain's head with its root, so a canary chain can re-template alone", () => {
+    const seen: [string | null, string][] = [];
+    const canaryHash = (k: string | null, root: string): PlanResolution => {
+      seen.push([k, root]);
+      const r = resolve(k);
+      return r.ok && root === "l2"
+        ? { ...r, templateHash: "h-pro-staging" }
+        : r;
+    };
+    const steps = planChains({
+      licences: [L("l1", { stage: "e1" }), L("l2", { stage: "e2" })],
+      environments: [E("e1", "l1"), E("e2", "l2")],
+      resolve: canaryHash,
+      app: CLEAN,
+    });
+    expect(seen).toStrictEqual([
+      ["pro", "l1"],
+      ["pro", "l2"],
+    ]);
+    expect(steps).toStrictEqual([
+      {
+        kind: "provision",
+        root: "l2",
+        licence: L("l2", { stage: "e2" }),
+        templateId: "t-pro",
+        templateHash: "h-pro-staging",
+        label: "Pro",
+        environmentId: "e2",
+      },
+    ]);
+  });
+});

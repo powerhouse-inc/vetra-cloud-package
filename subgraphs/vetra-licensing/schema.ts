@@ -2,6 +2,7 @@ import { gql } from "graphql-tag";
 import { Kind, type DocumentNode } from "graphql";
 import { publisherSchema } from "./publisher-schema.js";
 import { subscriptionsSchema } from "./subscriptions-schema.js";
+import { releasesSchema } from "./releases-schema.js";
 
 /**
  * The machine surface (vetraLicensing, contract § vetraLicensing (machine)):
@@ -94,11 +95,12 @@ export const machineSchema: DocumentNode = gql`
 `;
 
 /**
- * Everything this subgraph serves: the machine, publisher and subscriptions
- * surfaces in one document. The publisher and subscriptions documents extend
- * Query and Mutation, so they are only valid together with the machine
+ * Everything this subgraph serves: the machine, publisher, subscriptions and
+ * releases surfaces in one document. The publisher and subscriptions documents
+ * extend Query and Mutation, so they are only valid together with the machine
  * document. Each defines its own types (PublisherEnvironment, not the machine
- * AppUserEnvironment).
+ * AppUserEnvironment); releases extends PublisherEnvironment, so it is only
+ * valid together with the publisher document.
  */
 export const schema: DocumentNode = {
   kind: Kind.DOCUMENT,
@@ -106,5 +108,6 @@ export const schema: DocumentNode = {
     ...machineSchema.definitions,
     ...publisherSchema.definitions,
     ...subscriptionsSchema.definitions,
+    ...releasesSchema.definitions,
   ],
 };

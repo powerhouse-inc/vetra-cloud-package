@@ -87,7 +87,8 @@ function appHold(app: PlanApp, holdUnverified: boolean): string | null {
 export function planChains(input: {
   licences: PlanLicence[];
   environments: PlanEnvironment[];
-  resolve(kind: string | null): PlanResolution;
+  /** A chain's head kind -> template; per chain, as a canary resolves on its own channel. */
+  resolve(kind: string | null, root: string): PlanResolution;
   /** Required: omitting the integrity of the app must not fail open. */
   app: PlanApp;
   holdUnverified?: boolean;
@@ -163,7 +164,7 @@ export function planChains(input: {
       }
     }
 
-    const r = input.resolve(head.kind);
+    const r = input.resolve(head.kind, root);
     if (!r.ok) {
       steps.push({ kind: "hold", root, reason: r.reason });
       continue;

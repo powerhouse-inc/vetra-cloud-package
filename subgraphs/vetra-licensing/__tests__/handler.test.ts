@@ -5,7 +5,9 @@ import type { AppDocView } from "../app-reads.js";
 import type { GrantProvenance } from "../grants.js";
 import type { LicenceRecord } from "../reads.js";
 import type { LicenseEnvironments } from "../db/schema.js";
-import { EnvironmentNotReadyError } from "../environments.js";
+import { resolveTemplateArtifacts } from "../artifact-resolution.js";
+import { templateHash } from "../template.js";
+import { EnvironmentNotReadyError, type ProvisionResult } from "../environments.js";
 import type { LifecycleRecord } from "../lifecycle.js";
 import { addDays, confirmedEndedRows, tickOffboarding, type OffboardingDeps } from "../offboarding.js";
 
@@ -820,5 +822,319 @@ describe("AppLicenseHandler", () => {
       await vi.waitFor(() => expect(k.state.finished).toBe(2));
       expect(k.state.started).toBe(2);
     });
+  });
+});
+
+describe("AppLicenseHandler: canary chains (spec 4.2)", () => {
+  const fusionTemplate = {
+    ...tpl("ded", "DEDICATED"),
+    template: {
+      services: [
+        {
+          id: "f",
+          type: "FUSION",
+          prefix: "sektar",
+          artifactName: "host",
+          artifactChannel: "LATEST",
+          resolvedVersion: "1.0.0",
+          resolvedRepository: "cr.vetra.io/p/host",
+        },
+      ],
+      packages: [],
+      size: null,
+      baseDomain: null,
+      packageRegistry: null,
+    },
+  };
+  const WITH_STAGING: AppDocView = {
+    ...APP,
+    templates: [fusionTemplate, tpl("sh", "SHARED")],
+    artifacts: [
+      {
+        kind: "FUSION_IMAGE",
+        name: "host",
+        versions: [
+          { version: "1.0.0", reference: "cr.vetra.io/p/host:1.0.0" },
+          { version: "1.1.0", reference: "cr.vetra.io/p/host:1.1.0" },
+        ],
+        channels: [
+          { channel: "LATEST", version: "1.0.0" },
+          { channel: "STAGING", version: "1.1.0" },
+        ],
+      },
+    ],
+  };
+
+  it("re-templates a canary onto STAGING and leaves a customer on the template's hash alone", async () => {
+    const h = harness(
+      {
+        app: async (id) => (id === "app-1" ? WITH_STAGING : null),
+        environments: async () => [
+          envRow({
+            environment_id: "e1",
+            root_license_id: "l1",
+            license_id: "l1",
+            channel_override: "STAGING",
+          }),
+          envRow({
+            environment_id: "e2",
+            root_license_id: "l2",
+            license_id: "l2",
+          }),
+        ],
+      },
+      [lic("l1", { stage: "e1" }), lic("l2", { stage: "e2" })],
+    );
+    await h.handler.reconcileOnce();
+    expect(h.provisioned).toStrictEqual(["l1"]);
+    const input = vi.mocked(h.deps.provision).mock.calls[0]![0];
+    expect(input.template.services[0]).toMatchObject({
+      artifactChannel: "LATEST",
+      resolvedVersion: "1.1.0",
+    });
+    expect(input.templateHash).toBe(
+      templateHash(
+        resolveTemplateArtifacts(
+          fusionTemplate.template,
+          WITH_STAGING.artifacts,
+          "STAGING",
+        ),
+      ),
+    );
+  });
+});
+
+describe("AppLicenseHandler: release work (spec 4.3)", () => {
+  /** Two live chains whose environments are behind the template. */
+  const behind = () => ({
+    licences: [lic("l0", { stage: "e0" }), lic("l1", { stage: "e1" })],
+    envs: [
+      envRow({ environment_id: "e0", root_license_id: "l0", license_id: "l0", template_hash: "old" }),
+      envRow({ environment_id: "e1", root_license_id: "l1", license_id: "l1", template_hash: "old" }),
+    ],
+  });
+
+  it("gives the re-template budget back for a chain whose FUSION version was held", async () => {
+    const { licences, envs } = behind();
+    const provision = vi.fn(async (input: { root: string }) => ({ environment_id: `e${input.root.slice(1)}`, versionHeld: true }) as LicenseEnvironments & { versionHeld: true });
+    const h = harness({
+      environments: async () => envs,
+      provision,
+      cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+    }, licences);
+    await h.handler.reconcileOnce();
+    expect(provision).toHaveBeenCalledTimes(2);
+    expect(h.logger.info).not.toHaveBeenCalledWith(expect.stringContaining("deferred to later ticks"));
+  });
+
+  it("still spends it on a chain that re-templated", async () => {
+    const { licences, envs } = behind();
+    const h = harness({
+      environments: async () => envs,
+      cfg: { ...loadLicensingConfig({}), enabled: true, dryRun: false, retemplatePerTick: 1 },
+    }, licences);
+    await h.handler.reconcileOnce();
+    expect(h.provisioned).toHaveLength(1);
+  });
+
+  it("runs afterChains with the app and its re-read rows, before afterApp", async () => {
+    const order: string[] = [];
+    const rows = [envRow({ environment_id: "e1", root_license_id: "l1", license_id: "l1", template_hash: "h-ded" })];
+    const afterChains = vi.fn(async () => { order.push("chains"); });
+    const h = harness({
+      environments: async () => rows,
+      afterChains,
+      afterApp: vi.fn(async () => { order.push("app"); }),
+    }, [lic("l1", { stage: "e1" })]);
+    await h.handler.reconcileOnce();
+    expect(afterChains).toHaveBeenCalledWith(APP, rows);
+    expect(order).toStrictEqual(["chains", "app"]);
+  });
+
+  it("logs a failing afterChains once and still runs afterApp", async () => {
+    const h = harness({ afterChains: async () => { throw new Error("db down"); } });
+    await h.handler.reconcileOnce();
+    await h.handler.reconcileOnce();
+    expect(h.deps.afterApp).toHaveBeenCalledTimes(2);
+    expect(h.logger.warn.mock.calls.filter(([m]) => String(m).includes("release work of app app-1 failed: Error: db down"))).toHaveLength(1);
+  });
+
+  it("never runs afterChains for a held app", async () => {
+    const afterChains = vi.fn(async () => {});
+    const h = harness({ app: async () => ({ ...APP, tampered: true, tamperReason: "x" }), afterChains });
+    await h.handler.reconcileOnce();
+    expect(afterChains).not.toHaveBeenCalled();
+  });
+});
+
+describe("AppLicenseHandler: held chains and the re-template budget (spec 4.3)", () => {
+  const cfg = {
+    ...loadLicensingConfig({}),
+    enabled: true,
+    dryRun: false,
+    retemplatePerTick: 1,
+  };
+  /** What provisionChain returns for a chain: a full row, held or not, dispatched or not. */
+  const result = (
+    environmentId: string,
+    root: string,
+    over: { versionHeld?: true; dispatched?: true },
+  ): ProvisionResult => ({
+    ...envRow({
+      environment_id: environmentId,
+      root_license_id: root,
+      license_id: root,
+      template_hash: "h-ded",
+    }),
+    ...over,
+  });
+  /** Two live chains, l0 (e0) and l1 (e1), both behind the template. */
+  const behind = () => ({
+    licences: [lic("l0", { stage: "e0" }), lic("l1", { stage: "e1" })],
+    envs: [
+      envRow({
+        environment_id: "e0",
+        root_license_id: "l0",
+        license_id: "l0",
+        template_hash: "old",
+      }),
+      envRow({
+        environment_id: "e1",
+        root_license_id: "l1",
+        license_id: "l1",
+        template_hash: "old",
+      }),
+    ],
+  });
+  const deferredOne = (h: ReturnType<typeof harness>) =>
+    expect(h.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "1 environment re-template(s) deferred to later ticks",
+      ),
+    );
+
+  it("keeps the slot spent for a held chain that still dispatched other changes", async () => {
+    const { licences, envs } = behind();
+    const provision = vi.fn(async (input: { root: string }) =>
+      result(`e${input.root.slice(1)}`, input.root, {
+        versionHeld: true,
+        dispatched: true,
+      }),
+    );
+    const h = harness(
+      { environments: async () => envs, provision, cfg },
+      licences,
+    );
+    await h.handler.reconcileOnce();
+    expect(provision).toHaveBeenCalledTimes(1);
+    deferredOne(h);
+  });
+
+  // The first tick starts at the second chain (l1).
+  it.each([
+    { order: "held chain first", held: "l1", real: "l0", calls: ["l1", "l0"] },
+    { order: "real re-template first", held: "l0", real: "l1", calls: ["l1"] },
+  ])(
+    "a held chain that dispatched nothing never keeps the slot from a real re-template ($order)",
+    async ({ held, real, calls }) => {
+      const { licences, envs } = behind();
+      const provision = vi.fn(async (input: { root: string }) =>
+        result(
+          `e${input.root.slice(1)}`,
+          input.root,
+          input.root === held ? { versionHeld: true } : { dispatched: true },
+        ),
+      );
+      const h = harness(
+        { environments: async () => envs, provision, cfg },
+        licences,
+      );
+      await h.handler.reconcileOnce();
+      expect(provision.mock.calls.map((c) => c[0].root)).toStrictEqual(calls);
+      expect(calls).toContain(real);
+      if (calls.length === 1)
+        deferredOne(h); // the held chain waits, as any re-template would
+      else
+        expect(h.logger.info).not.toHaveBeenCalledWith(
+          expect.stringContaining("deferred to later ticks"),
+        );
+    },
+  );
+
+  it("never gives back a slot a held create or repoint did not take", async () => {
+    const { licences, envs } = behind();
+    const repointed = envRow({
+      environment_id: "er",
+      root_license_id: "lr",
+      license_id: "old-licence",
+      template_hash: "h-ded",
+    });
+    const provision = vi.fn(async (input: { root: string }) => {
+      if (input.root === "n0") return result("en", "n0", { versionHeld: true });
+      if (input.root === "lr") return result("er", "lr", { versionHeld: true });
+      return result(`e${input.root.slice(1)}`, input.root, {
+        dispatched: true,
+      });
+    });
+    const h = harness(
+      { environments: async () => [...envs, repointed], provision, cfg },
+      [lic("n0"), lic("lr", { stage: "er" }), ...licences],
+    );
+    await h.handler.reconcileOnce();
+    const roots = provision.mock.calls.map((c) => c[0].root);
+    expect(roots).toEqual(expect.arrayContaining(["n0", "lr"]));
+    expect(roots.filter((r) => r === "l0" || r === "l1")).toHaveLength(1);
+    deferredOne(h);
+  });
+});
+
+describe("AppLicenseHandler: release work that does not settle", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("skips an app whose earlier release work is still running, and still runs afterApp", async () => {
+    vi.useFakeTimers();
+    let finish: () => void = () => {};
+    let calls = 0;
+    const afterChains = vi.fn(() => {
+      calls++;
+      return calls === 1
+        ? new Promise<void>((r) => {
+            finish = r;
+          })
+        : Promise.resolve();
+    });
+    const h = harness({
+      afterChains,
+      cfg: {
+        ...loadLicensingConfig({}),
+        enabled: true,
+        dryRun: false,
+        stepTimeoutMs: 1_000,
+      },
+    });
+    const tick = async () => {
+      const p = h.handler.reconcileOnce();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await p;
+    };
+    await tick(); // times out
+    warned(
+      h,
+      "release work of app app-1 failed: StepTimeoutError: release work of app app-1 timed out after 1000ms",
+    );
+    await tick(); // still running: skipped
+    expect(afterChains).toHaveBeenCalledTimes(1);
+    expect(h.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "release work of app app-1 from an earlier tick is still running; skipping",
+      ),
+    );
+    expect(h.deps.afterApp).toHaveBeenCalledTimes(2);
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    await tick();
+    expect(afterChains).toHaveBeenCalledTimes(2);
   });
 });

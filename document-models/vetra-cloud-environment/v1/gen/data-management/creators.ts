@@ -14,6 +14,7 @@ import {
   SetDnsRecordsInputSchema,
   SetGenericSubdomainInputSchema,
   SetLabelInputSchema,
+  SetManagedByInputSchema,
   SetOwnerInputSchema,
   SetOwnerOrgInputSchema,
   SetRuntimeConfigInputSchema,
@@ -31,6 +32,7 @@ import type {
   SetDnsRecordsInput,
   SetGenericSubdomainInput,
   SetLabelInput,
+  SetManagedByInput,
   SetOwnerInput,
   SetOwnerOrgInput,
   SetRuntimeConfigInput,
@@ -48,6 +50,7 @@ import type {
   SetDnsRecordsAction,
   SetGenericSubdomainAction,
   SetLabelAction,
+  SetManagedByAction,
   SetOwnerAction,
   SetOwnerOrgAction,
   SetRuntimeConfigAction,
@@ -189,5 +192,14 @@ export const setBackupSchedule = (input: SetBackupScheduleInput) =>
     { ...input },
     undefined,
     SetBackupScheduleInputSchema,
+    "global",
+  );
+
+export const setManagedBy = (input: SetManagedByInput) =>
+  createAction<SetManagedByAction>(
+    "SET_MANAGED_BY",
+    { ...input },
+    undefined,
+    SetManagedByInputSchema,
     "global",
   );

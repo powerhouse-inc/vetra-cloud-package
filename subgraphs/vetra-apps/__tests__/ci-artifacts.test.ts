@@ -157,3 +157,63 @@ describe("ciRecordArtifact", () => {
     ).rejects.toThrow(/channel must be/);
   });
 });
+
+describe("ciRecordArtifact under a release policy (spec 4.1)", () => {
+  const channelOf = (docs: ReturnType<typeof fakeDocs>) =>
+    docs.executed[0]!.actions.find((a) => a.type === "SET_ARTIFACT_CHANNEL")?.input as
+      | { channel: string; version: string }
+      | undefined;
+
+  it("moves STAGING instead of LATEST for a gated App's FUSION image", async () => {
+    const app = await seedActiveApp(h);
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
+    const asked: string[] = [];
+    h.deps.releasePolicy = async (id) => {
+      asked.push(id);
+      return "GATED";
+    };
+    await ciRecordArtifact(h.deps, ci(), input({ appId: app.id, channel: "LATEST" }));
+    expect(asked).toStrictEqual([app.id]);
+    expect(channelOf(docs)).toMatchObject({ channel: "STAGING", version: "1.2.3" });
+  });
+
+  it("leaves every other combination as it was", async () => {
+    const app = await seedActiveApp(h);
+    h.deps.releasePolicy = async () => "GATED";
+    for (const [over, want] of [
+      [{ channel: "DEV" }, "DEV"],
+      [{ channel: "STAGING" }, "STAGING"],
+      [{ kind: "PACKAGE", channel: "LATEST", reference: "https://registry.vetra.io/p" }, "LATEST"],
+    ] as const) {
+      const docs = fakeDocs(new Set([app.id]));
+      h.deps.docs = docs;
+      await ciRecordArtifact(h.deps, ci(), input({ appId: app.id, ...over }));
+      expect(channelOf(docs)?.channel).toBe(want);
+    }
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
+    h.deps.releasePolicy = async () => "AUTO";
+    await ciRecordArtifact(h.deps, ci(), input({ appId: app.id, channel: "LATEST" }));
+    expect(channelOf(docs)?.channel).toBe("LATEST");
+  });
+
+  it("asks for the policy only when a channel could move, and fails loudly when it cannot be read", async () => {
+    const app = await seedActiveApp(h);
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
+    let asked = 0;
+    h.deps.releasePolicy = async () => {
+      asked++;
+      throw new Error("licensing db down");
+    };
+    await ciRecordArtifact(h.deps, ci(), input({ appId: app.id }));
+    expect(asked).toBe(0);
+    docs.executed.length = 0;
+    await expect(
+      ciRecordArtifact(h.deps, ci(), input({ appId: app.id, channel: "LATEST" })),
+    ).rejects.toThrow("licensing db down");
+    expect(docs.executed).toStrictEqual([]);
+    expect(docs.created).toStrictEqual([]);
+  });
+});

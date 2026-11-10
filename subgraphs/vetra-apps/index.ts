@@ -33,6 +33,7 @@ import {
   reactorLedgerSource,
 } from "../vetra-licensing/licensing-ledger.js";
 import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
+import { releasePolicyOf } from "../vetra-licensing/rollout-db.js";
 import {
   DRIFT_INTERVAL_MS,
   reportAppDocumentDrift,
@@ -126,6 +127,24 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       }
     });
 
+    // The release policy lives beside the ledger, in the "vetra-licensing"
+    // namespace: a gated App's CI build moves STAGING, not LATEST. Opened on
+    // first use and retried after a failure, like the ledger; releasePolicyOf
+    // reads AUTO until that subgraph has created its tables.
+    let releaseDb: Promise<Kysely<VetraLicensingDB>> | null = null;
+    const releasePolicy = (appId: string) => {
+      releaseDb ??= this.relationalDb
+        .createNamespace("vetra-licensing")
+        .then((d) => d as unknown as Kysely<VetraLicensingDB>);
+      return releaseDb.then(
+        (d) => releasePolicyOf(d, appId),
+        (err: unknown) => {
+          releaseDb = null;
+          throw err;
+        },
+      );
+    };
+
     // Organisation moves of envs are announced in the observability namespace
     // (its tables are created by that subgraph; until it has booted a move
     // fails and is retried on the next read).
@@ -188,6 +207,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         appLedger,
         console,
       ),
+      releasePolicy,
     };
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     // A Studio launch/rollback is applied right after it was recorded (the

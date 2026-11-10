@@ -250,6 +250,44 @@ describe("createApp", () => {
     ).toBe("NOT_FOUND");
   });
 
+  it("refuses to attach an env managed by an app's licence template: nothing is linked", async () => {
+    await connectGithubDeploy(h.deps, owner, "code");
+    const managed = await h.envs.seedStandalone();
+    await h.envs.manage(managed);
+    const before = h.envs.executed.length;
+    const attach = createApp(h.deps, owner, {
+      name: "Shop",
+      installationId: INSTALLATION,
+      repositoryId: REPO_ID,
+      productionEnvironmentId: managed,
+    });
+    await expect(attach).rejects.toMatchObject({
+      message:
+        "Environment is managed by an app's licence template and cannot be an App's production environment",
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+    expect(h.envs.executed.slice(before)).toStrictEqual([]);
+    expect((await h.envs.getState(managed))?.app).toBeNull();
+    expect(await h.db.selectFrom("apps").select("id").execute()).toStrictEqual([]);
+  });
+
+  it("attaches an env whose document predates managedBy as before", async () => {
+    const envId = await h.envs.seedStandalone();
+    h.envs.dropManagedBy(envId);
+    await connectGithubDeploy(h.deps, owner, "code");
+    const app = await createApp(h.deps, owner, {
+      name: "Shop",
+      installationId: INSTALLATION,
+      repositoryId: REPO_ID,
+      productionEnvironmentId: envId,
+    });
+    expect(app.production_environment_id).toBe(envId);
+    expect((await h.envs.getState(envId))?.app).toMatchObject({
+      appId: app.id,
+      role: "PRODUCTION",
+    });
+  });
+
   it("makes slugs unique (-2, -3 …)", async () => {
     await seedActiveApp(h, "Shop");
     const second = await createApp(h.deps, owner, {
