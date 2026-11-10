@@ -156,6 +156,35 @@ describe("createUpdateGate", () => {
     });
   });
 
+  it("moves a customer that missed a COMPLETE rollout, recording it under that rollout", async () => {
+    await gated();
+    await promote({ apply_after: NOW });
+    expect(await store.complete("r1")).toBe(true);
+    expect(
+      await gate.admit({ row: envRow(), move: MOVE, now: LATER }),
+    ).toStrictEqual({ version: "floor", updateId: "u1" });
+    expect(await store.update("u1")).toMatchObject({
+      rollout_id: "r1",
+      status: "APPLYING",
+      due_at: NOW,
+    });
+    expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+  });
+
+  it("holds a customer whose version's only rollout was superseded, writing nothing", async () => {
+    await gated();
+    await promote({ apply_after: NOW });
+    await store.promote({
+      ...(await store.rollout("r1"))!,
+      id: "r2",
+      version: "1.2.0",
+    });
+    expect(
+      await gate.admit({ row: envRow(), move: MOVE, now: LATER }),
+    ).toStrictEqual({ version: "hold", updateId: null });
+    expect(await store.history("e1", 20)).toStrictEqual([]);
+  });
+
   it("lets a canary of a gated app through without a rollout", async () => {
     await gated();
     expect(

@@ -293,6 +293,36 @@ describe("decideRelease: GATED customers", () => {
     ).toBe("floor");
   });
 
+  it("moves a customer that missed a COMPLETE rollout at once, recording it under that rollout", () => {
+    const complete = rollout({ status: "COMPLETE", apply_after: BEFORE });
+    const d = gate({ rollout: complete });
+    expect(d).toMatchObject({
+      version: "floor",
+      updateId: "new",
+      reason: null,
+    });
+    expect(inserted(d)).toMatchObject({
+      rollout_id: "r1",
+      status: "APPLYING",
+      due_at: BEFORE,
+      started_at: NOW,
+    });
+    // Still one at a time, and its FAILED update waits for a force.
+    expect(gate({ rollout: complete, otherApplying: true })).toMatchObject({
+      version: "hold",
+      reason: "another environment of the app is updating",
+    });
+    expect(
+      gate({
+        rollout: complete,
+        existing: row({ status: "FAILED", due_at: BEFORE }),
+      }),
+    ).toMatchObject({
+      version: "hold",
+      reason: "its update to 1.1.0 is FAILED",
+    });
+  });
+
   it("holds an update the holder asked for while the rollout is paused", () => {
     expect(
       gate({

@@ -114,11 +114,11 @@ describe("rollouts", () => {
     );
     expect((await store.rollout("r1"))!.status).toBe("SUPERSEDED");
     expect((await store.rollout("other"))!.status).toBe("ACTIVE");
-    expect(await store.openRollout("a", "web", "1.2.0")).toMatchObject({
+    expect(await store.releasedRollout("a", "web", "1.2.0")).toMatchObject({
       id: "r2",
       status: "ACTIVE",
     });
-    expect(await store.openRollout("a", "web", "1.1.0")).toBeNull();
+    expect(await store.releasedRollout("a", "web", "1.1.0")).toBeNull();
     expect((await store.rolloutsOf("a")).map((r) => r.id)).toStrictEqual([
       "r2",
       "r1",
@@ -127,6 +127,32 @@ describe("rollouts", () => {
     expect(
       (await store.activeRollouts("a")).map((r) => r.id).sort(),
     ).toStrictEqual(["other", "r2"]);
+  });
+
+  it("finds the version's newest ACTIVE, PAUSED or COMPLETE rollout, never a SUPERSEDED one", async () => {
+    await store.promote(rollout({ id: "r1" }));
+    expect(await store.complete("r1")).toBe(true);
+    expect((await store.releasedRollout("a", "web", "1.1.0"))!.id).toBe("r1");
+    // Promoted again: the newer one, whatever its status.
+    await store.promote(rollout({ id: "r2", promoted_at: T1 }));
+    expect((await store.releasedRollout("a", "web", "1.1.0"))!.id).toBe("r2");
+    expect(await store.pause("r2", "e1 failed", T1)).toBe(true);
+    expect(await store.releasedRollout("a", "web", "1.1.0")).toMatchObject({
+      id: "r2",
+      status: "PAUSED",
+    });
+    // A newer version supersedes r2; the COMPLETE r1 stays released.
+    await store.promote(
+      rollout({ id: "r3", version: "1.2.0", promoted_at: T1 }),
+    );
+    expect((await store.releasedRollout("a", "web", "1.1.0"))!.id).toBe("r1");
+    await db
+      .updateTable("app_rollouts")
+      .set({ status: "SUPERSEDED" })
+      .where("id", "=", "r1")
+      .execute();
+    expect(await store.releasedRollout("a", "web", "1.1.0")).toBeNull();
+    expect(await store.releasedRollout("a", "api", "1.2.0")).toBeNull();
   });
 
   it("pauses only an ACTIVE rollout, and resume returns its FAILED updates to PENDING", async () => {
@@ -195,7 +221,7 @@ describe("rollouts", () => {
       .values([rollout({ id: "r1" }), rollout({ id: "r2" })])
       .execute();
     await store.promote(rollout({ id: "r0", artifact_name: "api" }));
-    expect((await store.openRollout("a", "web", "1.1.0"))!.id).toBe("r2");
+    expect((await store.releasedRollout("a", "web", "1.1.0"))!.id).toBe("r2");
     expect((await store.activeRollouts("a")).map((r) => r.id)).toStrictEqual([
       "r2",
       "r1",

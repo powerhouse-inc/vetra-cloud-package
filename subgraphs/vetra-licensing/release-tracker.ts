@@ -27,7 +27,8 @@ export interface ReleaseTrackerDeps {
  * its template (an environment the keeper has not visited since the
  * promotion has no update yet, but is behind). One the keeper cannot
  * provision now (no document, or asleep or going away) does not hold it
- * open.
+ * open: it catches up under the COMPLETE rollout once it can be moved, and
+ * should that late update fail it pauses nothing.
  *
  * A resumed update whose environment already runs its version (its
  * deployment failed after the version was set: phase 1 does not revert) is

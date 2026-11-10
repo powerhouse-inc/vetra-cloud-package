@@ -61,7 +61,7 @@ export function createUpdateGate(deps: {
           const rolledOut = policy === "GATED" && !canary;
           const rollout =
             rolledOut && move.artifactName
-              ? await q.openRollout(row.app_id, move.artifactName, move.to)
+              ? await q.releasedRollout(row.app_id, move.artifactName, move.to)
               : null;
           const existing = rolledOut
             ? rollout

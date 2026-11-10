@@ -161,8 +161,12 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .where("id", "=", id)
         .executeTakeFirst()
         .then((r) => r ?? null),
-    /** The artifact's ACTIVE or PAUSED rollout of `version`, or null. */
-    openRollout: (
+    /**
+     * The artifact's newest rollout of `version` that is ACTIVE, PAUSED or
+     * COMPLETE (never SUPERSEDED), or null: the release a gated customer
+     * moving to `version` belongs to.
+     */
+    releasedRollout: (
       appId: string,
       artifactName: string,
       version: string,
@@ -173,7 +177,7 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         .where("app_id", "=", appId)
         .where("artifact_name", "=", artifactName)
         .where("version", "=", version)
-        .where("status", "in", ["ACTIVE", "PAUSED"])
+        .where("status", "in", ["ACTIVE", "PAUSED", "COMPLETE"])
         .orderBy("promoted_at", "desc")
         .orderBy("id", "desc")
         .executeTakeFirst()

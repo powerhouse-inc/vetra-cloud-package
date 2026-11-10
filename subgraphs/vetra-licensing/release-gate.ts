@@ -11,7 +11,10 @@ export interface GateInput {
   /** The environment resolves on a channel override (a canary): no rollout gates it. */
   canary: boolean;
   move: FusionMove;
-  /** GATED, not a canary: the ACTIVE or PAUSED rollout of move.to; null when it was never promoted. */
+  /**
+   * GATED, not a canary: the newest ACTIVE, PAUSED or COMPLETE rollout of
+   * move.to; null when it was never promoted (or only superseded).
+   */
   rollout: AppRollouts | null;
   /**
    * This environment's row for this move: its row of `rollout`, or (canary,
@@ -69,9 +72,10 @@ const earlier = (a: string, b: string | null): string => {
  *
  * AUTO (the default) always moves, as the floor did before; it only records
  * an update, created APPLYING. GATED moves a customer only when its update is
- * PENDING and due (requested, or past due_at), its rollout ACTIVE and no
+ * PENDING and due (requested, or past due_at), its rollout not PAUSED and no
  * other update of the app APPLYING; a canary needs no rollout and is due at
- * once. A version the floor cannot order (stranded) waits for the
+ * once. A COMPLETE rollout still releases its version: a customer that
+ * missed it (asleep, say) catches up under it, due at once. A version the floor cannot order (stranded) waits for the
  * publisher's force under either policy, its update carrying the error. A
  * forced update skips the deadline, the pause and the stranded hold, never
  * the one-at-a-time rule. A new version supersedes a PENDING update of an
@@ -127,7 +131,7 @@ export function decideRelease(i: GateInput): GateDecision {
     const requested = pending !== null && pending.requested_at !== null;
     // The pause first: an "update now" is refused while paused, so a
     // deadline would mislead.
-    if (rolledOut && !forced && i.rollout?.status !== "ACTIVE")
+    if (rolledOut && !forced && i.rollout?.status === "PAUSED")
       reason = "its rollout is paused";
     else if (rolledOut && !forced && !requested && !isDue(dueAt, i.now))
       reason = `due at ${dueAt}`;

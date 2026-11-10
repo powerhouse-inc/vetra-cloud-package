@@ -206,6 +206,22 @@ describe("trackReleases", () => {
     );
   });
 
+  it("fails a late update of a COMPLETE rollout without pausing it, and does not claim it did", async () => {
+    await store.promote(rollout({ status: "COMPLETE" }));
+    await store.insertUpdate(update());
+    states.set("e1", { status: "DEPLOYMENt_FAILED", version: "1.1.0" });
+    await trackReleases(deps, APP, [envRow()]);
+    expect(await store.update("u1")).toMatchObject({
+      status: "FAILED",
+      error: "the deployment of 1.1.0 failed",
+    });
+    expect((await store.rollout("r1"))!.status).toBe("COMPLETE");
+    expect(deps.logger.warn).toHaveBeenCalledOnce();
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "[licensing] update of environment e1 to FUSION 1.1.0 failed: the deployment of 1.1.0 failed",
+    );
+  });
+
   it("fails an update that is not READY within the timeout", async () => {
     await store.insertUpdate(update({ rollout_id: null }));
     states.set("e1", { status: "DEPLOYING", version: "1.1.0" });
