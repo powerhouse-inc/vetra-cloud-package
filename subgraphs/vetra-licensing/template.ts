@@ -485,6 +485,51 @@ export function isFusionStranded(
   return !recorded.includes(current) && recorded.includes(wanted);
 }
 
+/**
+ * What the floor does with a live environment's FUSION version (spec 4.3):
+ * "floor" moves it only up (isFusionUpgrade); "hold" leaves it (a gated
+ * update not yet due); "force" also sets a version the floor cannot order
+ * (isFusionStranded; the publisher's forceEnvironmentUpdate), but never one
+ * provably older than the current.
+ */
+export type FusionVersionMode = "floor" | "hold" | "force";
+
+/** A FUSION version move the floor would make on a live environment (fusionMoveOf). */
+export interface FusionMove {
+  /** The app artifact the template's FUSION service runs. */
+  artifactName: string | null;
+  from: string;
+  to: string;
+  /** The record lists `to` but not `from`: the floor cannot prove `from` older (isFusionStranded). */
+  stranded: boolean;
+}
+
+/**
+ * The FUSION version move the floor would make, or null when it moves none:
+ * the template runs no FUSION, the service has no version yet (the floor
+ * sets one; nothing is updated), the version is current, or it is newer or
+ * cannot be ordered at all. Pure; the template must validate.
+ */
+export function fusionMoveOf(
+  template: TemplateShape,
+  current: VetraCloudEnvironmentState,
+  fusionVersions?: readonly string[],
+): FusionMove | null {
+  const wanted = validateTemplate(template).services.find(
+    (s) => s.type === "FUSION",
+  )?.version;
+  const from =
+    current.services.find((s) => s.type === "FUSION")?.version ?? null;
+  if (!wanted || from === null) return null;
+  const artifactName =
+    template.services.find((s) => s.type === "FUSION")?.artifactName ?? null;
+  if (isFusionUpgrade(from, wanted, fusionVersions))
+    return { artifactName, from, to: wanted, stranded: false };
+  if (isFusionStranded(from, wanted, fusionVersions))
+    return { artifactName, from, to: wanted, stranded: true };
+  return null;
+}
+
 export interface FloorUpdateRenderInput {
   template: TemplateShape;
   /** The environment's current global state, as EnvGateway.getState returns it. */
@@ -503,6 +548,8 @@ export interface FloorUpdateRenderInput {
    * wanted version but not the current one (see isFusionStranded).
    */
   onFusionHeld?: (held: { current: string; wanted: string }) => void;
+  /** What to do with the FUSION version (FusionVersionMode); default "floor". */
+  fusionVersion?: FusionVersionMode;
 }
 
 /**
@@ -532,6 +579,7 @@ function floorFusionActions(
   includedKey: boolean,
   fusionVersions: readonly string[] | undefined,
   onFusionHeld: FloorUpdateRenderInput["onFusionHeld"],
+  mode: FusionVersionMode,
 ): Action[] {
   const { repository, version } = s;
   const actions: Action[] = [];
@@ -554,9 +602,23 @@ function floorFusionActions(
     );
   }
   const currentVersion = have?.version ?? null;
-  if (currentVersion === null || isFusionUpgrade(currentVersion, version, fusionVersions)) {
+  if (currentVersion === null) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
-  } else if (isFusionStranded(currentVersion, version, fusionVersions)) {
+  } else if (
+    mode !== "hold" &&
+    isFusionUpgrade(currentVersion, version, fusionVersions)
+  ) {
+    actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (
+    mode === "force" &&
+    currentVersion !== version &&
+    !isFusionUpgrade(version, currentVersion, fusionVersions)
+  ) {
+    actions.push(setServiceVersion({ type: "FUSION", version }));
+  } else if (
+    mode === "floor" &&
+    isFusionStranded(currentVersion, version, fusionVersions)
+  ) {
     onFusionHeld?.({ current: currentVersion, wanted: version });
   }
   return actions;
@@ -588,6 +650,7 @@ export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[
           input.includedKey === true,
           input.fusionVersions,
           input.onFusionHeld,
+          input.fusionVersion ?? "floor",
         ),
       );
     }
