@@ -36,7 +36,7 @@ async function readEnvironment(
     return state;
   } catch (err) {
     const message = `[licensing] reading environment ${environmentId} of app ${appId} failed; tracking it as not observed: ${String(err)}`;
-    if (!logged) readFailures.set(deps, (logged = new Map()));
+    if (!logged) readFailures.set(deps, (logged = new Map<string, string>()));
     if (logged.get(environmentId) !== message) {
       logged.set(environmentId, message);
       deps.logger.warn(message);
