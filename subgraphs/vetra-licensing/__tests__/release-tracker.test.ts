@@ -441,6 +441,67 @@ describe("trackReleases: open updates of environments that are no longer live", 
   });
 });
 
+describe("trackReleases: an environment document it cannot read", () => {
+  const failing = new Set<string>();
+  beforeEach(() => {
+    failing.clear();
+    const read = deps.envState;
+    deps.envState = (id) =>
+      failing.has(id)
+        ? Promise.reject(new Error(`read of ${id} failed`))
+        : read(id);
+  });
+  const readFailed = (id: string) =>
+    `[licensing] reading environment ${id} of app a failed; tracking it as not observed: Error: read of ${id} failed`;
+
+  it("is not observed: the update still times out, and the next environment is tracked", async () => {
+    await store.insertUpdate(update({ rollout_id: null }));
+    await store.insertUpdate(
+      update({ id: "u2", environment_id: "e2", rollout_id: null }),
+    );
+    // u2 is read first (newest first: the id breaks the tie).
+    failing.add("e2");
+    states.set("e1", { status: "READY", version: "1.1.0" });
+    const rows = [
+      envRow(),
+      envRow({ environment_id: "e2", root_license_id: "l2" }),
+    ];
+    await trackReleases(deps, APP, rows);
+    expect((await store.update("u2"))!.status).toBe("APPLYING");
+    expect((await store.update("u1"))!.status).toBe("SUCCEEDED");
+    clock = LATE;
+    await trackReleases(deps, APP, rows);
+    expect(await store.update("u2")).toMatchObject({
+      status: "FAILED",
+      error: "not READY on 1.1.0 within 20 minutes",
+    });
+  });
+
+  it("skips a PENDING update it cannot read", async () => {
+    await store.insertUpdate(
+      update({ status: "PENDING", started_at: null, rollout_id: null }),
+    );
+    failing.add("e1");
+    await trackReleases(deps, APP, [envRow()]);
+    expect((await store.update("u1"))!.status).toBe("PENDING");
+  });
+
+  it("logs a failure once per environment and message, again once it was read in between", async () => {
+    await store.insertUpdate(update({ rollout_id: null }));
+    states.set("e1", { status: "DEPLOYING", version: "1.1.0" });
+    failing.add("e1");
+    await trackReleases(deps, APP, [envRow()]);
+    await trackReleases(deps, APP, [envRow()]);
+    expect(deps.logger.warn).toHaveBeenCalledOnce();
+    expect(deps.logger.warn).toHaveBeenCalledWith(readFailed("e1"));
+    failing.delete("e1");
+    await trackReleases(deps, APP, [envRow()]);
+    failing.add("e1");
+    await trackReleases(deps, APP, [envRow()]);
+    expect(deps.logger.warn).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("trackReleases: another writer moved the row first", () => {
   // The real store, with one write reporting that it moved nothing (the gate
   // released or superseded the row, or an overlapping run settled it).

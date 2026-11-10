@@ -15,6 +15,53 @@ export interface ReleaseTrackerDeps {
   now(): string;
 }
 
+/** Per tracker (its deps): environment id -> the read failure last logged for it. */
+const readFailures = new WeakMap<ReleaseTrackerDeps, Map<string, string>>();
+
+/**
+ * The environment's document, or null when it is missing or cannot be read:
+ * an update is then not observed (it times out as usual) and the tracking
+ * goes on with the next one. A failure is logged once per environment and
+ * message, until a read of that environment succeeds.
+ */
+async function readEnvironment(
+  deps: ReleaseTrackerDeps,
+  appId: string,
+  environmentId: string,
+): Promise<VetraCloudEnvironmentState | null> {
+  let logged = readFailures.get(deps);
+  try {
+    const state = await deps.envState(environmentId);
+    logged?.delete(environmentId);
+    return state;
+  } catch (err) {
+    const message = `[licensing] reading environment ${environmentId} of app ${appId} failed; tracking it as not observed: ${String(err)}`;
+    if (!logged) readFailures.set(deps, (logged = new Map()));
+    if (logged.get(environmentId) !== message) {
+      logged.set(environmentId, message);
+      deps.logger.warn(message);
+    }
+    return null;
+  }
+}
+
+/**
+ * Whether the keeper could move any of these environments now: one whose
+ * document is missing, or whose status provisionChain refuses (asleep,
+ * going away), is not waited for.
+ */
+async function anyProvisionable(
+  deps: ReleaseTrackerDeps,
+  appId: string,
+  rows: LicenseEnvironments[],
+): Promise<boolean> {
+  for (const r of rows) {
+    const state = await readEnvironment(deps, appId, r.environment_id);
+    if (state && !NOT_APPLICABLE.has(state.status)) return true;
+  }
+  return false;
+}
+
 /**
  * The handler's afterChains release work for one app (spec 4.3). `rows` must
  * be ALL of the app's license_environments rows (the handler's full `forApp`
@@ -36,26 +83,13 @@ export interface ReleaseTrackerDeps {
  * never moved again, as its environment meets the template; it succeeds once
  * that environment is READY again.
  *
+ * An environment document that cannot be read counts as not observed
+ * (readEnvironment): it never stops the rest of the app's tracking.
+ *
  * A row leaves SUCCEEDED with no error (a stranded one it carried while it
  * waited included). Only the run whose write moved a row logs it, or pauses
  * its rollout: another writer may have moved it first.
  */
-/**
- * Whether the keeper could move any of these environments now: one whose
- * document is missing, or whose status provisionChain refuses (asleep,
- * going away), is not waited for.
- */
-async function anyProvisionable(
-  deps: ReleaseTrackerDeps,
-  rows: LicenseEnvironments[],
-): Promise<boolean> {
-  for (const r of rows) {
-    const state = await deps.envState(r.environment_id);
-    if (state && !NOT_APPLICABLE.has(state.status)) return true;
-  }
-  return false;
-}
-
 export async function trackReleases(
   deps: ReleaseTrackerDeps,
   app: AppDocView,
@@ -84,7 +118,7 @@ export async function trackReleases(
   for (const u of applying.filter(isLive)) {
     const outcome = updateOutcome(
       u,
-      observe(await deps.envState(u.environment_id)),
+      observe(await readEnvironment(deps, app.id, u.environment_id)),
       now,
       deps.cfg.updateTimeoutMs,
     );
@@ -135,7 +169,7 @@ export async function trackReleases(
   // Read before the APPLYING loop, which moves no PENDING row.
   for (const u of pending) {
     if (!met.has(u.environment_id)) continue;
-    const env = observe(await deps.envState(u.environment_id));
+    const env = observe(await readEnvironment(deps, app.id, u.environment_id));
     if (env?.fusionVersion !== u.to_version || env.status !== "READY") continue;
     if (
       !(await deps.store.finishUpdate(u.id, "SUCCEEDED", null, now, "PENDING"))
@@ -160,7 +194,8 @@ export async function trackReleases(
       ?.channels.find((c) => c.channel === "LATEST")?.version;
     if (latest !== r.version || (await deps.store.openCount(r.id)) > 0)
       continue;
-    if (await (waitsForBehind ??= anyProvisionable(deps, behind))) continue;
+    if (await (waitsForBehind ??= anyProvisionable(deps, app.id, behind)))
+      continue;
     if (!(await deps.store.complete(r.id))) continue;
     deps.logger.info(
       `[licensing] rollout ${r.id} of app ${app.id} (${r.artifact_name} ${r.version}) is complete`,

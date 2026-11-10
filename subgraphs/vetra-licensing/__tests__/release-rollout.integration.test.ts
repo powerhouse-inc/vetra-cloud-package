@@ -165,8 +165,10 @@ describe("app release rollout against a real reactor + real database", () => {
       sink.push(m);
     },
   });
-  /** Set for one tick: the tracker's reads of the environment documents fail. */
+  /** Set for some ticks: the tracker's reads of the environment documents fail. */
   let envReadsFail = false;
+  /** Set for one tick: the tracker's reads of the APPLYING updates fail. */
+  let rolloutStoreFails = false;
   /** CI, as the vetra-apps routes authenticate it: the App's identity, acting for its owner. */
   let appsDeps: AppsDeps;
   const ci: CiIdentity = {
@@ -370,7 +372,13 @@ describe("app release rollout against a real reactor + real database", () => {
       logger: into(logged.managedBy),
     });
     const releaseTracking: ReleaseTrackerDeps = {
-      store: rollouts,
+      store: {
+        ...rollouts,
+        applyingOf: (appId) =>
+          rolloutStoreFails
+            ? Promise.reject(new Error("rollout store down"))
+            : rollouts.applyingOf(appId),
+      },
       envState: (id) =>
         envReadsFail
           ? Promise.reject(new Error("environment document read failed"))
@@ -568,14 +576,28 @@ describe("app release rollout against a real reactor + real database", () => {
     expect(await rollouts.rolloutsOf(APP)).toStrictEqual([]);
   });
 
-  it("a release step that fails does not stop the other, and is logged once", async () => {
+  it("an environment document the tracker cannot read is logged once, and fails nothing", async () => {
     const canary = envOf[did(PUBLISHER)]!;
     await deploy(canary);
-    // A holder joins on the tick the tracker cannot read the environment documents.
-    await issue(LEAVER);
     envReadsFail = true;
     await tick();
+    await tick();
     envReadsFail = false;
+    // Not observed: still applying (within its timeout), and no release step failed.
+    expect(await latestUpdate(canary)).toMatchObject({ status: "APPLYING" });
+    expect(logged.tracker).toStrictEqual([
+      `[licensing] reading environment ${canary} of app ${APP} failed; tracking it as not observed: Error: environment document read failed`,
+    ]);
+    expect(logged.handler).toStrictEqual([]);
+  });
+
+  it("a release step that fails does not stop the other, and is logged once", async () => {
+    const canary = envOf[did(PUBLISHER)]!;
+    // A holder joins on the tick the tracker's store fails.
+    await issue(LEAVER);
+    rolloutStoreFails = true;
+    await tick();
+    rolloutStoreFails = false;
     const joined = (await rows()).find((r) => r.user_did === did(LEAVER))!;
     envOf[did(LEAVER)] = joined.environment_id;
     // The tracker failed: the canary's update is not settled yet...
@@ -585,7 +607,7 @@ describe("app release rollout against a real reactor + real database", () => {
       (await envs.getState(joined.environment_id))!.managedBy,
     ).toMatchObject({ appId: APP, templateId: "host", services: ["FUSION"] });
     expect(logged.handler).toStrictEqual([
-      `[licensing] release work of app ${APP} failed: Error: environment document read failed`,
+      `[licensing] release work of app ${APP} failed: Error: rollout store down`,
     ]);
     await tick();
     expect(await latestUpdate(canary)).toMatchObject({ status: "SUCCEEDED" });
@@ -772,14 +794,16 @@ describe("app release rollout against a real reactor + real database", () => {
     expect(await fusionVersion(envOf[did(LEAVER)]!)).toBe("1.0.0");
     expect((await rollouts.rollout(rollout!.id))!.status).toBe("COMPLETE");
     // Everything logged at warn over the whole run: the one failed release
-    // step, and the failed update with the pause it caused. No version was
-    // stranded, so the gate held nothing with an error.
+    // step, the unreadable document, and the failed update with the pause
+    // it caused. No version was stranded, so the gate held nothing with an
+    // error.
     expect(logged).toStrictEqual({
       handler: [
-        `[licensing] release work of app ${APP} failed: Error: environment document read failed`,
+        `[licensing] release work of app ${APP} failed: Error: rollout store down`,
       ],
       gate: [],
       tracker: [
+        `[licensing] reading environment ${envOf[did(PUBLISHER)]} of app ${APP} failed; tracking it as not observed: Error: environment document read failed`,
         `[licensing] update of environment ${one} to FUSION 1.1.0 failed: the deployment of 1.1.0 failed`,
         `[licensing] rollout ${rollout!.id} of app ${APP} is paused until the publisher resumes it`,
       ],
