@@ -201,7 +201,8 @@ export async function setReleasePolicy(
         );
       }
     }
-    await deps.store.saveSettings(next, deps.now());
+    // Canaries first, AUTO last: an unmark that fails partway leaves the
+    // app GATED, so a retry of the same call finishes the job.
     if (leaving) {
       for (const row of await deps.envRows.forApp(input.appId)) {
         if (!isCanary(row)) continue;
@@ -211,6 +212,7 @@ export async function setReleasePolicy(
         });
       }
     }
+    await deps.store.saveSettings(next, deps.now());
     return next;
   });
   kick(deps);

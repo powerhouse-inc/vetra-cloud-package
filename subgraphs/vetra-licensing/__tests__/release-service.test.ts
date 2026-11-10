@@ -626,6 +626,47 @@ describe("leaving gating", () => {
     expect((await deps.store.settings("a")).policy).toBe("AUTO");
   });
 
+  it("stays GATED when an unmark fails partway, and a retry finishes it", async () => {
+    await publisherEnv("mine2");
+    await gate();
+    await setCanaryEnvironment(deps, {
+      appId: "a",
+      environmentId: "mine2",
+      canary: true,
+      callerDid: PUBLISHER,
+    });
+    const rows = deps.envRows;
+    let unmarks = 0;
+    deps = {
+      ...deps,
+      envRows: {
+        ...rows,
+        update: async (id, patch) => {
+          if (patch.channel_override === null && ++unmarks === 2)
+            throw new Error("database down");
+          return rows.update(id, patch);
+        },
+      },
+    };
+    await expect(
+      setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ).rejects.toThrow("database down");
+    expect((await deps.store.settings("a")).policy).toBe("GATED");
+    expect(
+      [await canaryOf("mine"), await canaryOf("mine2")].filter(
+        (c) => c !== null,
+      ),
+    ).toHaveLength(1);
+    expect(
+      await setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ).toMatchObject({ policy: "AUTO" });
+    expect([await canaryOf("mine"), await canaryOf("mine2")]).toStrictEqual([
+      null,
+      null,
+    ]);
+    expect((await deps.store.settings("a")).policy).toBe("AUTO");
+  });
+
   it("AUTO to AUTO touches nothing but the notice", async () => {
     await markCanary();
     written.length = 0;
