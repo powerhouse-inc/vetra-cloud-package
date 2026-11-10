@@ -26,6 +26,14 @@ import {
 import { documentModels } from "../../../document-models/document-models.js";
 import { createReactorAppDocStore } from "../../vetra-apps/app-doc-store.js";
 import { createReactorEnvGateway } from "../../vetra-apps/envs.js";
+import { loadAppsConfig } from "../../vetra-apps/config.js";
+import { up as upApps } from "../../vetra-apps/db/migrations.js";
+import type { VetraAppsDB } from "../../vetra-apps/db/schema.js";
+import {
+  ciRecordArtifact,
+  type AppsDeps,
+  type CiIdentity,
+} from "../../vetra-apps/service.js";
 import { generateSubdomain } from "../../../shared/subdomain-generator.js";
 import { up } from "../db/migrations.js";
 import type { VetraLicensingDB } from "../db/schema.js";
@@ -51,7 +59,7 @@ import { AppLicenseHandler } from "../handler.js";
 import { createLifecycleStore } from "../lifecycle.js";
 import { markEnded, type OffboardingDeps } from "../offboarding.js";
 import { createWarmPoolStore } from "../warm-pool-db.js";
-import { createRolloutStore } from "../rollout-db.js";
+import { createRolloutStore, releasePolicyOf } from "../rollout-db.js";
 import { activeUpdateGate, createUpdateGate } from "../update-gate.js";
 import { trackReleases, type ReleaseTrackerDeps } from "../release-tracker.js";
 import { createManagedBySync } from "../managed-by.js";
@@ -70,12 +78,24 @@ import {
 
 /**
  * The release rollout end to end (spec 2026-11-10 §9): a real reactor, real
- * environment and app documents, the production handler wiring (update gate,
- * release tracking and the managed-by marker through runAll, as index.ts
- * wires them with the keeper applying) and the release operations. Only
- * gitops and ArgoCD are played by the test (deploy / fail below).
+ * environment and app documents, CI's artifact recording (ciRecordArtifact
+ * with the release policy, as vetra-apps/index.ts wires it), the handler
+ * wired as vetra-licensing/index.ts wires it with the keeper applying (the
+ * update gate; release tracking and the managed-by marker through runAll;
+ * markEnded on a chain's end) and the release operations. Only gitops and
+ * ArgoCD are played by the test (deploy / fail below).
+ *
+ * Not proven here, because it differs from vetra-licensing/index.ts:
+ * provision and onEnded run without the chain lock (provisionChain, not
+ * provisionChainExclusive; no underChainOf); onResumed and afterApp
+ * (offboarding, reporting tokens) are no-ops; there is no warm pool; the
+ * release mutations are called on the service directly, not through the
+ * vetraReleases resolvers (only the publisher's read goes through the
+ * resolver map); publisher auth has no Renown organisation lookups.
  */
 const APP = "5d2c1b7a-5d4f-4e6a-8b9c-0d1e2f3a4b6d";
+/** The App's CI workload identity (its apps row's identity_did). */
+const APP_DID = "did:key:zDnaeWebIdentity";
 const PUBLISHER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CUSTOMER_1 = "0x1111111111111111111111111111111111111111";
 const CUSTOMER_2 = "0x2222222222222222222222222222222222222222";
@@ -129,10 +149,32 @@ describe("app release rollout against a real reactor + real database", () => {
   let clock = T0;
   const now = () => new Date(clock).toISOString();
   const envOf: Record<string, string> = {};
-  /** What the handler logs at warn (and error) level. */
-  const handlerWarnings: string[] = [];
-  /** Set for one tick: the tracker's environment reads fail. */
-  let observabilityDown = false;
+  /** What each piece logs at warn (and error) level. */
+  const logged = {
+    handler: [] as string[],
+    gate: [] as string[],
+    tracker: [] as string[],
+    managedBy: [] as string[],
+  };
+  const into = (sink: string[]) => ({
+    info: () => {},
+    warn: (m: string) => {
+      sink.push(m);
+    },
+    error: (m: string) => {
+      sink.push(m);
+    },
+  });
+  /** Set for one tick: the tracker's reads of the environment documents fail. */
+  let envReadsFail = false;
+  /** CI, as the vetra-apps routes authenticate it: the App's identity, acting for its owner. */
+  let appsDeps: AppsDeps;
+  const ci: CiIdentity = {
+    address: PUBLISHER,
+    chainId: 1,
+    appDid: APP_DID,
+    claim: null,
+  };
 
   const rows = () =>
     db.selectFrom("license_environments").selectAll().execute();
@@ -166,24 +208,20 @@ describe("app release rollout against a real reactor + real database", () => {
       label: holder.slice(0, 6),
       now: now(),
     });
-  const publish = (version: string, channel: "STAGING" | "LATEST") =>
-    appDocs.execute(APP, [
-      appActions.recordArtifactVersion({
-        kind: "FUSION_IMAGE",
-        name: "web",
-        version,
-        reference: ref(version),
-        commitSha: null,
-        runId: null,
-        publishedAt: now(),
-      }),
-      appActions.setArtifactChannel({
-        kind: "FUSION_IMAGE",
-        name: "web",
-        channel,
-        version,
-      }),
-    ]);
+  /** A FUSION build CI records, pointing `channel` at it (none: only recorded). */
+  const publish = (version: string, channel?: "LATEST") =>
+    ciRecordArtifact(appsDeps, ci, {
+      appId: APP,
+      kind: "FUSION_IMAGE",
+      name: "web",
+      version,
+      reference: ref(version),
+      ...(channel ? { channel } : {}),
+    });
+  const channelOf = async (channel: string) =>
+    (await service.apps.app(APP))!.artifacts
+      .find((a) => a.name === "web")!
+      .channels.find((c) => c.channel === channel)?.version ?? null;
 
   beforeAll(async () => {
     client = await new ReactorClientBuilder()
@@ -227,6 +265,56 @@ describe("app release rollout against a real reactor + real database", () => {
       }),
       appActions.publishTerm({ id: "k" }),
     ]);
+    // The vetra-apps side: the App's row (ownership and CI identity) and
+    // the release policy read from this database, as vetra-apps/index.ts.
+    const appsDb = new Kysely<VetraAppsDB>({
+      dialect: new PGliteDialect(new PGlite()),
+    });
+    await upApps(appsDb as Kysely<any>);
+    await appsDb
+      .insertInto("apps")
+      .values({
+        id: APP,
+        slug: "web",
+        name: "Web",
+        owner_address: PUBLISHER,
+        owner_chain_id: 1,
+        status: "ACTIVE",
+        installation_id: "77",
+        repository_id: "4242",
+        repository_full_name: "acme/web",
+        production_branch: "main",
+        production_environment_id: "env-web",
+        previews_enabled: false,
+        preview_limit: 0,
+        preview_ttl_days: 7,
+        harbor_project: "acme",
+        harbor_robot_name: "robot$acme",
+        harbor_robot_id: null,
+        harbor_robot_secret_enc: "unused",
+        identity_did: APP_DID,
+        identity_expires_at: null,
+        owner_org_id: null,
+        studio_environment_id: null,
+        created_at: now(),
+        updated_at: now(),
+      })
+      .execute();
+    envs = createReactorEnvGateway(client as never);
+    appsDeps = {
+      db: appsDb,
+      envs,
+      cfg: loadAppsConfig({}),
+      github: null,
+      harbor: null,
+      renown: null,
+      generateSubdomain,
+      now: () => new Date(clock),
+      newId: () => randomUUID(),
+      logger: into([]),
+      docs: appDocs,
+      releasePolicy: (id) => releasePolicyOf(db, id),
+    };
     await publish("1.0.0", "LATEST");
 
     const appReads = createAppReads(client as never, {
@@ -243,7 +331,6 @@ describe("app release rollout against a real reactor + real database", () => {
       lifecycle,
     });
     const grants = createGrantStore(db);
-    envs = createReactorEnvGateway(client as never);
     const cfg = {
       ...loadLicensingConfig({}),
       enabled: true,
@@ -255,7 +342,7 @@ describe("app release rollout against a real reactor + real database", () => {
     const silent = { info: () => {}, warn: () => {}, error: () => {} };
     const updates = activeUpdateGate(
       cfg,
-      createUpdateGate({ store: rollouts, logger: silent }),
+      createUpdateGate({ store: rollouts, logger: into(logged.gate) }),
     );
     expect(updates).toBeDefined();
     const chainEnvDeps: ChainEnvDeps = {
@@ -278,15 +365,18 @@ describe("app release rollout against a real reactor + real database", () => {
       logger: silent,
       now,
     };
-    const markManaged = createManagedBySync({ envs, logger: silent });
+    const markManaged = createManagedBySync({
+      envs,
+      logger: into(logged.managedBy),
+    });
     const releaseTracking: ReleaseTrackerDeps = {
       store: rollouts,
       envState: (id) =>
-        observabilityDown
-          ? Promise.reject(new Error("observability unreachable"))
+        envReadsFail
+          ? Promise.reject(new Error("environment document read failed"))
           : envs.getState(id),
       cfg,
-      logger: silent,
+      logger: into(logged.tracker),
       now,
     };
     handler = new AppLicenseHandler({
@@ -311,15 +401,7 @@ describe("app release rollout against a real reactor + real database", () => {
       afterApp: async () => {},
       migrationComplete: async () => true,
       cfg,
-      logger: {
-        info: () => {},
-        warn: (m: string) => {
-          handlerWarnings.push(m);
-        },
-        error: (m: string) => {
-          handlerWarnings.push(m);
-        },
-      },
+      logger: into(logged.handler),
       now,
     });
     const appWriter = createAppLicensingWriter({
@@ -459,7 +541,10 @@ describe("app release rollout against a real reactor + real database", () => {
   });
 
   it("a release goes to the canary first, and no further", async () => {
-    await publish("1.1.0", "STAGING");
+    // CI aims the build at LATEST; the app is gated, so it lands on STAGING.
+    await publish("1.1.0", "LATEST");
+    expect(await channelOf("STAGING")).toBe("1.1.0");
+    expect(await channelOf("LATEST")).toBe("1.0.0");
     await tick();
     const canary = envOf[did(PUBLISHER)]!;
     expect(await fusionVersion(canary)).toBe("1.1.0");
@@ -470,16 +555,27 @@ describe("app release rollout against a real reactor + real database", () => {
     });
     for (const c of [CUSTOMER_1, CUSTOMER_2, CUSTOMER_3])
       expect(await fusionVersion(envOf[did(c)]!)).toBe("1.0.0");
+    // Not promotable while the canary is not READY on it.
+    await expect(
+      promoteRelease(service, {
+        appId: APP,
+        artifactName: "web",
+        version: "1.1.0",
+        promotedBy: PUBLISHER,
+      }),
+    ).rejects.toThrow("no canary environment of this app is READY on 1.1.0");
+    expect(await channelOf("LATEST")).toBe("1.0.0");
+    expect(await rollouts.rolloutsOf(APP)).toStrictEqual([]);
   });
 
   it("a release step that fails does not stop the other, and is logged once", async () => {
     const canary = envOf[did(PUBLISHER)]!;
     await deploy(canary);
-    // A holder joins on the tick the tracker cannot read the environments.
+    // A holder joins on the tick the tracker cannot read the environment documents.
     await issue(LEAVER);
-    observabilityDown = true;
+    envReadsFail = true;
     await tick();
-    observabilityDown = false;
+    envReadsFail = false;
     const joined = (await rows()).find((r) => r.user_did === did(LEAVER))!;
     envOf[did(LEAVER)] = joined.environment_id;
     // The tracker failed: the canary's update is not settled yet...
@@ -488,14 +584,29 @@ describe("app release rollout against a real reactor + real database", () => {
     expect(
       (await envs.getState(joined.environment_id))!.managedBy,
     ).toMatchObject({ appId: APP, templateId: "host", services: ["FUSION"] });
-    expect(handlerWarnings).toStrictEqual([
-      `[licensing] release work of app ${APP} failed: Error: observability unreachable`,
+    expect(logged.handler).toStrictEqual([
+      `[licensing] release work of app ${APP} failed: Error: environment document read failed`,
     ]);
     await tick();
     expect(await latestUpdate(canary)).toMatchObject({ status: "SUCCEEDED" });
-    expect(handlerWarnings).toHaveLength(1);
+    expect(logged.handler).toHaveLength(1);
     await deploy(joined.environment_id);
     expect(await fusionVersion(joined.environment_id)).toBe("1.0.0");
+  });
+
+  it("only a version a canary is READY on can be promoted", async () => {
+    // A newer build CI recorded without moving a channel: no canary runs it.
+    await publish("1.2.0");
+    await expect(
+      promoteRelease(service, {
+        appId: APP,
+        artifactName: "web",
+        version: "1.2.0",
+        promotedBy: PUBLISHER,
+      }),
+    ).rejects.toThrow("no canary environment of this app is READY on 1.2.0");
+    expect(await channelOf("LATEST")).toBe("1.0.0");
+    expect(await rollouts.rolloutsOf(APP)).toStrictEqual([]);
   });
 
   it("a promotion gives customers notice and changes nothing yet", async () => {
@@ -510,6 +621,7 @@ describe("app release rollout against a real reactor + real database", () => {
       status: "ACTIVE",
       apply_after: new Date(T0 + 24 * HOUR).toISOString(),
     });
+    expect(await channelOf("LATEST")).toBe("1.1.0");
     await tick();
     for (const c of [CUSTOMER_1, CUSTOMER_2, CUSTOMER_3, LEAVER]) {
       expect(await fusionVersion(envOf[did(c)]!)).toBe("1.0.0");
@@ -639,6 +751,10 @@ describe("app release rollout against a real reactor + real database", () => {
         if ((await latestUpdate(id))?.status === "APPLYING") applying.push(id);
       expect(applying).toHaveLength(1);
       expect(await fusionVersion(applying[0]!)).toBe("1.1.0");
+      for (const id of waiting.filter((w) => w !== applying[0])) {
+        expect(await fusionVersion(id)).toBe("1.0.0");
+        expect(await latestUpdate(id)).toMatchObject({ status: "PENDING" });
+      }
       await deploy(applying[0]!);
       await tick();
       expect(await latestUpdate(applying[0]!)).toMatchObject({
@@ -655,6 +771,19 @@ describe("app release rollout against a real reactor + real database", () => {
     // The customer who left never received it, and does not hold the rollout open.
     expect(await fusionVersion(envOf[did(LEAVER)]!)).toBe("1.0.0");
     expect((await rollouts.rollout(rollout!.id))!.status).toBe("COMPLETE");
-    expect(handlerWarnings).toHaveLength(1);
+    // Everything logged at warn over the whole run: the one failed release
+    // step, and the failed update with the pause it caused. No version was
+    // stranded, so the gate held nothing with an error.
+    expect(logged).toStrictEqual({
+      handler: [
+        `[licensing] release work of app ${APP} failed: Error: environment document read failed`,
+      ],
+      gate: [],
+      tracker: [
+        `[licensing] update of environment ${one} to FUSION 1.1.0 failed: the deployment of 1.1.0 failed`,
+        `[licensing] rollout ${rollout!.id} of app ${APP} is paused until the publisher resumes it`,
+      ],
+      managedBy: [],
+    });
   });
 }, 300_000);
