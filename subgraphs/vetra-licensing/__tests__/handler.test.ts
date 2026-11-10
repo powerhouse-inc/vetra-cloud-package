@@ -5,6 +5,8 @@ import type { AppDocView } from "../app-reads.js";
 import type { GrantProvenance } from "../grants.js";
 import type { LicenceRecord } from "../reads.js";
 import type { LicenseEnvironments } from "../db/schema.js";
+import { resolveTemplateArtifacts } from "../artifact-resolution.js";
+import { templateHash } from "../template.js";
 import { EnvironmentNotReadyError } from "../environments.js";
 import type { LifecycleRecord } from "../lifecycle.js";
 import { addDays, confirmedEndedRows, tickOffboarding, type OffboardingDeps } from "../offboarding.js";
@@ -890,6 +892,14 @@ describe("AppLicenseHandler: canary chains (spec 4.2)", () => {
       artifactChannel: "LATEST",
       resolvedVersion: "1.1.0",
     });
-    expect(input.templateHash).not.toBe("h-ded");
+    expect(input.templateHash).toBe(
+      templateHash(
+        resolveTemplateArtifacts(
+          fusionTemplate.template,
+          WITH_STAGING.artifacts,
+          "STAGING",
+        ),
+      ),
+    );
   });
 });

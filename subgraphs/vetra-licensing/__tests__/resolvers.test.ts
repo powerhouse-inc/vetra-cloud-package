@@ -19,6 +19,8 @@ import type { AppDocView, AppTemplateView } from "../app-reads.js";
 import type { LicenceRecord } from "../reads.js";
 import { createResolvers, type ResolverDeps } from "../resolvers.js";
 import { REPORTING_HEADER } from "../reporting.js";
+import { resolveTemplateArtifacts } from "../artifact-resolution.js";
+import { templateHash } from "../template.js";
 
 type Field = (p: unknown, a: unknown, c: unknown) => Promise<unknown>;
 type Resolvers = {
@@ -592,6 +594,153 @@ describe("vetraLicensing (machine)", () => {
       await db.insertInto("app_environment_limits").values({ app_id: "app-3", max_environments: 0 }).execute();
       expect(await code(apply("fs"))).toBe("INVALID_INPUT");
       expect(s.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a canary chain (spec 4.2)", () => {
+    const FUSION = {
+      services: [
+        {
+          id: "f",
+          type: "FUSION" as const,
+          prefix: "vault",
+          artifactName: "host",
+          artifactChannel: "LATEST",
+        },
+      ],
+      packages: [],
+      size: null,
+      baseDomain: null,
+      packageRegistry: null,
+    };
+    const host = (channels: { channel: string; version: string }[]) => [
+      {
+        kind: "FUSION_IMAGE" as const,
+        name: "host",
+        versions: [
+          { version: "1.0.0", reference: "cr.vetra.io/app-vault/host:1.0.0" },
+          { version: "1.1.0", reference: "cr.vetra.io/app-vault/host:1.1.0" },
+        ],
+        channels,
+      },
+    ];
+    /** app-1 with tpl-ded running the host image, resolved as app-reads does (on its own channel). */
+    const appOn = (
+      channels: { channel: string; version: string }[],
+    ): AppDocView => {
+      const artifacts = host(channels);
+      let resolved: AppTemplateView;
+      try {
+        const t = resolveTemplateArtifacts(FUSION, artifacts);
+        resolved = {
+          ...template("tpl-ded", "DEDICATED", templateHash(t)),
+          template: t,
+        };
+      } catch (err) {
+        resolved = {
+          ...template(
+            "tpl-ded",
+            "DEDICATED",
+            templateHash(FUSION),
+            (err as Error).message,
+          ),
+          template: FUSION,
+        };
+      }
+      const base = freshApp1();
+      return {
+        ...base,
+        artifacts,
+        templates: [
+          resolved,
+          ...base.templates.filter((t) => t.id !== "tpl-ded"),
+        ],
+      };
+    };
+    const onStaging = (channels: { channel: string; version: string }[]) =>
+      templateHash(resolveTemplateArtifacts(FUSION, host(channels), "STAGING"));
+    const canary = () =>
+      db
+        .updateTable("license_environments")
+        .set({ channel_override: "STAGING" })
+        .where("environment_id", "=", "env-1")
+        .execute();
+    /** The resolvers with provision observed: what template each call provisioned. */
+    const observed = () => {
+      const base = deps();
+      const provision = vi.fn(base.provision);
+      return {
+        provision,
+        r: createResolvers({ ...base, provision }) as unknown as Resolvers,
+      };
+    };
+    const versionOf = (
+      p: ReturnType<typeof observed>["provision"],
+      n: number,
+    ) => p.mock.calls[n]![0].template.services[0]!.resolvedVersion;
+
+    it("provisions a canary chain on STAGING, with that resolution's hash; a chain without an override as before", async () => {
+      const both = [
+        { channel: "LATEST", version: "1.0.0" },
+        { channel: "STAGING", version: "1.1.0" },
+      ];
+      app1 = appOn(both);
+      await canary();
+      const { provision, r } = observed();
+      const env = await m(
+        "applyEnvironmentTemplate",
+        { input: { licenseId: "l1", label: "x" } },
+        asApp,
+        r,
+      );
+      expect(env).toMatchObject({
+        environmentId: "env-1",
+        templateHash: onStaging(both),
+      });
+      expect(versionOf(provision, 0)).toBe("1.1.0");
+      const own = await m(
+        "applyEnvironmentTemplate",
+        { input: { licenseId: "l-new", label: "x" } },
+        asApp,
+        r,
+      );
+      expect(own).toMatchObject({
+        rootLicenseId: "l-new",
+        templateHash: app1.templates[0]!.templateHash,
+      });
+      expect(versionOf(provision, 1)).toBe("1.0.0");
+      expect(app1.templates[0]!.templateHash).not.toBe(onStaging(both));
+    });
+
+    it("accepts a canary whose app has no LATEST build yet (a gated app's first release)", async () => {
+      const stagingOnly = [{ channel: "STAGING", version: "1.1.0" }];
+      app1 = appOn(stagingOnly);
+      expect(app1.templates[0]!.resolutionError).toMatch(/LATEST/);
+      await canary();
+      const { provision, r } = observed();
+      const env = await m(
+        "applyEnvironmentTemplate",
+        { input: { licenseId: "l1", label: "x" } },
+        asApp,
+        r,
+      );
+      expect(env).toMatchObject({
+        environmentId: "env-1",
+        templateHash: onStaging(stagingOnly),
+      });
+      expect(versionOf(provision, 0)).toBe("1.1.0");
+      // Without an override the chain is held, as before.
+      expect(
+        await code(
+          m(
+            "applyEnvironmentTemplate",
+            { input: { licenseId: "l-new", label: "x" } },
+            asApp,
+            r,
+          ),
+        ),
+      ).toBe("INVALID_INPUT");
+      expect(provision).toHaveBeenCalledTimes(1);
     });
   });
 });

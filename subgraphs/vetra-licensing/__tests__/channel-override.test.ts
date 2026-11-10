@@ -91,6 +91,19 @@ describe("resolveChainKind", () => {
     ).toBe(true);
   });
 
+  it("hashes a canary like the template's own resolution when STAGING and LATEST point at one version", () => {
+    const same = appWith([
+      { channel: "LATEST", version: "1.0.0" },
+      { channel: "STAGING", version: "1.0.0" },
+    ]);
+    const canary = resolveChainKind(same, "pro", CANARY_CHANNEL);
+    const own = resolveKind(same, "pro");
+    expect(canary.ok && own.ok).toBe(true);
+    expect(canary.ok && canary.template.templateHash).toBe(
+      own.ok && own.template.templateHash,
+    );
+  });
+
   it("resolves a canary whose app has no LATEST build yet (a gated app's first release)", () => {
     const stagingOnly = appWith([{ channel: "STAGING", version: "1.1.0" }]);
     expect(resolveKind(stagingOnly, "pro").ok).toBe(false);

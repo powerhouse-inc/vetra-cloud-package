@@ -268,8 +268,17 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
           }
           const app = await deps.apps.app(appId);
           if (!app) throw new InvalidPublisherInputError(`app ${appId} has no readable document`);
+          const root = await deps.grants.chainRootOf(licence.id);
+          // As the handler: a canary chain resolves on its own channel (spec
+          // 4.2). Read before the chain lock is taken: an override changed in
+          // between gets one stale provision, which the keeper corrects on its
+          // next tick.
+          const channel =
+            (await deps.envRows.forApp(appId)).find(
+              (e) => e.root_license_id === root,
+            )?.channel_override ?? null;
           // A tampered app does not resolve; an unverified one is held, as by the handler.
-          const r = resolveKind(app, licence.kind);
+          const r = resolveChainKind(app, licence.kind, channel);
           if (!r.ok) throw new InvalidPublisherInputError(r.reason);
           if (app.unverified) {
             throw new InvalidPublisherInputError(
@@ -279,22 +288,12 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
           if (r.template.mode !== "DEDICATED") {
             throw new InvalidPublisherInputError("a SHARED licence has no environment of its own");
           }
-          const root = await deps.grants.chainRootOf(licence.id);
           // As the handler: only the chain's newest authorised licence is served.
           if ((await deps.grants.chainHead(root)) !== licence.id) {
             throw new InvalidPublisherInputError(
               `licence ${licence.id} is not the newest licence of its chain; upgrade the newest licence`,
             );
           }
-          // As the handler: a canary chain resolves on its own channel (spec 4.2).
-          const channel =
-            (await deps.envRows.forApp(appId)).find(
-              (e) => e.root_license_id === root,
-            )?.channel_override ?? null;
-          const chained = channel
-            ? resolveChainKind(app, licence.kind, channel)
-            : r;
-          if (!chained.ok) throw new InvalidPublisherInputError(chained.reason);
           try {
             const row = await deps.provision(
               {
@@ -303,10 +302,10 @@ export function createResolvers(deps: ResolverDeps): Record<string, unknown> {
                 licenseId: licence.id,
                 // The grant row's holder, never the document's.
                 userDid: licence.userDid,
-                templateId: chained.template.id,
-                template: chained.template.template,
-                templateHash: chained.template.templateHash,
-                fusionVersions: chained.template.fusionVersions,
+                templateId: r.template.id,
+                template: r.template.template,
+                templateHash: r.template.templateHash,
+                fusionVersions: r.template.fusionVersions,
                 // As the handler: the project name chosen at issue wins.
                 label: (await deps.grants.chainLabel(root)) ?? a.input.label,
                 now: deps.now(),
