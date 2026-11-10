@@ -125,10 +125,12 @@ export function decideRelease(i: GateInput): GateDecision {
     reason = stranded;
   } else if (gated) {
     const requested = pending !== null && pending.requested_at !== null;
-    if (rolledOut && !forced && !requested && !isDue(dueAt, i.now))
-      reason = `due at ${dueAt}`;
-    else if (rolledOut && !forced && i.rollout?.status !== "ACTIVE")
+    // The pause first: an "update now" is refused while paused, so a
+    // deadline would mislead.
+    if (rolledOut && !forced && i.rollout?.status !== "ACTIVE")
       reason = "its rollout is paused";
+    else if (rolledOut && !forced && !requested && !isDue(dueAt, i.now))
+      reason = `due at ${dueAt}`;
     else if (i.otherApplying)
       reason = "another environment of the app is updating";
   }

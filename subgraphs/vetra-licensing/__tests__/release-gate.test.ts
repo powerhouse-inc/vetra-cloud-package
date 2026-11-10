@@ -249,6 +249,12 @@ describe("decideRelease: GATED customers", () => {
     ).toBe("floor");
   });
 
+  it("names the pause, not the deadline, when a paused update is not yet due", () => {
+    expect(
+      gate({ rollout: rollout({ status: "PAUSED" }), existing: row() }),
+    ).toMatchObject({ version: "hold", reason: "its rollout is paused" });
+  });
+
   it("holds while another environment of the app is updating, even forced", () => {
     expect(
       gate({ otherApplying: true, existing: row({ due_at: BEFORE }) }),
