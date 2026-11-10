@@ -209,12 +209,11 @@ export function createReleaseResolvers(
           ctx,
         ) => {
           const appId = await owned(a.appId, ctx, true);
+          // resolveOwnerApp already refused a caller without an address.
+          const did = callerDid(ctx);
+          if (!did) throw new UnauthenticatedError("sign in with Renown");
           return rolloutOut(
-            await promoteRelease(deps, {
-              ...a,
-              appId,
-              promotedBy: ctx.user?.address ?? "",
-            }),
+            await promoteRelease(deps, { ...a, appId, promotedBy: did }),
           );
         },
       ),

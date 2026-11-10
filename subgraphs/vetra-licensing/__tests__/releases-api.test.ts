@@ -521,3 +521,189 @@ describe("vetraReleases environment fields: the holder, or the app's owner", () 
     }
   });
 });
+
+describe("vetraReleases through the resolvers", () => {
+  let app: AppDocView;
+  beforeEach(() => {
+    app = {
+      ...APP,
+      artifacts: [
+        {
+          kind: "FUSION_IMAGE",
+          name: "host",
+          versions: [
+            { version: "1.0.0", reference: "cr.vetra.io/p/host:1.0.0" },
+            { version: "1.1.0", reference: "cr.vetra.io/p/host:1.1.0" },
+          ],
+          channels: [{ channel: "LATEST", version: "1.0.0" }],
+        },
+      ],
+    };
+    deps = {
+      ...deps,
+      apps: { app: async (id) => (id === "a" ? app : null) },
+      appWriter: {
+        appendLicensingOps: async (_id, actions) => {
+          for (const a of actions) {
+            const i = a.input as { channel: string; version: string };
+            const channels = app.artifacts[0]!.channels;
+            const c = channels.find((x) => x.channel === i.channel);
+            if (c) c.version = i.version;
+            else channels.push({ channel: i.channel, version: i.version });
+          }
+        },
+      },
+      envState: async (id) =>
+        id === "mine"
+          ? ({
+              status: "READY",
+              services: [{ type: "FUSION", version: "1.1.0" }],
+            } as never)
+          : null,
+    };
+    r = createReleaseResolvers(deps) as unknown as Resolvers;
+  });
+  const gate = async () => {
+    await m("setCanaryEnvironment", {
+      appId: "a",
+      environmentId: "mine",
+      canary: true,
+    });
+    await m("setReleasePolicy", { appId: "a", policy: "GATED" });
+  };
+  const promote = (who = OWNER) =>
+    m(
+      "promoteRelease",
+      { appId: "a", artifactName: "host", version: "1.1.0" },
+      who,
+    );
+  /** A rollout and an environment with a waiting update, both of app "b". */
+  const otherApp = async () => {
+    await deps.store.promote({
+      id: "rb",
+      app_id: "b",
+      artifact_name: "host",
+      version: "1.1.0",
+      status: "PAUSED",
+      apply_after: NOW,
+      promoted_by: "did:pkh:eip155:1:0xp",
+      promoted_at: NOW,
+      paused_at: NOW,
+      paused_reason: "x",
+    });
+    await db
+      .insertInto("license_environments")
+      .values({ ...envRow("theirs", HOLDER), app_id: "b" })
+      .execute();
+    await deps.store.insertUpdate({
+      ...(await deps.store.update("u1"))!,
+      id: "ub",
+      environment_id: "theirs",
+      app_id: "b",
+      status: "FAILED",
+    });
+  };
+
+  it("records the authenticated caller as the promoter", async () => {
+    await gate();
+    expect(await promote(shouting(OWNER))).toMatchObject({
+      id: "r1",
+      version: "1.1.0",
+      status: "ACTIVE",
+      promotedBy: `did:pkh:eip155:1:${OWNER}`,
+    });
+    expect((await deps.store.rollout("r1"))!.promoted_by).toBe(
+      `did:pkh:eip155:1:${OWNER}`,
+    );
+  });
+
+  it("treats another app's rollout and environment as missing", async () => {
+    await otherApp();
+    expect(
+      await codeOf(m("resumeRollout", { appId: "a", rolloutId: "rb" })),
+    ).toBe("NOT_FOUND");
+    expect(
+      await codeOf(
+        m("forceEnvironmentUpdate", { appId: "a", environmentId: "theirs" }),
+      ),
+    ).toBe("NOT_FOUND");
+    expect((await deps.store.rollout("rb"))!.status).toBe("PAUSED");
+    expect(await deps.store.update("ub")).toMatchObject({
+      status: "FAILED",
+      forced_at: null,
+    });
+  });
+
+  it("lists each FUSION image's STAGING, LATEST and the canaries", async () => {
+    await gate();
+    expect(await q("releaseCandidates", { appId: "a" })).toStrictEqual([
+      {
+        artifactName: "host",
+        staging: "1.0.0",
+        latest: "1.0.0",
+        canaries: [{ environmentId: "mine", version: "1.1.0", status: "READY" }],
+      },
+    ]);
+  });
+
+  it("counts a promoted rollout's updates by status", async () => {
+    await gate();
+    await promote();
+    await db
+      .insertInto("license_environments")
+      .values(envRow("cust2", STRANGER))
+      .execute();
+    const base = (await deps.store.update("u1"))!;
+    for (const [id, environment_id, status] of [
+      ["u2", "cust", "PENDING"],
+      ["u3", "cust2", "SUCCEEDED"],
+      ["u4", "mine", "SUCCEEDED"],
+    ] as const) {
+      await deps.store.insertUpdate({
+        ...base,
+        id,
+        environment_id,
+        status,
+        rollout_id: "r1",
+      });
+    }
+    expect(await q("rollouts", { appId: "a" })).toMatchObject([
+      {
+        id: "r1",
+        status: "ACTIVE",
+        counts: [
+          { status: "PENDING", count: 1 },
+          { status: "SUCCEEDED", count: 2 },
+        ],
+      },
+    ]);
+  });
+
+  it("refuses an authorised holder's update now while licensing is switched off", async () => {
+    r = createReleaseResolvers({
+      ...deps,
+      cfg: { enabled: false },
+    }) as unknown as Resolvers;
+    expect(
+      await codeOf(
+        m("updateEnvironmentNow", { environmentId: "cust" }, HOLDER),
+      ),
+    ).toBe("LICENSING_DISABLED");
+    expect((await deps.store.update("u1"))!.requested_at).toBeNull();
+  });
+
+  it("refuses a default notice out of range as INVALID_INPUT", async () => {
+    for (const defaultNoticeHours of [-1, 721, 1.5]) {
+      expect(
+        await codeOf(
+          m("setReleasePolicy", {
+            appId: "a",
+            policy: "AUTO",
+            defaultNoticeHours,
+          }),
+        ),
+      ).toBe("INVALID_INPUT");
+    }
+    expect((await deps.store.settings("a")).defaultNoticeHours).toBe(72);
+  });
+});
