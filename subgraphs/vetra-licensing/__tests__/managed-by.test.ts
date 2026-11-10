@@ -188,6 +188,43 @@ describe("createManagedBySync", () => {
     expect(warn).toHaveBeenCalledTimes(3);
   });
 
+  it("logs a failure again after a tick that did nothing for the environment", async () => {
+    const warn = vi.fn();
+    let state: Record<string, unknown> | null = {
+      status: "READY",
+      managedBy: null,
+    };
+    const sync = createManagedBySync({
+      envs: {
+        getState: async () => state as never,
+        execute: async () => {
+          throw new Error("reactor down");
+        },
+      },
+      logger: { warn },
+    });
+    await sync(app(), [row()]);
+    expect(warn).toHaveBeenCalledOnce();
+    // The document is missing, then DRAFT, then no marker is wanted: each
+    // tick does nothing for it, so the next identical failure is news.
+    for (const between of [
+      () => {
+        state = null;
+        return sync(app(), [row()]);
+      },
+      () => {
+        state = { status: "DRAFT", managedBy: null };
+        return sync(app(), [row()]);
+      },
+      () => sync(app(), [row({ template_id: "sh" })]),
+    ]) {
+      await between();
+      state = { status: "READY", managedBy: null };
+      await sync(app(), [row()]);
+    }
+    expect(warn).toHaveBeenCalledTimes(4);
+  });
+
   it("forgets an ended environment, so a live row for it again is re-checked", async () => {
     const s = setup({ status: "READY", managedBy: null });
     await s.sync(app(), [row()]);

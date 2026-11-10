@@ -600,6 +600,9 @@ describe("a template-managed production env takes no Studio launch", () => {
     await h.envs.manage(p.envId);
     const before = h.envs.executed.length;
     expect(await code(setStudioProductDrive(h.deps, agent, p.app.id, "drive-1", p.secret))).toBe("BAD_USER_INPUT");
+    await expect(setStudioProductDrive(h.deps, agent, p.app.id, "drive-1", p.secret)).rejects.toThrow(
+      "Production environment is managed by an app's licence template; its version moves only through the release gate",
+    );
     expect((await getApp(h.db, p.app.id))!.product_drive_id).toBeNull();
     expect(h.envs.executed.length).toBe(before);
   });

@@ -375,12 +375,17 @@ describe("createUpdateGate", () => {
     await gate.admit({ row: envRow(), move: MOVE, now: NOW });
     // Another writer settled the row after the gate read it PENDING.
     await store.finishUpdate("u1", "FAILED", "settled", LATER, "PENDING");
+    const transitions: unknown[][] = [];
     const racing = createUpdateGate({
       store: wrapped((q) => ({
         ...q,
         updateFor: async (rolloutId, environmentId) => {
           const read = await q.updateFor(rolloutId, environmentId);
           return read && { ...read, status: "PENDING" };
+        },
+        transitionUpdate: (...args) => {
+          transitions.push(args);
+          return q.transitionUpdate(...args);
         },
       })),
       logger: { warn, info },
@@ -389,6 +394,10 @@ describe("createUpdateGate", () => {
     expect(
       await racing.admit({ row: envRow(), move: MOVE, now: LATER }),
     ).toStrictEqual({ version: "hold", updateId: null });
+    // Held because its guarded start found the row no longer PENDING.
+    expect(transitions).toStrictEqual([
+      ["u1", "PENDING", { status: "APPLYING", started_at: LATER }],
+    ]);
     expect(await store.update("u1")).toMatchObject({
       status: "FAILED",
       started_at: null,

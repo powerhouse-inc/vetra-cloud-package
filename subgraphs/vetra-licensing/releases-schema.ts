@@ -45,6 +45,7 @@ export const releasesSchema: DocumentNode = gql`
     "ACTIVE | PAUSED | SUPERSEDED | COMPLETE"
     status: String!
     applyAfter: String!
+    "The promoter's DID (lower-cased)."
     promotedBy: String!
     promotedAt: String!
     pausedAt: String

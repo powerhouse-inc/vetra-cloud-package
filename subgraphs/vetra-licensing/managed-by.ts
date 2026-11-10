@@ -83,8 +83,9 @@ export interface ManagedBySyncDeps {
  * rows. Each environment's document is read once per process and marker; a
  * DRAFT (not initialised yet) is left for the next tick. Failures are logged
  * per environment and retried next tick; a failure that repeats with the same
- * message is logged once, until the environment is marked or the message
- * changes.
+ * message on consecutive ticks is logged once, until the environment is
+ * marked, a tick does nothing for it (no document, DRAFT, no marker wanted)
+ * or the message changes.
  */
 export function createManagedBySync(deps: ManagedBySyncDeps) {
   /** environment id -> the marker this process confirmed on its document. */
@@ -102,12 +103,18 @@ export function createManagedBySync(deps: ManagedBySyncDeps) {
         continue;
       }
       const wanted = wantedManagedBy(row, app);
-      if (!wanted) continue;
+      if (!wanted) {
+        warned.delete(row.environment_id);
+        continue;
+      }
       const key = JSON.stringify(wanted);
       if (confirmed.get(row.environment_id) === key) continue;
       try {
         const state = await deps.envs.getState(row.environment_id);
-        if (!state || state.status === "DRAFT") continue;
+        if (!state || state.status === "DRAFT") {
+          warned.delete(row.environment_id);
+          continue;
+        }
         if (!sameManagedBy(state.managedBy, wanted)) {
           await deps.envs.execute(row.environment_id, [setManagedBy(wanted)]);
         }
