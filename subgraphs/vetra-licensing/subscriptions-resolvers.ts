@@ -96,9 +96,13 @@ export const STUDIO_KEY_SECRET_NAMES = [
 
 const INVALID_CHECK = { valid: false, appId: null, appName: null, kind: null, termLabel: null, mode: null };
 
-async function primaryUrl(deps: SubscriptionDeps, environmentId: string): Promise<string | null> {
-  const u = envUrls(await deps.envState(environmentId));
+function primaryUrlOf(state: Parameters<typeof envUrls>[0]): string | null {
+  const u = envUrls(state);
   return u.app ?? u.connect ?? u.switchboard;
+}
+
+async function primaryUrl(deps: SubscriptionDeps, environmentId: string): Promise<string | null> {
+  return primaryUrlOf(await deps.envState(environmentId));
 }
 
 /**
@@ -122,8 +126,14 @@ export async function subscriptionFor(
   const mode = envRow ? "DEDICATED" : resolved?.ok ? resolved.template.mode : "SHARED";
   const dedicated = mode === "DEDICATED";
   let openUrl: string | null = null;
-  if (envRow) openUrl = await primaryUrl(deps, envRow.environment_id);
-  else if (!dedicated && resolved?.ok && resolved.stage) openUrl = await primaryUrl(deps, resolved.stage);
+  // The holder deleted the environment; the row stays until offboarding drops
+  // it. Nothing left to open, stop or delete, so it links and warns nowhere.
+  let liveRow = envRow;
+  if (envRow) {
+    const state = await deps.envState(envRow.environment_id);
+    if (state) openUrl = primaryUrlOf(state);
+    else liveRow = null;
+  } else if (!dedicated && resolved?.ok && resolved.stage) openUrl = await primaryUrl(deps, resolved.stage);
   return {
     licenseId: l.id,
     appId: l.appId,
@@ -135,19 +145,19 @@ export async function subscriptionFor(
     start: l.start,
     end: l.end,
     mode,
-    environmentId: envRow?.environment_id ?? null,
+    environmentId: liveRow?.environment_id ?? null,
     environmentLabel: dedicated ? (envRow?.label ?? (await deps.grants.chainLabel(root))) : null,
     openUrl,
-    stoppedAt: envRow?.stopped_at ?? null,
-    deleteAfter: envRow?.delete_after ?? null,
+    stoppedAt: liveRow?.stopped_at ?? null,
+    deleteAfter: liveRow?.delete_after ?? null,
     warnings: subscriptionWarnings(
       {
         status: l.status,
         end: l.end,
         mode,
-        endedAt: envRow?.ended_at ?? null,
-        stoppedAt: envRow?.stopped_at ?? null,
-        deleteAfter: envRow?.delete_after ?? null,
+        endedAt: liveRow?.ended_at ?? null,
+        stoppedAt: liveRow?.stopped_at ?? null,
+        deleteAfter: liveRow?.delete_after ?? null,
       },
       deps.now(),
     ),
