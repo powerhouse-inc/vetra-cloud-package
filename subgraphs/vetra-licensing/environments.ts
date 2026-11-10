@@ -9,11 +9,14 @@ import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { addressOfDid } from "./did.js";
 import { keyedMutex, LockTimeoutError, type AcquireOptions } from "./keyed-mutex.js";
 import {
+  fusionMoveOf,
   renderCreateActions,
   renderFloorUpdateActions,
   validateTemplate,
+  type FusionVersionMode,
   type TemplateShape,
 } from "./template.js";
+import type { UpdateGate } from "./update-gate.js";
 import type { WarmPoolStore, WarmRow } from "./warm-pool-db.js";
 
 export class AppEnvironmentCapReachedError extends Error {
@@ -168,7 +171,21 @@ export interface ChainEnvDeps {
   appKey?: (input: AppKeyInput) => Promise<boolean>;
   /** Releases an environment's included key (a failed claim); idempotent. */
   releaseAppKey?: (environmentId: string) => Promise<void>;
+  /**
+   * Records every FUSION version move of a live environment and decides
+   * whether it may happen now (spec 4.3). Absent: the floor moves it as it
+   * always has, and nothing is recorded.
+   */
+  updates?: UpdateGate;
 }
+
+/**
+ * provisionChain's row. `versionHeld`: the floor left the FUSION version
+ * where it is (a gated update not yet due, or a version it cannot order), so
+ * the template is not fully met and template_hash did not advance; the next
+ * tick provisions the chain again.
+ */
+export type ProvisionResult = LicenseEnvironments & { versionHeld?: true };
 
 export interface ProvisionChainInput {
   appId: string;
@@ -239,7 +256,7 @@ function assertSameOwner(row: LicenseEnvironments, input: ProvisionChainInput): 
 export async function provisionChain(
   deps: ChainEnvDeps,
   input: ProvisionChainInput,
-): Promise<LicenseEnvironments> {
+): Promise<ProvisionResult> {
   const existing = await deps.rows.byRoot(input.root);
   if (existing) assertSameOwner(existing, input);
   if (existing && existing.template_hash === input.templateHash) {
@@ -344,12 +361,25 @@ export async function provisionChain(
   // A create carries the included key (spec 3.11); a live environment's key
   // was given when it was created or claimed.
   let actions: Action[];
+  // The FUSION version the floor would move, and what the gate allows.
+  let held = false;
+  let admitted: string | null = null;
   if (state.status !== "DRAFT") {
+    const move = fusionMoveOf(input.template, state, input.fusionVersions);
+    let fusionVersion: FusionVersionMode = "floor";
+    if (move && deps.updates) {
+      const gate = await deps.updates.admit({ row, move, now: input.now });
+      fusionVersion = gate.version;
+      admitted = gate.updateId;
+    }
+    held = move !== null && (fusionVersion === "hold" || (fusionVersion === "floor" && move.stranded));
     actions = renderFloorUpdateActions({
       template: input.template,
       current: state,
       fusionVersions: input.fusionVersions,
-      onFusionHeld: ({ current, wanted }) => {
+      fusionVersion,
+      // With a gate, the stranded version is recorded and logged once there.
+      onFusionHeld: deps.updates ? undefined : ({ current, wanted }) => {
         const msg = `[licensing] environment ${row.environment_id} of chain ${row.root_license_id} stays on FUSION ${current}: the app's record no longer lists it (only its last 50 versions are kept, or it was pinned by hand), so it cannot be proven older than ${wanted}; move it by hand if it should follow the template`;
         if (deps.logger?.warn) deps.logger.warn(msg);
         else (deps.logger ?? console).error(msg);
@@ -365,17 +395,32 @@ export async function provisionChain(
       includedKey: await writeIncludedKey(deps, row.environment_id, subdomain, row.root_license_id, input),
     });
   }
-  if (actions.length > 0) await deps.envs.execute(row.environment_id, actions);
+  if (actions.length > 0) {
+    try {
+      await deps.envs.execute(row.environment_id, actions);
+    } catch (err) {
+      // Nothing went out: the admitted update waits again.
+      if (admitted && deps.updates) {
+        await deps.updates.release(admitted).catch((releaseErr: unknown) => {
+          (deps.logger ?? console).error(
+            `[licensing] update ${admitted} of environment ${row.environment_id} was not dispatched and could not be released: ${String(releaseErr)}`,
+          );
+        });
+      }
+      throw err;
+    }
+  }
 
-  // The row's label is the one the environment was created with.
+  // The row's label is the one the environment was created with. A held
+  // version is not the template: the hash advances only once it is met.
   const patch = {
     license_id: input.licenseId,
     template_id: input.templateId,
-    template_hash: input.templateHash,
+    ...(held ? {} : { template_hash: input.templateHash }),
     updated_at: input.now,
   };
   await deps.rows.update(row.environment_id, patch);
-  return { ...row, ...patch };
+  return { ...row, ...patch, ...(held ? { versionHeld: true as const } : {}) };
 }
 
 /** The warm environment cannot be used; it is discarded and the chain built cold. */
@@ -599,6 +644,6 @@ export function provisionChainExclusive(
   deps: ChainEnvDeps,
   input: ProvisionChainInput,
   opts: AcquireOptions = {},
-): Promise<LicenseEnvironments> {
+): Promise<ProvisionResult> {
   return lockChain(input.root, () => provisionChain(deps, input), opts);
 }
