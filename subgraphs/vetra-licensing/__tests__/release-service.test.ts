@@ -590,18 +590,65 @@ const canaryOf = async (id: string) =>
 describe("leaving gating", () => {
   it.each([
     [
-      "ACTIVE",
-      /the release of host 1\.1\.0 is still rolling out and must finish first/,
+      "is PAUSED",
+      "PAUSED",
+      [],
+      /the release of host 1\.1\.0 \(rollout r1\) is paused and must finish first/,
     ],
-    ["PAUSED", /the release of host 1\.1\.0 is paused and must finish first/],
-  ] as const)("is refused while a rollout is %s", async (status, message) => {
+    [
+      "has an update still open",
+      "ACTIVE",
+      ["PENDING"],
+      /the release of host 1\.1\.0 \(rollout r1\) has 1 update still open and must finish first/,
+    ],
+    [
+      "has updates still open",
+      "ACTIVE",
+      ["PENDING", "APPLYING", "SUCCEEDED"],
+      /the release of host 1\.1\.0 \(rollout r1\) has 2 updates still open and must finish first/,
+    ],
+  ] as const)(
+    "is refused while a rollout %s",
+    async (_, status, updates, message) => {
+      await gate();
+      await deps.store.promote(rolloutRow({ status }));
+      for (const [i, s] of updates.entries())
+        await deps.store.insertUpdate(
+          update({
+            id: `u${i}`,
+            environment_id: `cust${i}`,
+            rollout_id: "r1",
+            status: s,
+          }),
+        );
+      await expect(
+        setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+      ).rejects.toThrow(message);
+      expect((await deps.store.settings("a")).policy).toBe("GATED");
+      expect(await canaryOf("mine")).toBe("STAGING");
+    },
+  );
+
+  it("is allowed while a rollout is ACTIVE with nothing open", async () => {
     await gate();
-    await deps.store.promote(rolloutRow({ status }));
-    await expect(
-      setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
-    ).rejects.toThrow(message);
-    expect((await deps.store.settings("a")).policy).toBe("GATED");
-    expect(await canaryOf("mine")).toBe("STAGING");
+    await deps.store.promote(rolloutRow());
+    // Settled, or closed because its environment ended.
+    await deps.store.insertUpdate(
+      update({ rollout_id: "r1", status: "SUCCEEDED" }),
+    );
+    await deps.store.insertUpdate(
+      update({
+        id: "u2",
+        environment_id: "gone",
+        rollout_id: "r1",
+        status: "SUPERSEDED",
+      }),
+    );
+    expect(
+      await setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+    ).toMatchObject({ policy: "AUTO" });
+    expect(await canaryOf("mine")).toBeNull();
+    expect((await deps.store.rollout("r1"))!.status).toBe("ACTIVE");
   });
 
   it("is allowed once every rollout is COMPLETE or SUPERSEDED, and unmarks the canaries", async () => {
@@ -838,15 +885,18 @@ describe("one release decision of an app at a time", () => {
   it("a promotion and leaving gating cannot both go through", async () => {
     await gate();
     states.set("mine", { status: "READY", version: "1.1.0" });
+    // Leaving first: the promotion then finds the app AUTO. (A promotion
+    // first no longer refuses the leave: its rollout has nothing open.)
     const results = await Promise.allSettled([
-      promoteIt(),
       setReleasePolicy(deps, { appId: "a", policy: "AUTO" }),
+      promoteIt(),
     ]);
     expect(results.map((r) => r.status)).toStrictEqual([
       "fulfilled",
       "rejected",
     ]);
-    expect((await deps.store.settings("a")).policy).toBe("GATED");
+    expect((await deps.store.settings("a")).policy).toBe("AUTO");
+    expect(await deps.store.rolloutsOf("a")).toStrictEqual([]);
   });
 
   it("two concurrent promotions cannot move LATEST backwards", async () => {

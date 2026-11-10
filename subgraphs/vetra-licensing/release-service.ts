@@ -158,9 +158,11 @@ export const releaseSettings = (
 /**
  * Sets the app's release policy (spec 4.1). GATED needs a live canary and
  * brings STAGING up to LATEST. Leaving GATED is refused while a rollout is
- * ACTIVE or PAUSED (AUTO would move every held customer at once, past the
- * notice and past a pause), and unmarks the canaries: CI stops moving
- * STAGING for an AUTO app. `defaultNoticeHours` absent: unchanged.
+ * PAUSED, or ACTIVE with a PENDING or APPLYING update (AUTO would move every
+ * held customer at once, past the notice and past a pause); an ACTIVE
+ * rollout with nothing open (its stragglers cannot be provisioned now, say)
+ * does not hold it. It unmarks the canaries: CI stops moving STAGING for an
+ * AUTO app. `defaultNoticeHours` absent: unchanged.
  */
 export async function setReleasePolicy(
   deps: ReleaseServiceDeps,
@@ -191,14 +193,20 @@ export async function setReleasePolicy(
       }
       await bringStagingUp(deps, await writableApp(deps, input.appId));
     } else if (leaving) {
-      const open = (await deps.store.rolloutsOf(input.appId)).find(
-        (r) => r.status === "ACTIVE" || r.status === "PAUSED",
-      );
-      if (open) {
-        const state = open.status === "PAUSED" ? "paused" : "still rolling out";
-        throw new OperationRejectedError(
-          `the release of ${open.artifact_name} ${open.version} is ${state} and must finish first`,
-        );
+      for (const r of await deps.store.rolloutsOf(input.appId)) {
+        if (r.status !== "ACTIVE" && r.status !== "PAUSED") continue;
+        const release = `the release of ${r.artifact_name} ${r.version} (rollout ${r.id})`;
+        if (r.status === "PAUSED") {
+          throw new OperationRejectedError(
+            `${release} is paused and must finish first`,
+          );
+        }
+        const open = await deps.store.openCount(r.id);
+        if (open > 0) {
+          throw new OperationRejectedError(
+            `${release} has ${open} ${open === 1 ? "update" : "updates"} still open and must finish first`,
+          );
+        }
       }
     }
     // Canaries first, AUTO last: an unmark that fails partway leaves the
