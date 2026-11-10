@@ -743,6 +743,14 @@ export async function createApp(
     if (RELEASED_STATUSES.has(attachEnvState.status)) {
       throw appsError("BAD_USER_INPUT", "Environment is terminated");
     }
+    // A licence chain's env: its version moves only through the keeper's
+    // release gate, never through an App's deploys (spec 4.3).
+    if (attachEnvState.managedBy) {
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Environment is managed by an app's licence template and cannot be an App's production environment",
+      );
+    }
   }
 
   // The workload identity first (R2), so a refusal leaves nothing behind.
@@ -1407,6 +1415,8 @@ async function adoptableEnv(
   if (!state) throw refuse("it does not exist");
   if (isStudioState(state)) throw refuse("it is a Studio");
   if (RELEASED_STATUSES.has(state.status)) throw refuse("it is terminated");
+  if (state.managedBy)
+    throw refuse("it is managed by an app's licence template");
   const studioOrg = studio.ownerOrgId ?? null;
   const envOrg = state.ownerOrgId ?? null;
   const sameOwner =
@@ -3698,7 +3708,12 @@ interface DeployTarget {
   fusionEnvTemplate: FusionEnvInput[];
 }
 
-/** The production env, checked: it exists and is linked to the App as its production env. */
+/**
+ * The production env, checked: it exists, is linked to the App as its
+ * production env, and is no licence chain's (one linked before attach and
+ * adopt refused those, or marked after): only the keeper's release gate
+ * moves that one's version (spec 4.3).
+ */
 function assertProductionEnv(
   app: AppRow,
   state: VetraCloudEnvironmentState | null,
@@ -3708,6 +3723,12 @@ function assertProductionEnv(
     throw appsError(
       "BAD_USER_INPUT",
       "Production environment is not linked to this App",
+    );
+  }
+  if (state.managedBy) {
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Production environment is managed by an app's licence template; its version moves only through the release gate",
     );
   }
   return state;
