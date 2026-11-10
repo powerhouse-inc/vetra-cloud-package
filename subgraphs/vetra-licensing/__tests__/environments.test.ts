@@ -719,6 +719,29 @@ describe("provisionChain asks the update gate before it moves a FUSION version (
     expect((await deps.rows.byRoot("l1"))!.template_hash).toBe("h1");
   });
 
+  it("leaves an admitted update APPLYING when the execute failed after the version went out", async () => {
+    await live();
+    // The gateway applied the batch (the version first), then threw.
+    deps.envs.execute = async (id) => {
+      states.get(id)!.services[0]!.version = "1.1.0";
+      throw new Error("approve rejected");
+    };
+    await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("approve rejected");
+    expect(await updates().latest("env-1")).toMatchObject({ status: "APPLYING", to_version: "1.1.0" });
+  });
+
+  it("leaves an admitted update APPLYING when the environment cannot be re-read after a failed execute", async () => {
+    await live();
+    const getState = deps.envs.getState;
+    deps.envs.execute = async () => {
+      deps.envs.getState = async () => { throw new Error("read failed"); };
+      throw new Error("reactor down");
+    };
+    await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("reactor down");
+    deps.envs.getState = getState;
+    expect(await updates().latest("env-1")).toMatchObject({ status: "APPLYING" });
+  });
+
   it("never asks the gate for a new environment", async () => {
     const admit = vi.spyOn(deps.updates!, "admit");
     await provisionChain(deps, input({ template: v110 }));

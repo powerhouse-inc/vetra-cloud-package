@@ -370,14 +370,14 @@ export async function provisionChain(
   let actions: Action[];
   // The FUSION version the floor would move, and what the gate allows.
   let held = false;
-  let admitted: string | null = null;
+  let admitted: { id: string; from: string } | null = null;
   if (state.status !== "DRAFT") {
     const move = fusionMoveOf(input.template, state, input.fusionVersions);
     let fusionVersion: FusionVersionMode = "floor";
     if (move && deps.updates) {
       const gate = await deps.updates.admit({ row, move, now: input.now });
       fusionVersion = gate.version;
-      admitted = gate.updateId;
+      admitted = gate.updateId === null ? null : { id: gate.updateId, from: move.from };
     }
     held = move !== null && (fusionVersion === "hold" || (fusionVersion === "floor" && move.stranded));
     actions = renderFloorUpdateActions({
@@ -406,14 +406,18 @@ export async function provisionChain(
     try {
       await deps.envs.execute(row.environment_id, actions);
     } catch (err) {
-      // Nothing went out: the admitted update waits again.
-      if (admitted && deps.updates) {
-        await deps.updates.release(admitted).catch((releaseErr: unknown) => {
+      if (admitted && deps.updates && (await versionUnmoved(deps, row.environment_id, admitted.from))) {
+        // Nothing went out: the admitted update waits again.
+        const { id } = admitted;
+        await deps.updates.release(id).catch((releaseErr: unknown) => {
           (deps.logger ?? console).error(
-            `[licensing] update ${admitted} of environment ${row.environment_id} was not dispatched and could not be released: ${String(releaseErr)}`,
+            `[licensing] update ${id} of environment ${row.environment_id} was not dispatched and could not be released: ${String(releaseErr)}`,
           );
         });
       }
+      // Otherwise the version may be deploying (the gateway can throw after
+      // the batch applied): the update stays APPLYING for the tracker to
+      // settle or time out, so no second environment of the app starts.
       throw err;
     }
   }
@@ -433,6 +437,19 @@ export async function provisionChain(
     ...(held ? { versionHeld: true as const } : {}),
     ...(actions.length > 0 ? { dispatched: true as const } : {}),
   };
+}
+
+/**
+ * After a failed execute: whether the environment's FUSION version is
+ * provably still `from`. A document that is gone, or cannot be read, is not.
+ */
+async function versionUnmoved(deps: ChainEnvDeps, environmentId: string, from: string): Promise<boolean> {
+  try {
+    const state = await deps.envs.getState(environmentId);
+    return state?.services.find((s) => s.type === "FUSION")?.version === from;
+  } catch {
+    return false;
+  }
 }
 
 /** The warm environment cannot be used; it is discarded and the chain built cold. */
