@@ -4,7 +4,7 @@ import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import { up } from "../db/migrations.js";
 import type { ObservabilityDB } from "../db/schema.js";
-import { createResolvers } from "../resolvers.js";
+import { createResolvers, parseManagedBy } from "../resolvers.js";
 
 const ME = "0xabc";
 
@@ -209,5 +209,28 @@ describe("myEnvironments", () => {
     expect(out[0].studioInstanceId).toBeNull();
     expect(out[0].packages).toEqual([]);
     expect(out[0].services).toEqual([]);
+  });
+});
+
+describe("VetraCloudEnvironmentSummary.managedBy", () => {
+  const MANAGED = { appId: "app-1", templateId: "t-1", rootLicenseId: "l-1", services: ["FUSION"] };
+
+  it("reads the licence template that manages an environment, null for any other", async () => {
+    await envDb.schema.alterTable("environments").addColumn("managedBy", "text").execute();
+    await seedEnv({ id: "holder", owner: ME });
+    await seedEnv({ id: "standalone", owner: ME });
+    await envDb.updateTable("environments").set({ managedBy: JSON.stringify(MANAGED) }).where("id", "=", "holder").execute();
+    const field = (makeResolvers() as unknown as {
+      VetraCloudEnvironmentSummary: { managedBy: (p: { id: string }) => Promise<unknown> };
+    }).VetraCloudEnvironmentSummary.managedBy;
+    expect(await field({ id: "holder" })).toStrictEqual(MANAGED);
+    expect(await field({ id: "standalone" })).toBeNull();
+    expect(await field({ id: "missing" })).toBeNull();
+  });
+
+  it("reads a malformed value as null", () => {
+    expect(parseManagedBy("{not json")).toBeNull();
+    expect(parseManagedBy(JSON.stringify({ appId: "a" }))).toBeNull();
+    expect(parseManagedBy(JSON.stringify({ ...MANAGED, services: "FUSION" }))).toStrictEqual({ ...MANAGED, services: [] });
   });
 });

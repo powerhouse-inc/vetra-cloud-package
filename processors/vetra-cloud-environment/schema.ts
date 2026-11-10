@@ -60,6 +60,12 @@ export interface Environments {
   /** PR number of a PREVIEW env, else NULL. */
   prNumber: number | null;
   /**
+   * JSON of doc state's `managedBy` ({ appId, templateId, rootLicenseId,
+   * services }): the licence template that manages a holder's environment.
+   * NULL for every other environment.
+   */
+  managedBy: string | null;
+  /**
    * Warm-pool tracking (NULL for ordinary, non-pool environments).
    * Written by the studio-pool-keeper service and the claim subgraph.
    * WARMING | AVAILABLE | CLAIMED | FAILED.

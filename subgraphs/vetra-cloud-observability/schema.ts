@@ -424,6 +424,16 @@ export const schema: DocumentNode = gql`
     ownerOrgId: String
     """Addresses allowed to sign on an organisation environment (lowercased)."""
     orgOperators: [String!]!
+    """The licence template that manages this environment (a holder's App environment); null for every other environment."""
+    managedBy: VetraCloudEnvManagedBy
+  }
+
+  type VetraCloudEnvManagedBy {
+    appId: String!
+    templateId: String!
+    rootLicenseId: String!
+    """Service types the template owns (their versions and the FUSION image are locked for the holder)."""
+    services: [String!]!
   }
 
   type VetraCloudEnvPackage {

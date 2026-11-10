@@ -109,6 +109,17 @@ export async function up(db: Kysely<any>): Promise<void> {
     // Column already exists — expected for fresh installs
   }
 
+  // managedBy column — JSON mirror of state's `managedBy` (the licence
+  // template managing a holder's environment), read by myEnvironments.
+  try {
+    await db.schema
+      .alterTable("environments")
+      .addColumn("managedBy", "text")
+      .execute();
+  } catch {
+    // Column already exists — expected for fresh installs
+  }
+
   // Warm-pool columns (added 2026-06-15) — see
   // docs/superpowers/specs/2026-06-15-warm-pool-vetra-studio-design.md.
   // Written by the studio-pool-keeper service and the claim subgraph.

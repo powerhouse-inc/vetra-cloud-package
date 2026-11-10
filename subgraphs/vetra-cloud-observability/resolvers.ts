@@ -1154,11 +1154,38 @@ export function createResolvers(
         packageRegistryResolvers.Mutation.setDefaultPackageRegistry,
     },
 
+    // Its own lookup, so the list query (and its read-model column set)
+    // stays as it was: only a client asking for managedBy pays for it.
+    VetraCloudEnvironmentSummary: {
+      managedBy: async (parent: { id: string }) => {
+        const row = (await envDb
+          .selectFrom("environments")
+          .select("managedBy")
+          .where("id", "=", parent.id)
+          .executeTakeFirst()) as { managedBy: string | null } | undefined;
+        return parseManagedBy(row?.managedBy ?? null);
+      },
+    },
     ReleaseHistoryEntry: {},
     ReleaseIndexEntry: {},
     ClintRuntimeEndpointsForPrefix: {},
     ClintRuntimeEndpoint: {},
   };
+}
+
+/** The read model's managedBy JSON, or null when absent or unreadable. */
+export function parseManagedBy(
+  raw: string | null,
+): { appId: string; templateId: string; rootLicenseId: string; services: string[] } | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof v.appId !== "string" || typeof v.templateId !== "string" || typeof v.rootLicenseId !== "string") return null;
+    const services = Array.isArray(v.services) ? v.services.filter((s): s is string => typeof s === "string") : [];
+    return { appId: v.appId, templateId: v.templateId, rootLicenseId: v.rootLicenseId, services };
+  } catch {
+    return null;
+  }
 }
 
 /** Shape of environments-table row the bump helpers read. */
