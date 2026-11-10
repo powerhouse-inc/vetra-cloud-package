@@ -823,6 +823,29 @@ describe("the floor's FUSION version modes and fusionMoveOf (spec 4.3)", () => {
     ]);
   });
 
+  it("hold reports nothing for a version the record no longer lists", () => {
+    const held = vi.fn();
+    expect(
+      types(
+        renderFloorUpdateActions({
+          template: shaTemplate,
+          current: onFusion(SHA_A),
+          fusionVersions: [SHA_B],
+          fusionVersion: "hold",
+          onFusionHeld: held,
+        }),
+      ),
+    ).toEqual([]);
+    expect(held).not.toHaveBeenCalled();
+  });
+
+  it("force sets a commit tag even with no recording order", () => {
+    expect(render(onFusion(SHA_A), undefined, "force")).toEqual([
+      "SET_SERVICE_VERSION",
+      "APPROVE_CHANGES",
+    ]);
+  });
+
   it("force sets a version the floor cannot order, and never one provably older", () => {
     const held = vi.fn();
     expect(

@@ -553,23 +553,11 @@ export interface FloorUpdateRenderInput {
 }
 
 /**
- * The action list that brings an existing, live environment UP TO a template,
- * treating the template as a floor: missing template packages are added,
- * template packages provably older than the template are upgraded, template
- * services that are missing or disabled are enabled, the FUSION image
- * follows the template (keeping the holder's env, secrets and auto-update
- * settings) and the FUSION version only ever moves up (isFusionUpgrade). Nothing is ever
- * removed, disabled or downgraded, and the label and service prefixes the
- * holder has are left alone. Returns []
- * when the environment already meets the floor, so nothing is dispatched.
- */
-/**
  * The FUSION half of the floor. SET_FUSION_CONFIG replaces the whole fusion
  * config, so it is sent only when the image must change, and then carries the
  * holder's env (secret values live outside the document and are untouched),
- * autoUpdate and tag pattern over. The version moves only up (by semver, or
- * by the artifact's recording order for commit tags), or is set when the
- * service has none (it was missing).
+ * autoUpdate and tag pattern over. The version moves as `mode` says
+ * (FusionVersionMode), or is set when the service has none (it was missing).
  */
 function floorFusionActions(
   s: { repository: string; version: string; host?: string },
@@ -624,6 +612,21 @@ function floorFusionActions(
   return actions;
 }
 
+/**
+ * The action list that brings an existing, live environment UP TO a template,
+ * treating the template as a floor: missing template packages are added,
+ * template packages provably older than the template are upgraded, template
+ * services that are missing or disabled are enabled, and the FUSION image
+ * follows the template (keeping the holder's env, secrets and auto-update
+ * settings). The FUSION version goes as `fusionVersion` says
+ * (FusionVersionMode): "floor" moves it only up (isFusionUpgrade), "hold"
+ * never moves it, and "force" may also move it to a version whose order is
+ * unknown, never to one provably older; a service with no version yet gets
+ * the template's in every mode. Nothing is ever removed or disabled,
+ * no package is downgraded, and the label and service prefixes the holder
+ * has are left alone. Returns [] when the environment already meets the
+ * floor, so nothing is dispatched.
+ */
 export function renderFloorUpdateActions(input: FloorUpdateRenderInput): Action[] {
   const n = validateTemplate(input.template);
   const current = input.current;
