@@ -317,6 +317,25 @@ describe("deployApp to a template-managed production env", () => {
     expect(env?.packages).toStrictEqual([]);
   });
 
+  it("refuses to roll back onto a target managed by an app's licence template", async () => {
+    const good = await deployApp(h.deps, owner, prod());
+    await h.db
+      .updateTable("app_deployments")
+      .set({ status: "READY" })
+      .where("id", "=", good.id)
+      .execute();
+    h.envs.setStatus(app.production_environment_id, "READY");
+    await h.envs.manage(app.production_environment_id);
+    const before = h.envs.executed.length;
+    await expect(rollbackApp(h.deps, owner, good.id)).rejects.toMatchObject({
+      message:
+        "Production environment is managed by an app's licence template; its version moves only through the release gate",
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+    expect(h.envs.executed.slice(before)).toStrictEqual([]);
+    expect(await deploymentCount()).toBe(1);
+  });
+
   it("deploys to a target whose document predates managedBy as before", async () => {
     h.envs.dropManagedBy(app.production_environment_id);
     const d = await deployApp(

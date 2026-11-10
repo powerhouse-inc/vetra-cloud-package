@@ -331,6 +331,8 @@ describe("vetra-licensing migrations: app release rollout tables", () => {
   it("adds channel_override to license_environments, null on existing rows", async () => {
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
     await up(db as Kysely<any>);
+    // A database from before the column: the row exists when up() adds it.
+    await db.schema.alterTable("license_environments").dropColumn("channel_override").execute();
     await db.insertInto("license_environments").values({
       environment_id: "e", root_license_id: "l", app_id: "a", user_did: "u", license_id: "l", template_id: null,
       label: null, template_hash: "h", ended_at: null, stopped_at: null, delete_after: null, created_at: "t", updated_at: "t",
@@ -355,7 +357,16 @@ describe("vetra-licensing migrations: app release rollout tables", () => {
   it("drops the release tables on down() and recreates them on up()", async () => {
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
     await up(db as Kysely<any>);
+    await db.insertInto("app_release_settings")
+      .values({ app_id: "a", policy: "GATED", default_notice_hours: 24, updated_at: "t" }).execute();
+    await db.insertInto("app_rollouts").values({
+      id: "r1", app_id: "a", artifact_name: "host", version: "1.1.0", status: "ACTIVE", apply_after: "t",
+      promoted_by: "p", promoted_at: "t", paused_at: null, paused_reason: null,
+    }).execute();
     await db.insertInto("environment_updates").values(update("u1", "r1")).execute();
+    for (const t of ["app_release_settings", "app_rollouts", "environment_updates"] as const) {
+      expect(await db.selectFrom(t).selectAll().execute()).toHaveLength(1);
+    }
     await down(db as Kysely<any>);
     await up(db as Kysely<any>);
     for (const t of ["app_release_settings", "app_rollouts", "environment_updates"] as const) {

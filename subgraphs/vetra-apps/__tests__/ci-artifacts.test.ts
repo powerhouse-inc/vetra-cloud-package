@@ -200,7 +200,8 @@ describe("ciRecordArtifact under a release policy (spec 4.1)", () => {
 
   it("asks for the policy only when a channel could move, and fails loudly when it cannot be read", async () => {
     const app = await seedActiveApp(h);
-    h.deps.docs = fakeDocs(new Set([app.id]));
+    const docs = fakeDocs(new Set([app.id]));
+    h.deps.docs = docs;
     let asked = 0;
     h.deps.releasePolicy = async () => {
       asked++;
@@ -208,8 +209,11 @@ describe("ciRecordArtifact under a release policy (spec 4.1)", () => {
     };
     await ciRecordArtifact(h.deps, ci(), input({ appId: app.id }));
     expect(asked).toBe(0);
+    docs.executed.length = 0;
     await expect(
       ciRecordArtifact(h.deps, ci(), input({ appId: app.id, channel: "LATEST" })),
     ).rejects.toThrow("licensing db down");
+    expect(docs.executed).toStrictEqual([]);
+    expect(docs.created).toStrictEqual([]);
   });
 });

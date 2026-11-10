@@ -594,6 +594,16 @@ describe("a template-managed production env takes no Studio launch", () => {
     expect(h.envs.executed.length).toBe(before);
   });
 
+  it("the product's drive is refused: nothing recorded, nothing written", async () => {
+    const p = await seedProduct();
+    h.envs.setStatus(p.envId, "READY");
+    await h.envs.manage(p.envId);
+    const before = h.envs.executed.length;
+    expect(await code(setStudioProductDrive(h.deps, agent, p.app.id, "drive-1", p.secret))).toBe("BAD_USER_INPUT");
+    expect((await getApp(h.db, p.app.id))!.product_drive_id).toBeNull();
+    expect(h.envs.executed.length).toBe(before);
+  });
+
   it("a launch queued before the env was marked fails at the watcher: nothing dispatched, nothing restored", async () => {
     const p = await seedProduct();
     await launchToReady(p, launchInput(p, 1, SHA1));
