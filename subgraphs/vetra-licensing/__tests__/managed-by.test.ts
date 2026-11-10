@@ -159,6 +159,78 @@ describe("createManagedBySync", () => {
     );
   });
 
+  it("logs a write that keeps failing once, again when its message changes, and again after a success", async () => {
+    const warn = vi.fn();
+    let failure: string | null = "reactor down";
+    const sync = createManagedBySync({
+      envs: {
+        getState: async () => ({ status: "READY", managedBy: null }) as never,
+        execute: async () => {
+          if (failure) throw new Error(failure);
+        },
+      },
+      logger: { warn },
+    });
+    await sync(app(), [row()]);
+    await sync(app(), [row()]);
+    expect(warn).toHaveBeenCalledOnce();
+    failure = "locked";
+    await sync(app(), [row()]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenLastCalledWith(
+      expect.stringContaining("failed: Error: locked"),
+    );
+    failure = null;
+    await sync(app(), [row()]);
+    // The marker changes, so the next tick writes (and fails) again.
+    failure = "locked";
+    await sync(app(["FUSION"]), [row()]);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  it("forgets an ended environment, so a live row for it again is re-checked", async () => {
+    const s = setup({ status: "READY", managedBy: null });
+    await s.sync(app(), [row()]);
+    await s.sync(app(), [row({ ended_at: T })]);
+    await s.sync(app(), [row()]);
+    expect(s.getState).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a row without a template alone", async () => {
+    const s = setup({ status: "READY", managedBy: null });
+    await s.sync(app(), [row({ template_id: null })]);
+    expect(s.getState).not.toHaveBeenCalled();
+    expect(s.executed).toHaveLength(0);
+  });
+
+  it("marks a stopped environment that has not ended", async () => {
+    const s = setup({ status: "STOPPED", managedBy: null });
+    await s.sync(app(), [row({ stopped_at: T })]);
+    expect(s.executed).toHaveLength(1);
+    expect(s.executed[0]![0]!.input).toStrictEqual(WANTED);
+  });
+
+  it("re-marks an environment whose row moves to another template", async () => {
+    const two: AppDocView = {
+      ...app(),
+      templates: [
+        tpl("t", "DEDICATED", ["FUSION", "CONNECT"]),
+        tpl("t2", "DEDICATED", ["SWITCHBOARD"]),
+      ],
+    };
+    const s = setup({ status: "READY", managedBy: WANTED });
+    await s.sync(two, [row()]);
+    expect(s.executed).toHaveLength(0);
+    await s.sync(two, [row({ template_id: "t2" })]);
+    expect(s.executed).toHaveLength(1);
+    expect(s.executed[0]![0]!.input).toStrictEqual({
+      appId: "a",
+      templateId: "t2",
+      rootLicenseId: "l1",
+      services: ["SWITCHBOARD"],
+    });
+  });
+
   it("marks the other environments when one fails", async () => {
     const executed: string[] = [];
     const sync = createManagedBySync({
