@@ -723,7 +723,7 @@ describe("provisionChain asks the update gate before it moves a FUSION version (
     await live();
     // The gateway applied the batch (the version first), then threw.
     deps.envs.execute = async (id) => {
-      states.get(id)!.services[0]!.version = "1.1.0";
+      (states.get(id) as ReturnType<typeof liveOn100>).services[0]!.version = "1.1.0";
       throw new Error("approve rejected");
     };
     await expect(provisionChain(deps, input({ templateHash: "h2", template: v110 }))).rejects.toThrow("approve rejected");
