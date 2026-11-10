@@ -29,7 +29,13 @@ const env = (subdomain: string): VetraCloudEnvironmentState =>
     apexService: null,
     services: [{ type: "FUSION", enabled: true, prefix: "app" }],
   }) as unknown as VetraCloudEnvironmentState;
-const ENV_STATES: Record<string, VetraCloudEnvironmentState> = { "env-app": env("pfnuer"), "env-ded": env("thesis") };
+const ENV_STATES: Record<string, VetraCloudEnvironmentState> = {
+  "env-app": env("pfnuer"),
+  "env-ded": env("thesis"),
+  "env-off": env("offboarding"),
+  "env-EXPIRED": env("lapsed-expired"),
+  "env-REVOKED": env("lapsed-revoked"),
+};
 
 // The callers, as the gateway builds them from a Renown bearer (any chain).
 const asHolder = { user: { address: HOLDER, networkId: "eip155", chainId: 137 } };
@@ -119,7 +125,7 @@ beforeAll(async () => {
   const tpl = ((await pub.VetraPublisherQueries.templates!({}, { appId: APP_DED }, asOwner)) as { id: string }[])[0]!.id;
   await pm("addTerm", { input: { appId: APP_DED, kind: "beta", templateId: tpl, validityDays: 7, issuers: ["INVITE_CODE"] } });
 
-  for (const c of ["kv-pro-01", "kv-pro-02", "kv-pro-03", "kv-pro-04", "kv-pro-05", "kv-pro-06"]) await code(APP_DED, "pro", c, { maxUses: 5 });
+  for (const c of ["kv-pro-01", "kv-pro-02", "kv-pro-03", "kv-pro-04", "kv-pro-05", "kv-pro-06", "kv-pro-07"]) await code(APP_DED, "pro", c, { maxUses: 5 });
   // A DEDICATED template pointing at an artifact the app never published: it
   // cannot be resolved, so its published term issues nothing.
   const broken = (await pm("addTemplate", { input: { appId: APP_DED, name: "Broken", mode: "DEDICATED" } })) as string;
@@ -357,6 +363,20 @@ describe("vetraSubscriptions: what I hold", () => {
     travel(plus(ended, 91));
     await h.db.deleteFrom("license_environments").where("environment_id", "=", "env-off").execute();
     expect((await mine()).map((s) => s.licenseId)).not.toContain(lapsed.licenseId);
+  });
+
+  it("a licence whose environment the holder deleted warns about nothing and links nowhere", async () => {
+    const lapsed = await redeem({ code: "kv-pro-07", label: "Deleted" });
+    // The row outlives the document: the holder deleted the environment.
+    await h.db.insertInto("license_environments").values({
+      environment_id: "env-deleted", root_license_id: lapsed.licenseId, app_id: APP_DED, user_did: HOLDER_DID,
+      license_id: lapsed.licenseId, template_id: null, label: "Deleted", template_hash: "h",
+      ended_at: clock, stopped_at: null, delete_after: plus(clock, 90), created_at: clock, updated_at: clock,
+    }).execute();
+    await gateway.expire(lapsed.licenseId);
+    expect((await mine()).find((s) => s.licenseId === lapsed.licenseId)).toMatchObject({
+      status: "EXPIRED", mode: "DEDICATED", environmentId: null, openUrl: null, warnings: [],
+    });
   });
 
   it("an ended licence without an environment stays listed for 90 days after it ended", async () => {
