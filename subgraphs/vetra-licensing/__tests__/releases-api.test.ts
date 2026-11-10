@@ -641,7 +641,9 @@ describe("vetraReleases through the resolvers", () => {
         artifactName: "host",
         staging: "1.0.0",
         latest: "1.0.0",
-        canaries: [{ environmentId: "mine", version: "1.1.0", status: "READY" }],
+        canaries: [
+          { environmentId: "mine", version: "1.1.0", status: "READY" },
+        ],
       },
     ]);
   });
