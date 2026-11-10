@@ -57,3 +57,11 @@ describe("loadLicensingConfig", () => {
     })).toMatchObject({ warmPoolScanIntervalMs: 30_000, warmPoolCreatesPerTick: 3, warmPoolMaxPerTemplate: 10 });
   });
 });
+
+describe("loadLicensingConfig: the update timeout (spec 4.3)", () => {
+  it("defaults to 20 minutes and reads LICENSING_UPDATE_TIMEOUT_MS", () => {
+    expect(loadLicensingConfig({}).updateTimeoutMs).toBe(20 * 60 * 1000);
+    expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: "60000" }).updateTimeoutMs).toBe(60_000);
+    expect(loadLicensingConfig({ LICENSING_UPDATE_TIMEOUT_MS: "0" }).updateTimeoutMs).toBe(20 * 60 * 1000);
+  });
+});

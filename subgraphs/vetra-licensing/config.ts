@@ -43,6 +43,11 @@ export interface LicensingConfig {
   tokensPerTick: number;
   /** A handler step (or read) that takes longer fails, so a hung call cannot stall every later tick. */
   stepTimeoutMs: number;
+  /**
+   * An APPLYING environment update not READY on its version within this
+   * long has failed (LICENSING_UPDATE_TIMEOUT_MS, spec 4.3).
+   */
+  updateTimeoutMs: number;
   /** How often the app warm pool keeper runs (APP_WARM_POOL_SCAN_INTERVAL_MS). */
   warmPoolScanIntervalMs: number;
   /** Warm environments created per keeper tick, across all pools (APP_WARM_POOL_CREATES_PER_TICK). 0 pauses filling. */
@@ -101,6 +106,7 @@ export function loadLicensingConfig(
     licensingPublicUrl: trimmed("VETRA_LICENSING_URL"),
     retemplatePerTick: nonNegative("LICENSING_RETEMPLATE_PER_TICK", 5),
     stepTimeoutMs: int("LICENSING_STEP_TIMEOUT_MS", 120 * 1000),
+    updateTimeoutMs: int("LICENSING_UPDATE_TIMEOUT_MS", 20 * 60 * 1000),
     tokensPerTick: nonNegative("LICENSING_TOKENS_PER_TICK", 5),
     warmPoolScanIntervalMs: int("APP_WARM_POOL_SCAN_INTERVAL_MS", 30 * 1000),
     warmPoolCreatesPerTick: nonNegative("APP_WARM_POOL_CREATES_PER_TICK", 3),
