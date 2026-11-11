@@ -11,7 +11,11 @@ import {
   type AppsDeps,
 } from "./service.js";
 import { mirrorAppById } from "./app-document.js";
-import { markBranchDeleted } from "./instances/reconciler.js";
+import {
+  markBranchDeleted,
+  markPullRequestClosed,
+  markPullRequestReopened,
+} from "./instances/reconciler.js";
 
 /** `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`. */
 export function verifyGithubSignature(
@@ -122,12 +126,25 @@ export async function handleGithubWebhook(
   }
   const action = typeof payload.action === "string" ? payload.action : null;
 
-  if (input.event === "pull_request" && action === "closed") {
+  if (
+    input.event === "pull_request" &&
+    (action === "closed" || action === "reopened")
+  ) {
     const repositoryId = idOf(pick(payload, "repository.id"));
     const prNumber = Number(
       pick(payload, "pull_request.number") ?? payload.number,
     );
     if (!repositoryId || !Number.isInteger(prNumber)) return { status: 204 };
+    if (action === "reopened") {
+      const reopened = await markPullRequestReopened(
+        deps,
+        repositoryId,
+        prNumber,
+      );
+      return reopened > 0
+        ? { status: 200, body: { reopenedInstances: reopened } }
+        : { status: 204 };
+    }
     let removed = 0;
     for (const app of await appsByRepository(deps, repositoryId)) {
       const preview = await getPreview(deps.db, app.id, prNumber);
@@ -140,7 +157,18 @@ export async function handleGithubWebhook(
       );
       removed++;
     }
-    return { status: 200, body: { removedPreviews: removed } };
+    const removedInstances = await markPullRequestClosed(
+      deps,
+      repositoryId,
+      prNumber,
+    );
+    return {
+      status: 200,
+      body:
+        removedInstances > 0
+          ? { removedPreviews: removed, removedInstances }
+          : { removedPreviews: removed },
+    };
   }
 
   if (input.event === "installation" && action === "deleted") {

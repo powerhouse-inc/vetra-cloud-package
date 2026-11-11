@@ -720,3 +720,69 @@ export async function markBranchDeleted(
     );
   return rows.length;
 }
+
+async function previewRowsOfPr(
+  deps: AppsDeps,
+  repositoryId: string,
+  pr: number,
+): Promise<{ id: string; app_id: string }[]> {
+  return deps.db
+    .selectFrom("instances")
+    .innerJoin("apps", "apps.id", "instances.app_id")
+    .select(["instances.id", "instances.app_id"])
+    .where("apps.repository_id", "=", repositoryId)
+    .where("instances.kind", "=", "preview")
+    .where("instances.pr", "=", pr)
+    .execute();
+}
+
+/**
+ * A PR was closed or merged: its preview goes (spec section 5) and stays
+ * gone, whatever builds still arrive, until the PR is reopened. Runs under
+ * the app's instances lock, so a reconciler pass cannot revive the row
+ * concurrently. Returns how many rows were marked.
+ */
+export async function markPullRequestClosed(
+  deps: AppsDeps,
+  repositoryId: string,
+  pr: number,
+): Promise<number> {
+  const rows = await previewRowsOfPr(deps, repositoryId, pr);
+  for (const r of rows)
+    await withKeyLock(`instances:${r.app_id}`, async () => {
+      const nowIso = deps.now().toISOString();
+      await deps.db
+        .updateTable("instances")
+        .set({ removed_at: nowIso, updated_at: nowIso })
+        .where("id", "=", r.id)
+        .where("removed_at", "is", null)
+        .execute();
+      await deps.db
+        .updateTable("instances")
+        .set({ removed_reason: PR_CLOSED, updated_at: nowIso })
+        .where("id", "=", r.id)
+        .execute();
+    });
+  return rows.length;
+}
+
+/** A closed PR was reopened: its preview may come back (after the GitHub check). */
+export async function markPullRequestReopened(
+  deps: AppsDeps,
+  repositoryId: string,
+  pr: number,
+): Promise<number> {
+  let n = 0;
+  for (const r of await previewRowsOfPr(deps, repositoryId, pr))
+    await withKeyLock(`instances:${r.app_id}`, async () => {
+      const nowIso = deps.now().toISOString();
+      const res = await deps.db
+        .updateTable("instances")
+        .set({ removed_reason: PR_REOPENED, updated_at: nowIso })
+        .where("id", "=", r.id)
+        .where("removed_reason", "=", PR_CLOSED)
+        .executeTakeFirst();
+      n += Number(res.numUpdatedRows);
+    });
+  return n;
+}
