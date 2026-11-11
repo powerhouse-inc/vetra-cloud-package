@@ -15,6 +15,7 @@ import { listInstances } from "../instances/repo.js";
 import {
   markBranchDeleted,
   reconcileInstancesOnce,
+  WAITING_FOR_ENV,
 } from "../instances/reconciler.js";
 import { UPDATE_TIMEOUT_MS } from "../instances/status.js";
 
@@ -448,6 +449,46 @@ describe("reconcileInstancesOnce — final fix wave", () => {
     h.envs.setStatus(envId, "READY");
     await reconcileInstancesOnce(h.deps);
     expect((await one()).status).toBe("ready");
+  });
+});
+
+describe("reconcileInstancesOnce — a deleted branch's environment going", () => {
+  it("brings the branch back only once its old environment is gone", async () => {
+    h.envs.delete = async (id: string) => {
+      h.envs.deleted.push(id);
+      h.envs.setStatus(id, "TERMINATING");
+    };
+    await seedRelease(h, appId, {
+      version: "2.0.0-beta.0-next.1",
+      run: 100,
+      branch: "next",
+    });
+    await reconcileInstancesOnce(h.deps);
+    const env = (await one()).environment_id!;
+    await markBranchDeleted(h.deps, REPO_ID, "next");
+    await reconcileInstancesOnce(h.deps);
+    await seedRelease(h, appId, {
+      version: "2.0.0-beta.0-next.2",
+      run: 200,
+      branch: "next",
+      digest: digest("b"),
+    });
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      environment_id: env,
+      reason: WAITING_FOR_ENV,
+    });
+    expect(h.envs.deleted.filter((d) => d === env)).toHaveLength(1);
+
+    h.envs.setStatus(env, "DESTROYED");
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      host: label("next"),
+    });
+    expect((await one()).environment_id).not.toBe(env);
   });
 });
 

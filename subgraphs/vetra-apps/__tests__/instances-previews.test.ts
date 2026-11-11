@@ -13,7 +13,9 @@ import {
   PR_CLOSED,
   PR_FORK,
   markPullRequestClosed,
+  markPullRequestReopened,
   reconcileInstancesOnce,
+  WAITING_FOR_ENV,
   sweepInstancesOnce,
 } from "../instances/reconciler.js";
 import { listPreviews } from "../repo.js";
@@ -408,6 +410,87 @@ describe("preview instances — the 15-minute sweep", () => {
       cfg: { ...h.deps.cfg, instances: { enabled: false, labelSuffix: "" } },
     });
     expect((await byPr(12)).removed_at).toBeNull();
+  });
+});
+
+describe("preview instances — removal waits for the environment to go", () => {
+  /** A real delete leaves the environment TERMINATING for a while. */
+  const slowDelete = () => {
+    h.envs.delete = async (id: string) => {
+      h.envs.deleted.push(id);
+      h.envs.setStatus(id, "TERMINATING");
+    };
+  };
+  const deletes = (env: string) => h.envs.deleted.filter((d) => d === env);
+  const envsOnHost = async (host: string) => {
+    const out: string[] = [];
+    for (const [id] of h.envs.docs) {
+      const st = (await h.envs.getState(id))!;
+      if (st.status !== "TERMINATING" && st.status !== "DESTROYED")
+        if (JSON.stringify(st).includes(host)) out.push(id);
+    }
+    return out;
+  };
+
+  it("brings an evicted preview back only once its old environment is gone (limit 1, then 5)", async () => {
+    slowDelete();
+    await setApp({ preview_limit: 1 });
+    await prBuild(1, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    const { environment_id: env, host } = await byPr(1);
+    await prBuild(2, 1, 200);
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(1)).toMatchObject({
+      environment_id: env,
+      reason: WAITING_FOR_ENV,
+    });
+    expect((await byPr(1)).status).not.toBe("removed");
+
+    await setApp({ preview_limit: 5 });
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect((await byPr(1)).environment_id).toBe(env);
+    expect(deletes(env!)).toHaveLength(1);
+    expect(await envsOnHost(host!)).toEqual([]);
+
+    h.envs.setStatus(env!, "DESTROYED");
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(1)).toMatchObject({
+      status: "removed",
+      environment_id: null,
+    });
+    await reconcileInstancesOnce(h.deps);
+    const back = await byPr(1);
+    expect(back).toMatchObject({ status: "updating", host, removed_at: null });
+    expect(back.environment_id).not.toBe(env);
+  });
+
+  it("does not bring a closed-then-reopened preview back while its environment is going", async () => {
+    slowDelete();
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    const { environment_id: env, host } = await byPr(12);
+    await markPullRequestClosed(h.deps, REPO_ID, 12);
+    await reconcileInstancesOnce(h.deps);
+    await markPullRequestReopened(h.deps, REPO_ID, 12);
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(12)).toMatchObject({
+      environment_id: env,
+      reason: WAITING_FOR_ENV,
+    });
+    expect(deletes(env!)).toHaveLength(1);
+    expect(await envsOnHost(host!)).toEqual([]);
+
+    // Gone from the store altogether counts as gone too.
+    h.envs.docs.delete(env!);
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(12)).toMatchObject({
+      status: "updating",
+      host,
+      removed_at: null,
+    });
   });
 });
 

@@ -47,6 +47,12 @@ export const INSTANCE_BASE_DOMAIN = "vetra.io";
 export const BRANCH_DELETED = "branch deleted";
 const NOT_WANTED = "no longer wanted";
 /**
+ * reason of an instance being removed while its environment is still going: it
+ * keeps environment_id (and its host) until the environment is DESTROYED or
+ * gone, so a revive never makes a second environment on the same host.
+ */
+export const WAITING_FOR_ENV = "waiting for the environment to go";
+/**
  * removed_reason of a closed (or merged) PR's preview: revived only by
  * reopening — the webhook, or (missed webhook) a build with a newer run than
  * its last target, after GitHub says the PR is open. A re-run keeps its run id.
@@ -777,14 +783,26 @@ async function initEnvironment(
 async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
   if (row.status === "removed") return;
   if (row.environment_id) {
-    const state = await deps.envs.getState(row.environment_id);
-    // Only this App's unlicensed PREVIEW, or a DRAFT it created, is deleted.
+    const envId = row.environment_id;
+    let state = await deps.envs.getState(envId);
+    // Only this App's unlicensed PREVIEW, or a DRAFT it created, is deleted;
+    // and never again once it is on its way out.
     if (
       state &&
+      !GOING.has(state.status) &&
+      state.status !== "DESTROYED" &&
       ((ours(state, row) && state.app?.role === "PREVIEW") ||
         ownDraft(state, row))
-    )
-      await deps.envs.delete(row.environment_id);
+    ) {
+      await deps.envs.delete(envId);
+      state = await deps.envs.getState(envId);
+    }
+    // Still going: it holds the host; the row (and its tombstone) waits.
+    if (state && GOING.has(state.status)) {
+      if (row.status !== "pending" || row.reason !== WAITING_FOR_ENV)
+        await patch(deps, row, { status: "pending", reason: WAITING_FOR_ENV });
+      return;
+    }
   }
   // Tombstones: a deleted branch (may come back with a newer build) and every
   // preview (a closed PR stays closed; a returning one keeps its host).
