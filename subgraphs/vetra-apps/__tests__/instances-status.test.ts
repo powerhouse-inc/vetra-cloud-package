@@ -60,4 +60,34 @@ describe("observeEnvironment", () => {
       reason: "the environment is TERMINATING",
     });
   });
+
+  it("fails a failed deployment at once, on any tag and with no start time", () => {
+    const failed = { kind: "failed", reason: "the deployment failed" };
+    expect(
+      observeEnvironment(
+        state("DEPLOYMENt_FAILED", "1.4.0@sha256:x"),
+        TAG,
+        null,
+        now,
+      ),
+    ).toEqual(failed);
+    expect(
+      observeEnvironment(state("DEPLOYMENt_FAILED"), TAG, started(1000), now),
+    ).toEqual(failed);
+  });
+
+  it("keeps DRAFT, unknown statuses and unparseable start times updating, never ready", () => {
+    expect(observeEnvironment(state("DRAFT"), TAG, null, now)).toEqual({
+      kind: "updating",
+    });
+    expect(observeEnvironment(state("SOMETHING_NEW"), TAG, null, now)).toEqual({
+      kind: "updating",
+    });
+    expect(
+      observeEnvironment(state("DEPLOYING"), TAG, "not a date", now),
+    ).toEqual({ kind: "updating" });
+    expect(observeEnvironment(state("DRAFT"), TAG, "not a date", now)).toEqual({
+      kind: "updating",
+    });
+  });
 });
