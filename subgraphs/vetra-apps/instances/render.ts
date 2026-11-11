@@ -20,8 +20,29 @@ export interface InstanceImage {
   phHost: string;
 }
 
-export const imageTag = (version: string, digest: string) =>
-  `${version}@${digest}`;
+export const imageTag = (version: string, digest: string) => {
+  if (!version)
+    throw new Error(`An instance image needs a version (digest ${digest})`);
+  return `${version}@${digest}`;
+};
+
+/** A tag must carry a version before its digest: `repo:@sha256:…` is not a usable reference. */
+function assertVersioned(image: InstanceImage) {
+  if (!image.tag || image.tag.startsWith("@"))
+    throw new Error(
+      `Instance image ${image.repository} has no version in its tag "${image.tag}"`,
+    );
+}
+
+const envName = (state: VetraCloudEnvironmentState) =>
+  `"${state.genericSubdomain ?? state.label ?? "unnamed"}"`;
+
+/** Environments that are going or gone: nothing to update. */
+const GONE = new Set<VetraCloudEnvironmentState["status"]>([
+  "TERMINATING",
+  "DESTROYED",
+  "ARCHIVED",
+]);
 
 type FusionEnvEntry = { name: string; value: string | null; isSecret: boolean };
 
@@ -57,6 +78,7 @@ export interface CreateInstanceInput {
  * backups, no kept /data; overview gaps 5 and 6). APPROVE is sent separately.
  */
 export function instanceCreateActions(i: CreateInstanceInput): Action[] {
+  assertVersioned(i.image);
   return [
     setLabel({ label: i.label }),
     initialize({
@@ -96,12 +118,27 @@ const sameEnv = (state: VetraCloudEnvironmentState, want: FusionEnvEntry[]) =>
     })),
   ) === JSON.stringify(want);
 
-/** The actions that bring an existing instance environment to `image`; [] when it already runs it. */
+/**
+ * The actions that bring an existing instance environment to `image`; [] when it already
+ * runs it or is going away. Throws on anything that is not an instance (a licensed
+ * environment, or one that is not an app PREVIEW): these actions are system-signed, so
+ * the reducer's template lock does not stop them, and this is the guard.
+ */
 export function instanceUpdateActions(
   state: VetraCloudEnvironmentState,
   image: InstanceImage,
   admins: string,
 ): Action[] {
+  if (state.managedBy)
+    throw new Error(
+      `Environment ${envName(state)} is licensed (managedBy set): not an instance`,
+    );
+  if (state.app?.role !== "PREVIEW")
+    throw new Error(
+      `Environment ${envName(state)} is not an instance (not an app PREVIEW)`,
+    );
+  if (GONE.has(state.status)) return [];
+  assertVersioned(image);
   const fusion = state.services.find((s) => s.type === "FUSION");
   const env = fusionEnv(image, admins);
   const changes: Action[] = [];

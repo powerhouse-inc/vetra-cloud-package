@@ -120,3 +120,85 @@ describe("instanceUpdateActions", () => {
     ).toEqual(["SET_FUSION_CONFIG"]);
   });
 });
+
+describe("instanceUpdateActions refuses what is not an instance", () => {
+  it("throws on a licensed environment (managedBy set), naming it", async () => {
+    const envs = new FakeEnvs();
+    const s = (await envs.getState(await created(envs)))!;
+    const licensed = {
+      ...s,
+      managedBy: {
+        appId: "sektar",
+        rootLicenseId: "lic-1",
+        services: ["FUSION" as const],
+        templateId: "t-1",
+      },
+    };
+    expect(() =>
+      instanceUpdateActions(
+        licensed,
+        image(imageTag("1.5.0-main.2", D2)),
+        OWNER,
+      ),
+    ).toThrow(/"shop-main" is licensed/);
+  });
+
+  it("throws on an environment that is not an app PREVIEW", async () => {
+    const envs = new FakeEnvs();
+    const s = (await envs.getState(await created(envs)))!;
+    const production = {
+      ...s,
+      app: { ...s.app!, role: "PRODUCTION" as const },
+    };
+    expect(() => instanceUpdateActions(production, image(), OWNER)).toThrow(
+      /"shop-main" is not an instance/,
+    );
+    expect(() =>
+      instanceUpdateActions({ ...s, app: null }, image(), OWNER),
+    ).toThrow(/not an instance/);
+  });
+
+  it.each(["TERMINATING", "DESTROYED", "ARCHIVED"] as const)(
+    "does nothing to a %s environment",
+    async (status) => {
+      const envs = new FakeEnvs();
+      const s = (await envs.getState(await created(envs)))!;
+      expect(
+        instanceUpdateActions(
+          { ...s, status },
+          image(imageTag("1.5.0-main.2", D2)),
+          OWNER,
+        ),
+      ).toEqual([]);
+    },
+  );
+});
+
+describe("empty versions are refused", () => {
+  it("imageTag throws on an empty version", () => {
+    expect(() => imageTag("", D1)).toThrow(/version/);
+  });
+
+  it("create and update throw on a tag without a version", async () => {
+    const envs = new FakeEnvs();
+    const s = (await envs.getState(await created(envs)))!;
+    expect(() => instanceUpdateActions(s, image(`@${D2}`), OWNER)).toThrow(
+      /version/,
+    );
+    expect(() =>
+      instanceCreateActions({
+        label: "x",
+        host: "x",
+        baseDomain: "vetra.io",
+        registry: "r",
+        owner: OWNER,
+        ownerOrgId: null,
+        appId: "app-1",
+        gitRef: "refs/heads/main",
+        imageProject: "acme",
+        image: image(`@${D1}`),
+        admins: OWNER,
+      }),
+    ).toThrow(/version/);
+  });
+});
