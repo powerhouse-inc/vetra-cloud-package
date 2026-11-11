@@ -76,7 +76,7 @@ Version rules:
 - A version is a **release** when its prerelease part is empty or matches
   exactly `^(alpha|beta|rc)\.\d+$`; anything else is a **build**.
 - Releases are ordered by semver. Builds are ordered only among themselves,
-  by the run number of their branch or PR (section 14.17), and are never
+  by the GitHub run id of their run (section 14.17), and are never
   compared with releases: a build is never a plan's target, so nothing needs
   that comparison (semver would put `2.0.0-beta.2-next.12` after
   `2.0.0-beta.2`).
@@ -142,7 +142,8 @@ One run:
 
 `{ "appId": "…" }` → `{ "registry": "cr.vetra.io", "username": "…",
 "password": "…", "repository": "<namespace>/<app>", "expiresAt": "…" }`:
-a Harbor robot with push rights on the namespace's project, valid for 1 hour,
+a Harbor robot with push rights on the namespace's project, valid for 1 day,
+deleted by Vetra once it is 1 hour old,
 issued only to the app's own CI identity (the same workload-token check as
 `ci/releases`). Vetra creates the namespace's project on first use.
 
@@ -154,7 +155,6 @@ issued only to the app's own CI identity (the same workload-token check as
   "version": "2.0.0-beta.1",
   "kind": "release",                // "build" | "release"
   "branch": "next", "pr": null,
-  "run": 412,                       // the workflow run number: orders builds and releases of a branch
   "commit": "cac9276bc10b…",
   "notes": "## Features …",         // releases only: the changelog
   "image": { "ref": "cr.vetra.io/sektar/sektar:2.0.0-beta.1", "digest": "sha256:…", "host": "cli" },
@@ -165,8 +165,12 @@ issued only to the app's own CI identity (the same workload-token check as
 }
 ```
 
-Vetra verifies the attestation through the GitHub API (built by this repo's
-`vetra.yml` workflow at this commit, digest matching), stores the record
+The run is not in the body: Vetra takes it from the workload token
+(`claim.runId`, GitHub's run id), which orders builds and releases of a branch
+(14.17). Vetra verifies the attestation through the GitHub API (built by this
+repo's `vetra.yml` workflow at this commit, digest matching; the exact checks
+and `sigstore` options are in
+[the spike findings](./2026-11-11-releases-phase-1-spike.md)), stores the record
 immutably and answers: 200 for a version it already has with the same digest
 (a re-run is a no-op), 409 for the same version with a different digest. `requires` comes from `powerhouse.config.json` (`vetra.requires`).
 `migrates` is set when the commits since the previous release add or change
@@ -470,7 +474,8 @@ carried over:
     already); restoring is CNPG point-in-time recovery to that backup, plus the
     `/data` volume snapshot taken with it.
 17. **Newest** build or release of a branch (and newest build of a PR) is the
-    one with the highest workflow run number, never the one that arrived last.
+    one with the highest verified GitHub run id (`claim.runId`), never the one
+    that arrived last.
 18. **PR titles.** Vetra's PR check fails a PR whose title is not a
     conventional commit (squash merges make the title the commit, and
     release-please versions from it).
@@ -484,6 +489,7 @@ Work outside Vetra's repos, and the phase that needs it:
 | Powerhouse monorepo (`ph` CLI) | `ph vetra check` (14.10) | 1 |
 | Powerhouse monorepo (hosts) | the running version a host reports, for the health definition (14.7) | 2 |
 | Powerhouse monorepo (switchboard auth) | `ACCESS=licensed` with the 24 h grace (14.14) and `ACCESS=members` | 3 |
+| Renown (`renown-package` workload exchange) | tokens for prerelease and maintenance branches: today only `push`/`workflow_dispatch` on the one production branch, `v*` tag pushes and `pull_request` runs get one (`core/refs.ts` `classifyRun`); a push to `next` is refused with 403. Needs a list of release branches per workload identity (spike findings, section 1) | 1 |
 | GitHub App "Vetra Deploy" | `contents: write`, `pull_requests: write`; every installation approves the upgrade (14.15) | 1 |
 | Sektar repo | the new workflow, `vetra` section in `powerhouse.config.json`, root `Dockerfile` removed | 1 (workflow), 3 (switch-over) |
 
