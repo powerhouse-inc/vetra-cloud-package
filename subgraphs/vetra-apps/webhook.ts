@@ -194,6 +194,18 @@ export async function handleGithubWebhook(
 
 const NULL_SHA = /^0+$/;
 
+/** A deleted branch (push with deleted: true on refs/heads/…) takes its branch instance with it. */
+async function removeDeletedBranchInstances(
+  deps: AppsDeps,
+  payload: Payload,
+): Promise<number> {
+  const repositoryId = idOf(pick(payload, "repository.id"));
+  const ref = typeof payload.ref === "string" ? payload.ref : "";
+  if (!repositoryId || payload.deleted !== true || !ref.startsWith("refs/heads/"))
+    return 0;
+  return markBranchDeleted(deps, repositoryId, ref.slice("refs/heads/".length));
+}
+
 /**
  * A push to a Studio product's production branch made outside the Studio
  * (D15): its head sha goes to `apps.external_changes_sha`, and the Studio
@@ -207,18 +219,6 @@ const NULL_SHA = /^0+$/;
  * Studio's commits under someone else's head is flagged. Returns how many
  * Apps were flagged.
  */
-/** A deleted branch (push with deleted: true on refs/heads/…) takes its branch instance with it. */
-async function removeDeletedBranchInstances(
-  deps: AppsDeps,
-  payload: Payload,
-): Promise<number> {
-  const repositoryId = idOf(pick(payload, "repository.id"));
-  const ref = typeof payload.ref === "string" ? payload.ref : "";
-  if (!repositoryId || payload.deleted !== true || !ref.startsWith("refs/heads/"))
-    return 0;
-  return markBranchDeleted(deps, repositoryId, ref.slice("refs/heads/".length));
-}
-
 async function flagOutsidePush(deps: AppsDeps, payload: Payload): Promise<number> {
   const repositoryId = idOf(pick(payload, "repository.id"));
   const installationId = idOf(pick(payload, "installation.id"));
