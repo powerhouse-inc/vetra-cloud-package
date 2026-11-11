@@ -127,6 +127,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppsRegistryNamespaceColumn(db);
   await ensureRegistryNamespacesTable(db);
   await ensureAppsReleaseBranchesColumn(db);
+  await ensureInstancesTable(db);
+  await ensureAppsInstancesEnabledColumn(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -495,5 +497,76 @@ export async function ensureRegistryNamespacesTable(
   } catch (err) {
     // Two boots racing on CREATE TABLE IF NOT EXISTS (see ensureStudioLaunchSecretsTable).
     if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** Releases phase 2: one row per running instance (branch, preview, …). Schema builder only (namespaced). */
+export async function ensureInstancesTable(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("instances")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("kind", "varchar(16)", (c) => c.notNull())
+      .addColumn("name", "varchar(255)", (c) => c.notNull())
+      .addColumn("branch", "varchar(255)")
+      .addColumn("pr", "integer")
+      .addColumn("host", "varchar(63)")
+      .addColumn("environment_id", "varchar(255)")
+      .addColumn("target_version", "varchar(255)")
+      .addColumn("target_digest", "varchar(128)")
+      .addColumn("target_repository", "varchar(512)")
+      .addColumn("target_ph_host", "varchar(64)")
+      .addColumn("target_run", "bigint")
+      .addColumn("running_version", "varchar(255)")
+      .addColumn("running_digest", "varchar(128)")
+      .addColumn("running_repository", "varchar(512)")
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("reason", "text")
+      .addColumn("failed_digest", "varchar(128)")
+      .addColumn("update_started_at", "varchar(64)")
+      .addColumn("removed_at", "varchar(64)")
+      .addColumn("removed_reason", "varchar(64)")
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addUniqueConstraint("instances_app_kind_name_uq", ["app_id", "kind", "name"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  for (const [name, column] of [
+    ["instances_host_uq", "host"],
+    ["instances_environment_uq", "environment_id"],
+  ] as const) {
+    try {
+      await db.schema
+        .createIndex(name)
+        .ifNotExists()
+        .unique()
+        .on("instances")
+        .column(column)
+        .where(sql.ref(column), "is not", null)
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err)) throw err;
+    }
+  }
+}
+
+/** Per-App opt-in for instances (releases phase 2). Existing Apps: off. */
+export async function ensureAppsInstancesEnabledColumn(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("apps")
+      .addColumn("instances_enabled", "boolean", (c) =>
+        c.ifNotExists().notNull().defaultTo(false),
+      )
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+      throw err;
   }
 }

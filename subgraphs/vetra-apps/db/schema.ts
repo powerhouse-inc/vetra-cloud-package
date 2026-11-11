@@ -37,6 +37,8 @@ export interface AppsTable {
   production_branch: string;
   /** JSON array of the branches / patterns besides production_branch that may publish releases (releases/branches.ts); '[]' by default. */
   release_branches?: string;
+  /** Whether the reconciler runs this App's instances (releases phase 2; default false). */
+  instances_enabled?: boolean;
   production_environment_id: string;
   previews_enabled: boolean;
   preview_limit: number;
@@ -140,6 +142,7 @@ export interface StudioLaunchSecretsTable {
 }
 
 export interface VetraAppsDB {
+  instances: InstancesTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
@@ -187,4 +190,51 @@ export interface RegistryNamespacesTable {
   owner_kind: "org" | "person";
   owner_id: string;
   created_at: string;
+}
+
+export type InstanceKind = "branch" | "preview" | "shared" | "own";
+/** `removed`: a tombstone for a deleted branch (never shown). */
+export type InstanceStatus =
+  | "pending"
+  | "updating"
+  | "ready"
+  | "failed"
+  | "stopped"
+  | "removed";
+
+/** One running environment of an App (spec section 5). */
+export interface InstancesTable {
+  id: string;
+  app_id: string;
+  kind: InstanceKind;
+  /** The branch (branch), `pr-<n>` (preview). Unique per app and kind. */
+  name: string;
+  branch: string | null;
+  pr: number | null;
+  /** DNS label: https://<host>.vetra.io. Null until a free one is found. */
+  host: string | null;
+  environment_id: string | null;
+  target_version: string | null;
+  target_digest: string | null;
+  /** The release's image_ref without its tag. */
+  target_repository: string | null;
+  /** The release's host (PH_HOST), e.g. cli. */
+  target_ph_host: string | null;
+  /** releases.run of the target (bigint). */
+  target_run: number | null;
+  /** The target last seen ready: where a failed update goes back to. */
+  running_version: string | null;
+  running_digest: string | null;
+  running_repository: string | null;
+  status: InstanceStatus;
+  reason: string | null;
+  /** A target that failed; not retried until a newer target arrives. */
+  failed_digest: string | null;
+  update_started_at: string | null;
+  /** Set when the instance is to be removed (the reconciler deletes its environment). */
+  removed_at: string | null;
+  /** "branch deleted" keeps a tombstone; anything else deletes the row. */
+  removed_reason: string | null;
+  created_at: string;
+  updated_at: string;
 }
