@@ -9,6 +9,7 @@ export type AppsErrorCode =
   | "APP_NOT_ACTIVE"
   | "GITHUB_NOT_CONNECTED"
   | "SERVICE_NOT_CONFIGURED"
+  | "VERSION_CONFLICT"
   | StudioLaunchErrorCode
   | GithubSetupErrorCode;
 

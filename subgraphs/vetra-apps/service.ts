@@ -20,6 +20,7 @@ import {
   wakeEnvironment,
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
+import type { AttestationVerifier } from "./releases/attestation.js";
 import type { VetraAppsConfig } from "./config.js";
 import type {
   AppDeploymentKind,
@@ -126,6 +127,8 @@ export interface AppsDeps {
   envs: EnvGateway;
   cfg: VetraAppsConfig;
   github: GithubDeployApi | null;
+  /** Verifies a release image's GitHub build attestation; null/absent: only with cfg.allowUnattestedReleases. */
+  attestations?: AttestationVerifier | null;
   harbor: HarborApi | null;
   renown: RenownApi | null;
   generateSubdomain: (documentId: string) => string;

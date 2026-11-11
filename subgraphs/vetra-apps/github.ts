@@ -166,6 +166,8 @@ export interface GithubDeployApi {
    * (POST /app/installations/{id}/access_tokens, app JWT). GitHub issues it
    * for one hour. Never log the token.
    */
+  /** An installation token with the installation's own permissions (to read attestations). Never log it. */
+  installationToken(installationId: string): Promise<string>;
   createRepoPushToken(
     installationId: string,
     repositoryId: string,
@@ -644,6 +646,8 @@ export function createGithubDeployApi(
       if (r.status === 404) return null;
       return { state: r.data?.state ?? "", role: r.data?.role ?? "" };
     },
+
+    installationToken,
 
     async createRepoPushToken(installationId, repositoryId) {
       const { token: jwt } = await auth({ type: "app" });

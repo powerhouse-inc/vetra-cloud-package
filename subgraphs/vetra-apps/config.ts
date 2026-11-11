@@ -23,6 +23,8 @@ export interface RenownWorkloadConfig {
 }
 
 export interface VetraAppsConfig {
+  /** Test/dev only: accept a release report without a verifiable GitHub attestation when no verifier is wired. */
+  allowUnattestedReleases: boolean;
   github: GithubDeployConfig | null;
   webhookSecret: string | null;
   harbor: HarborAppsConfig | null;
@@ -102,6 +104,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
   }
 
   return {
+    allowUnattestedReleases: trimmed(env.VETRA_APPS_ALLOW_UNATTESTED_RELEASES) === "1",
     github,
     webhookSecret: trimmed(env.GITHUB_DEPLOY_APP_WEBHOOK_SECRET),
     harbor,

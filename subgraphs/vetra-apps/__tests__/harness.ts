@@ -341,6 +341,7 @@ export function fakeGithub(): GithubDeployApi & {
           ? memberships.get(org)!
           : { state: "active", role: "admin" },
     ),
+    installationToken: rec("installationToken", () => "ghs_install"),
     createRepoPushToken: rec("createRepoPushToken", () => ({
       token: `ghs_push_${++pushTokenSeq}`,
       expiresAt: "2026-10-02T13:00:00.000Z",
@@ -575,6 +576,7 @@ export function testConfig(
   over: Partial<VetraAppsConfig> = {},
 ): VetraAppsConfig {
   return {
+    allowUnattestedReleases: false,
     github: {
       appId: "1001",
       slug: "vetra-deploy",

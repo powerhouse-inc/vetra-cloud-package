@@ -19,7 +19,11 @@ import {
   type CiIdentity,
   type DeployAppInput,
 } from "./service.js";
-import { ciRegistryToken } from "./releases/service.js";
+import {
+  ciRegistryToken,
+  ciReportRelease,
+  type ReportReleaseInput,
+} from "./releases/service.js";
 import { mirrorAppById } from "./app-document.js";
 
 /**
@@ -28,6 +32,7 @@ import { mirrorAppById } from "./app-document.js";
  *
  *   POST apps/ci/registry-credentials  {appId}
  *   POST apps/ci/registry-token        {appId}
+ *   POST apps/ci/releases              ReportReleaseInput
  *   POST apps/ci/deploy                DeployAppInput
  *   GET  apps/ci/deployments/:id
  *
@@ -167,6 +172,7 @@ const STATUS: Record<string, number> = {
   PREVIEWS_DISABLED: 400,
   APP_NOT_ACTIVE: 400,
   GITHUB_NOT_CONNECTED: 400,
+  VERSION_CONFLICT: 409,
   SERVICE_NOT_CONFIGURED: 503,
 };
 
@@ -262,14 +268,65 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
         return ciRegistryToken(deps, ci, requireString(body, "appId"));
       }),
 
+    releases: (request: Request) =>
+      run(request, async (ci) => {
+        const b = await jsonBody(request);
+        const obj = (k: string) => {
+          const v = b[k];
+          if (!v || typeof v !== "object" || Array.isArray(v))
+            throw new HttpError("BAD_USER_INPUT", `${k} must be an object`);
+          return v as Record<string, unknown>;
+        };
+        const kind = b.kind;
+        if (kind !== "release" && kind !== "build")
+          throw new HttpError(
+            "BAD_USER_INPUT",
+            "kind must be release or build",
+          );
+        const image = obj("image");
+        return ciReportRelease(deps, ci, {
+          appId: requireString(b, "appId"),
+          version: requireString(b, "version"),
+          kind,
+          branch: typeof b.branch === "string" ? b.branch : null,
+          pr: typeof b.pr === "number" ? b.pr : null,
+          commit: requireString(b, "commit"),
+          notes: typeof b.notes === "string" ? b.notes : null,
+          image: {
+            ref: requireString(image, "ref"),
+            digest: requireString(image, "digest"),
+            host: requireString(image, "host"),
+          },
+          packages: Array.isArray(b.packages)
+            ? (b.packages as unknown[]).map((p) => {
+                const o = (p ?? {}) as Record<string, unknown>;
+                return {
+                  name: requireString(o, "name"),
+                  version: requireString(o, "version"),
+                };
+              })
+            : [],
+          requires: (b.requires && typeof b.requires === "object"
+            ? b.requires
+            : {}) as ReportReleaseInput["requires"],
+          migrates: b.migrates === true,
+          built: (() => {
+            const built = obj("built");
+            return {
+              powerhouse: requireString(built, "powerhouse"),
+              baseImage: requireString(built, "baseImage"),
+            };
+          })(),
+        });
+      }),
+
     artifacts: (request: Request) =>
       run(request, async (ci) => {
         const body = await jsonBody(request);
-        const str = (k: string) =>
-          {
-            const v = body[k];
-            return typeof v === "string" ? v : null;
-          };
+        const str = (k: string) => {
+          const v = body[k];
+          return typeof v === "string" ? v : null;
+        };
         return ciRecordArtifact(deps, ci, {
           appId: requireString(body, "appId"),
           kind: requireString(body, "kind") as RecordArtifactInput["kind"],

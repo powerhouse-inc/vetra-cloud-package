@@ -11,6 +11,7 @@ import { loadAppsConfig, missingConfig } from "./config.js";
 import { createReactorEnvGateway, subdomainTakenIn } from "./envs.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
+import { createGithubAttestationVerifier } from "./releases/attestation.js";
 import { createHarborApi } from "./harbor.js";
 import { createRenownApi } from "./renown.js";
 import { applyQueuedDeployment, type AppsDeps } from "./service.js";
@@ -210,6 +211,22 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ),
       releasePolicy,
     };
+    if (deps.github) {
+      const github = deps.github;
+      deps.attestations = createGithubAttestationVerifier({
+        token: async (repository) => {
+          const app = await db
+            .selectFrom("apps")
+            .select("installation_id")
+            .where("repository_full_name", "=", repository)
+            .where("installation_id", "is not", null)
+            .executeTakeFirst();
+          if (!app?.installation_id)
+            throw new Error(`no GitHub installation for ${repository}`);
+          return github.installationToken(app.installation_id);
+        },
+      });
+    }
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     // A Studio launch/rollback is applied right after it was recorded (the
     // agent's request returns at once); the watcher picks up any it misses.
@@ -265,6 +282,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         ),
         this.http.post("apps/ci/registry-token", json, (request) =>
           ci.registryToken(request),
+        ),
+        this.http.post("apps/ci/releases", json, (request) =>
+          ci.releases(request),
         ),
         this.http.post("apps/ci/deploy", json, (request) => ci.deploy(request)),
         this.http.post("apps/ci/artifacts", json, (request) =>
