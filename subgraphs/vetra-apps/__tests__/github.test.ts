@@ -523,4 +523,20 @@ describe("GitHub deploy client", () => {
       });
     });
   });
+
+  it("mints a release token: one repository, contents and pull_requests write", async () => {
+    const f = fakeFetch({
+      "POST /app/installations/77/access_tokens": () =>
+        Response.json({ token: "ghs_rel", expires_at: "2026-11-11T13:00:00Z" }),
+    });
+    const gh = createGithubDeployApi(cfg, f.impl as never);
+    expect(await gh.createReleaseToken("77", "4242")).toStrictEqual({
+      token: "ghs_rel",
+      expiresAt: "2026-11-11T13:00:00Z",
+    });
+    expect(f.calls[0].body).toStrictEqual({
+      repository_ids: [4242],
+      permissions: { contents: "write", pull_requests: "write" },
+    });
+  });
 });

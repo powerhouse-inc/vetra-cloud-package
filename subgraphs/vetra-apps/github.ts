@@ -176,6 +176,17 @@ export interface GithubDeployApi {
     repositoryId: string,
   ): Promise<{ token: string; expiresAt: string }>;
   /**
+   * An installation token limited to one repository with contents:write and
+   * pull_requests:write (POST /app/installations/{id}/access_tokens, app JWT):
+   * what vetra-publish needs to open release PRs and tag releases (spec 14.1).
+   * GitHub refuses it until the installation has approved both permissions.
+   * One hour. Never log the token.
+   */
+  createReleaseToken(
+    installationId: string,
+    repositoryId: string,
+  ): Promise<{ token: string; expiresAt: string }>;
+  /**
    * The Vetra Deploy installation on a repository's account
    * (GET /repos/{full}/installation, app JWT) and the repository as that
    * installation sees it (GET /repos/{full}, installation token). Null when
@@ -350,6 +361,29 @@ export function createGithubDeployApi(
       installationId: Number(installationId),
     });
     return r.token;
+  }
+
+  /** A one-repository installation token with exactly `permissions`. */
+  async function repoAccessToken(
+    installationId: string,
+    repositoryId: string,
+    permissions: Record<string, "read" | "write">,
+  ): Promise<{ token: string; expiresAt: string }> {
+    const { token: jwt } = await auth({ type: "app" });
+    const id = Number(repositoryId);
+    if (!Number.isSafeInteger(id))
+      throw new GithubHttpError(400, "invalid repository id");
+    const { data } = await call<{ token?: string; expires_at?: string } | null>(
+      jwt,
+      "POST",
+      `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+      { repository_ids: [id], permissions },
+      [],
+      "Bearer",
+    );
+    if (!data?.token || !data.expires_at)
+      throw new GithubHttpError(502, "GitHub returned no installation token");
+    return { token: data.token, expiresAt: data.expires_at };
   }
 
   async function call<T>(
@@ -661,21 +695,14 @@ export function createGithubDeployApi(
     },
 
     async createRepoPushToken(installationId, repositoryId) {
-      const { token: jwt } = await auth({ type: "app" });
-      const id = Number(repositoryId);
-      if (!Number.isSafeInteger(id))
-        throw new GithubHttpError(400, "invalid repository id");
-      const { data } = await call<{ token?: string; expires_at?: string } | null>(
-        jwt,
-        "POST",
-        `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
-        { repository_ids: [id], permissions: { contents: "write" } },
-        [],
-        "Bearer",
-      );
-      if (!data?.token || !data.expires_at)
-        throw new GithubHttpError(502, "GitHub returned no installation token");
-      return { token: data.token, expiresAt: data.expires_at };
+      return repoAccessToken(installationId, repositoryId, { contents: "write" });
+    },
+
+    async createReleaseToken(installationId, repositoryId) {
+      return repoAccessToken(installationId, repositoryId, {
+        contents: "write",
+        pull_requests: "write",
+      });
     },
 
     async getBranchHead(installationId, fullName, branch) {

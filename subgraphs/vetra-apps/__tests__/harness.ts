@@ -346,6 +346,10 @@ export function fakeGithub(): GithubDeployApi & {
       token: `ghs_push_${++pushTokenSeq}`,
       expiresAt: "2026-10-02T13:00:00.000Z",
     })),
+    createReleaseToken: rec("createReleaseToken", () => ({
+      token: "ghs_release",
+      expiresAt: "2026-10-02T13:00:00.000Z",
+    })),
     order,
     files,
     takenRepoNames,
