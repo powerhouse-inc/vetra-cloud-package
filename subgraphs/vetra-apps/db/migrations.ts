@@ -125,6 +125,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureExternalChangesColumns(db);
   await ensureReleasesTables(db);
   await ensureAppsRegistryNamespaceColumn(db);
+  await ensureRegistryNamespacesTable(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -450,5 +451,24 @@ export async function ensureAppsRegistryNamespaceColumn(db: Kysely<any>): Promis
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
+}
+
+/** Who holds each Harbor namespace (one owner per project name, first claim wins). */
+export async function ensureRegistryNamespacesTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("registry_namespaces")
+      .ifNotExists()
+      .addColumn("namespace", "varchar(255)", (c) => c.primaryKey())
+      .addColumn("owner_kind", "varchar(8)", (c) => c.notNull())
+      .addColumn("owner_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    // Two boots racing on CREATE TABLE IF NOT EXISTS (see ensureStudioLaunchSecretsTable).
+    if (!isConcurrentIndexError(err)) throw err;
   }
 }

@@ -30,7 +30,11 @@ export async function ciRegistryToken(
   const app = await authorizeCi(deps, ci, appId);
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   const namespace = await ensureAppNamespace(deps, app);
-  await deps.harbor.createProject(namespace); // false = exists: fine, it is ours by name
+  // false = the project exists. Safe only because ensureAppNamespace has
+  // claimed the name for this owner in registry_namespaces (refusing names
+  // another owner holds and reserved infrastructure names), and Vetra is the
+  // only writer of these project names: an existing one is ours.
+  await deps.harbor.createProject(namespace);
   const robot = await deps.harbor.createNamespacePushRobot(namespace, 1);
   const now = deps.now();
   await recordPushRobot(deps.db, {

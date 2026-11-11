@@ -145,6 +145,7 @@ export interface VetraAppsDB {
   github_deploy_connections: GithubDeployConnectionsTable;
   releases: ReleasesTable;
   namespace_push_robots: NamespacePushRobotsTable;
+  registry_namespaces: RegistryNamespacesTable;
 }
 
 export interface ReleasesTable {
@@ -175,5 +176,13 @@ export interface ReleasesTable {
 export interface NamespacePushRobotsTable {
   robot_id: number;
   namespace: string;
+  created_at: string;
+}
+
+/** The owner of a Harbor namespace; org apps by org id, personal apps by lower-cased address. */
+export interface RegistryNamespacesTable {
+  namespace: string;
+  owner_kind: "org" | "person";
+  owner_id: string;
   created_at: string;
 }

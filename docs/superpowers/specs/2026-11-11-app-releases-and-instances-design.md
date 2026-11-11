@@ -124,10 +124,19 @@ One run:
 `cr.vetra.io/<namespace>/<app>:<version>`
 
 - `<namespace>`: for an org app the org's Renown handle, else
-  `o-<first 8 alphanumerics of the org id>`; for a personal app the owner's
-  Renown handle, else `u-<first 8 hex of the owner address>`. A handle
+  `o-<first 16 alphanumerics of the org id>`; for a personal app the owner's
+  Renown handle, else `u-<first 16 hex of the owner address>`. A handle
   rename is handled as a transfer (below). One Harbor project per namespace;
   the action gets push rights for it from `POST ci/registry-token` (below).
+- Namespaces are claimed: Vetra records the owner of each name
+  (`registry_namespaces`: org id, or lower-cased address) the first time an
+  app uses it. A name another owner holds (a handle released and re-taken, a
+  person and an org with the same handle) is refused with `FORBIDDEN` and
+  nothing is stored on the app. Handles that name infrastructure projects
+  (`library`, `vetra`, `vetra-cloud-package`, `powerhouse-inc`,
+  `powerhouse-inc-*`), the old per-app projects (`app-*`) or the fallback
+  shapes (`u-*`, `o-*`) fall back. Vetra is the only writer of these project
+  names, so an existing Harbor project under a claimed name is the owner's.
 - `<app>`: the app's slug: **unique across all of Vetra** (it also names the
   app's instance hosts, section 5), never changes (a rename does not move
   images or hosts). A second host image of the same app is
