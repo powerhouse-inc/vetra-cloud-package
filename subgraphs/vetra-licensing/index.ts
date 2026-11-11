@@ -350,6 +350,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       grants,
       envRows: chainRows,
       envState: (id) => envs.getState(id),
+      // As offboarding's: the token row and the issuer's memory of it.
+      forgetEnvironment: async (id) => {
+        await deleteReportingToken(db, id);
+        tokenIssuer.forget(id);
+      },
       licenseGateway: gateway,
       studio,
       directory: {
