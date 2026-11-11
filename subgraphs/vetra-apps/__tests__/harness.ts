@@ -244,8 +244,10 @@ export class FakeEnvs implements EnvGateway {
 
 export function fakeGithub(): GithubDeployApi & {
   calls: Record<string, unknown[][]>;
-  /** PR number → state; "error" simulates GitHub being unreachable. Default open. */
-  prStates: Map<number, "open" | "closed" | "error">;
+  /** PR number → state; "error": GitHub unreachable; "missing": 404. Default open. */
+  prStates: Map<number, "open" | "closed" | "error" | "missing">;
+  /** PR number → its head repository id (null: deleted fork). Absent: REPO_ID (same repository). */
+  prHeadRepos: Map<number, string | null>;
   /** Repo path → contents, for toolchain detection. Absent path reads as null. */
   files: Map<string, string>;
   /** Repo names (`login/name`) that already exist; createRepoAsUser throws RepoNameTakenError for these. */
@@ -278,7 +280,8 @@ export function fakeGithub(): GithubDeployApi & {
   /** Repository full name → its main head ("error": GitHub fails; absent: empty repository). */
   branchHeads: Map<string, string>;
 } {
-  const prStates = new Map<number, "open" | "closed" | "error">();
+  const prStates = new Map<number, "open" | "closed" | "error" | "missing">();
+  const prHeadRepos = new Map<number, string | null>();
   const files = new Map<string, string>();
   const calls: Record<string, unknown[][]> = {};
   const order: string[] = [];
@@ -331,8 +334,9 @@ export function fakeGithub(): GithubDeployApi & {
       if (head === "error") throw new GithubHttpError(502, "Bad Gateway");
       return head ?? null;
     }),
-    findRepoInstallation: rec("findRepoInstallation", (fullName: string) =>
-      repoInstallations.get(fullName) ?? null,
+    findRepoInstallation: rec(
+      "findRepoInstallation",
+      (fullName: string) => repoInstallations.get(fullName) ?? null,
     ),
     getOrgMembership: rec("getOrgMembership", (token: string, org: string) =>
       membershipsByToken.has(`${token}|${org}`)
@@ -433,7 +437,21 @@ export function fakeGithub(): GithubDeployApi & {
       (_i: string, _r: string, n: number) => {
         const st = prStates.get(n) ?? "open";
         if (st === "error") throw new Error("GitHub unreachable");
+        if (st === "missing") throw new GithubHttpError(404, "Not Found");
         return st;
+      },
+    ),
+    prHeadRepos,
+    getPullRequest: rec(
+      "getPullRequest",
+      (_i: string, _r: string, n: number) => {
+        const st = prStates.get(n) ?? "open";
+        if (st === "error") throw new Error("GitHub unreachable");
+        if (st === "missing") throw new GithubHttpError(404, "Not Found");
+        return {
+          state: st,
+          headRepositoryId: prHeadRepos.has(n) ? prHeadRepos.get(n)! : REPO_ID,
+        };
       },
     ),
     createDeployment: rec("createDeployment", () => String(++deploymentSeq)),
@@ -457,7 +475,11 @@ export function fakeHarbor(): HarborApi & {
   const existing = new Set<string>();
   const deletedRobots: number[] = [];
   const deletedProjects: string[] = [];
-  const namespaceRobots: { project: string; durationDays: number; id: number }[] = [];
+  const namespaceRobots: {
+    project: string;
+    durationDays: number;
+    id: number;
+  }[] = [];
   let robotSeq = 0;
   return {
     namespaceRobots,

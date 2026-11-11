@@ -68,6 +68,16 @@ export interface GithubDeployApi {
     repoFullName: string,
     prNumber: number,
   ): Promise<"open" | "closed">;
+  /**
+   * A PR's state ("open"; merged counts as "closed") and the id of the
+   * repository its head branch lives in (null: the fork was deleted).
+   * Read with the installation token.
+   */
+  getPullRequest(
+    installationId: string,
+    repoFullName: string,
+    prNumber: number,
+  ): Promise<{ state: "open" | "closed"; headRepositoryId: string | null }>;
   createDeployment(
     installationId: string,
     repoFullName: string,
@@ -580,6 +590,22 @@ export function createGithubDeployApi(
       return data.state === "open" ? "open" : "closed";
     },
 
+    async getPullRequest(installationId, fullName, prNumber) {
+      const { data } = await inst<{
+        state?: string;
+        head?: { repo?: { id?: number | string } | null };
+      }>(
+        installationId,
+        "GET",
+        `/repos/${repoPath(fullName)}/pulls/${prNumber}`,
+      );
+      const id = data.head?.repo?.id;
+      return {
+        state: data.state === "open" ? "open" : "closed",
+        headRepositoryId: id == null ? null : String(id),
+      };
+    },
+
     async createDeployment(installationId, fullName, input) {
       const { data } = await inst<{ id: number }>(
         installationId,
@@ -695,7 +721,9 @@ export function createGithubDeployApi(
     },
 
     async createRepoPushToken(installationId, repositoryId) {
-      return repoAccessToken(installationId, repositoryId, { contents: "write" });
+      return repoAccessToken(installationId, repositoryId, {
+        contents: "write",
+      });
     },
 
     async createReleaseToken(installationId, repositoryId) {
