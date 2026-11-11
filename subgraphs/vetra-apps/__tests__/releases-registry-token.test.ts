@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("ciRegistryToken", () => {
-  it("creates the namespace's project once and a 1-day robot per call, scoped to the app", async () => {
+  it("creates the namespace's project once and a 1-day namespace robot per call", async () => {
     const app = await seedActiveApp(h);
     const ci = ciIdentity(claim("refs/heads/main", { runId: "1" }));
     const a = await ciRegistryToken(h.deps, ci, app.id);

@@ -14,7 +14,7 @@ import {
 
 const PUSH_TOKEN_MS = 60 * 60 * 1000;
 
-/** Push rights on the app's namespace for one CI run (spec: POST ci/registry-token). */
+/** Push rights on the app's namespace (all of that owner's apps) for one CI run; `repository` is where this app pushes (spec: POST ci/registry-token). */
 export async function ciRegistryToken(
   deps: AppsDeps,
   ci: CiIdentity,

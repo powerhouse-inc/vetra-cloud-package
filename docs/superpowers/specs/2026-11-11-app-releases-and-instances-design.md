@@ -153,6 +153,13 @@ deleted by Vetra once it is 1 hour old,
 issued only to the app's own CI identity (the same workload-token check as
 `ci/releases`). Vetra creates the namespace's project on first use.
 
+**Scope.** The robot covers the whole namespace, i.e. all of that owner's
+apps (Harbor robots can't be narrower than a project); `repository` is where
+this app must push. A release record pins the digest, and its attestation binds
+that digest to the app's own repo, so instances must pull by digest
+(`image_ref@image_digest`), never by tag: an overwritten tag then changes
+nothing that runs.
+
 ### `POST ci/releases`
 
 ```json

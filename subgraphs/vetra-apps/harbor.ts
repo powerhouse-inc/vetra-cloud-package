@@ -12,7 +12,11 @@ export interface HarborApi {
   createPushRobot(
     project: string,
   ): Promise<{ id: number; name: string; secret: string }>;
-  /** A push+pull robot on `project` expiring after `durationDays` (Harbor counts whole days). */
+  /**
+   * A push+pull robot on the whole `project` (all of that namespace's
+   * repositories; Harbor cannot scope robots below a project), expiring after
+   * `durationDays` (Harbor counts whole days).
+   */
   createNamespacePushRobot(
     project: string,
     durationDays: number,
