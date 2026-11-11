@@ -123,8 +123,9 @@ One run:
 
 `cr.vetra.io/<namespace>/<app>:<version>`
 
-- `<namespace>`: the owning org's Renown handle, or the owner's handle for a
-  personal app; without a handle, `u-<first 8 hex of the address>`. A handle
+- `<namespace>`: for an org app the org's Renown handle, else
+  `o-<first 8 alphanumerics of the org id>`; for a personal app the owner's
+  Renown handle, else `u-<first 8 hex of the owner address>`. A handle
   rename is handled as a transfer (below). One Harbor project per namespace;
   the action gets push rights for it from `POST ci/registry-token` (below).
 - `<app>`: the app's slug: **unique across all of Vetra** (it also names the

@@ -14,7 +14,7 @@
 
 - Version rule: a version is a **release** when its prerelease part is empty or matches exactly `^(alpha|beta|rc)\.\d+$`; any other valid semver is a **build**.
 - Releases are ordered by semver; builds only among themselves, by run; builds and releases are never compared.
-- Image path: `cr.vetra.io/<namespace>/<app-slug>:<version>`. `<namespace>`: the owning org's Renown handle, else the owner's Renown handle, else `u-<first 8 hex of the owner address>`. App slugs are already unique across Vetra (`apps.slug` is `UNIQUE`).
+- Image path: `cr.vetra.io/<namespace>/<app-slug>:<version>`. `<namespace>`: org apps use the org's Renown handle, else `o-<first 8 alphanumerics of the org id>`; personal apps use the owner's Renown handle, else `u-<first 8 hex of the owner address>`. App slugs are already unique across Vetra (`apps.slug` is `UNIQUE`).
 - One Harbor project per namespace, private.
 - `POST ci/releases` answers 200 for a version already stored with the same digest, 409 (`VERSION_CONFLICT`) for the same version with another digest.
 - Release records are never deleted in phase 1 (build pruning comes with phase 2).

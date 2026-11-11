@@ -1,4 +1,5 @@
 import type { RenownOrgs } from "../../../shared/renown-orgs.js";
+import { notConfigured } from "../errors.js";
 import type { AppsDeps } from "../service.js";
 import type { AppRow } from "../repo.js";
 
@@ -14,17 +15,20 @@ export async function resolveNamespace(
     return HARBOR_NAME.test(lower) ? lower : null;
   };
   if (app.owner_org_id) {
-    const handle = usable(await orgs?.orgHandle(app.owner_org_id).catch(() => null));
+    const handle = usable(await orgs?.orgHandle(app.owner_org_id));
     return handle ?? `o-${app.owner_org_id.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 8)}`;
   }
-  const handle = usable(await orgs?.personHandle(app.owner_address).catch(() => null));
+  const handle = usable(await orgs?.personHandle(app.owner_address));
   return handle ?? `u-${app.owner_address.toLowerCase().replace(/^0x/, "").slice(0, 8)}`;
 }
 
-/** The app's namespace, fixed on first use. */
+/** The app's namespace, fixed on first use (only a definitive Renown answer is stored). */
 export async function ensureAppNamespace(deps: AppsDeps, app: AppRow): Promise<string> {
   if (app.registry_namespace) return app.registry_namespace;
-  const ns = await resolveNamespace(app, deps.orgs ?? null);
+  // No Renown means no way to tell a missing handle from an unknown one:
+  // never persist a fallback then. Lookup errors propagate for the same reason.
+  if (!deps.orgs) throw notConfigured("Renown (orgs endpoint)");
+  const ns = await resolveNamespace(app, deps.orgs);
   await deps.db
     .updateTable("apps")
     .set({ registry_namespace: ns })
