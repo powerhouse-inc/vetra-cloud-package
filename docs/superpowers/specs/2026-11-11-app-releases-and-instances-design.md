@@ -3,7 +3,8 @@
 Date: 2026-11-11. Status: draft for review. Replaces: the app deploy path
 (`vetra-deploy-action`, `ci/deploy`, `ci/artifacts`, `app_deployments`,
 previews), artifact channels, the licensing environment model
-(`license_environments`, `stage`, template modes) and the Studio launch path.
+(`license_environments`, `stage`, template modes). Vetra Studio products are
+out of scope (section 9).
 Builds on: [2026-11-10 app release rollout](2026-11-10-app-release-rollout-design.md)
 (its gated logic moves into rollouts here).
 
@@ -95,8 +96,11 @@ One run:
    and creates the GitHub release with the notes.
 2. **Build** the host image once: `cr.vetra.io/<namespace>/<app>:<version>`
    (naming below). OCI labels: version, commit, repo, host (`cli`).
-3. **Sign** it with the run's GitHub OIDC identity (cosign keyless) and attach
-   a SLSA provenance attestation and an SBOM.
+3. **Attest** it with GitHub artifact attestations
+   (`actions/attest-build-provenance`, plus an SBOM attestation): SLSA
+   provenance signed with the run's identity. For private repos GitHub keeps
+   these in its own non-public log, so repo names and commits never reach a
+   public transparency log (keyless cosign would publish them to Sigstore's).
 4. **Publish packages** (if any) at the same version to the Vetra registry:
    builds under dist-tag `<branch>`/`pr-<n>`, prereleases under `next`,
    releases under `latest`.
@@ -107,7 +111,8 @@ One run:
 `cr.vetra.io/<namespace>/<app>:<version>`
 
 - `<namespace>`: the owning org's Renown handle, or the owner's handle for a
-  personal app. One Harbor project per namespace; the action gets a short-lived
+  personal app; without a handle, `u-<first 8 hex of the address>`. A handle
+  rename is handled as a transfer (below). One Harbor project per namespace; the action gets a short-lived
   push token for it from Vetra.
 - `<app>`: the app's slug: unique in its namespace, never changes (a rename
   does not move images). A second host image of the same app is
@@ -115,7 +120,14 @@ One run:
 - Tags are written once and never moved. Vetra records the digest; instances
   run by digest.
 - Isolation is per namespace: an org's apps can push to each other's
-  repositories. Accepted: they share admins.
+  repositories. Accepted: they share admins, tags are immutable, and Vetra
+  accepts a release only when its signature names the app's own repo.
+- **Transfer** (between orgs, or personal → org): Vetra copies the app's
+  images from `<old>/<app>` to `<new>/<app>` (a Harbor copy within one
+  registry: same digests, shared layers), rewrites `image_ref` on every
+  release record, then deletes the old repository. Instances run by digest
+  and keep running; they pull from the new path at their next update. CI gets
+  push rights for the new namespace from the transfer on.
 
 ### `POST ci/releases`
 
@@ -134,9 +146,10 @@ One run:
 }
 ```
 
-Vetra verifies the signature and provenance (built by this repo's workflow at
-this commit), stores the record immutably and answers 409 for a version it
-already has. `requires` comes from `powerhouse.config.json` (`vetra.requires`).
+Vetra verifies the attestation through the GitHub API (built by this repo's
+`vetra.yml` workflow at this commit, digest matching), stores the record
+immutably and answers: 200 for a version it already has with the same digest
+(a re-run is a no-op), 409 for the same version with a different digest. `requires` comes from `powerhouse.config.json` (`vetra.requires`).
 `migrates` is set when the commits since the previous release add or change
 files matching `vetra.migrations` (globs; default: the project's reactor and
 read-model migration folders), or when the config sets `vetra.migrates: true`
@@ -208,7 +221,7 @@ for own instances (`calm-bat-b4qzzqbb`) unless the holder sets a custom domain.
 
 ## 6. The reconciler
 
-One loop replaces CI deploy, Studio launch, licensing provisioning and the
+One loop replaces CI deploy, licensing provisioning and the
 keeper. For each instance:
 
 1. **Desired state** = template + target (an image digest) + the settings
@@ -293,10 +306,9 @@ version and base image each release was built with. When a fix is published:
 
 ## 9. Vetra Studio
 
-Studio-made apps get a GitHub repo like any other app and publish through the
-same action: builds from their branches, releases from release PRs. The
-Studio's integer versions and `launchStudioVersion` go; a Studio "launch" is
-merging the release PR and rolling out.
+Out of scope. Studio products keep their current path (`launchStudioVersion`
+→ `app_deployments`, integer versions) until they get their own design; this
+spec's removals apply to apps published from GitHub only.
 
 ## 10. Permissions and audit
 
@@ -364,45 +376,121 @@ carried over:
 5. Shared access (Sektar's SHARED plans) moves to a new shared instance; no
    data to move (it pointed at production).
 
-## 14. Removed
+## 14. Operational requirements
+
+1. **The action runs as the Vetra GitHub App.** Release PRs, tags and GitHub
+   releases are created with the app's installation token, never the
+   workflow's `GITHUB_TOKEN` (GitHub starts no workflows for what that token
+   creates, so a release PR would get no preview and its merge would publish
+   nothing). The GitHub App needs `contents: write` and
+   `pull_requests: write`.
+2. **Publisher and holder settings.**
+   - Publisher secrets, settings and files per template (e.g. Sektar's Google
+     OAuth client JSON mounted at `/client_secret_sektar-web-app.json`,
+     `SEKTAR_OAUTH_RELAY_BASE`), stored in OpenBao, the same on every instance
+     of the template. Names Vetra sets itself (section 5) are refused.
+   - Holder settings on their own instance (their own OAuth client, custom
+     domain), kept per instance and applied on every update and rollback.
+3. **Withdrawing a release.** The publisher can withdraw a release: no plan
+   can target it, rollouts to it stop, instances still on it are flagged in
+   release health. Release records are never deleted.
+4. **Deleting an app with holders.** With live licences: holders are told
+   with a notice period (default 30 days), may download their backup, then
+   their own instances go through the end-of-licence steps. Without live
+   licences: deleted at once.
+5. **Holder data stays the holder's.** The publisher controls updates,
+   rollbacks, backups and logs of own instances, but has no access to their
+   data unless the holder grants support access (time-limited, audited).
+   Holders can download a backup of their own instance at any time.
+6. **Registry retention.** Build images are deleted with their build records.
+   Release images are kept while any release record or instance needs them.
+7. **Healthy** means: the switchboard's health endpoint answers, Connect
+   serves its page, the reactor has finished its migrations, and the version
+   the host reports equals the target. The reconciler, rehearsals and the
+   regression pause all use this definition.
+8. **Update windows per plan** (e.g. nights and weekends, Europe/Berlin):
+   after the notice, a rollout updates customer instances only inside the
+   window. "Update now" by a holder ignores it.
+9. **Vetra's own canary app.** A small test app publishes, releases and rolls
+   out through the whole pipeline every night on staging; a failure alerts
+   the Vetra team.
+10. **`ph vetra check`** validates the `vetra` section of
+    `powerhouse.config.json` and prints the version the next release would
+    get, before anything is pushed.
+11. **Minimum Powerhouse version.** Publishing needs a project with a host
+    (`hosts/cli`, uniform runners on). `ph vetra check` and the publish action
+    report what is missing; Vetra opens a PR adding `hosts/cli` to a connected
+    repo that lacks it.
+12. **Rehearsals never expose holder data.** The clone has no publisher in
+    `ADMINS`; the smoke test runs inside the cluster with a service identity;
+    only pass/fail and logs without data leave it; the clone is destroyed
+    right after.
+13. **Preview cost.** At most 5 preview instances per app (configurable; the
+    oldest PR's preview is removed first). Branch and preview instances sleep
+    when idle (the housekeeping service) and use a single Postgres instance
+    without S3 backups.
+14. **Licence gate availability.** When Vetra cannot be reached, the gate keeps
+    a caller's last positive answer for 24 h; callers never seen before are
+    refused.
+15. **GitHub permission upgrade.** Release PRs need the Vetra GitHub App's
+    `contents: write` and `pull_requests: write`; an installation without them
+    blocks publishing, and the console shows the approval link.
+16. **Backups use CNPG.** The backup before an update is an on-demand CNPG
+    backup to S3 (each instance's Postgres is a CNPG cluster with S3 backups
+    already); restoring is CNPG point-in-time recovery to that backup, plus the
+    `/data` volume snapshot taken with it.
+17. **Newest build** of a branch is the one with the highest run number,
+    never the one that arrived last.
+18. **PR titles.** Vetra's PR check fails a PR whose title is not a
+    conventional commit (squash merges make the title the commit, and
+    release-please versions from it).
+
+## 15. Removed
 
 `vetra-deploy-action` (after the alias period), `ci/deploy`, `ci/artifacts`,
 `ci/registry-credentials` (replaced by a namespace push token), `deployApp`,
-`rollbackApp`, `launchStudioVersion`, `app_deployments`, previews tables,
+`rollbackApp`, `app_deployments` and previews tables for GitHub apps (Studio keeps its
+path),
 `license_environments`, the licence `stage`, artifact versions and channels on
 the app document, template modes, template packages, `templateHash`
 re-templating, the floor logic, the keeper's provisioning, per-app Harbor
 projects, Sektar's root `Dockerfile` and its conditional `fusion-dockerfile`.
 
-## 15. Out of scope
+## 16. Out of scope
 
 Multi-region or HA instances; a holder choosing their own version; moving data
 between shared and own instances; approval workflows beyond permissions;
 billing and paid plans (they arrive as a new issuer); custom domains for shared
-instances.
+instances; several Vetra apps in one repo; usage metering; a public status
+page; Vetra Studio products (section 9).
 
-## 16. Build order
+## 17. Build order
 
 Each phase ships on its own and is usable.
 
 1. **Publish**: `vetra-publish` action (branches, release PRs, versions, host
-   image, naming, packages, `ci/releases`, signing, `requires`, `migrates`);
-   `releases` table recording each release's Powerhouse version and base
-   image; Releases view. Old deploy path still running.
+   image, naming, packages, `ci/releases`, signing, `requires`, `migrates`;
+   acting as the Vetra GitHub App, 14.1); `releases` table recording each
+   release's Powerhouse version and base image; Releases view; `ph vetra
+   check` (14.10). Old deploy path still running.
 2. **Instances**: `instances` table, reconciler, branch and preview instances,
-   settings Vetra owns, PR comment and check; Vetra Studio on the same path.
-   Old deploy path and `launchStudioVersion` removed.
+   settings Vetra owns, publisher and holder settings (14.2), the health
+   definition (14.7), registry retention (14.6), preview limits and sleep
+   (14.13), PR comment and check (with the PR-title check, 14.18). The old
+   deploy path removed for GitHub apps (Studio products keep it, section 9).
 3. **Plans and rollouts**: plans with target, policy, shared and own
    instances, rollouts (requirement check, notice, one at a time, backups,
    restore-based rollback for `migrates`, pause, pinning), Team plan, licence
    gate in the Powerhouse switchboard, audit log and release manager role,
-   Sektar switch-over (section 13). Licensing's environment model removed.
+   withdrawing releases (14.3), deleting apps with holders (14.4), holder data
+   and backup downloads (14.5), update windows (14.8), Sektar switch-over
+   (section 13). Licensing's environment model removed.
 4. **Trust**: notifications, customer notes, scan gate, provenance in the
    console, rebuild PRs for base-layer fixes.
 5. **Confidence**: rehearsals, regression pause, release health, daily
-   backups and restore.
+   backups and restore, Vetra's canary app (14.9).
 6. **Reach**: releases and changelogs on public `/apps`.
 
-Phases 1–3 deliver the six requirements (customer data, rebuild tracking,
-one-way migrations, Studio, release requirements, audit); phases 4–6 the
-rest.
+Phases 1–3 deliver the review's requirements (customer data, rebuild
+tracking, one-way migrations, release requirements, audit, section 14);
+phases 4–6 the rest.
