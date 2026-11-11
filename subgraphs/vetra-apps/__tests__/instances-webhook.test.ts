@@ -128,6 +128,8 @@ describe("pull_request webhook — preview instances", () => {
       status: "removed",
       removed_reason: PR_CLOSED,
     });
+    // A newer run makes the reconciler ask GitHub, which says closed.
+    h.github.prStates.set(12, "closed");
     await seedRelease(h, appId, { version: "1.5.0-pr.12.2", run: 300, pr: 12 });
     await reconcileInstancesOnce(h.deps);
     expect((await preview()).status).toBe("removed");
