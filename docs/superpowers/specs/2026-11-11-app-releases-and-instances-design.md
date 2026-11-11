@@ -63,18 +63,23 @@ template mode. "Publish" means publishing a release, nothing else.
   have their own release PR proposing `2.0.0-beta.0`, `beta.1`…; the
   identifier (`alpha`, `beta`, `rc`) is a setting of that branch, changeable as
   it matures. Builds: `<proposed>-<branch>.<run>`, e.g. `2.0.0-beta.2-next.12`
-  while the release PR proposes `2.0.0-beta.2`, so a build sorts after the last
-  release and before the next. Finishing: merge the branch into `main`;
-  `main`'s release PR proposes `2.0.0`.
+  while the release PR proposes `2.0.0-beta.2`. Finishing: merge the branch
+  into `main`; `main`'s release PR proposes `2.0.0`.
 - **Maintenance branches** (`1.x`, optional) have their own release PR for
   `1.4.2`.
 - **PRs** make builds `<proposed>-pr.<n>.<run>` of their target branch's
   proposed version.
 
-Version rules: every version is semver. The prerelease identifiers `main`,
-`pr` and branch names are reserved for builds; a version is a release when its
-prerelease part is empty or is `alpha|beta|rc.<n>`. Ordering is semver
-everywhere.
+Version rules:
+
+- Every version is semver.
+- A version is a **release** when its prerelease part is empty or matches
+  exactly `^(alpha|beta|rc)\.\d+$`; anything else is a **build**.
+- Releases are ordered by semver. Builds are ordered only among themselves,
+  by the run number of their branch or PR (section 14.17), and are never
+  compared with releases: a build is never a plan's target, so nothing needs
+  that comparison (semver would put `2.0.0-beta.2-next.12` after
+  `2.0.0-beta.2`).
 
 ### The workflow and the action
 
@@ -84,7 +89,10 @@ repo (the three copies today go): `.github/workflows/vetra.yml` runs
 branches, on PRs, and on release-PR merges. Everything else comes from the
 repo's `powerhouse.config.json` (`vetra` section): release branches and their
 prerelease identifiers, which host to build, package dirs, the smoke test.
-`vetra-deploy-action@v1` keeps working as an alias until phase 2 ships.
+In phase 1, `vetra-deploy-action@v1` stays unchanged and keeps deploying;
+repos opt into `vetra-publish` (both may run side by side). From phase 2 the
+old action is deprecated: it fails with a message pointing at the new
+workflow.
 
 Auth is unchanged: GitHub OIDC (audience `renown.vetra.io`) exchanged at
 Renown for workload tokens; Vetra checks repo, ref and event against what is
@@ -112,10 +120,11 @@ One run:
 
 - `<namespace>`: the owning org's Renown handle, or the owner's handle for a
   personal app; without a handle, `u-<first 8 hex of the address>`. A handle
-  rename is handled as a transfer (below). One Harbor project per namespace; the action gets a short-lived
-  push token for it from Vetra.
-- `<app>`: the app's slug: unique in its namespace, never changes (a rename
-  does not move images). A second host image of the same app is
+  rename is handled as a transfer (below). One Harbor project per namespace;
+  the action gets push rights for it from `POST ci/registry-token` (below).
+- `<app>`: the app's slug: **unique across all of Vetra** (it also names the
+  app's instance hosts, section 5), never changes (a rename does not move
+  images or hosts). A second host image of the same app is
   `<app>-<host>`.
 - Tags are written once and never moved. Vetra records the digest; instances
   run by digest.
@@ -129,6 +138,14 @@ One run:
   and keep running; they pull from the new path at their next update. CI gets
   push rights for the new namespace from the transfer on.
 
+### `POST ci/registry-token`
+
+`{ "appId": "…" }` → `{ "registry": "cr.vetra.io", "username": "…",
+"password": "…", "repository": "<namespace>/<app>", "expiresAt": "…" }`:
+a Harbor robot with push rights on the namespace's project, valid for 1 hour,
+issued only to the app's own CI identity (the same workload-token check as
+`ci/releases`). Vetra creates the namespace's project on first use.
+
 ### `POST ci/releases`
 
 ```json
@@ -137,6 +154,7 @@ One run:
   "version": "2.0.0-beta.1",
   "kind": "release",                // "build" | "release"
   "branch": "next", "pr": null,
+  "run": 412,                       // the workflow run number: orders builds and releases of a branch
   "commit": "cac9276bc10b…",
   "notes": "## Features …",         // releases only: the changelog
   "image": { "ref": "cr.vetra.io/sektar/sektar:2.0.0-beta.1", "digest": "sha256:…", "host": "cli" },
@@ -157,7 +175,7 @@ for the next release.
 
 ## 4. Releases in Vetra
 
-- **Records**: `releases (app_id, version, kind, branch, pr, commit, notes,
+- **Records**: `releases (app_id, version, kind, branch, pr, run, commit, notes,
   customer_notes, image_ref, image_digest, host, packages, requires, migrates,
   scan_status, created_at)`, unique on (app, version). Builds live in the same
   table with `kind = build` and are pruned (the newest 20 per branch, PR builds
@@ -176,14 +194,17 @@ One table, `instances`, replaces `app_deployments`, previews,
 
 | Kind | One per | Target | Admins | Removed when |
 |---|---|---|---|---|
-| **branch** | release branch | that branch's newest build | publisher | branch deleted |
+| **branch** | release branch | the newest build or release from that branch (a release-PR merge produces a release, not a build) | publisher | branch deleted |
 | **preview** | open PR | that PR's newest build | publisher | PR closed |
 | **shared** | shared plan | the plan's target release | publisher; members: the plan's licence holders | plan retired and no live licence left |
 | **own** | holder of an own plan | the plan's target release, or a pinned one | the holder | licence ended: stopped after 7 days, deleted after 90 |
 
-The **Team plan** is optional (off by default, one click on the app page): a
-shared plan whose holders are the owning org's members, without codes or
-grants. Rollouts treat it as the first stop before customers.
+The **Team plan** is optional (off by default, one click on the app page; org
+apps only): a shared plan for the owning org's own people, without codes or
+grants. Its instance does not use the licence gate: it admits the org's
+members, kept in sync with the org (`ACCESS=members`, the member list set by
+Vetra). When it exists, a release must have run healthy on it before a
+customer rollout of that release starts (section 7).
 
 ### What every instance runs
 
@@ -198,7 +219,7 @@ container) plus the template's extra services. Vetra sets, per instance:
 | `PH_WORKFLOWS_SECRETS_MASTER_KEY` | generated once per instance, kept in OpenBao |
 | `PUBLIC_URL` | `https://<instance-host>` |
 | `ADMINS` | per kind (table above); for publishers: the owner, or the org's admins |
-| access gate | shared instances only: `ACCESS=licensed`, `VETRA_APP_ID` (below) |
+| access gate | shared instances: `ACCESS=licensed`, `VETRA_APP_ID` (below); the Team instance: `ACCESS=members` with the org's members |
 | `OPENROUTER_API_KEY` | from the LLM broker, capped at the plan's budget, when the plan includes AI |
 
 Platform Connect/Switchboard services, template packages and channels are
@@ -216,8 +237,11 @@ one change outside Vetra's repos.
 ### Instance hosts
 
 `<app>-<kind-name>.<base domain>`: `sektar-main`, `sektar-next`,
-`sektar-pr-12`, `sektar-starter` (shared: the plan's slug), and generated names
-for own instances (`calm-bat-b4qzzqbb`) unless the holder sets a custom domain.
+`sektar-pr-12`, `sektar-starter` (shared: the plan's slug), `sektar-team`, and
+generated names for own instances (`calm-bat-b4qzzqbb`) unless the holder sets a
+custom domain. App slugs are unique across Vetra, so these never collide
+between orgs; plan slugs are unique within their app, and `main`, `team` and
+`pr-<n>` are reserved.
 
 ## 6. The reconciler
 
@@ -237,8 +261,9 @@ instance whose plan cannot render (a service Vetra cannot run, a requirement
 the template does not meet) shows `failed: plan can't be provisioned`, never a
 silent wait. Instances are rendered whole from the template (no "floor").
 
-Targets move as follows: branch and preview instances on every reported build;
-shared and own instances only through a rollout.
+Targets move as follows: branch instances on every build or release reported
+from their branch; preview instances on every build of their PR; shared and
+own instances only through a rollout.
 
 ## 7. Plans and rollouts
 
@@ -263,10 +288,14 @@ itself.
 
 ### A rollout
 
-Started by the publisher (changing a plan's target) or by the policy.
+A rollout moves one or more plans to a release (e.g. Starter and Pro to
+`2.0.0`). Started by the publisher (changing plans' targets) or by a plan's
+policy (then for that plan alone).
 
-1. **Check** the release's `requires` against the plan's template and the scan
-   status. Refuse with the reason before anything moves.
+1. **Check** the release's `requires` against each plan's template, the scan
+   status, and, when the app has a Team instance, that the release has run
+   healthy on it (the Team plan itself is exempt). Refuse with the reason
+   before anything moves.
 2. **Rehearse** (when the release `migrates`, or on request): clone one
    customer instance, its database and `/data` included, into a throwaway
    instance; update the clone; run health checks and the repo's smoke test
@@ -274,8 +303,8 @@ Started by the publisher (changing a plan's target) or by the policy.
    clone's URL). A failure stops the rollout before any customer is touched.
 3. **Announce**: holders get an in-app notice and an email with the customer
    notes and the date (`now + noticeHours`). Holders may "update now".
-4. **Update one instance at a time**, the shared instance first, then own
-   instances. Before each: a **backup** (database + `/data`). After each:
+4. **Update one instance at a time**: the rollout's shared instances first,
+   then its own instances (a plan is either shared or own). Before each: a **backup** (database + `/data`). After each:
    health and the error rate compared with before; a regression **pauses** the
    rollout and alerts, as does a failure.
 5. **Paused**: retry, skip that instance, or roll back.
@@ -439,13 +468,25 @@ carried over:
     backup to S3 (each instance's Postgres is a CNPG cluster with S3 backups
     already); restoring is CNPG point-in-time recovery to that backup, plus the
     `/data` volume snapshot taken with it.
-17. **Newest build** of a branch is the one with the highest run number,
-    never the one that arrived last.
+17. **Newest** build or release of a branch (and newest build of a PR) is the
+    one with the highest workflow run number, never the one that arrived last.
 18. **PR titles.** Vetra's PR check fails a PR whose title is not a
     conventional commit (squash merges make the title the commit, and
     release-please versions from it).
 
-## 15. Removed
+## 15. External dependencies
+
+Work outside Vetra's repos, and the phase that needs it:
+
+| Where | What | Phase |
+|---|---|---|
+| Powerhouse monorepo (`ph` CLI) | `ph vetra check` (14.10) | 1 |
+| Powerhouse monorepo (hosts) | the running version a host reports, for the health definition (14.7) | 2 |
+| Powerhouse monorepo (switchboard auth) | `ACCESS=licensed` with the 24 h grace (14.14) and `ACCESS=members` | 3 |
+| GitHub App "Vetra Deploy" | `contents: write`, `pull_requests: write`; every installation approves the upgrade (14.15) | 1 |
+| Sektar repo | the new workflow, `vetra` section in `powerhouse.config.json`, root `Dockerfile` removed | 1 (workflow), 3 (switch-over) |
+
+## 16. Removed
 
 `vetra-deploy-action` (after the alias period), `ci/deploy`, `ci/artifacts`,
 `ci/registry-credentials` (replaced by a namespace push token), `deployApp`,
@@ -456,7 +497,7 @@ the app document, template modes, template packages, `templateHash`
 re-templating, the floor logic, the keeper's provisioning, per-app Harbor
 projects, Sektar's root `Dockerfile` and its conditional `fusion-dockerfile`.
 
-## 16. Out of scope
+## 17. Out of scope
 
 Multi-region or HA instances; a holder choosing their own version; moving data
 between shared and own instances; approval workflows beyond permissions;
@@ -464,7 +505,7 @@ billing and paid plans (they arrive as a new issuer); custom domains for shared
 instances; several Vetra apps in one repo; usage metering; a public status
 page; Vetra Studio products (section 9).
 
-## 17. Build order
+## 18. Build order
 
 Each phase ships on its own and is usable.
 
@@ -476,15 +517,20 @@ Each phase ships on its own and is usable.
 2. **Instances**: `instances` table, reconciler, branch and preview instances,
    settings Vetra owns, publisher and holder settings (14.2), the health
    definition (14.7), registry retention (14.6), preview limits and sleep
-   (14.13), PR comment and check (with the PR-title check, 14.18). The old
-   deploy path removed for GitHub apps (Studio products keep it, section 9).
+   (14.13), PR comment and check (with the PR-title check, 14.18). Removed:
+   `ci/deploy`, `deployApp`/`rollbackApp` and previews for GitHub apps; the
+   old action deprecated. Kept until phase 3, because existing plans depend on
+   them: the app's production environment (shared plans point at it),
+   `ci/artifacts` and the artifact channels (licensed environments follow
+   them). Studio products keep their path (section 9).
 3. **Plans and rollouts**: plans with target, policy, shared and own
    instances, rollouts (requirement check, notice, one at a time, backups,
    restore-based rollback for `migrates`, pause, pinning), Team plan, licence
    gate in the Powerhouse switchboard, audit log and release manager role,
    withdrawing releases (14.3), deleting apps with holders (14.4), holder data
    and backup downloads (14.5), update windows (14.8), Sektar switch-over
-   (section 13). Licensing's environment model removed.
+   (section 13). Removed with it: licensing's environment model, the app's
+   production environment, `ci/artifacts`, artifact channels.
 4. **Trust**: notifications, customer notes, scan gate, provenance in the
    console, rebuild PRs for base-layer fixes.
 5. **Confidence**: rehearsals, regression pause, release health, daily
