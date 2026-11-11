@@ -6,6 +6,7 @@ import {
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
   ensureDeploymentTriggerColumns,
+  ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
   ensureStudioLaunchSecretsTable,
   ensureStudioProductColumns,
@@ -413,6 +414,37 @@ describe("ensureExternalChangesColumns (Task 4.2)", () => {
       expect(
         await db.selectFrom("app_deployments").select(["id", "mirror_sha"]).execute(),
       ).toStrictEqual([{ id: "d", mirror_sha: null }]);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("ensureAppsReleaseBranchesColumn", () => {
+  it("adds release_branches (JSON text, default []) in the namespace schema; existing rows get []; idempotent and concurrent-safe", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      await sql`CREATE TABLE "vetra-apps".apps (id varchar(64) PRIMARY KEY)`.execute(
+        root,
+      );
+      const db = root.withSchema("vetra-apps");
+      await db.insertInto("apps").values({ id: "a" }).execute();
+      await Promise.all(
+        [1, 2, 3].map(() => ensureAppsReleaseBranchesColumn(db)),
+      );
+      await ensureAppsReleaseBranchesColumn(db);
+      await db.insertInto("apps").values({ id: "b" }).execute();
+      expect(
+        await db
+          .selectFrom("apps")
+          .select(["id", "release_branches"])
+          .orderBy("id")
+          .execute(),
+      ).toStrictEqual([
+        { id: "a", release_branches: "[]" },
+        { id: "b", release_branches: "[]" },
+      ]);
     } finally {
       await root.destroy();
     }

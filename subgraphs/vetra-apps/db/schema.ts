@@ -35,6 +35,8 @@ export interface AppsTable {
   repository_id: string | null;
   repository_full_name: string | null;
   production_branch: string;
+  /** JSON array of the branches / patterns besides production_branch that may publish releases (releases/branches.ts); '[]' by default. */
+  release_branches?: string;
   production_environment_id: string;
   previews_enabled: boolean;
   preview_limit: number;

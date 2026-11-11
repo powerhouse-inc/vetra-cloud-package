@@ -126,6 +126,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureReleasesTables(db);
   await ensureAppsRegistryNamespaceColumn(db);
   await ensureRegistryNamespacesTable(db);
+  await ensureAppsReleaseBranchesColumn(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -450,6 +451,27 @@ export async function ensureAppsRegistryNamespaceColumn(
     await db.schema
       .alterTable("apps")
       .addColumn("registry_namespace", "varchar(255)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+      throw err;
+  }
+}
+
+/**
+ * The branches besides the production branch that may publish releases
+ * (JSON array of names / patterns, releases/branches.ts). Existing Apps get
+ * []. Additive and idempotent.
+ */
+export async function ensureAppsReleaseBranchesColumn(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("apps")
+      .addColumn("release_branches", "text", (c) =>
+        c.ifNotExists().notNull().defaultTo("[]"),
+      )
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
