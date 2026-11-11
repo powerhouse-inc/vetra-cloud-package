@@ -112,8 +112,9 @@ on:
     types: [opened, synchronize, reopened]
 permissions: {}
 concurrency:
-  group: vetra-\${{ github.event.pull_request.number || github.ref }}
-  # A push may be cutting a release: let it finish.
+  # A push may be cutting a release: one group per commit, so a newer push
+  # never cancels it (nor a pending one). A pull request keeps only its newest run.
+  group: vetra-\${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: \${{ github.event_name == 'pull_request' }}
 jobs:
   publish:
@@ -133,6 +134,10 @@ ${setup}      - uses: powerhouse-inc/vetra-publish@v1
 ${commands}  # The production environment and PR previews, until releases replace them.
   deploy:
     if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}')
+    # Deploys go out in order: a newer push or PR commit supersedes a running one.
+    concurrency:
+      group: vetra-deploy-\${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       id-token: write

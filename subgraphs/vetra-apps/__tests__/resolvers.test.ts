@@ -423,6 +423,21 @@ describe("workflow template", () => {
     );
   });
 
+  // One group per ref let a newer push cancel the pending run of a merged
+  // release PR, so the release never reached Vetra: pushes group per commit.
+  it("groups pushes per commit and pull requests per PR; deploy cancels its own stale runs", () => {
+    const t = workflowTemplate("app-1");
+    const [workflow, jobs] = t.split("jobs:\n");
+    expect(workflow).toContain(
+      "  group: vetra-${{ github.event.pull_request.number || github.sha }}\n",
+    );
+    expect(workflow).not.toContain("github.ref }}");
+    const deploy = jobs.split("  deploy:\n")[1];
+    expect(deploy).toContain(
+      "    concurrency:\n      group: vetra-deploy-${{ github.event.pull_request.number || github.ref }}\n      cancel-in-progress: true\n",
+    );
+  });
+
   it("keeps the old deploy job, on the production branch and pull requests only", () => {
     const t = workflowTemplate("app-1", "release");
     expect(t).toContain("- uses: powerhouse-inc/vetra-deploy-action@v1");
