@@ -9,7 +9,8 @@ import { UnauthenticatedError } from "./auth.js";
 import { resolveKind, type AppReads } from "./app-reads.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { addressOfDid, callerDid } from "./did.js";
-import type { ChainEnvRows } from "./environments.js";
+import { dropDeletedEnvironment } from "./deleted-environment.js";
+import { lockChain, type ChainEnvRows } from "./environments.js";
 import type { GrantStore } from "./grants.js";
 import { InvalidCodeError, getCode, isUsable } from "./invite-codes.js";
 import { TermNotIssuableError, withLicenceLock } from "./issue.js";
@@ -38,7 +39,9 @@ export interface SubscriptionDeps {
   licences: Pick<LicenseReads, "licenceRecords">;
   lifecycle: Pick<LifecycleStore, "entries">;
   grants: Pick<GrantStore, "grantsForHolder" | "grantFor" | "chainRootsFor" | "chainLabel">;
-  envRows: Pick<ChainEnvRows, "byRoot">;
+  envRows: Pick<ChainEnvRows, "byRoot" | "remove">;
+  /** Forgets a dropped environment's reporting token (offboarding's forgetEnvironment). */
+  forgetEnvironment(environmentId: string): Promise<void>;
   envState(environmentId: string): Promise<VetraCloudEnvironmentState | null>;
   /** The recording gateway: a cancel also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
@@ -153,17 +156,29 @@ export async function subscriptionFor(
     openUrl,
     stoppedAt: liveRow?.stopped_at ?? null,
     deleteAfter: liveRow?.delete_after ?? null,
-    warnings: subscriptionWarnings(
-      {
-        status: l.status,
-        end: l.end,
-        mode,
-        endedAt: liveRow?.ended_at ?? null,
-        stoppedAt: liveRow?.stopped_at ?? null,
-        deleteAfter: liveRow?.delete_after ?? null,
-      },
-      deps.now(),
-    ),
+    warnings: [
+      // The holder deleted the environment their live licence covers: they may have a new one.
+      ...(envRow && !liveRow && isLive(l.status)
+        ? [
+            {
+              kind: "ENVIRONMENT_DELETED" as const,
+              at: envRow.updated_at,
+              message: "You deleted this environment. Your licence still covers one: create a new one.",
+            },
+          ]
+        : []),
+      ...subscriptionWarnings(
+        {
+          status: l.status,
+          end: l.end,
+          mode,
+          endedAt: liveRow?.ended_at ?? null,
+          stoppedAt: liveRow?.stopped_at ?? null,
+          deleteAfter: liveRow?.delete_after ?? null,
+        },
+        deps.now(),
+      ),
+    ],
   };
 }
 
@@ -214,6 +229,27 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
   };
 
   /** One of the caller's licences, by its grant row; anyone else's fails like a missing one. */
+  const rootOf = async (licenseId: string) =>
+    (await deps.grants.chainRootsFor([licenseId])).get(licenseId) ?? licenseId;
+  /** Drops the chain's row when the holder deleted its environment; the next provision is fresh. */
+  const dropDeleted = (l: AuthorisedLicence, root: string) =>
+    dropDeletedEnvironment(
+      {
+        rows: deps.envRows,
+        envState: (id) => deps.envState(id),
+        forgetEnvironment: (id) => deps.forgetEnvironment(id),
+        lock: (r, fn) => lockChain(r, fn),
+      },
+      { root, userDid: l.userDid, appId: l.appId },
+    );
+  const kick = (licenseId: string) => {
+    try {
+      deps.onLicenceIssued?.(licenseId);
+    } catch (e) {
+      deps.issuer.logger.warn(`[licensing] onLicenceIssued failed for ${licenseId}:`, e);
+    }
+  };
+
   const owned = async (licenseId: string, caller: string): Promise<AuthorisedLicence> => {
     const grant = await deps.grants.grantFor(licenseId);
     if (!grant || grant.userDid !== caller) throw new UnknownLicenseError();
@@ -297,6 +333,12 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
       redeemInviteCode: withCodes(
         async (a: { input: { code: string; label?: string | null; upgrades?: string | null } }, ctx) => {
           const caller = did(ctx);
+          // Renewing onto a chain whose environment the holder deleted starts a fresh one. Only
+          // the caller's own licence; anything else is left for the issuer to refuse.
+          if (a.input.upgrades) {
+            const prior = await owned(a.input.upgrades, caller).catch(() => null);
+            if (prior) await dropDeleted(prior, await rootOf(prior.id));
+          }
           let licenseId: string;
           try {
             ({ licenseId } = await redeemInviteCode(deps.issuer, {
@@ -314,16 +356,26 @@ export function createSubscriptionResolvers(deps: SubscriptionDeps): Record<stri
             if (err instanceof TermNotIssuableError) throw new InvalidCodeError();
             throw err;
           }
-          try {
-            deps.onLicenceIssued?.(licenseId);
-          } catch (e) {
-            deps.issuer.logger.warn(`[licensing] onLicenceIssued failed for ${licenseId}:`, e);
-          }
+          kick(licenseId);
           const l = await owned(licenseId, caller);
-          const root = (await deps.grants.chainRootsFor([l.id])).get(l.id) ?? l.id;
-          return subscriptionFor(deps, l, root);
+          return subscriptionFor(deps, l, await rootOf(l.id));
         },
       ),
+
+      // The holder deleted the environment their ACTIVE licence covers: give them a new one.
+      // Anything else (an environment that still exists, none yet) is returned as it is.
+      recreateEnvironment: withCodes(async (a: { licenseId: string }, ctx) => {
+        const caller = did(ctx);
+        const l = await owned(a.licenseId, caller);
+        if (l.status !== "ACTIVE") {
+          throw new OperationRejectedError(
+            `licence ${l.id} is ${l.status}; only an ACTIVE licence gets a new environment`,
+          );
+        }
+        const root = await rootOf(l.id);
+        if (await dropDeleted(l, root)) kick(l.id);
+        return subscriptionFor(deps, l, root);
+      }),
 
       cancelSubscription: withCodes(async (a: { licenseId: string }, ctx) => {
         const caller = did(ctx);

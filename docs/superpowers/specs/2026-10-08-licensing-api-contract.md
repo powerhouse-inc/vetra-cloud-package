@@ -279,6 +279,8 @@ type VetraSubscriptionsQueries {
 type VetraSubscriptionsMutations {
   redeemInviteCode(input: RedeemInviteCodeInput!): Subscription!
   cancelSubscription(licenseId: String!): Boolean!
+  "A new environment for an ACTIVE licence whose environment the holder deleted (warning ENVIRONMENT_DELETED). Otherwise the subscription as it is."
+  recreateEnvironment(licenseId: String!): Subscription!
   "Writes the caller's studio-licence Claude key into a tenant's secrets (was VetraAccessCodes.applyInviteCodeSecret)."
   applyStudioKey(tenantId: String!, secretNames: [String!]!): Boolean!
 }

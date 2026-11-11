@@ -59,6 +59,8 @@ const travel = (to: string) => {
 };
 const tick = () => travel(new Date(Date.parse(clock) + 1000).toISOString());
 const setSecret = vi.fn(async (_t: string, key: string, _v: string) => ({ key }));
+/** Reporting tokens forgotten for dropped environments. */
+const forgotten: string[] = [];
 /** Everything the code under test logs, to prove the key never is. */
 const logger = {
   info: vi.spyOn(console, "info"),
@@ -179,6 +181,9 @@ beforeAll(async () => {
     tenantOwners: async (t) => tenants.get(t) ?? [],
     // Short here; the polling itself is covered with fake timers in apply-studio-key.test.ts.
     tenantWait: { timeoutMs: 20, intervalMs: 5 },
+    forgetEnvironment: async (id) => {
+      forgotten.push(id);
+    },
     directory: {
       appIds: async () => new Set([APP_DED, APP_SH, APP_STUDIO]),
       app: (id) => h.apps.app(id),
@@ -533,5 +538,71 @@ describe("vetraSubscriptions: directory", () => {
     const raw = JSON.stringify(list).toLowerCase();
     expect(raw).not.toContain(HOLDER.toLowerCase());
     expect(raw).not.toContain(OTHER.toLowerCase());
+  });
+});
+
+describe("vetraSubscriptions: a new environment for a deleted one", () => {
+  /** A fresh DEDICATED licence whose chain row points at `environmentId`. */
+  async function licenceWithRow(c: string, environmentId: string) {
+    await code(APP_DED, "pro", c);
+    const l = await redeem({ code: c, label: c });
+    await h.db.insertInto("license_environments").values({
+      environment_id: environmentId, root_license_id: l.licenseId, app_id: APP_DED, user_did: HOLDER_DID,
+      license_id: l.licenseId, template_id: null, label: c, template_hash: "h",
+      ended_at: null, stopped_at: null, delete_after: null, created_at: clock, updated_at: clock,
+    }).execute();
+    return l;
+  }
+  const rowOf = (root: string) =>
+    h.db.selectFrom("license_environments").selectAll().where("root_license_id", "=", root).executeTakeFirst();
+
+  it("asks the holder of a live licence whose environment was deleted to create a new one", async () => {
+    const l = await licenceWithRow("kv-rec-01", "env-gone-1");
+    expect((await mine()).find((s) => s.licenseId === l.licenseId)).toMatchObject({
+      status: "ACTIVE",
+      environmentId: null,
+      warnings: [{ kind: "ENVIRONMENT_DELETED" }],
+    });
+  });
+
+  it("recreateEnvironment drops the deleted environment and starts a new one", async () => {
+    const l = await licenceWithRow("kv-rec-02", "env-gone-2");
+    const onLicenceIssued = vi.fn();
+    deps.onLicenceIssued = onLicenceIssued;
+    try {
+      const s = (await m("recreateEnvironment", { licenseId: l.licenseId }, asHolder)) as Sub;
+      expect(s).toMatchObject({ licenseId: l.licenseId, environmentId: null, warnings: [] });
+      expect(await rowOf(l.licenseId)).toBeUndefined();
+      expect(forgotten).toContain("env-gone-2");
+      expect(onLicenceIssued).toHaveBeenCalledWith(l.licenseId);
+    } finally {
+      delete deps.onLicenceIssued;
+    }
+  });
+
+  it("is the holder's alone, for a live licence, and leaves an existing environment be", async () => {
+    const l = await licenceWithRow("kv-rec-03", "env-gone-3");
+    expect(await codeOf(m("recreateEnvironment", { licenseId: l.licenseId }, asOther))).toBe("NOT_FOUND");
+    expect(await rowOf(l.licenseId)).toBeDefined();
+
+    const live = await licenceWithRow("kv-rec-04", "env-app");
+    const same = (await m("recreateEnvironment", { licenseId: live.licenseId }, asHolder)) as Sub;
+    expect(same.environmentId).toBe("env-app");
+    expect((await rowOf(live.licenseId))?.environment_id).toBe("env-app");
+
+    const ended = await licenceWithRow("kv-rec-05", "env-gone-5");
+    expect(await m("cancelSubscription", { licenseId: ended.licenseId }, asHolder)).toBe(true);
+    expect(await codeOf(m("recreateEnvironment", { licenseId: ended.licenseId }, asHolder))).toBe("INVALID_INPUT");
+    expect(await rowOf(ended.licenseId)).toBeDefined();
+  });
+
+  it("a redeem onto a chain whose environment was deleted starts a fresh one too", async () => {
+    const before = await licenceWithRow("kv-rec-06", "env-gone-6");
+    await gateway.expire(before.licenseId);
+    await code(APP_DED, "max", "kv-rec-max");
+    const back = await redeem({ code: "kv-rec-max", upgrades: before.licenseId });
+    expect(await grants.chainRootOf(back.licenseId)).toBe(before.licenseId);
+    expect(await rowOf(before.licenseId)).toBeUndefined();
+    expect(forgotten).toContain("env-gone-6");
   });
 });

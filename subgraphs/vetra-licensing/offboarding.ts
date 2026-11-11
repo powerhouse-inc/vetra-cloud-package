@@ -24,7 +24,13 @@ export function offboardingAction(
 }
 
 export interface SubscriptionWarning {
-  kind: "EXPIRING" | "ENDED_STOP_PENDING" | "STOPPED_DELETE_PENDING" | "DELETE_IMMINENT";
+  kind:
+    | "EXPIRING"
+    | "ENDED_STOP_PENDING"
+    | "STOPPED_DELETE_PENDING"
+    | "DELETE_IMMINENT"
+    // A live licence whose environment the holder deleted (subscriptions-resolvers.ts).
+    | "ENVIRONMENT_DELETED";
   at: string;
   message: string;
 }
