@@ -160,7 +160,8 @@ issued only to the app's own CI identity (the same workload-token check as
   "image": { "ref": "cr.vetra.io/sektar/sektar:2.0.0-beta.1", "digest": "sha256:…", "host": "cli" },
   "packages": [{ "name": "@sektar/sektar", "version": "2.0.0-beta.1" }],
   "requires": { "powerhouse": ">=6.2.3", "services": ["DOCLING"], "size": "M" },
-  "migrates": true
+  "migrates": true,
+  "built": { "powerhouse": "6.2.3", "baseImage": "node:24-bookworm-slim@sha256:…" }
 }
 ```
 
@@ -177,7 +178,7 @@ for the next release.
 
 - **Records**: `releases (app_id, version, kind, branch, pr, run, commit, notes,
   customer_notes, image_ref, image_digest, host, packages, requires, migrates,
-  scan_status, created_at)`, unique on (app, version). Builds live in the same
+  powerhouse_version, base_image, scan_status, created_at)`, unique on (app, version). Builds live in the same
   table with `kind = build` and are pruned (the newest 20 per branch, PR builds
   when the PR closes). Releases are never deleted.
 - **Customer notes** (`customer_notes`): what holders see. Starts as a copy of
