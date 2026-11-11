@@ -36,6 +36,17 @@ describe("matchesBranchPattern", () => {
   });
 });
 
+describe("matchesBranchPattern performance", () => {
+  it("is linear: no catastrophic backtracking on many stars", () => {
+    const pattern = "*-*-*-*-*-*-*-*-z";
+    const branch = `${"a-".repeat(60)}y`;
+    expect(branch).toHaveLength(121);
+    const start = performance.now();
+    expect(matchesBranchPattern(branch, pattern)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+});
+
 describe("isReleaseBranch", () => {
   it("is true for the production branch and listed branches", () => {
     expect(isReleaseBranch("main", "main", [])).toBe(true);
@@ -77,6 +88,14 @@ describe("validateReleaseBranches", () => {
       expect(r?.code, bad).toBe("BAD_USER_INPUT");
       expect(r?.message, bad).toContain(`'${bad.trim()}'`);
     }
+  });
+
+  it("refuses a bare * (every top-level branch)", () => {
+    const r = refusal(() => validateReleaseBranches(["next", " * "]));
+    expect(r?.code).toBe("BAD_USER_INPUT");
+    expect(r?.message).toContain(
+      "would make every top-level branch a release branch",
+    );
   });
 
   it("caps the list at 20 entries after dedupe", () => {
