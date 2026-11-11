@@ -54,7 +54,10 @@ import {
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
 import { sweepPushRobots } from "./releases/service.js";
-import { reconcileInstancesOnce } from "./instances/reconciler.js";
+import {
+  reconcileInstancesOnce,
+  sweepInstancesOnce,
+} from "./instances/reconciler.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
@@ -381,6 +384,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     if (cfg.instances.enabled) {
       every(WATCH_INTERVAL_MS, "instance reconciler", () =>
         reconcileInstancesOnce(deps),
+      );
+      every(SWEEP_INTERVAL_MS, "instance sweeper", () =>
+        sweepInstancesOnce(deps),
       );
     } else {
       console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");

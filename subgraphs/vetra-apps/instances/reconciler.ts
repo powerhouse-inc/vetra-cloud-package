@@ -46,7 +46,11 @@ export const INSTANCE_BASE_DOMAIN = "vetra.io";
 /** removed_reason that keeps a tombstone (the branch may come back with newer builds). */
 export const BRANCH_DELETED = "branch deleted";
 const NOT_WANTED = "no longer wanted";
-/** removed_reason of a closed (or merged) PR's preview: never revived by a build, only by reopening. */
+/**
+ * removed_reason of a closed (or merged) PR's preview: revived only by
+ * reopening — the webhook, or (missed webhook) a build with a newer run than
+ * its last target, after GitHub says the PR is open. A re-run keeps its run id.
+ */
 export const PR_CLOSED = "pull request closed";
 /** removed_reason of a PR whose head is in another repository: never gets a preview. */
 export const PR_FORK = "pull request from a fork";
@@ -91,10 +95,54 @@ export async function reconcileInstancesOnce(deps: AppsDeps): Promise<void> {
   }
 }
 
+/**
+ * The 15-minute sweep (with the old path's preview sweeper): old-path
+ * previews of apps on instances go, and every running preview is checked with
+ * GitHub, so a missed pull_request.closed webhook (and staging, whose webhooks
+ * go to production) does not keep a preview up until its TTL.
+ */
+export async function sweepInstancesOnce(deps: AppsDeps): Promise<void> {
+  if (!deps.cfg.instances.enabled) return;
+  const apps = await deps.db
+    .selectFrom("apps")
+    .selectAll()
+    .where("instances_enabled", "=", true)
+    .execute();
+  for (const raw of apps) {
+    const app = normalizeApp(raw);
+    try {
+      await withKeyLock(`instances:${app.id}`, () =>
+        retireOldPreviews(deps, app),
+      );
+      await sweepClosedPreviews(deps, app);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] instance sweep of ${app.slug}: ${message(err)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Running previews whose PR GitHub calls closed are marked like
+ * markPullRequestClosed does. At most preview_limit GitHub calls per app;
+ * "unknown" keeps the preview (and stops asking for this app this sweep).
+ */
+async function sweepClosedPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
+  if (!wantsPreviews(app)) return;
+  const running = (await listInstances(deps.db, app.id, "preview")).filter(
+    (r) => !r.removed_at,
+  );
+  for (const row of running.slice(0, app.preview_limit)) {
+    const gate = await pullRequestGate(deps, app, row.pr!);
+    if (gate === "unknown") return;
+    if (gate === "closed") await markClosed(deps, app.id, row.id);
+  }
+}
+
 async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
   await syncPreviewInstances(deps, app);
-  await retireOldPreviews(deps, app);
   const rows = await listInstances(deps.db, app.id);
   // Removals first: an evicted preview frees its place before a new one is
   // created (spec 14.13). Array.prototype.sort is stable.
@@ -251,11 +299,17 @@ export async function syncPreviewInstances(
     deps.now().getTime() - app.preview_ttl_days * DAY_MS,
   ).toISOString();
   const candidates = await previewCandidates(deps.db, app.id, since);
-  const excluded = new Set(
-    rows
-      .filter((r) => r.removed_reason && FINAL.has(r.removed_reason))
-      .map((r) => r.pr!),
-  );
+  const newestRun = new Map(candidates.map((r) => [r.pr!, r.run]));
+  // A closed PR's tombstone is asked about again only once a newer run
+  // arrives: the workflow runs on `reopened`.
+  const final = (r: InstanceRow) =>
+    !!r.removed_reason &&
+    FINAL.has(r.removed_reason) &&
+    !(
+      r.removed_reason === PR_CLOSED &&
+      (newestRun.get(r.pr!) ?? 0) > (r.target_run ?? 0)
+    );
+  const excluded = new Set(rows.filter(final).map((r) => r.pr!));
   // PRs left out for this pass only: GitHub could not say (or was not asked),
   // or the build cannot be run. They hold no place, so running previews stay.
   const skipped = new Set<number>();
@@ -323,7 +377,9 @@ export async function syncPreviewInstances(
     }
     if (gate !== "open") {
       const reason = gate === "fork" ? PR_FORK : PR_CLOSED;
-      if (row) await patch(deps, row, { reason, removed_reason: reason });
+      // The run asked about becomes the tombstone's target: asked once per run.
+      if (row)
+        await patch(deps, row, { ...target, reason, removed_reason: reason });
       else
         await insertInstance(deps.db, {
           ...previewRow(deps, app, pr, target, nowIso),
@@ -796,22 +852,30 @@ export async function markPullRequestClosed(
   pr: number,
 ): Promise<number> {
   const rows = await previewRowsOfPr(deps, repositoryId, pr);
-  for (const r of rows)
-    await withKeyLock(`instances:${r.app_id}`, async () => {
-      const nowIso = deps.now().toISOString();
-      await deps.db
-        .updateTable("instances")
-        .set({ removed_at: nowIso, updated_at: nowIso })
-        .where("id", "=", r.id)
-        .where("removed_at", "is", null)
-        .execute();
-      await deps.db
-        .updateTable("instances")
-        .set({ removed_reason: PR_CLOSED, updated_at: nowIso })
-        .where("id", "=", r.id)
-        .execute();
-    });
+  for (const r of rows) await markClosed(deps, r.app_id, r.id);
   return rows.length;
+}
+
+/** Marks one preview row closed, under the app's instances lock. */
+async function markClosed(
+  deps: AppsDeps,
+  appId: string,
+  id: string,
+): Promise<void> {
+  await withKeyLock(`instances:${appId}`, async () => {
+    const nowIso = deps.now().toISOString();
+    await deps.db
+      .updateTable("instances")
+      .set({ removed_at: nowIso, updated_at: nowIso })
+      .where("id", "=", id)
+      .where("removed_at", "is", null)
+      .execute();
+    await deps.db
+      .updateTable("instances")
+      .set({ removed_reason: PR_CLOSED, updated_at: nowIso })
+      .where("id", "=", id)
+      .execute();
+  });
 }
 
 /** A closed PR was reopened: its preview may come back (after the GitHub check). */

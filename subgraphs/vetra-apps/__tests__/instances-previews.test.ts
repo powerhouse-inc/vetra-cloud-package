@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { makeHarness, owner, seedActiveApp, type Harness } from "./harness.js";
+import {
+  makeHarness,
+  owner,
+  REPO_ID,
+  seedActiveApp,
+  type Harness,
+} from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
 import { instanceLabel } from "../instances/host.js";
 import { listInstances, type InstanceRow } from "../instances/repo.js";
 import {
   PR_CLOSED,
   PR_FORK,
+  markPullRequestClosed,
   reconcileInstancesOnce,
+  sweepInstancesOnce,
 } from "../instances/reconciler.js";
 import { listPreviews } from "../repo.js";
 import { deployApp } from "../service.js";
@@ -184,11 +192,13 @@ describe("preview instances", () => {
 });
 
 describe("preview instances — the PR on GitHub", () => {
-  it("creates nothing for a closed PR, and does not ask GitHub again", async () => {
+  it("creates nothing for a closed PR, and does not ask GitHub again on a re-run", async () => {
     h.github.prStates.set(12, "closed");
     await prBuild(12, 1, 100);
     await reconcileInstancesOnce(h.deps);
-    await prBuild(12, 2, 200, "b");
+    // A re-run keeps its run id.
+    await prBuild(12, 2, 100, "b");
+    await reconcileInstancesOnce(h.deps);
     await reconcileInstancesOnce(h.deps);
     expect(await byPr(12)).toMatchObject({
       status: "removed",
@@ -197,6 +207,43 @@ describe("preview instances — the PR on GitHub", () => {
     });
     expect(h.envs.docs.size).toBe(baseDocs);
     expect(h.github.calls.getPullRequest).toHaveLength(1);
+  });
+
+  it("asks GitHub again about a closed PR once a newer run arrives (it was reopened)", async () => {
+    h.github.prStates.set(12, "closed");
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    // A newer run that GitHub still calls closed: asked once, not every pass.
+    await prBuild(12, 2, 200, "b");
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(2);
+    expect((await byPr(12)).removed_reason).toBe(PR_CLOSED);
+    // Reopened: the workflow runs on `reopened`, so a newer run arrives.
+    h.github.prStates.set(12, "open");
+    await prBuild(12, 3, 300, "c");
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(12)).toMatchObject({
+      status: "updating",
+      removed_at: null,
+      target_version: "1.5.0-pr.12.3",
+    });
+  });
+
+  it("revives a webhook-closed preview only on a newer run, never on a re-run", async () => {
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    await markPullRequestClosed(h.deps, REPO_ID, 12);
+    await reconcileInstancesOnce(h.deps);
+    expect((await byPr(12)).status).toBe("removed");
+    await prBuild(12, 2, 100, "b");
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(1);
+    expect((await byPr(12)).status).toBe("removed");
+    await prBuild(12, 3, 200, "c");
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(2);
+    expect((await byPr(12)).status).toBe("updating");
   });
 
   it("treats a PR GitHub does not know (404) as closed", async () => {
@@ -307,6 +354,63 @@ describe("preview instances — when GitHub cannot say", () => {
   });
 });
 
+describe("preview instances — the 15-minute sweep", () => {
+  it("removes a running preview whose PR closed without a webhook", async () => {
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    const env = (await byPr(12)).environment_id!;
+    h.github.prStates.set(12, "closed");
+    await sweepInstancesOnce(h.deps);
+    expect(await byPr(12)).toMatchObject({ removed_reason: PR_CLOSED });
+    expect((await byPr(12)).removed_at).not.toBeNull();
+    await reconcileInstancesOnce(h.deps);
+    expect(h.envs.deleted).toContain(env);
+    expect((await byPr(12)).status).toBe("removed");
+    // It stays closed: further builds of the same run do not bring it back.
+    await reconcileInstancesOnce(h.deps);
+    expect((await byPr(12)).status).toBe("removed");
+  });
+
+  it("keeps a running preview when GitHub cannot say", async () => {
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    h.github.prStates.set(12, "error");
+    await sweepInstancesOnce(h.deps);
+    expect(await byPr(12)).toMatchObject({
+      removed_at: null,
+      removed_reason: null,
+    });
+  });
+
+  it("leaves an open PR's preview alone", async () => {
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    await sweepInstancesOnce(h.deps);
+    expect((await byPr(12)).removed_at).toBeNull();
+  });
+
+  it("asks GitHub at most preview_limit times per app", async () => {
+    await setApp({ preview_limit: 3 });
+    for (const pr of [1, 2, 3]) await prBuild(pr, 1, pr * 100);
+    await reconcileInstancesOnce(h.deps);
+    await setApp({ preview_limit: 2 });
+    const before = h.github.calls.getPullRequest?.length ?? 0;
+    await sweepInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest!.length - before).toBe(2);
+  });
+
+  it("does nothing while the instances kill switch is off", async () => {
+    await prBuild(12, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    h.github.prStates.set(12, "closed");
+    await sweepInstancesOnce({
+      ...h.deps,
+      cfg: { ...h.deps.cfg, instances: { enabled: false, labelSuffix: "" } },
+    });
+    expect((await byPr(12)).removed_at).toBeNull();
+  });
+});
+
 describe("old previews", () => {
   const oldPreview = (pr: number) =>
     deployApp(h.deps, owner, {
@@ -331,7 +435,10 @@ describe("old previews", () => {
     await productionReady();
     const d = await oldPreview(7);
     await setApp({ instances_enabled: true });
+    // Not on every 15 s pass: a failing delete would warn every 15 s.
     await reconcileInstancesOnce(h.deps);
+    expect(await listPreviews(h.db, appId)).toHaveLength(1);
+    await sweepInstancesOnce(h.deps);
     expect(await listPreviews(h.db, appId)).toEqual([]);
     expect(h.envs.deleted).toContain(d.environment_id);
   });
@@ -341,6 +448,7 @@ describe("old previews", () => {
     await productionReady();
     await oldPreview(7);
     await reconcileInstancesOnce(h.deps);
+    await sweepInstancesOnce(h.deps);
     expect(await listPreviews(h.db, appId)).toHaveLength(1);
   });
 });
