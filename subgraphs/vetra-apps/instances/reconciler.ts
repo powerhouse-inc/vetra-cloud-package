@@ -4,9 +4,18 @@ import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-
 import { withEnvLock, withKeyLock } from "../../../shared/key-lock.js";
 import { expectOrgHandover } from "../../vetra-cloud-observability/env-protection.js";
 import { notConfigured } from "../errors.js";
-import { hasCiIdentity, normalizeApp, type AppRow } from "../repo.js";
+import {
+  hasCiIdentity,
+  listPreviews,
+  normalizeApp,
+  type AppRow,
+} from "../repo.js";
 import type { ReleaseRow } from "../releases/repo.js";
-import type { AppsDeps } from "../service.js";
+import {
+  deletePreviewsOfApp,
+  PREVIEWS_FROM_INSTANCES,
+  type AppsDeps,
+} from "../service.js";
 import { instanceLabel } from "./host.js";
 import {
   imageTag,
@@ -85,6 +94,7 @@ export async function reconcileInstancesOnce(deps: AppsDeps): Promise<void> {
 async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
   await syncPreviewInstances(deps, app);
+  await retireOldPreviews(deps, app);
   const rows = await listInstances(deps.db, app.id);
   // Removals first: an evicted preview frees its place before a new one is
   // created (spec 14.13). Array.prototype.sort is stable.
@@ -118,6 +128,17 @@ function wantsInstances(app: AppRow): boolean {
 
 function wantsPreviews(app: AppRow): boolean {
   return wantsInstances(app) && app.previews_enabled;
+}
+
+/**
+ * An app on instances has no old-path previews (overview slice 2): they are
+ * deleted through deletePreview, which only deletes this app's PREVIEW
+ * documents and marks their deployments SUPERSEDED.
+ */
+async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
+  if (!wantsInstances(app)) return;
+  if ((await listPreviews(deps.db, app.id)).length === 0) return;
+  await deletePreviewsOfApp(deps, app, PREVIEWS_FROM_INSTANCES);
 }
 
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>

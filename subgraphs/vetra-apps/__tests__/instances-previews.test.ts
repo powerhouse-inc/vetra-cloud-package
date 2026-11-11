@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { makeHarness, seedActiveApp, type Harness } from "./harness.js";
+import { makeHarness, owner, seedActiveApp, type Harness } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
 import { instanceLabel } from "../instances/host.js";
 import { listInstances, type InstanceRow } from "../instances/repo.js";
@@ -8,6 +8,8 @@ import {
   PR_FORK,
   reconcileInstancesOnce,
 } from "../instances/reconciler.js";
+import { listPreviews } from "../repo.js";
+import { deployApp } from "../service.js";
 
 let h: Harness;
 let appId: string;
@@ -241,5 +243,43 @@ describe("preview instances — the PR on GitHub", () => {
     h.advance(7 * DAY + 60_000);
     await reconcileInstancesOnce(h.deps);
     expect(await previews()).toEqual([]);
+  });
+});
+
+describe("old previews", () => {
+  const oldPreview = (pr: number) =>
+    deployApp(h.deps, owner, {
+      appId,
+      kind: "PREVIEW",
+      prNumber: pr,
+      gitRef: `refs/pull/${pr}/merge`,
+      sha: "abcdef1234567890abcdef1234567890abcdef12",
+      packages: [{ name: "@acme/shop", version: `1.2.0-pr.${pr}.abcdef1` }],
+    });
+  const productionReady = async () => {
+    const app = await h.db
+      .selectFrom("apps")
+      .selectAll()
+      .where("id", "=", appId)
+      .executeTakeFirstOrThrow();
+    h.envs.setStatus(app.production_environment_id, "READY");
+  };
+
+  it("are deleted once the app is on instances", async () => {
+    await setApp({ instances_enabled: false });
+    await productionReady();
+    const d = await oldPreview(7);
+    await setApp({ instances_enabled: true });
+    await reconcileInstancesOnce(h.deps);
+    expect(await listPreviews(h.db, appId)).toEqual([]);
+    expect(h.envs.deleted).toContain(d.environment_id);
+  });
+
+  it("stay for an app that is not on instances", async () => {
+    await setApp({ instances_enabled: false });
+    await productionReady();
+    await oldPreview(7);
+    await reconcileInstancesOnce(h.deps);
+    expect(await listPreviews(h.db, appId)).toHaveLength(1);
   });
 });

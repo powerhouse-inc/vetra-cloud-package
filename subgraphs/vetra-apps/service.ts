@@ -222,6 +222,9 @@ export interface AppsDeps {
 export const DEFAULT_PREVIEW_LIMIT = 5;
 export const DEFAULT_PREVIEW_TTL_DAYS = 7;
 export const PREVIEW_COMMENT_MARKER = "<!-- vetra-preview -->";
+/** Why an old-path PREVIEW deploy of an app on instances is not applied (releases phase 2 slice 2). */
+export const PREVIEWS_FROM_INSTANCES =
+  "previews of this app come from its vetra-publish builds (instances)";
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 export const HARBOR_HOST = "cr.vetra.io";
 const MAX_SLUG_ATTEMPTS = 10;
@@ -3475,6 +3478,32 @@ async function deployChecked(
     app.production_environment_id,
   );
   const image = resolveImage(app, input.imageTag, productionState);
+  // An app on instances gets its PR previews from vetra-publish builds
+  // (instances/reconciler.ts): the old action's preview deploy is recorded,
+  // never applied, so a PR never has two previews. The kill switch
+  // (VETRA_APPS_INSTANCES=off) hands previews back to this path.
+  if (
+    input.kind === "PREVIEW" &&
+    app.instances_enabled &&
+    deps.cfg.instances.enabled
+  ) {
+    return recordSkippedDeployment(deps, app, {
+      prNumber,
+      gitRef: actor.gitRef,
+      sha: input.sha.toLowerCase(),
+      runUrl,
+      actorGithub: actor.github,
+      actorDid: actor.did,
+      packages: input.packages.map((p) => ({
+        name: p.name,
+        version: p.version,
+      })),
+      imageTag: image ? `${image.repository}:${image.tag}` : null,
+      reason: PREVIEWS_FROM_INSTANCES,
+      trigger: actor.trigger,
+      onBehalfOf: actor.onBehalfOf,
+    });
+  }
   // A PR's CI run can finish after the PR was merged/closed (and after the
   // pull_request.closed webhook removed its preview): never (re)create or
   // update a preview for a closed PR. Record the run as SUPERSEDED instead.

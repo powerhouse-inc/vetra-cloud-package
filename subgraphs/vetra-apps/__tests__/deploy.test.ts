@@ -5,6 +5,7 @@ import {
   ciDeployment,
   deletePreview,
   deployApp,
+  PREVIEWS_FROM_INSTANCES,
   resolveImage,
   rollbackApp,
   updateApp,
@@ -28,6 +29,7 @@ import {
   owner,
   seedActiveApp,
   stranger,
+  testConfig,
   type Harness,
 } from "./harness.js";
 
@@ -697,5 +699,56 @@ describe("resolveImage", () => {
     expect(() => resolveImage(a, "bad tag", null)).toThrow();
     expect(() => resolveImage(a, "docker.io/app-shop/web:1", null)).toThrow();
     expect(REPO_ID).toBe(a.repository_id);
+  });
+});
+
+describe("PREVIEW deploys of an app on instances", () => {
+  const optIn = () =>
+    h.db
+      .updateTable("apps")
+      .set({ instances_enabled: true })
+      .where("id", "=", app.id)
+      .execute();
+
+  it("are recorded as SUPERSEDED and touch no environment", async () => {
+    await optIn();
+    const envsBefore = h.envs.docs.size;
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/12/merge"),
+      preview(12),
+    );
+    expect(d).toMatchObject({
+      status: "SUPERSEDED",
+      kind: "PREVIEW",
+      error: PREVIEWS_FROM_INSTANCES,
+      environment_id: null,
+    });
+    expect(await getPreview(h.db, app.id, 12)).toBeNull();
+    expect(h.envs.docs.size).toBe(envsBefore);
+    expect(h.github.calls.getPullRequestState).toBeUndefined();
+  });
+
+  it("leave the production deploy as it is", async () => {
+    await optIn();
+    const d = await deployAsCi(h.deps, claim("refs/heads/main"), prod());
+    expect(d).toMatchObject({ status: "DEPLOYING", kind: "PRODUCTION" });
+  });
+
+  it("deploy as before while the instances kill switch is off", async () => {
+    await h.close();
+    h = await makeHarness(
+      testConfig({ instances: { enabled: false, labelSuffix: "" } }),
+    );
+    app = await seedActiveApp(h);
+    h.envs.setStatus(app.production_environment_id, "READY");
+    await optIn();
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/12/merge"),
+      preview(12),
+    );
+    expect(d.status).not.toBe("SUPERSEDED");
+    expect(await getPreview(h.db, app.id, 12)).not.toBeNull();
   });
 });
