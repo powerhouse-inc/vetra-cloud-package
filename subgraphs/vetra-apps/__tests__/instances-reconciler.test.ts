@@ -8,6 +8,8 @@ import {
   type Harness,
 } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
+import { setLabel } from "../../../document-models/vetra-cloud-environment/v1/index.js";
+import { withEnvLock } from "../../../shared/key-lock.js";
 import { instanceLabel } from "../instances/host.js";
 import { listInstances } from "../instances/repo.js";
 import {
@@ -288,6 +290,7 @@ describe("reconcileInstancesOnce — branch instances", () => {
     await reconcileInstancesOnce(h.deps);
     const rows = await instances();
     expect(rows.find((r) => r.name === "next")!.status).toBe("ready");
+    expect(rows.find((r) => r.name === "main")!.status).toBe("failed");
     expect(rows.find((r) => r.name === "main")!.reason).toMatch(
       /not .*instance/,
     );
@@ -405,5 +408,108 @@ describe("reconcileInstancesOnce — branch instances", () => {
     const s = (await h.envs.getState((await one()).environment_id!))!;
     expect(s.owner).toBe(OWNER);
     expect(s.fusion!.env.find((e) => e.name === "ADMINS")!.value).toBe(OWNER);
+  });
+});
+
+describe("reconcileInstancesOnce — fix round 1", () => {
+  it("waits for the environment lock before touching the environment", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    let release!: () => void;
+    const held = withEnvLock(
+      envId,
+      () => new Promise<void>((r) => (release = r)),
+    );
+    const pass = reconcileInstancesOnce(h.deps);
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await one()).status).toBe("updating");
+    release();
+    await held;
+    await pass;
+    expect((await one()).status).toBe("ready");
+  });
+
+  it("approves changes it sent but never approved", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    await h.envs.execute(envId, [setLabel({ label: "half done" })]);
+    expect((await h.envs.getState(envId))!.status).toBe("CHANGES_PENDING");
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("CHANGES_APPROVED");
+  });
+
+  it("retries a revert that failed", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    await seedRelease(h, appId, {
+      version: "1.5.0-main.2",
+      run: 200,
+      digest: digest("b"),
+    });
+    await reconcileInstancesOnce(h.deps);
+    h.envs.setStatus(envId, "DEPLOYMENt_FAILED");
+
+    const execute = h.envs.execute.bind(h.envs);
+    let failOnce = true;
+    h.envs.execute = async (id, actions) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("reactor unavailable");
+      }
+      return execute(id, actions);
+    };
+    await reconcileInstancesOnce(h.deps);
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.2@${digest("b")}`);
+    expect((await one()).status).toBe("failed");
+
+    await reconcileInstancesOnce(h.deps);
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.1@${digest("a")}`);
+    expect(await one()).toMatchObject({
+      status: "failed",
+      failed_digest: digest("b"),
+    });
+  });
+
+  for (const gone of ["TERMINATING", "DESTROYED", "ARCHIVED"] as const) {
+    it(`recreates an environment that is ${gone}, without reverting it`, async () => {
+      await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+      await reconcileInstancesOnce(h.deps);
+      const first = (await one()).environment_id!;
+      h.envs.setStatus(first, gone);
+      const before = h.envs.executed.length;
+      await reconcileInstancesOnce(h.deps);
+      expect(h.envs.executed.length).toBe(before);
+      expect(await one()).toMatchObject({
+        environment_id: null,
+        status: "pending",
+      });
+      await reconcileInstancesOnce(h.deps);
+      expect((await one()).environment_id).not.toBe(first);
+      expect((await one()).environment_id).not.toBeNull();
+    });
+  }
+
+  it("deletes an unlinked DRAFT environment when the instance is removed", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const draft = await h.envs.create();
+    await h.db
+      .updateTable("instances")
+      .set({ environment_id: draft })
+      .where("app_id", "=", appId)
+      .execute();
+    await h.db
+      .updateTable("apps")
+      .set({ instances_enabled: false })
+      .where("id", "=", appId)
+      .execute();
+    await reconcileInstancesOnce(h.deps);
+    expect(h.envs.deleted).toContain(draft);
   });
 });
