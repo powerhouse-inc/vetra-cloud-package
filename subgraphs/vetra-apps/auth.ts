@@ -29,6 +29,11 @@ export interface VetraClaim {
   runAttempt?: string;
   actor?: string;
   prNumber?: number | null;
+  /**
+   * Renown says the run's branch may publish releases (the production branch
+   * or a listed release branch); undefined when Renown did not say.
+   */
+  releaseBranch?: boolean;
 }
 
 export interface Caller {
@@ -81,6 +86,10 @@ export function parseVetraClaim(vetra: unknown): VetraClaim | null {
     runAttempt: str(claim.runAttempt),
     actor: str(claim.actor),
     prNumber: typeof claim.prNumber === "number" ? claim.prNumber : null,
+    releaseBranch:
+      typeof claim.releaseBranch === "boolean"
+        ? claim.releaseBranch
+        : undefined,
   };
 }
 

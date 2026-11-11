@@ -693,7 +693,10 @@ export async function seedActiveApp(
   return confirmAppIdentity(h.deps, owner, app.id);
 }
 
-/** A C1 `vetra` claim for `ref` (refClass / eventName derived from the ref). */
+/**
+ * A C1 `vetra` claim for `ref` (refClass / eventName derived from the ref;
+ * releaseBranch true for a push to the production branch main).
+ */
 export const claim = (ref: string, extra: Record<string, unknown> = {}) => {
   const pr = /^refs\/pull\/(\d+)\/merge$/.exec(ref);
   return {
@@ -709,6 +712,7 @@ export const claim = (ref: string, extra: Record<string, unknown> = {}) => {
     repository: REPO,
     actor: "octocat",
     sha: "abcdef1234567",
+    releaseBranch: ref === "refs/heads/main",
     ...extra,
   };
 };

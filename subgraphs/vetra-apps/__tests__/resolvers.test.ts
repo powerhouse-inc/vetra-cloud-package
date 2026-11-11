@@ -97,6 +97,22 @@ describe("vetra claim parsing", () => {
       prNumber: null,
       runId: "5",
     });
+    expect(
+      parseVetraClaim({ ref: "refs/heads/next", releaseBranch: true })
+        ?.releaseBranch,
+    ).toBe(true);
+    expect(
+      parseVetraClaim({ ref: "refs/heads/x", releaseBranch: false })
+        ?.releaseBranch,
+    ).toBe(false);
+    // Only a real boolean counts; absent (older Renown) or malformed is undefined.
+    expect(
+      parseVetraClaim({ ref: "refs/heads/x", releaseBranch: "true" })
+        ?.releaseBranch,
+    ).toBeUndefined();
+    expect(parseVetraClaim({ ref: "refs/heads/x" })?.releaseBranch).toBe(
+      undefined,
+    );
     expect(parseVetraClaim({ ref: 1 })).toBeNull();
     expect(parseVetraClaim(null)).toBeNull();
   });
