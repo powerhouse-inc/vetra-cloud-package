@@ -61,7 +61,7 @@ export function compareReleases(a: string, b: string): number {
   for (let i = 0; i < Math.max(x.prerelease.length, y.prerelease.length); i++) {
     if (x.prerelease[i] === undefined) return -1;
     if (y.prerelease[i] === undefined) return 1;
-    const c = compareIdent(x.prerelease[i]!, y.prerelease[i]!);
+    const c = compareIdent(x.prerelease[i], y.prerelease[i]);
     if (c !== 0) return c;
   }
   return 0;
