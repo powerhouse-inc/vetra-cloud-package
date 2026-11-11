@@ -517,6 +517,7 @@ export async function markBranchDeleted(
     .innerJoin("apps", "apps.id", "instances.app_id")
     .select("instances.id")
     .where("apps.repository_id", "=", repositoryId)
+    .where("apps.instances_enabled", "=", true)
     .where("instances.kind", "=", "branch")
     .where("instances.name", "=", branch)
     .where("instances.removed_at", "is", null)

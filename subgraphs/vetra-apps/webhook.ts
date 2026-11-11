@@ -11,6 +11,7 @@ import {
   type AppsDeps,
 } from "./service.js";
 import { mirrorAppById } from "./app-document.js";
+import { markBranchDeleted } from "./instances/reconciler.js";
 
 /** `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`. */
 export function verifyGithubSignature(
@@ -180,7 +181,12 @@ export async function handleGithubWebhook(
   }
 
   if (input.event === "push") {
-    return { status: 200, body: { flaggedApps: await flagOutsidePush(deps, payload) } };
+    const flaggedApps = await flagOutsidePush(deps, payload);
+    const removedInstances = await removeDeletedBranchInstances(deps, payload);
+    return {
+      status: 200,
+      body: removedInstances > 0 ? { flaggedApps, removedInstances } : { flaggedApps },
+    };
   }
 
   return { status: 204 };
@@ -201,6 +207,18 @@ const NULL_SHA = /^0+$/;
  * Studio's commits under someone else's head is flagged. Returns how many
  * Apps were flagged.
  */
+/** A deleted branch (push with deleted: true on refs/heads/…) takes its branch instance with it. */
+async function removeDeletedBranchInstances(
+  deps: AppsDeps,
+  payload: Payload,
+): Promise<number> {
+  const repositoryId = idOf(pick(payload, "repository.id"));
+  const ref = typeof payload.ref === "string" ? payload.ref : "";
+  if (!repositoryId || payload.deleted !== true || !ref.startsWith("refs/heads/"))
+    return 0;
+  return markBranchDeleted(deps, repositoryId, ref.slice("refs/heads/".length));
+}
+
 async function flagOutsidePush(deps: AppsDeps, payload: Payload): Promise<number> {
   const repositoryId = idOf(pick(payload, "repository.id"));
   const installationId = idOf(pick(payload, "installation.id"));
