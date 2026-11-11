@@ -729,6 +729,19 @@ describe("PREVIEW deploys of an app on instances", () => {
     expect(h.github.calls.getPullRequestState).toBeUndefined();
   });
 
+  it("are recorded as SUPERSEDED even with an image this path would reject", async () => {
+    await optIn();
+    const d = await deployAsCi(
+      h.deps,
+      claim("refs/pull/12/merge"),
+      preview(12, { imageTag: "bad tag" }),
+    );
+    expect(d).toMatchObject({
+      status: "SUPERSEDED",
+      error: PREVIEWS_FROM_INSTANCES,
+    });
+  });
+
   it("leave the production deploy as it is", async () => {
     await optIn();
     const d = await deployAsCi(h.deps, claim("refs/heads/main"), prod());

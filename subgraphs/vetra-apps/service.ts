@@ -3474,14 +3474,11 @@ async function deployChecked(
   }
   let runUrl = input.runUrl?.trim() || null;
   if (runUrl && !/^https:\/\/github\.com\//.test(runUrl)) runUrl = null;
-  const productionState = await deps.envs.getState(
-    app.production_environment_id,
-  );
-  const image = resolveImage(app, input.imageTag, productionState);
   // An app on instances gets its PR previews from vetra-publish builds
   // (instances/reconciler.ts): the old action's preview deploy is recorded,
   // never applied, so a PR never has two previews. The kill switch
-  // (VETRA_APPS_INSTANCES=off) hands previews back to this path.
+  // (VETRA_APPS_INSTANCES=off) hands previews back to this path. Before the
+  // image is checked: nothing here is deployed, so it cannot fail the run.
   if (
     input.kind === "PREVIEW" &&
     app.instances_enabled &&
@@ -3498,12 +3495,16 @@ async function deployChecked(
         name: p.name,
         version: p.version,
       })),
-      imageTag: image ? `${image.repository}:${image.tag}` : null,
+      imageTag: input.imageTag?.trim() || null,
       reason: PREVIEWS_FROM_INSTANCES,
       trigger: actor.trigger,
       onBehalfOf: actor.onBehalfOf,
     });
   }
+  const productionState = await deps.envs.getState(
+    app.production_environment_id,
+  );
+  const image = resolveImage(app, input.imageTag, productionState);
   // A PR's CI run can finish after the PR was merged/closed (and after the
   // pull_request.closed webhook removed its preview): never (re)create or
   // update a preview for a closed PR. Record the run as SUPERSEDED instead.
