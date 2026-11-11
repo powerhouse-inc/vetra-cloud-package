@@ -50,6 +50,7 @@ import {
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
 import { sweepPushRobots } from "./releases/service.js";
+import { reconcileInstancesOnce } from "./instances/reconciler.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
@@ -370,6 +371,14 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     });
 
     every(5 * 60 * 1000, "push robot sweep", () => sweepPushRobots(deps));
+
+    if (cfg.instances.enabled) {
+      every(WATCH_INTERVAL_MS, "instance reconciler", () =>
+        reconcileInstancesOnce(deps),
+      );
+    } else {
+      console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");
+    }
 
     every(DRIFT_INTERVAL_MS, "app document drift", () =>
       reportAppDocumentDrift({ db, docs: deps.docs!, logger: console }),

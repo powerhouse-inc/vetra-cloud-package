@@ -2781,6 +2781,8 @@ export interface UpdateAppInput {
   /** Replaces the release branches (releases/branches.ts); [] clears them. */
   releaseBranches?: string[] | null;
   previewsEnabled?: boolean | null;
+  /** Run this App's instances (releases phase 2). Needs a GitHub repository. */
+  instancesEnabled?: boolean | null;
   previewLimit?: number | null;
   previewTtlDays?: number | null;
 }
@@ -2821,6 +2823,14 @@ export async function updateApp(
   }
   if (input.previewsEnabled != null)
     patch.previews_enabled = input.previewsEnabled;
+  if (input.instancesEnabled != null) {
+    if (input.instancesEnabled && !hasCiIdentity(app))
+      throw appsError(
+        "BAD_USER_INPUT",
+        "Instances run releases published from GitHub (vetra-publish); this App has no repository",
+      );
+    patch.instances_enabled = input.instancesEnabled;
+  }
   const productionBranch = input.productionBranch?.trim();
   if (productionBranch != null) assertBranch(productionBranch);
   const releaseBranches =

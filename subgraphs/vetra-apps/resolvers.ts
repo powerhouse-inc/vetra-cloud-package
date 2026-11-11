@@ -1,5 +1,6 @@
 import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
+import { appInstancesFor } from "./instances/service.js";
 import { envUrls } from "./envs.js";
 import {
   bearerHasVetraClaim,
@@ -185,6 +186,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     previewsEnabled: app.previews_enabled,
     previewLimit: app.preview_limit,
     previewTtlDays: app.preview_ttl_days,
+    instancesEnabled: app.instances_enabled ?? false,
     harborProject: app.harbor_project,
     identityDid: app.identity_did,
     identityExpiresAt: app.identity_expires_at ?? null,
@@ -279,6 +281,14 @@ export function createResolvers(deps: AppsDeps) {
           (await appDeploymentsFor(deps, requireCaller(ctx), appId, limit)).map(
             (d) => mapDeployment(deps, d),
           ),
+        ),
+      appInstances: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "appInstances", () =>
+          appInstancesFor(deps, requireCaller(ctx), appId),
         ),
       appReleases: (
         _: unknown,

@@ -98,6 +98,26 @@ export const schema: DocumentNode = gql`
     version: String!
   }
 
+  "A running environment of an app (spec: releases and instances, section 5)."
+  type AppInstance {
+    id: ID!
+    "branch | preview | shared | own"
+    kind: String!
+    name: String!
+    branch: String
+    pr: Int
+    url: String
+    "pending | updating | ready | failed | stopped"
+    status: String!
+    reason: String
+    targetVersion: String
+    targetDigest: String
+    runningVersion: String
+    runningDigest: String
+    environmentId: String
+    updatedAt: String!
+  }
+
   type AppDeployment {
     id: ID!
     appId: ID!
@@ -142,6 +162,8 @@ export const schema: DocumentNode = gql`
     previewsEnabled: Boolean!
     previewLimit: Int!
     previewTtlDays: Int!
+    "Whether Vetra runs this App's instances (one per release branch)."
+    instancesEnabled: Boolean!
     harborProject: String!
     identityDid: String!
     """
@@ -229,6 +251,7 @@ export const schema: DocumentNode = gql`
     previewsEnabled: Boolean
     previewLimit: Int
     previewTtlDays: Int
+    instancesEnabled: Boolean
   }
 
   input DeployedPackageInput {
@@ -264,6 +287,7 @@ export const schema: DocumentNode = gql`
     studioProduct(studioEnvironmentId: String!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appReleases(appId: ID!, kind: String, limit: Int): [AppRelease!]!
+    appInstances(appId: ID!): [AppInstance!]!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment
