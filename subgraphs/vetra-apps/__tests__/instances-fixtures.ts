@@ -15,6 +15,7 @@ export async function seedRelease(
     pr?: number | null;
     kind?: "build" | "release";
     digest?: string;
+    createdAt?: string;
   },
 ): Promise<ReleaseRow> {
   const app = (await getApp(h.db, appId))!;
@@ -36,7 +37,7 @@ export async function seedRelease(
     migrates: false,
     powerhouse_version: "6.2.3",
     base_image: "node:24@sha256:00",
-    created_at: "2026-11-11T00:00:00.000Z",
+    created_at: over.createdAt ?? "2026-11-11T00:00:00.000Z",
   });
   return row;
 }

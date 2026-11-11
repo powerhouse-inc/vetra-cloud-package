@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeHarness, seedActiveApp, type Harness } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
 import { getApp } from "../repo.js";
-import { branchTargets, targetOf } from "../instances/targets.js";
+import {
+  branchTargets,
+  pickPreviews,
+  previewCandidates,
+  targetOf,
+} from "../instances/targets.js";
 
 let h: Harness;
 let appId: string;
@@ -106,5 +111,75 @@ describe("targetOf", () => {
       target_ph_host: "cli",
       target_run: 100,
     });
+  });
+});
+
+describe("previewCandidates", () => {
+  const SINCE = "2026-11-04T00:00:00.000Z";
+
+  it("takes each PR's newest build by run, never a branch build, newest PR first", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-pr.12.1", run: 100, pr: 12 });
+    await seedRelease(h, appId, {
+      version: "1.5.0-pr.12.3",
+      run: 300,
+      pr: 12,
+      digest: digest("c"),
+    });
+    // Arrives last, but an older run: not the target (spec 14.17).
+    await seedRelease(h, appId, {
+      version: "1.5.0-pr.12.2",
+      run: 200,
+      pr: 12,
+      digest: digest("b"),
+    });
+    await seedRelease(h, appId, { version: "1.5.0-pr.13.1", run: 250, pr: 13 });
+    await seedRelease(h, appId, { version: "1.5.0-main.9", run: 999 });
+    const c = await previewCandidates(h.db, appId, SINCE);
+    expect(c.map((r) => [r.pr, r.version])).toEqual([
+      [12, "1.5.0-pr.12.3"],
+      [13, "1.5.0-pr.13.1"],
+    ]);
+    expect(typeof c[0].run).toBe("number");
+  });
+
+  it("leaves out a PR whose last build is older than the TTL", async () => {
+    await seedRelease(h, appId, {
+      version: "1.5.0-pr.12.1",
+      run: 100,
+      pr: 12,
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    await seedRelease(h, appId, {
+      version: "1.5.0-pr.13.1",
+      run: 90,
+      pr: 13,
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    await seedRelease(h, appId, {
+      version: "1.5.0-pr.13.2",
+      run: 95,
+      pr: 13,
+      createdAt: "2026-11-05T00:00:00.000Z",
+    });
+    const c = await previewCandidates(h.db, appId, SINCE);
+    expect(c.map((r) => r.version)).toEqual(["1.5.0-pr.13.2"]);
+  });
+});
+
+describe("pickPreviews", () => {
+  const r = (pr: number, run: number) =>
+    ({ pr, run, version: `1.0.0-pr.${pr}.1` }) as never;
+
+  it("keeps the newest PRs up to the limit, skipping excluded ones", () => {
+    const picked = pickPreviews(
+      [r(5, 500), r(4, 400), r(3, 300), r(2, 200)],
+      new Set([4]),
+      2,
+    );
+    expect([...picked.keys()]).toEqual([5, 3]);
+  });
+
+  it("keeps none at limit 0", () => {
+    expect(pickPreviews([r(5, 500)], new Set(), 0).size).toBe(0);
   });
 });

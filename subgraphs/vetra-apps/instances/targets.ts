@@ -61,3 +61,61 @@ export function targetOf(r: ReleaseRow): InstanceTarget {
     target_run: Number(r.run),
   };
 }
+
+/**
+ * The newest build of every PR that has a build recorded since `sinceIso`
+ * (spec 14.13: a preview goes after its TTL without a new build), newest
+ * first. Newest = highest verified run id, on an equal run the newest record
+ * (spec 14.17); ties between PRs go to the higher PR number.
+ */
+export async function previewCandidates(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+  sinceIso: string,
+): Promise<ReleaseRow[]> {
+  const recent = db
+    .selectFrom("releases")
+    .select("pr")
+    .where("app_id", "=", appId)
+    .where("kind", "=", "build")
+    .where("pr", "is not", null)
+    .where("created_at", ">=", sinceIso);
+  const rows = await db
+    .selectFrom("releases")
+    .selectAll()
+    .distinctOn("pr")
+    .where("app_id", "=", appId)
+    .where("kind", "=", "build")
+    .where("pr", "in", recent)
+    .orderBy("pr")
+    .orderBy("run", "desc")
+    .orderBy("created_at", "desc")
+    .execute();
+  return rows
+    .map((r) => ({ ...r, run: Number(r.run) }))
+    .sort(
+      (a, b) =>
+        b.run - a.run ||
+        b.created_at.localeCompare(a.created_at) ||
+        b.pr! - a.pr!,
+    );
+}
+
+/**
+ * The PRs that get a preview: the newest `limit` candidates (spec 14.13: the
+ * oldest-updated goes first beyond the cap), never an excluded one (closed,
+ * or from a fork). `candidates` is newest first (previewCandidates).
+ */
+export function pickPreviews(
+  candidates: ReleaseRow[],
+  excluded: ReadonlySet<number>,
+  limit: number,
+): Map<number, ReleaseRow> {
+  const out = new Map<number, ReleaseRow>();
+  for (const r of candidates) {
+    if (out.size >= limit) break;
+    if (r.pr == null || excluded.has(r.pr)) continue;
+    out.set(r.pr, r);
+  }
+  return out;
+}
