@@ -322,6 +322,7 @@ async function reconcileEnvironment(
     image.tag,
     row.update_started_at,
     deps.now(),
+    !!row.running_digest && row.running_digest === row.target_digest,
   );
   if (seen.kind === "ready") {
     if (row.status !== "ready" || row.running_digest !== row.target_digest)

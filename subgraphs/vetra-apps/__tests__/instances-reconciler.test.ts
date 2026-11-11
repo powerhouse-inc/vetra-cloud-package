@@ -411,6 +411,46 @@ describe("reconcileInstancesOnce — branch instances", () => {
   });
 });
 
+describe("reconcileInstancesOnce — final fix wave", () => {
+  async function readyOnTarget() {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).status).toBe("ready");
+    return envId;
+  }
+
+  it("treats a restart of a ready instance as updating, never failed, long after its start", async () => {
+    const envId = await readyOnTarget();
+    h.advance(UPDATE_TIMEOUT_MS * 3);
+    h.envs.setStatus(envId, "DEPLOYING");
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      failed_digest: null,
+      running_digest: digest("a"),
+    });
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).status).toBe("ready");
+  });
+
+  it("treats a failed-deployment blip of a ready instance as updating, and recovers", async () => {
+    const envId = await readyOnTarget();
+    h.envs.setStatus(envId, "DEPLOYMENt_FAILED");
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      failed_digest: null,
+    });
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).status).toBe("ready");
+  });
+});
+
 describe("reconcileInstancesOnce — fix round 1", () => {
   it("waits for the environment lock before touching the environment", async () => {
     await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });

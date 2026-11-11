@@ -13,6 +13,25 @@ const started = (msAgo: number) =>
   new Date(now.getTime() - msAgo).toISOString();
 
 describe("observeEnvironment", () => {
+  it("never fails an instance that already ran the target (a restart, a wake, a blip)", () => {
+    for (const s of ["DEPLOYING", "CHANGES_APPROVED", "DEPLOYMENt_FAILED"])
+      expect(
+        observeEnvironment(
+          state(s),
+          TAG,
+          started(UPDATE_TIMEOUT_MS * 10),
+          now,
+          true,
+        ),
+      ).toEqual({ kind: "updating" });
+    expect(
+      observeEnvironment(state("READY"), TAG, started(1), now, true),
+    ).toEqual({ kind: "ready" });
+    expect(
+      observeEnvironment(state("STOPPED"), TAG, started(1), now, true),
+    ).toEqual({ kind: "stopped" });
+  });
+
   it("is ready only when READY on the target tag", () => {
     expect(observeEnvironment(state("READY"), TAG, null, now)).toEqual({
       kind: "ready",

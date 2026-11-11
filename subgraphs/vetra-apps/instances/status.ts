@@ -14,25 +14,29 @@ const GONE = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
 /**
  * What the environment's state says about its instance. Interim health
  * (until releases phase 2 slice 3): READY and running the target tag
- * (`<version>@<digest>`), spec section 6 step 3.
+ * (`<version>@<digest>`), spec section 6 step 3. `runsTarget`: the instance
+ * already ran the target (running = target digest), so anything short of
+ * READY is a restart (owner stop/start, a wake, a failed-deployment blip):
+ * "updating" until it recovers, never timed out against the old start.
  */
 export function observeEnvironment(
   state: VetraCloudEnvironmentState,
   targetTag: string,
   updateStartedAt: string | null,
   now: Date,
+  runsTarget = false,
 ): Observation {
   if (state.status === "STOPPED") return { kind: "stopped" };
   if (GONE.has(state.status))
     return { kind: "failed", reason: `the environment is ${state.status}` };
   const version =
     state.services.find((s) => s.type === "FUSION")?.version ?? null;
-  if (version === targetTag) {
-    if (state.status === "READY") return { kind: "ready" };
-    // Definite outcome for this rollout; a failure left on an old tag is not.
-    if (state.status === "DEPLOYMENt_FAILED")
-      return { kind: "failed", reason: "the deployment failed" };
-  }
+  if (version === targetTag && state.status === "READY")
+    return { kind: "ready" };
+  if (runsTarget) return { kind: "updating" };
+  // Definite outcome for this rollout; a failure left on an old tag is not.
+  if (version === targetTag && state.status === "DEPLOYMENt_FAILED")
+    return { kind: "failed", reason: "the deployment failed" };
   // The reconciler always records a start time; without a usable one (missing
   // or unparseable) an unknown status stays "updating", never "ready".
   const startedMs = updateStartedAt ? Date.parse(updateStartedAt) : Number.NaN;
