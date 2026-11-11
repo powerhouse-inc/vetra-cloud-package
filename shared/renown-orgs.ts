@@ -33,6 +33,10 @@ export interface RenownOrgs {
   appPublisher(appDid: string): Promise<AppPublisher | null>;
   /** App DIDs whose Renown profile names this person as publisher (never org-owned apps). */
   personApps(address: string): Promise<string[]>;
+  /** The org's Renown handle; null when unknown or the org has none. */
+  orgHandle(orgId: string): Promise<string | null>;
+  /** The person's Renown handle; null without a profile or handle. */
+  personHandle(address: string): Promise<string | null>;
 }
 
 export interface RenownOrgsConfig {
@@ -85,6 +89,9 @@ const APP_PUBLISHER = `query VetraAppPublisher($appDid: String!) {
 const PERSON_APPS = `query VetraPersonApps($publisherDid: String!) {
   appProfilesByPublisher(publisherDid: $publisherDid) { appDid }
 }`;
+
+const ORG_HANDLE = `query VetraOrgHandle($id: String!) { organization(id: $id) { handle } }`;
+const PERSON_HANDLE = `query VetraPersonHandle($input: RenownUsersInput!) { renownUsers(input: $input) { handle } }`;
 
 /** At most this many app DIDs are taken from one person's profile list. */
 export const MAX_PERSON_APPS = 100;
@@ -207,6 +214,27 @@ export function createRenownOrgs(cfg: RenownOrgsConfig): RenownOrgs {
           { publisherDid: `did:pkh:eip155:1:${addr}` },
         );
         return (data.appProfilesByPublisher ?? []).slice(0, MAX_PERSON_APPS).map((p) => p.appDid);
+      });
+    },
+    orgHandle(orgId) {
+      return cached(`oh|${orgId}`, async () => {
+        const data = await post<{ organization: { handle: string | null } | null }>(
+          cfg.orgsEndpoint,
+          ORG_HANDLE,
+          { id: orgId },
+        );
+        return data.organization?.handle ?? null;
+      });
+    },
+    personHandle(address) {
+      const addr = address.toLowerCase();
+      return cached(`ph|${addr}`, async () => {
+        const data = await post<{ renownUsers: { handle: string | null }[] | null }>(
+          cfg.orgsEndpoint.replace(/\/renown-orgs$/, ""),
+          PERSON_HANDLE,
+          { input: { ethAddresses: [addr] } },
+        );
+        return data.renownUsers?.[0]?.handle ?? null;
       });
     },
   };

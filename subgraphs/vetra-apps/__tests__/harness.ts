@@ -83,6 +83,8 @@ export function fakeOrgs() {
     members: new Map<string, OrgMembership>(),
     apps: new Map<string, string[]>(),
     publishers: new Map<string, AppPublisher>(),
+    orgHandles: new Map<string, string | null>(),
+    personHandles: new Map<string, string | null>(),
     down: false,
     join(
       orgId: string,
@@ -109,6 +111,14 @@ export function fakeOrgs() {
     async appPublisher(appDid: string) {
       if (self.down) throw new RenownOrgsUnavailableError("down");
       return self.publishers.get(appDid) ?? null;
+    },
+    async orgHandle(orgId: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.orgHandles.get(orgId) ?? null;
+    },
+    async personHandle(address: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.personHandles.get(address.toLowerCase()) ?? null;
     },
     /** Profiles whose publisher is this person (as appProfilesByPublisher). */
     async personApps(address: string) {

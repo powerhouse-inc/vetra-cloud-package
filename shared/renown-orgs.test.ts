@@ -191,6 +191,28 @@ describe("person apps", () => {
     expect(await orgs.personApps(ALICE.toLowerCase())).toBe(dids);
     expect(await orgs.personApps("0xb")).toStrictEqual([]);
   });
+
+  it("reads an org's handle from renown-orgs, null for an unknown org", async () => {
+    const { orgs, calls } = client([
+      { data: { organization: { handle: "sektar" } } },
+      { data: { organization: null } },
+    ]);
+    expect(await orgs.orgHandle(ORG)).toBe("sektar");
+    expect(calls[0].url).toBe("https://renown.test/graphql/renown-orgs");
+    expect(calls[0].body.variables).toStrictEqual({ id: ORG });
+    expect(await orgs.orgHandle("org-2")).toBeNull();
+  });
+
+  it("reads a person's handle from the Renown switchboard, null on an empty answer", async () => {
+    const { orgs, calls } = client([
+      { data: { renownUsers: [{ handle: "frank" }] } },
+      { data: { renownUsers: [] } },
+    ]);
+    expect(await orgs.personHandle(ALICE)).toBe("frank");
+    expect(calls[0].url).toBe("https://renown.test/graphql");
+    expect(calls[0].body.variables).toStrictEqual({ input: { ethAddresses: [ALICE.toLowerCase()] } });
+    expect(await orgs.personHandle("0xb")).toBeNull();
+  });
 });
 
 describe("RenownSyncGuard", () => {
