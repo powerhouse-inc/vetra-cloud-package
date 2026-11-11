@@ -3087,6 +3087,8 @@ export async function openAppSetupPullRequest(
         "- [powerhouse-inc/vetra-publish](https://github.com/powerhouse-inc/vetra-publish) publishes a build of every push and pull request, keeps a release PR open on each release branch, and publishes a release when you merge it,",
         `- [powerhouse-inc/vetra-deploy-action](https://github.com/powerhouse-inc/vetra-deploy-action) keeps deploying \`${app.production_branch}\` to the production environment and pull requests to previews, until releases replace it.`,
         "",
+        "vetra-publish builds the host image from `hosts/<host>/Dockerfile` (generate it with `ph generate hosts`). Until the repository has one, it only warns and publishes nothing.",
+        "",
         `App: ${deps.cfg.vetraAppUrl}/user/apps/${app.id}`,
       ].join("\n"),
     },

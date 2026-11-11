@@ -621,7 +621,7 @@ describe("App identity + settings", () => {
       .openPullRequestWithFile[0] as [
       string,
       string,
-      { branch: string; path: string; content: string },
+      { branch: string; path: string; content: string; body: string },
     ];
     expect([installationId, repo, input.branch, input.path]).toStrictEqual([
       INSTALLATION,
@@ -632,6 +632,8 @@ describe("App identity + settings", () => {
     expect(input.content).toContain(`app-id: ${app.id}`);
     expect(input.content).toContain("id-token: write");
     expect(input.content).toContain("powerhouse-inc/vetra-publish@v1");
+    // Without a host image vetra-publish skips publishing (a warning).
+    expect(input.body).toContain("`hosts/<host>/Dockerfile`");
   });
 });
 
