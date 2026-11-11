@@ -2,6 +2,8 @@ import type { VetraClaim } from "../auth.js";
 import { appsError } from "../errors.js";
 import { versionKind } from "./version.js";
 
+const RUN_ID = /^[1-9]\d*$/;
+
 export interface ReportFacts {
   kind: "release" | "build";
   version: string;
@@ -33,9 +35,10 @@ export function assertReportAllowed(
   r: ReportFacts,
 ): { run: number } {
   const claim = assertClaimForApp(app, verified);
-  const run = Number(claim.runId);
-  if (!claim.runId || !Number.isSafeInteger(run))
-    throw appsError("FORBIDDEN", "Token carries no run id");
+  // Digits only: Number() would also take "1e3", "0x10" or " 12 ".
+  const run = RUN_ID.test(claim.runId ?? "") ? Number(claim.runId) : NaN;
+  if (!Number.isSafeInteger(run))
+    throw appsError("FORBIDDEN", "Token carries no valid run id");
   if (claim.sha !== r.commit)
     throw appsError(
       "FORBIDDEN",

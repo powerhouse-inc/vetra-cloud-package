@@ -28,6 +28,23 @@ describe("assertReportAllowed", () => {
     ).toStrictEqual({ run: 412 });
   });
 
+  it("refuses a run id that is not a plain positive integer", () => {
+    for (const runId of ["1e3", "0x10", " 12 ", "0", "-5", "", "01", "1.0", undefined]) {
+      expect(
+        code(() =>
+          assertReportAllowed(app, claim("refs/heads/main", { runId }), {
+            kind: "release",
+            version: "1.5.0",
+            branch: "main",
+            pr: null,
+            commit: sha,
+          }),
+        ),
+        String(runId),
+      ).toBe("FORBIDDEN");
+    }
+  });
+
   it("allows branch and PR builds", () => {
     expect(
       code(() =>
