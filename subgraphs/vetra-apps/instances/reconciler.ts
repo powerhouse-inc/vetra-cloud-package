@@ -24,12 +24,30 @@ import {
   type InstanceRow,
 } from "./repo.js";
 import { observeEnvironment } from "./status.js";
-import { branchTargets, targetOf, type InstanceTarget } from "./targets.js";
+import { pullRequestGate } from "./pull-requests.js";
+import {
+  branchTargets,
+  pickPreviews,
+  previewCandidates,
+  targetOf,
+  type InstanceTarget,
+} from "./targets.js";
 
 export const INSTANCE_BASE_DOMAIN = "vetra.io";
 /** removed_reason that keeps a tombstone (the branch may come back with newer builds). */
 export const BRANCH_DELETED = "branch deleted";
 const NOT_WANTED = "no longer wanted";
+/** removed_reason of a closed (or merged) PR's preview: never revived by a build, only by reopening. */
+export const PR_CLOSED = "pull request closed";
+/** removed_reason of a PR whose head is in another repository: never gets a preview. */
+export const PR_FORK = "pull request from a fork";
+/** removed_reason after a closed PR was reopened: revived like any other tombstone. */
+export const PR_REOPENED = "pull request reopened";
+/** Tombstones syncPreviewInstances never revives and the cap does not count. */
+const FINAL = new Set<string>([PR_CLOSED, PR_FORK]);
+const DAY_MS = 86_400_000;
+
+export const previewName = (pr: number) => `pr-${pr}`;
 
 const message = (err: unknown) =>
   (err instanceof Error ? err.message : String(err)).slice(0, 500);
@@ -66,7 +84,12 @@ export async function reconcileInstancesOnce(deps: AppsDeps): Promise<void> {
 
 async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
-  for (const row of await listInstances(deps.db, app.id)) {
+  await syncPreviewInstances(deps, app);
+  const rows = await listInstances(deps.db, app.id);
+  // Removals first: an evicted preview frees its place before a new one is
+  // created (spec 14.13). Array.prototype.sort is stable.
+  rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
+  for (const row of rows) {
     try {
       await reconcileInstance(deps, app, row);
     } catch (err) {
@@ -91,6 +114,10 @@ function wantsInstances(app: AppRow): boolean {
     app.status !== "DELETED" &&
     hasCiIdentity(app)
   );
+}
+
+function wantsPreviews(app: AppRow): boolean {
+  return wantsInstances(app) && app.previews_enabled;
 }
 
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
@@ -183,6 +210,141 @@ export async function syncBranchInstances(
         removed_reason: NOT_WANTED,
       });
   }
+}
+
+/**
+ * Rows for the wanted preview instances (spec section 5: one per open PR, on
+ * that PR's newest build; 14.13: at most preview_limit, none after
+ * preview_ttl_days without a build). A new or returning preview is created
+ * only once GitHub says its PR is open and from the app's repository. Preview
+ * rows are kept as tombstones (removeInstance): a closed PR's stays closed
+ * until reopened, and a returning preview gets its old host back. Tombstones
+ * go when their PR has no build within the TTL any more.
+ */
+export async function syncPreviewInstances(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<void> {
+  const rows = await listInstances(deps.db, app.id, "preview");
+  const since = new Date(
+    deps.now().getTime() - app.preview_ttl_days * DAY_MS,
+  ).toISOString();
+  const candidates = await previewCandidates(deps.db, app.id, since);
+  const excluded = new Set(
+    rows
+      .filter((r) => r.removed_reason && FINAL.has(r.removed_reason))
+      .map((r) => r.pr!),
+  );
+  const pick = () =>
+    wantsPreviews(app)
+      ? pickPreviews(candidates, excluded, app.preview_limit)
+      : new Map<number, ReleaseRow>();
+  let wanted = pick();
+  const nowIso = deps.now().toISOString();
+
+  // A PR found closed (or a fork) here frees its place at once: pick again.
+  const seen = new Set<number>();
+  let next: [number, ReleaseRow] | undefined;
+  while ((next = [...wanted].find(([pr]) => !seen.has(pr)))) {
+    const [pr, release] = next;
+    seen.add(pr);
+    let target: InstanceTarget;
+    try {
+      target = targetOf(release);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] instance ${app.slug}/${previewName(pr)}: ${message(err)}`,
+      );
+      continue;
+    }
+    const row = rows.find((r) => r.pr === pr);
+    if (row && !row.removed_at) {
+      if (
+        row.target_digest !== target.target_digest ||
+        row.target_version !== target.target_version ||
+        row.target_repository !== target.target_repository ||
+        row.target_ph_host !== target.target_ph_host
+      )
+        await patch(deps, row, target);
+      continue;
+    }
+    // Still being removed: wait until its environment is gone.
+    if (row && row.status !== "removed") continue;
+
+    const gate = await pullRequestGate(deps, app, pr);
+    if (gate === "unknown") continue;
+    if (gate !== "open") {
+      const reason = gate === "fork" ? PR_FORK : PR_CLOSED;
+      if (row) await patch(deps, row, { removed_reason: reason });
+      else
+        await insertInstance(deps.db, {
+          ...previewRow(deps, app, pr, target, nowIso),
+          status: "removed",
+          reason,
+          removed_at: nowIso,
+          removed_reason: reason,
+        });
+      excluded.add(pr);
+      wanted = pick();
+      continue;
+    }
+    if (row)
+      await patch(deps, row, {
+        ...target,
+        ...CLEAN,
+        environment_id: null,
+        removed_at: null,
+        removed_reason: null,
+        status: "pending",
+        reason: null,
+      });
+    else
+      await insertInstance(deps.db, previewRow(deps, app, pr, target, nowIso));
+  }
+
+  const recent = new Set(candidates.map((r) => r.pr));
+  for (const row of rows) {
+    if (row.status === "removed") {
+      if (!recent.has(row.pr)) await deleteInstance(deps.db, row.id);
+      continue;
+    }
+    if (!row.removed_at && !wanted.has(row.pr!))
+      await patch(deps, row, {
+        removed_at: nowIso,
+        removed_reason: NOT_WANTED,
+      });
+  }
+}
+
+function previewRow(
+  deps: AppsDeps,
+  app: AppRow,
+  pr: number,
+  target: InstanceTarget,
+  nowIso: string,
+) {
+  return {
+    id: deps.newId(),
+    app_id: app.id,
+    kind: "preview" as const,
+    name: previewName(pr),
+    branch: null,
+    pr,
+    host: null,
+    environment_id: null,
+    ...target,
+    running_version: null,
+    running_digest: null,
+    running_repository: null,
+    status: "pending" as const,
+    reason: null,
+    failed_digest: null,
+    update_started_at: null,
+    removed_at: null,
+    removed_reason: null,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
 }
 
 function targetImage(row: InstanceRow): InstanceImage {
@@ -482,7 +644,11 @@ async function initEnvironment(
         owner: app.owner_address,
         ownerOrgId: app.owner_org_id,
         appId: app.id,
-        gitRef: `refs/heads/${row.branch}`,
+        gitRef:
+          row.kind === "preview"
+            ? `refs/pull/${row.pr}/head`
+            : `refs/heads/${row.branch}`,
+        prNumber: row.kind === "preview" ? row.pr : null,
         imageProject: app.registry_namespace!,
         image,
         admins: app.owner_address,
@@ -516,12 +682,14 @@ async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
     )
       await deps.envs.delete(row.environment_id);
   }
-  if (row.removed_reason === BRANCH_DELETED)
+  // Tombstones: a deleted branch (may come back with a newer build) and every
+  // preview (a closed PR stays closed; a returning one keeps its host).
+  if (row.kind === "preview" || row.removed_reason === BRANCH_DELETED)
     await patch(deps, row, {
       ...CLEAN,
       environment_id: null,
       status: "removed",
-      reason: BRANCH_DELETED,
+      reason: row.removed_reason,
     });
   else await deleteInstance(deps.db, row.id);
 }
