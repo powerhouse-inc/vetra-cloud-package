@@ -361,7 +361,7 @@ describe("reconcileInstancesOnce — branch instances", () => {
   });
 
   it("fails the instance, creating nothing, when its host is taken", async () => {
-    h.deps.subdomainTaken = async (s) => s === label("main");
+    h.deps.subdomainUsed = async (s) => s === label("main");
     await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
     await reconcileInstancesOnce(h.deps);
     expect(await one()).toMatchObject({
@@ -375,7 +375,7 @@ describe("reconcileInstancesOnce — branch instances", () => {
 
   it("records a lost race for the host on the instance", async () => {
     // Another row claims the label between the check and the write.
-    h.deps.subdomainTaken = async (s) => {
+    h.deps.subdomainUsed = async (s) => {
       await h.db
         .insertInto("instances")
         .values({
@@ -448,6 +448,22 @@ describe("reconcileInstancesOnce — final fix wave", () => {
     h.envs.setStatus(envId, "READY");
     await reconcileInstancesOnce(h.deps);
     expect((await one()).status).toBe("ready");
+  });
+});
+
+describe("reconcileInstancesOnce — instance hosts", () => {
+  it("is not blocked by an environment whose subdomain is a prefix of its label", async () => {
+    // The product-slug rule (subdomainTaken) would see `<slug>` blocking
+    // `<slug>-main-<h>`; instance labels need only an exact match.
+    h.deps.subdomainTaken = async () => true;
+    h.deps.subdomainUsed = async (s) => s === slug;
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      host: label("main"),
+    });
+    expect((await one()).environment_id).not.toBeNull();
   });
 });
 

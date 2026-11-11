@@ -184,6 +184,12 @@ export interface AppsDeps {
    */
   subdomainTaken?: ((subdomain: string) => Promise<boolean>) | null;
   /**
+   * Whether an environment uses exactly this generic subdomain (instance
+   * hosts, which only an exact match blocks). Absent: only the instances'
+   * own hosts are checked.
+   */
+  subdomainUsed?: ((subdomain: string) => Promise<boolean>) | null;
+  /**
    * Called (not awaited) right after a Studio deployment was recorded
    * PENDING, to apply it without waiting for the watcher's next pass.
    */

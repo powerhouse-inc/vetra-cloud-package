@@ -8,7 +8,11 @@ import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
 import { loadAppsConfig, missingConfig } from "./config.js";
-import { createReactorEnvGateway, subdomainTakenIn } from "./envs.js";
+import {
+  createReactorEnvGateway,
+  subdomainTakenIn,
+  subdomainUsedIn,
+} from "./envs.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createGithubAttestationVerifier } from "./releases/attestation.js";
@@ -201,6 +205,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         environmentConnections(githubAuthDb, studioEnvironmentId),
       // A product's <slug>.vetra.io must not collide with an env's hosts.
       subdomainTaken: subdomainTakenIn(envReadModel),
+      // An instance label is blocked only by an exact env subdomain.
+      subdomainUsed: subdomainUsedIn(envReadModel),
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,

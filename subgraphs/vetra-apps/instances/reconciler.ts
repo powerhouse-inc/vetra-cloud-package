@@ -365,8 +365,9 @@ function isHostConflict(err: unknown): boolean {
 
 /**
  * Claims the instance's host label on its row. The label is unique per App and
- * branch by construction (host.ts); one held elsewhere, or a lost race on the
- * unique index, fails the instance instead of picking another.
+ * branch by construction (host.ts); one held elsewhere (exactly: an env's
+ * subdomain or another instance's host), or a lost race on the unique index,
+ * fails the instance instead of picking another.
  */
 async function claimHost(
   deps: AppsDeps,
@@ -388,7 +389,7 @@ async function claimHost(
     });
   if (
     (await isHostUsed(deps.db, host)) ||
-    (await deps.subdomainTaken?.(host))
+    (await deps.subdomainUsed?.(host))
   ) {
     await fail(`the host ${host} is taken`);
     return null;

@@ -11,6 +11,7 @@ import {
   createReactorEnvGateway,
   subdomainsCollide,
   subdomainTakenIn,
+  subdomainUsedIn,
 } from "../envs.js";
 import { FakeReactorClient } from "./fake-reactor.js";
 
@@ -91,6 +92,11 @@ describe("product subdomains", () => {
       expect(await taken("rapid-fox-2")).toBe(false);
       expect(await taken("shop-2")).toBe(false);
       expect(await taken("garden")).toBe(false);
+      // Instance hosts: only the exact subdomain counts.
+      const used = subdomainUsedIn(db);
+      expect(await used("rapid-fox")).toBe(true);
+      expect(await used("shop-main-ab12cd")).toBe(false);
+      expect(await used("rapid")).toBe(false);
     } finally {
       await root.destroy();
     }

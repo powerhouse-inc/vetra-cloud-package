@@ -208,3 +208,19 @@ export function subdomainTakenIn(
     );
   };
 }
+
+/**
+ * Whether an environment uses exactly this generic subdomain (env and old-path
+ * preview hosts). For instance labels, which always end in a 6-hex segment and
+ * so are never an old-path `<sub>-<prefix>` form: only an exact match blocks.
+ */
+export function subdomainUsedIn(
+  db: Kysely<EnvironmentsDB>,
+): (subdomain: string) => Promise<boolean> {
+  return async (candidate) =>
+    !!(await db
+      .selectFrom("environments")
+      .select("subdomain")
+      .where("subdomain", "=", candidate)
+      .executeTakeFirst());
+}
