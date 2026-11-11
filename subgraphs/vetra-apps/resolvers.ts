@@ -77,6 +77,7 @@ import {
   type AppRow,
   type DeploymentRow,
 } from "./repo.js";
+import { parseReleaseBranches } from "./releases/branches.js";
 
 /**
  * Resolver errors that are not GraphQLErrors (GitHub/Harbor/Renown/reactor
@@ -179,6 +180,7 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     launchedAt: app.launched_at ?? null,
     externalChangesSha: app.external_changes_sha ?? null,
     productionBranch: app.production_branch,
+    releaseBranches: parseReleaseBranches(app.release_branches),
     productionEnvironmentId: app.production_environment_id,
     previewsEnabled: app.previews_enabled,
     previewLimit: app.preview_limit,

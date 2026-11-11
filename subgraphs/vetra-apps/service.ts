@@ -41,7 +41,15 @@ import {
   type GithubUserTokens,
 } from "./github.js";
 import type { HarborApi } from "./harbor.js";
-import { isRenownConflict, type RenownApi } from "./renown.js";
+import {
+  isRenownConflict,
+  isRenownReleaseBranchesUnsupported,
+  type RenownApi,
+} from "./renown.js";
+import {
+  parseReleaseBranches,
+  validateReleaseBranches,
+} from "./releases/branches.js";
 import type { RenownOrgs } from "../../shared/renown-orgs.js";
 import {
   canCreateOrgApp,
@@ -2766,6 +2774,8 @@ function laterExpiry(a: string | null, b: string | null): string | null {
 export interface UpdateAppInput {
   name?: string | null;
   productionBranch?: string | null;
+  /** Replaces the release branches (releases/branches.ts); [] clears them. */
+  releaseBranches?: string[] | null;
   previewsEnabled?: boolean | null;
   previewLimit?: number | null;
   previewTtlDays?: number | null;
@@ -2807,12 +2817,30 @@ export async function updateApp(
   }
   if (input.previewsEnabled != null)
     patch.previews_enabled = input.previewsEnabled;
+  // Renown decides which ref may mint production / registry tokens: both
+  // branch settings are written there first, in one call.
+  const renownPatch: { productionBranch?: string; releaseBranches?: string[] } =
+    {};
   if (
     input.productionBranch != null &&
     input.productionBranch.trim() !== app.production_branch
   ) {
     const branch = input.productionBranch.trim();
     assertBranch(branch);
+    renownPatch.productionBranch = branch;
+    patch.production_branch = branch;
+  }
+  if (input.releaseBranches != null) {
+    const list = validateReleaseBranches(input.releaseBranches);
+    if (
+      JSON.stringify(list) !==
+      JSON.stringify(parseReleaseBranches(app.release_branches))
+    ) {
+      renownPatch.releaseBranches = list;
+      patch.release_branches = JSON.stringify(list);
+    }
+  }
+  if (Object.keys(renownPatch).length > 0) {
     if (!hasCiIdentity(app))
       throw appsError(
         "BAD_USER_INPUT",
@@ -2820,12 +2848,18 @@ export async function updateApp(
           ? "A Studio product launches from its Studio, not from a branch"
           : "This App has no repository",
       );
-    // Renown decides which ref may mint production tokens: keep it in sync first.
     if (!deps.renown) throw notConfigured("Renown workload identities");
-    await deps.renown.updateWorkloadIdentity(app.identity_did, {
-      productionBranch: branch,
-    });
-    patch.production_branch = branch;
+    try {
+      await deps.renown.updateWorkloadIdentity(app.identity_did, renownPatch);
+    } catch (err) {
+      // Never store a list Renown does not have: the two would disagree.
+      if (isRenownReleaseBranchesUnsupported(err))
+        throw appsError(
+          "SERVICE_UNAVAILABLE",
+          "Renown does not support release branches yet; nothing was saved. Try again once Renown is updated.",
+        );
+      throw err;
+    }
   }
   if (Object.keys(patch).length > 0) {
     await deps.db

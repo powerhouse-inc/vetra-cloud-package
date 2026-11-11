@@ -11,10 +11,17 @@ export interface RenownApi {
     chainId: number;
     /** Register for this Renown organisation (A2). */
     ownerOrgId?: string;
+    /** Branches besides productionBranch that may publish releases; sent only when non-empty. */
+    releaseBranches?: string[];
   }): Promise<{ did: string; ownerOrgId: string | null }>;
+  /** `releaseBranches`, when given, replaces Renown's list ([] clears it). */
   updateWorkloadIdentity(
     did: string,
-    patch: { repository?: string; productionBranch?: string },
+    patch: {
+      repository?: string;
+      productionBranch?: string;
+      releaseBranches?: string[];
+    },
   ): Promise<void>;
   deleteWorkloadIdentity(did: string): Promise<void>;
   /**
@@ -36,6 +43,19 @@ type FetchLike = typeof fetch;
  */
 export function isRenownConflict(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith("renown: CONFLICT");
+}
+
+/**
+ * Renown refused `releaseBranches` as an unknown argument / input field: it
+ * predates release branches (renown spec 2026-11-11-workload-release-branches).
+ */
+export function isRenownReleaseBranchesUnsupported(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.message.startsWith("renown: ") &&
+    err.message.includes("releaseBranches") &&
+    /Unknown argument|not defined by type|Cannot query field/.test(err.message)
+  );
 }
 
 export const REGISTRATION_TOKEN_HEADER = "x-renown-workload-registration-token";
@@ -75,7 +95,12 @@ export function createRenownApi(
   }
 
   return {
-    async registerWorkloadIdentity(input) {
+    async registerWorkloadIdentity({ releaseBranches, ...rest }) {
+      // An empty list is Renown's default: leave the field out so a Renown
+      // without release branches still accepts the registration.
+      const input = releaseBranches?.length
+        ? { ...rest, releaseBranches }
+        : rest;
       const data = await gql<{
         registerWorkloadIdentity: { did: string; ownerOrgId?: string | null };
       }>(
@@ -91,9 +116,12 @@ export function createRenownApi(
     },
 
     async updateWorkloadIdentity(did, patch) {
+      // releaseBranches only when it is being changed: a Renown without
+      // release branches keeps accepting the other updates.
+      const withList = patch.releaseBranches !== undefined;
       await gql(
-        `mutation Update($did: String!, $repository: String, $productionBranch: String) {
-          updateWorkloadIdentity(did: $did, repository: $repository, productionBranch: $productionBranch) { did }
+        `mutation Update($did: String!, $repository: String, $productionBranch: String${withList ? ", $releaseBranches: [String!]" : ""}) {
+          updateWorkloadIdentity(did: $did, repository: $repository, productionBranch: $productionBranch${withList ? ", releaseBranches: $releaseBranches" : ""}) { did }
         }`,
         { did, ...patch },
       );

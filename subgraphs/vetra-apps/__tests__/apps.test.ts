@@ -471,6 +471,58 @@ describe("App identity + settings", () => {
     );
   });
 
+  it("updateApp validates release branches, syncs them to Renown first and stores them", async () => {
+    const app = await seedActiveApp(h);
+    const updated = await updateApp(h.deps, owner, app.id, {
+      releaseBranches: [" next ", "*.x", "next"],
+    });
+    expect(updated.release_branches).toBe('["next","*.x"]');
+    expect(h.renown.updated).toStrictEqual([
+      { did: APP_DID, patch: { releaseBranches: ["next", "*.x"] } },
+    ]);
+    // Unchanged list: no Renown call.
+    await updateApp(h.deps, owner, app.id, {
+      releaseBranches: ["next", "*.x"],
+    });
+    expect(h.renown.updated).toHaveLength(1);
+    // Production branch and release branches together: one Renown call.
+    await updateApp(h.deps, owner, app.id, {
+      productionBranch: "trunk",
+      releaseBranches: [],
+    });
+    expect(h.renown.updated.at(-1)).toStrictEqual({
+      did: APP_DID,
+      patch: { productionBranch: "trunk", releaseBranches: [] },
+    });
+    expect((await getApp(h.deps.db, app.id))?.release_branches).toBe("[]");
+
+    const bad = await updateApp(h.deps, owner, app.id, {
+      releaseBranches: ["ok", "a/**"],
+    }).catch((e: { extensions?: { code?: string }; message: string }) => e);
+    expect(bad).toMatchObject({
+      extensions: { code: "BAD_USER_INPUT" },
+      message: expect.stringContaining("'a/**'"),
+    });
+    expect(h.renown.updated).toHaveLength(2);
+  });
+
+  it("updateApp keeps release branches unchanged when Renown does not support them yet", async () => {
+    const app = await seedActiveApp(h);
+    h.renown.updateWorkloadIdentity = async () => {
+      throw new Error(
+        'renown: GRAPHQL_VALIDATION_FAILED Unknown argument "releaseBranches" on field "Mutation.updateWorkloadIdentity".',
+      );
+    };
+    const err = await updateApp(h.deps, owner, app.id, {
+      releaseBranches: ["next"],
+    }).catch((e: { extensions?: { code?: string }; message: string }) => e);
+    expect(err).toMatchObject({
+      extensions: { code: "SERVICE_UNAVAILABLE" },
+      message: expect.stringContaining("release branches"),
+    });
+    expect((await getApp(h.deps.db, app.id))?.release_branches).toBe("[]");
+  });
+
   it("owner-level calls: owner + admin allowed; strangers and App identities refused", async () => {
     const app = await seedActiveApp(h);
     expect(

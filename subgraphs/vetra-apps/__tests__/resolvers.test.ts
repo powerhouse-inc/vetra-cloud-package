@@ -16,7 +16,10 @@ import { loadAppsConfig, missingConfig } from "../config.js";
 import { decryptSecret, encryptSecret } from "../crypto.js";
 import { workflowTemplate } from "../workflow-template.js";
 import { createHarborApi } from "../harbor.js";
-import { createRenownApi } from "../renown.js";
+import {
+  createRenownApi,
+  isRenownReleaseBranchesUnsupported,
+} from "../renown.js";
 import { envUrls } from "../envs.js";
 import type { AppRow } from "../repo.js";
 import {
@@ -53,6 +56,20 @@ describe("SDL", () => {
       ).sort();
       expect(Object.keys(impl).sort()).toStrictEqual(fields);
     }
+  });
+
+  it("App exposes releaseBranches and UpdateAppInput sets it", () => {
+    const built = buildASTSchema(schema);
+    const field = (type: string, name: string) =>
+      String(
+        (
+          built.getType(type) as unknown as {
+            getFields(): Record<string, { type: unknown }>;
+          }
+        ).getFields()[name]?.type,
+      );
+    expect(field("App", "releaseBranches")).toBe("[String!]!");
+    expect(field("UpdateAppInput", "releaseBranches")).toBe("[String!]");
   });
 
   it("CreateStudioAppInput requires the connected installationId", () => {
@@ -201,6 +218,8 @@ describe("resolvers", () => {
       status: "ACTIVE",
       identityDid: APP_DID,
       identityExpiresAt: "2027-10-02T12:00:00.000Z",
+      productionBranch: "main",
+      releaseBranches: [],
     });
     expect(await mapped.productionUrls()).toMatchObject({
       switchboard: expect.stringContaining("-switchboard.vetra.io"),
@@ -539,6 +558,73 @@ describe("HTTP clients", () => {
       "https://switchboard.renown.vetra.io/graphql/renown-workload",
     );
     expect(seen[0].headers["x-renown-workload-registration-token"]).toBe("tok");
+  });
+
+  it("Renown: releaseBranches is sent only when set, and an older Renown's refusal is recognisable", async () => {
+    const bodies: { query: string; variables: Record<string, unknown> }[] = [];
+    let reject = false;
+    const fetchImpl = vi.fn(async (_url: string | URL, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+      bodies.push(body);
+      if (reject && body.query.includes("releaseBranches"))
+        return Response.json(
+          {
+            errors: [
+              {
+                message:
+                  'Unknown argument "releaseBranches" on field "Mutation.updateWorkloadIdentity".',
+                extensions: { code: "GRAPHQL_VALIDATION_FAILED" },
+              },
+            ],
+          },
+          { status: 400 },
+        );
+      return Response.json({
+        data: {
+          registerWorkloadIdentity: { did: APP_DID },
+          updateWorkloadIdentity: { did: APP_DID },
+        },
+      });
+    });
+    const renown = createRenownApi(
+      { switchboardUrl: "https://r", registrationToken: "tok" },
+      "https://www.renown.id",
+      fetchImpl as never,
+    );
+    const reg = {
+      repositoryId: "1",
+      repository: "a/b",
+      productionBranch: "main",
+      ownerAddress: OWNER,
+      chainId: 1,
+    };
+    await renown.registerWorkloadIdentity({ ...reg, releaseBranches: [] });
+    await renown.registerWorkloadIdentity({
+      ...reg,
+      releaseBranches: ["next"],
+    });
+    await renown.updateWorkloadIdentity(APP_DID, { productionBranch: "main" });
+    await renown.updateWorkloadIdentity(APP_DID, { releaseBranches: [] });
+    expect(bodies[0].variables.input).not.toHaveProperty("releaseBranches");
+    expect(bodies[1].variables.input).toMatchObject({
+      releaseBranches: ["next"],
+    });
+    expect(bodies[2].query).not.toContain("releaseBranches");
+    expect(bodies[2].variables).not.toHaveProperty("releaseBranches");
+    expect(bodies[3].query).toContain("releaseBranches: $releaseBranches");
+    expect(bodies[3].variables.releaseBranches).toStrictEqual([]);
+
+    reject = true;
+    const err = await renown
+      .updateWorkloadIdentity(APP_DID, { releaseBranches: ["next"] })
+      .catch((e: unknown) => e);
+    expect(isRenownReleaseBranchesUnsupported(err)).toBe(true);
+    expect(
+      isRenownReleaseBranchesUnsupported(new Error("renown: 500 boom")),
+    ).toBe(false);
   });
 
   it("Renown: the delegation check uses @renown/sdk with EIP-712 proof verification", async () => {

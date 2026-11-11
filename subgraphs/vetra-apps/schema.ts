@@ -136,6 +136,8 @@ export const schema: DocumentNode = gql`
     "The GitHub repository; null for a Studio product without GitHub."
     repository: AppRepository
     productionBranch: String!
+    "Branches besides productionBranch that may publish releases: exact names, or * within one path segment (*.x, release/*)."
+    releaseBranches: [String!]!
     productionEnvironmentId: String!
     previewsEnabled: Boolean!
     previewLimit: Int!
@@ -222,6 +224,8 @@ export const schema: DocumentNode = gql`
   input UpdateAppInput {
     name: String
     productionBranch: String
+    "Replaces the release branches (at most 20; [] clears them)."
+    releaseBranches: [String!]
     previewsEnabled: Boolean
     previewLimit: Int
     previewTtlDays: Int
