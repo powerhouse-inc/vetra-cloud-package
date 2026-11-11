@@ -387,11 +387,23 @@ describe("crypto", () => {
 
 describe("workflow template", () => {
   it("fills the App id and a non-default production branch", () => {
-    expect(workflowTemplate("app-1")).toContain("branches: [main]");
+    expect(workflowTemplate("app-1")).not.toContain("production-branch");
     const t = workflowTemplate("app-1", "release");
-    expect(t).toContain('branches: ["release"]');
     expect(t).toContain('production-branch: "release"');
     expect(t).toContain("app-id: app-1");
+  });
+
+  // Every branch publishes builds; release branches also publish releases
+  // (Renown spec 2026-11-11-workload-release-branches-design, section 7).
+  it("runs on pushes to every branch, v* tags and pull requests", () => {
+    for (const t of [
+      workflowTemplate("app-1"),
+      workflowTemplate("app-1", "release"),
+    ]) {
+      expect(t).toContain(
+        `on:\n  push:\n    branches: ['**']\n    tags: ["v*"]\n  pull_request:\n`,
+      );
+    }
   });
 
   // head.repo.fork is true for EVERY pull request when the repository is itself

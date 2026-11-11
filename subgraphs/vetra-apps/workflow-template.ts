@@ -1,7 +1,9 @@
 /**
  * `.github/workflows/vetra.yml` (contract C4) with the App id and production
  * branch filled in. Codegen (`ph init`) writes the same workflow with
- * `app-id: ${{ vars.VETRA_APP_ID }}`.
+ * `app-id: ${{ vars.VETRA_APP_ID }}`. It runs on pushes to every branch: each
+ * branch publishes builds, the production and release branches also
+ * releases (Renown spec 2026-11-11-workload-release-branches-design, §7).
  */
 
 /** Package managers we can set up in the generated workflow. */
@@ -74,8 +76,6 @@ export function workflowTemplate(
     productionBranch === "main"
       ? ""
       : `          production-branch: ${JSON.stringify(productionBranch)}\n`;
-  const branchList =
-    productionBranch === "main" ? "main" : JSON.stringify(productionBranch);
 
   // vetra-deploy-action defaults every command to pnpm. Spell them out for any
   // other manager, and disable them entirely when there is nothing to install.
@@ -89,7 +89,7 @@ export function workflowTemplate(
   return `name: Vetra
 on:
   push:
-    branches: [${branchList}]
+    branches: ['**']
     tags: ["v*"]
   pull_request:
     types: [opened, synchronize, reopened]
