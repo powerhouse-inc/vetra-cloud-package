@@ -135,6 +135,28 @@ One run:
    releases under `latest`.
 5. **Report** `POST ci/releases` (below). The action deploys nothing.
 
+Details fixed by the action (plan 2):
+
+- The `vetra` section keys the action reads: `host` (default `cli`; image
+  built from `hosts/<host>/Dockerfile`), `packageDirs` (default `["."]`),
+  `prerelease` (branch → `alpha` | `beta` | `rc`), `requires`, `migrations`,
+  `migrates`. Other keys there (`connectPort`, …) belong to `ph vetra`.
+- dist-tags: releases `latest` from the production branch, `latest-<major>`
+  from other release branches (a `1.x` patch must not move `latest`), `next`
+  for prereleases; builds `<branch>` or `pr-<n>`, as `branch-<branch>` when
+  the name is `latest`, `next`, `latest-<n>` or starts like a version.
+- A push to a branch that is not a release branch builds `<proposed>` from
+  its own history; a PR uses its target branch's proposal.
+- The workflow runs on pushes to all branches except `release-please--**`
+  and on PRs, never on tags (the App's tags would start a second run), and
+  cancels in-progress runs only for PRs. Until phase 2 it has a second job
+  running `vetra-deploy-action@v1` on the production branch and PRs.
+- Finishing a prerelease line: the commit that brings `next` into `main` must
+  be a conventional commit (e.g. `feat!: 2.0`), or carry `Release-As: 2.0.0`;
+  a merge commit alone proposes nothing. Changing a branch's prerelease
+  identifier takes effect with a `Release-As: 2.0.0-rc.0` commit.
+- The SBOM attestation is deferred: Vetra reads none in phase 1.
+
 ### Image naming
 
 `cr.vetra.io/<namespace>/<app>:<version>`
@@ -185,6 +207,17 @@ this app must push. A release record pins the digest, and its attestation binds
 that digest to the app's own repo, so instances must pull by digest
 (`image_ref@image_digest`), never by tag: an overwritten tag then changes
 nothing that runs.
+
+### `POST ci/github-token`
+
+`{ "appId": "…" }` → `{ "token": "ghs_…", "expiresAt": "…" }`: the Vetra
+GitHub App's installation token for the app's repository only, with
+`contents: write` and `pull_requests: write`, valid one hour (14.1). Issued
+only to a `push` run on the production branch or a listed release branch
+whose token carries `releaseBranch: true` (the rule `ci/releases` applies to
+releases), else `FORBIDDEN`; 503 while the installation has not approved the
+permissions. The action uses it for the release PR, the tag and the GitHub
+release, and the run's own `GITHUB_TOKEN` for reading history.
 
 ### `POST ci/releases`
 
