@@ -114,3 +114,43 @@ export function assertReportAllowed(
   }
   return { run };
 }
+
+/**
+ * A push run on the production branch or one of the app's release branches
+ * that Renown also marked as a release branch (the same rule as a reported
+ * release). Returns the branch.
+ */
+export function assertReleaseBranchPush(
+  app: {
+    repository_id: string | null;
+    production_branch: string;
+    release_branches?: string | null;
+  },
+  verified: VetraClaim | null,
+): string {
+  const claim = assertClaimForApp(app, verified);
+  const m = /^refs\/heads\/(.+)$/.exec(claim.ref);
+  if (claim.eventName !== "push" || !m)
+    throw appsError(
+      "FORBIDDEN",
+      `Only a push to a release branch acts as the Vetra GitHub App (got ${claim.eventName ?? "?"} on ${claim.ref})`,
+    );
+  const branch = m[1];
+  if (
+    !isReleaseBranch(
+      branch,
+      app.production_branch,
+      parseReleaseBranches(app.release_branches),
+    )
+  )
+    throw appsError(
+      "FORBIDDEN",
+      `${branch} is not a release branch of this app: only ${app.production_branch} and the app's release branches open release PRs`,
+    );
+  if (!renownSaysReleaseBranch(claim, branch, app.production_branch))
+    throw appsError(
+      "FORBIDDEN",
+      `Renown did not mark ${branch} as a release branch for this token`,
+    );
+  return branch;
+}

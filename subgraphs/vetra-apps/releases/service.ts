@@ -9,7 +9,11 @@ import { GraphQLError } from "graphql";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { AttestationTokenError } from "./attestation.js";
-import { assertClaimForApp, assertReportAllowed } from "./claim.js";
+import {
+  assertClaimForApp,
+  assertReleaseBranchPush,
+  assertReportAllowed,
+} from "./claim.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
   forgetPushRobot,
@@ -81,6 +85,41 @@ export async function ciRegistryToken(
     repository: `${namespace}/${app.slug}`,
     expiresAt: new Date(now.getTime() + PUSH_TOKEN_MS).toISOString(),
   };
+}
+
+/**
+ * The Vetra GitHub App's installation token for one release-branch push run
+ * (spec 14.1): one repository, contents and pull_requests write, one hour.
+ * vetra-publish opens the release PR and tags releases with it, so GitHub
+ * starts workflows for them (it does not for GITHUB_TOKEN).
+ */
+export async function ciGithubToken(
+  deps: AppsDeps,
+  ci: CiIdentity,
+  appId: string,
+): Promise<{ token: string; expiresAt: string }> {
+  const app = await upstream(deps, RENOWN_DOWN, () =>
+    authorizeCi(deps, ci, appId),
+  );
+  assertReleaseBranchPush(app, ci.claim);
+  const github = deps.github;
+  if (!github) throw notConfigured("The Vetra Deploy GitHub App");
+  if (!app.installation_id || !app.repository_id)
+    throw appsError("BAD_USER_INPUT", "This App has no GitHub repository");
+  try {
+    return await github.createReleaseToken(
+      app.installation_id,
+      app.repository_id,
+    );
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] release token for ${app.slug}: ${String(err)}`,
+    );
+    throw appsError(
+      "SERVICE_UNAVAILABLE",
+      "Could not mint the GitHub installation token for release PRs and tags (the Vetra GitHub App's installation must approve contents: write and pull_requests: write); retry",
+    );
+  }
 }
 
 /** Deletes push robots older than an hour; Harbor itself only expires them after a day. */

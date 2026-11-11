@@ -798,9 +798,33 @@ describe("release routes: upstream failures are 503", () => {
     createCiRoutes(h.deps, fakeVerifier).releases(
       post("apps/ci/releases", bearer(prodClaim), releaseBody()),
     );
+  const githubToken = (c: unknown = prodClaim) =>
+    createCiRoutes(h.deps, fakeVerifier).githubToken(
+      post("apps/ci/github-token", bearer(c), { appId: app.id }),
+    );
 
   beforeEach(() => {
     h.orgs.personHandles.set(OWNER, "acme");
+  });
+
+  it("github-token: a production push gets the token", async () => {
+    const res = await githubToken();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toStrictEqual({
+      token: "ghs_release",
+      expiresAt: "2026-10-02T13:00:00.000Z",
+    });
+  });
+
+  it("github-token: a pull request is refused, GitHub failing is a 503", async () => {
+    expect((await githubToken(prClaim(4))).status).toBe(403);
+    h.deps.github!.createReleaseToken = async () => {
+      throw new Error("422");
+    };
+    expect(await answer(githubToken())).toMatchObject({
+      status: 503,
+      error: "SERVICE_UNAVAILABLE",
+    });
   });
 
   it("registry-token: Renown down", async () => {

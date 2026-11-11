@@ -71,6 +71,11 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
         "apps/ci/releases",
         { auth: "public", maxBodyBytes: 256 * 1024 },
       ],
+      [
+        "POST",
+        "apps/ci/github-token",
+        { auth: "public", maxBodyBytes: 256 * 1024 },
+      ],
       ["POST", "apps/ci/deploy", { auth: "public", maxBodyBytes: 256 * 1024 }],
       [
         "POST",

@@ -20,6 +20,7 @@ import {
   type DeployAppInput,
 } from "./service.js";
 import {
+  ciGithubToken,
   ciRegistryToken,
   ciReportRelease,
   type ReportReleaseInput,
@@ -32,6 +33,7 @@ import { mirrorAppById } from "./app-document.js";
  *
  *   POST apps/ci/registry-credentials  {appId}
  *   POST apps/ci/registry-token        {appId}
+ *   POST apps/ci/github-token          {appId}
  *   POST apps/ci/releases              ReportReleaseInput
  *   POST apps/ci/deploy                DeployAppInput
  *   GET  apps/ci/deployments/:id
@@ -346,6 +348,12 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       run(request, async (ci) => {
         const b = await jsonBody(request);
         return ciReportRelease(deps, ci, parseReleaseBody(b));
+      }),
+
+    githubToken: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        return ciGithubToken(deps, ci, requireString(body, "appId"));
       }),
 
     artifacts: (request: Request) =>

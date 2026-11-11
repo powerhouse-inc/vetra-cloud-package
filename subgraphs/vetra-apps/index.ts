@@ -281,6 +281,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         this.http.post("apps/ci/releases", json, (request) =>
           ci.releases(request),
         ),
+        this.http.post("apps/ci/github-token", json, (request) =>
+          ci.githubToken(request),
+        ),
         this.http.post("apps/ci/deploy", json, (request) => ci.deploy(request)),
         this.http.post("apps/ci/artifacts", json, (request) =>
           ci.artifacts(request),
