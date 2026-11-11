@@ -160,7 +160,8 @@ One run:
 a Harbor robot with push rights on the namespace's project, valid for 1 day,
 deleted by Vetra once it is 1 hour old,
 issued only to the app's own CI identity (the same workload-token check as
-`ci/releases`). Vetra creates the namespace's project on first use.
+`ci/releases`: the token must carry a `vetra` claim for the app's own
+repository id, else `FORBIDDEN`). Vetra creates the namespace's project on first use.
 
 **Scope.** The robot covers the whole namespace, i.e. all of that owner's
 apps (Harbor robots can't be narrower than a project); `repository` is where

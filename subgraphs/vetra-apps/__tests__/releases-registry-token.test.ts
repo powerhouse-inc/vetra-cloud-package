@@ -51,6 +51,19 @@ describe("ciRegistryToken", () => {
     });
   });
 
+  it("refuses a token without a vetra claim, or minted for another repository", async () => {
+    const app = await seedActiveApp(h);
+    for (const ci of [
+      ciIdentity(null),
+      ciIdentity(claim("refs/heads/main", { repositoryId: "9999" })),
+    ]) {
+      await expect(ciRegistryToken(h.deps, ci, app.id)).rejects.toMatchObject({
+        extensions: { code: "FORBIDDEN" },
+      });
+    }
+    expect(h.harbor.namespaceRobots).toHaveLength(0);
+  });
+
   it("the sweeper deletes robots older than an hour", async () => {
     const app = await seedActiveApp(h);
     await ciRegistryToken(h.deps, ciIdentity(claim("refs/heads/main")), app.id);

@@ -10,6 +10,17 @@ export interface ReportFacts {
   commit: string;
 }
 
+/** The token's verified claim, which must be for the app's own repository. */
+export function assertClaimForApp(
+  app: { repository_id: string | null },
+  claim: VetraClaim | null,
+): VetraClaim {
+  if (!claim) throw appsError("FORBIDDEN", "Token carries no vetra claim");
+  if (!app.repository_id || claim.repositoryId !== app.repository_id)
+    throw appsError("FORBIDDEN", "Token was minted for another repository");
+  return claim;
+}
+
 /**
  * A CI token may report only what its own run built: the app's repository,
  * the run's commit, its branch (push) or PR (pull_request). Uses the
@@ -18,12 +29,10 @@ export interface ReportFacts {
  */
 export function assertReportAllowed(
   app: { repository_id: string | null },
-  claim: VetraClaim | null,
+  verified: VetraClaim | null,
   r: ReportFacts,
 ): { run: number } {
-  if (!claim) throw appsError("FORBIDDEN", "Token carries no vetra claim");
-  if (!app.repository_id || claim.repositoryId !== app.repository_id)
-    throw appsError("FORBIDDEN", "Token was minted for another repository");
+  const claim = assertClaimForApp(app, verified);
   const run = Number(claim.runId);
   if (!claim.runId || !Number.isSafeInteger(run))
     throw appsError("FORBIDDEN", "Token carries no run id");

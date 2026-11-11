@@ -8,7 +8,7 @@ import {
 import { GraphQLError } from "graphql";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
-import { assertReportAllowed } from "./claim.js";
+import { assertClaimForApp, assertReportAllowed } from "./claim.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
   forgetPushRobot,
@@ -28,6 +28,7 @@ export async function ciRegistryToken(
   appId: string,
 ) {
   const app = await authorizeCi(deps, ci, appId);
+  assertClaimForApp(app, ci.claim);
   if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
   const namespace = await ensureAppNamespace(deps, app);
   // false = the project exists. Safe only because ensureAppNamespace has
