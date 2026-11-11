@@ -11,6 +11,24 @@ import { uncompress } from "snappyjs";
 import { appsError } from "../errors.js";
 import { GITHUB_TRUSTED_ROOTS } from "./github-trusted-root.js";
 
+/** Minting the installation token failed (GitHub, or the app's installation). */
+export class AttestationTokenError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `GitHub installation token mint failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "AttestationTokenError";
+  }
+}
+
+/** A bundle_url could not be fetched: GitHub was unreachable, not a verdict. */
+class BundleFetchError extends Error {}
+
+/**
+ * Verdicts (no attestation, failed verification) are `FORBIDDEN` GraphQL
+ * errors; any other failure to reach GitHub is a plain Error the caller
+ * reports as unavailable.
+ */
 export interface AttestationVerifier {
   verify(i: {
     repository: string;
@@ -287,9 +305,16 @@ export function createGithubAttestationVerifier(opts: {
     if (a.bundle) return a.bundle;
     if (!a.bundle_url?.startsWith("https://"))
       throw new Error("attestation has no bundle");
-    const res = await fetchImpl(a.bundle_url);
-    if (!res.ok) throw new Error(`bundle_url answered ${res.status}`);
-    const blob = new Uint8Array(await res.arrayBuffer());
+    let blob: Uint8Array;
+    try {
+      const res = await fetchImpl(a.bundle_url);
+      if (!res.ok) throw new Error(`bundle_url answered ${res.status}`);
+      blob = new Uint8Array(await res.arrayBuffer());
+    } catch (err) {
+      throw new BundleFetchError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     const size = snappyLength(blob);
     if (size > MAX_BUNDLE_BYTES)
       throw new Error(`bundle declares ${size} bytes, over the limit`);
@@ -303,21 +328,30 @@ export function createGithubAttestationVerifier(opts: {
         throw appsError("FORBIDDEN", `Invalid repository ${repository}`);
       if (!DIGEST.test(digest))
         throw appsError("FORBIDDEN", `Invalid image digest ${digest}`);
+      let token: string;
+      try {
+        token = await opts.token(repository, installationId);
+      } catch (err) {
+        throw new AttestationTokenError(err);
+      }
       const res = await fetchImpl(
         `https://api.github.com/repos/${repository}/attestations/${digest}?predicate_type=provenance`,
         {
           headers: {
-            authorization: `Bearer ${await opts.token(repository, installationId)}`,
+            authorization: `Bearer ${token}`,
             accept: "application/vnd.github+json",
             "x-github-api-version": "2022-11-28",
           },
         },
       );
-      if (!res.ok)
+      if (res.status === 404)
         throw appsError(
           "FORBIDDEN",
           `No attestation for ${digest} in ${repository}`,
         );
+      // 5xx, 429, 401, 403...: GitHub did not answer the question.
+      if (!res.ok)
+        throw new Error(`GitHub attestations API answered ${res.status}`);
       const body = (await res.json().catch(() => null)) as {
         attestations?: unknown;
       } | null;
@@ -337,14 +371,19 @@ export function createGithubAttestationVerifier(opts: {
         repository,
       };
       const reasons: string[] = [];
+      let unreachable: BundleFetchError | null = null;
       for (const a of attestations) {
         try {
           await verifyBundle(await loadBundle(a), expect);
           return;
         } catch (err) {
+          if (err instanceof BundleFetchError) unreachable = err;
           reasons.push(err instanceof Error ? err.message : String(err));
         }
       }
+      // A bundle we could not fetch might have verified: no verdict.
+      if (unreachable)
+        throw new Error(`attestation bundle not fetched: ${unreachable.message}`);
       throw appsError(
         "FORBIDDEN",
         `No valid attestation for ${digest}: ${reasons.join("; ") || "none"}`,

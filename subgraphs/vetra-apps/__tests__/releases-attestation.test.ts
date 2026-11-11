@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { compress } from "snappyjs";
 import { describe, expect, it } from "vitest";
+import { GraphQLError } from "graphql";
 import {
+  AttestationTokenError,
   assertSourceRepository,
   createGithubAttestationVerifier,
   parseTrustedRoots,
@@ -71,6 +73,82 @@ describe("GitHub attestation verifier", () => {
     await expect(
       v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+  });
+
+  /** The verdict-free outcome: a plain Error (mapped to 503 by the route). */
+  const upstreamFailure = async (p: Promise<unknown>) => {
+    const err = await p.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(GraphQLError);
+    return err as Error;
+  };
+  const args = { repository: "acme/shop", digest: D, commit: "abc", installationId: "9" };
+
+  it("treats any non-404 failure of GitHub's API as unavailable, not a verdict", async () => {
+    for (const status of [500, 502, 429, 401, 403]) {
+      const v = createGithubAttestationVerifier({
+        token: async () => "t",
+        fetch: (async () => json({ message: "x" }, status)) as never,
+        verifyBundle: async () => {},
+      });
+      const err = await upstreamFailure(v.verify(args));
+      expect(err.message, String(status)).toContain(String(status));
+    }
+  });
+
+  it("treats a failed bundle_url fetch as unavailable, not a verdict", async () => {
+    for (const blob of [
+      async () => new Response("no", { status: 503 }),
+      async () => {
+        throw new TypeError("fetch failed");
+      },
+    ]) {
+      const v = createGithubAttestationVerifier({
+        token: async () => "t",
+        fetch: (async (url: string) =>
+          url.startsWith("https://blob.example/")
+            ? blob()
+            : json({
+                attestations: [
+                  { bundle: null, bundle_url: "https://blob.example/b" },
+                ],
+              })) as never,
+        verifyBundle: async () => {},
+      });
+      await upstreamFailure(v.verify(args));
+    }
+  });
+
+  it("still accepts when another attestation verifies after a bundle_url failure", async () => {
+    const v = createGithubAttestationVerifier({
+      token: async () => "t",
+      fetch: (async (url: string) =>
+        url.startsWith("https://blob.example/")
+          ? new Response("no", { status: 500 })
+          : json({
+              attestations: [
+                { bundle: null, bundle_url: "https://blob.example/b" },
+                { bundle: { ok: true } },
+              ],
+            })) as never,
+      verifyBundle: async () => {},
+    });
+    await expect(v.verify(args)).resolves.toBeUndefined();
+  });
+
+  it("reports an installation token mint failure as such", async () => {
+    const v = createGithubAttestationVerifier({
+      token: async () => {
+        throw new Error("github: 403");
+      },
+      fetch: (async () => json({ attestations: [] })) as never,
+      verifyBundle: async () => {},
+    });
+    const err = await upstreamFailure(v.verify(args));
+    expect(err).toBeInstanceOf(AttestationTokenError);
   });
 
   it("refuses when every bundle fails verification", async () => {
