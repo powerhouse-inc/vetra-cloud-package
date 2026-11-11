@@ -626,11 +626,12 @@ describe("App identity + settings", () => {
     expect([installationId, repo, input.branch, input.path]).toStrictEqual([
       INSTALLATION,
       REPO,
-      "vetra/setup",
+      "vetra/publish",
       ".github/workflows/vetra.yml",
     ]);
     expect(input.content).toContain(`app-id: ${app.id}`);
     expect(input.content).toContain("id-token: write");
+    expect(input.content).toContain("powerhouse-inc/vetra-publish@v1");
   });
 });
 

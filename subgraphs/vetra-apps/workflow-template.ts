@@ -1,9 +1,11 @@
 /**
- * `.github/workflows/vetra.yml` (contract C4) with the App id and production
- * branch filled in. Codegen (`ph init`) writes the same workflow with
- * `app-id: ${{ vars.VETRA_APP_ID }}`. It runs on pushes to every branch: each
- * branch publishes builds, the production and release branches also
- * releases (Renown spec 2026-11-11-workload-release-branches-design, §7).
+ * `.github/workflows/vetra.yml` with the App id and production branch filled
+ * in. Codegen (`ph init`) writes the same workflow with
+ * `app-id: ${{ vars.VETRA_APP_ID }}`. Job `publish` runs
+ * powerhouse-inc/vetra-publish on pushes to every branch and on pull
+ * requests (builds everywhere, releases from release branches); job `deploy`
+ * keeps the old vetra-deploy-action on the production branch and pull
+ * requests until phase 2 removes that path (releases spec, section 3).
  */
 
 /** Package managers we can set up in the generated workflow. */
@@ -60,6 +62,14 @@ function setupSteps(
   return `      - uses: pnpm/action-setup@v4${version}\n${node}`;
 }
 
+/**
+ * Pull requests from another repository never reach the OIDC token. Compare
+ * full names rather than asking whether the head repo is a fork, which is
+ * true for every PR when this repository is itself a fork.
+ */
+const SAME_REPO =
+  "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository";
+
 export function workflowTemplate(
   appId: string,
   productionBranch = "main",
@@ -72,44 +82,65 @@ export function workflowTemplate(
 ): string {
   const manager =
     repo.packageManager === undefined ? "pnpm" : repo.packageManager;
+  const setup = setupSteps(manager, repo.declaresPackageManager ?? false);
+
+  // Both actions default every command to pnpm: spell them out for any other
+  // manager.
+  const commands =
+    manager !== null && manager !== "pnpm"
+      ? `          install-command: ${JSON.stringify(COMMANDS[manager].install)}\n          build-command: ${JSON.stringify(COMMANDS[manager].build)}\n`
+      : "";
+  // vetra-publish skips install and build when it has no package to publish;
+  // the old action needs them, and publishing, turned off explicitly.
+  const deployCommands =
+    manager === null
+      ? "          install-command: ''\n          build-command: ''\n          package-dirs: ''\n"
+      : commands;
   const branchInput =
     productionBranch === "main"
       ? ""
       : `          production-branch: ${JSON.stringify(productionBranch)}\n`;
 
-  // vetra-deploy-action defaults every command to pnpm. Spell them out for any
-  // other manager, and disable them entirely when there is nothing to install.
-  const commandInputs =
-    manager === null
-      ? "          install-command: ''\n          build-command: ''\n          package-dirs: ''\n"
-      : manager === "pnpm"
-        ? ""
-        : `          install-command: ${JSON.stringify(COMMANDS[manager].install)}\n          build-command: ${JSON.stringify(COMMANDS[manager].build)}\n`;
-
   return `name: Vetra
 on:
   push:
-    branches: ['**']
-    tags: ["v*"]
+    # Every branch publishes builds; the production branch and the App's
+    # release branches also publish releases. release-please's branches only
+    # carry release PRs, which run as pull requests.
+    branches: ['**', '!release-please--**']
   pull_request:
     types: [opened, synchronize, reopened]
-permissions:
-  id-token: write
-  contents: read
+permissions: {}
 concurrency:
   group: vetra-\${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A push may be cutting a release: let it finish.
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
 jobs:
-  deploy:
-    # Skip pull requests opened from another repository: they must not reach the
-    # OIDC token. Compare full names rather than asking whether the head repo is
-    # a fork, which is true for every PR when this repository is itself a fork.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+  publish:
+    if: ${SAME_REPO}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+      attestations: write
     steps:
       - uses: actions/checkout@v4
-${setupSteps(manager, repo.declaresPackageManager ?? false)}      - uses: powerhouse-inc/vetra-deploy-action@v1
+        with: { fetch-depth: 0 }
+${setup}      - uses: powerhouse-inc/vetra-publish@v1
         with:
           app-id: ${appId}
-${commandInputs}${branchInput}`;
+${commands}  # The production environment and PR previews, until releases replace them.
+  deploy:
+    if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+${setup}      - uses: powerhouse-inc/vetra-deploy-action@v1
+        with:
+          app-id: ${appId}
+${deployCommands}${branchInput}`;
 }

@@ -393,17 +393,43 @@ describe("workflow template", () => {
     expect(t).toContain("app-id: app-1");
   });
 
-  // Every branch publishes builds; release branches also publish releases
-  // (Renown spec 2026-11-11-workload-release-branches-design, section 7).
-  it("runs on pushes to every branch, v* tags and pull requests", () => {
+  // Every branch publishes builds, release branches also releases (Renown
+  // spec 2026-11-11-workload-release-branches-design section 7). No tag
+  // trigger: the Vetra GitHub App creates the release tags, which would start a run.
+  it("runs on pushes to every branch but release-please's, and on pull requests", () => {
     for (const t of [
       workflowTemplate("app-1"),
       workflowTemplate("app-1", "release"),
     ]) {
+      expect(t).toContain("on:\n  push:\n    # Every branch");
+      expect(t).toContain("    branches: ['**', '!release-please--**']\n");
       expect(t).toContain(
-        `on:\n  push:\n    branches: ['**']\n    tags: ["v*"]\n  pull_request:\n`,
+        "  pull_request:\n    types: [opened, synchronize, reopened]\n",
       );
+      expect(t).not.toContain("tags:");
     }
+  });
+
+  it("publishes with vetra-publish: OIDC, full history, attestations, no cancelled pushes", () => {
+    const t = workflowTemplate("app-1");
+    expect(t).toContain(
+      "- uses: powerhouse-inc/vetra-publish@v1\n        with:\n          app-id: app-1\n",
+    );
+    expect(t).toContain("      attestations: write\n");
+    expect(t).toContain("      pull-requests: read\n");
+    expect(t).toContain("with: { fetch-depth: 0 }");
+    expect(t).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    );
+  });
+
+  it("keeps the old deploy job, on the production branch and pull requests only", () => {
+    const t = workflowTemplate("app-1", "release");
+    expect(t).toContain("- uses: powerhouse-inc/vetra-deploy-action@v1");
+    expect(t).toContain(
+      "(github.event_name == 'pull_request' || github.ref == 'refs/heads/release')",
+    );
+    expect(t).toContain('production-branch: "release"');
   });
 
   // head.repo.fork is true for EVERY pull request when the repository is itself
@@ -482,6 +508,10 @@ describe("workflow template", () => {
     expect(t).toContain("install-command: ''");
     expect(t).toContain("build-command: ''");
     expect(t).toContain("package-dirs: ''");
+    // vetra-publish skips install/build itself when there is nothing to publish.
+    expect(t.split("vetra-publish@v1")[1].split("deploy:")[0]).not.toContain(
+      "install-command",
+    );
   });
 });
 
