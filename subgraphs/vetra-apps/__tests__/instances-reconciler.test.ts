@@ -566,24 +566,54 @@ describe("reconcileInstancesOnce — fix round 1", () => {
     });
   });
 
-  for (const gone of ["TERMINATING", "DESTROYED", "ARCHIVED"] as const) {
-    it(`recreates an environment that is ${gone}, without reverting it`, async () => {
-      await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
-      await reconcileInstancesOnce(h.deps);
-      const first = (await one()).environment_id!;
-      h.envs.setStatus(first, gone);
-      const before = h.envs.executed.length;
-      await reconcileInstancesOnce(h.deps);
-      expect(h.envs.executed.length).toBe(before);
-      expect(await one()).toMatchObject({
-        environment_id: null,
-        status: "pending",
-      });
-      await reconcileInstancesOnce(h.deps);
-      expect((await one()).environment_id).not.toBe(first);
-      expect((await one()).environment_id).not.toBeNull();
+  it("recreates an environment that is DESTROYED, without reverting it", async () => {
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const first = (await one()).environment_id!;
+    h.envs.setStatus(first, "DESTROYED");
+    const before = h.envs.executed.length;
+    await reconcileInstancesOnce(h.deps);
+    expect(h.envs.executed.length).toBe(before);
+    expect(await one()).toMatchObject({
+      environment_id: null,
+      status: "pending",
     });
-  }
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).environment_id).not.toBe(first);
+    expect((await one()).environment_id).not.toBeNull();
+  });
+
+  for (const going of ["TERMINATING", "ARCHIVED"] as const)
+    for (const gone of ["DESTROYED", "deleted"] as const)
+      it(`waits until a ${going} environment is ${gone} before recreating it`, async () => {
+        await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+        await reconcileInstancesOnce(h.deps);
+        const first = (await one()).environment_id!;
+        const host = (await one()).host;
+        h.envs.setStatus(first, going);
+        const before = h.envs.executed.length;
+        const docs = h.envs.docs.size;
+        await reconcileInstancesOnce(h.deps);
+        await reconcileInstancesOnce(h.deps);
+        // The old environment still holds the host: nothing new yet.
+        expect(h.envs.executed.length).toBe(before);
+        expect(h.envs.docs.size).toBe(docs);
+        expect(await one()).toMatchObject({
+          environment_id: first,
+          status: "pending",
+          host,
+        });
+        expect((await one()).reason).toContain(going);
+
+        if (gone === "deleted") await h.envs.delete(first);
+        else h.envs.setStatus(first, "DESTROYED");
+        await reconcileInstancesOnce(h.deps);
+        await reconcileInstancesOnce(h.deps);
+        const row = await one();
+        expect(row.environment_id).not.toBeNull();
+        expect(row.environment_id).not.toBe(first);
+        expect(row.host).toBe(host);
+      });
 
   it("deletes an unlinked DRAFT environment when the instance is removed", async () => {
     await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });

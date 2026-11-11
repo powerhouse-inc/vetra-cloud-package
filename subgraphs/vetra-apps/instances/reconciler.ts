@@ -236,10 +236,12 @@ export async function reconcileInstance(
   return withEnvLock(envId, () => reconcileEnvironment(deps, app, row, envId));
 }
 
-/** Environments that are going or gone: the instance gets a new one. */
-const GONE = new Set<VetraCloudEnvironmentState["status"]>([
+/**
+ * Environments on their way out: they still hold the instance's host, so the
+ * instance waits until they are DESTROYED (or deleted) to get a new one.
+ */
+const GOING = new Set<VetraCloudEnvironmentState["status"]>([
   "TERMINATING",
-  "DESTROYED",
   "ARCHIVED",
 ]);
 
@@ -273,9 +275,16 @@ async function reconcileEnvironment(
   envId: string,
 ): Promise<void> {
   const state = await deps.envs.getState(envId);
-  if (!state || state.status === "DRAFT" || GONE.has(state.status)) {
-    // Deleted, going away, or a create that never got past its first batch:
-    // start over (a going environment is left to finish, never reverted).
+  if (state && GOING.has(state.status)) {
+    // Left to finish, never reverted; recreated once it is gone.
+    const reason = `waiting for the old environment (${state.status}) to go`;
+    if (row.status !== "pending" || row.reason !== reason)
+      await patch(deps, row, { status: "pending", reason });
+    return;
+  }
+  if (!state || state.status === "DRAFT" || state.status === "DESTROYED") {
+    // Deleted, destroyed, or a create that never got past its first batch:
+    // start over.
     if (state && ownDraft(state, row)) await deps.envs.delete(envId);
     await patch(deps, row, {
       ...CLEAN,
