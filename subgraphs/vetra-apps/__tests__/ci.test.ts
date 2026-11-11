@@ -764,3 +764,113 @@ describe("POST apps/ci/releases body", () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe("release routes: upstream failures are 503", () => {
+  const DIGEST = `sha256:${"a".repeat(64)}`;
+  const releaseBody = () => ({
+    appId: app.id,
+    version: "1.5.0",
+    kind: "release",
+    branch: "main",
+    pr: null,
+    commit: SHA,
+    notes: null,
+    image: {
+      ref: `cr.vetra.io/acme/${app.slug}:1.5.0`,
+      digest: DIGEST,
+      host: "cli",
+    },
+    packages: [],
+    requires: {},
+    migrates: false,
+    built: { powerhouse: "6.2.3", baseImage: "node@sha256:00" },
+  });
+  const answer = async (res: Promise<Response>) => {
+    const r = await res;
+    const b = (await r.json()) as { error: string; message: string };
+    return { status: r.status, error: b.error, message: b.message };
+  };
+  const token = () =>
+    createCiRoutes(h.deps, fakeVerifier).registryToken(
+      post("apps/ci/registry-token", bearer(prodClaim), { appId: app.id }),
+    );
+  const report = () =>
+    createCiRoutes(h.deps, fakeVerifier).releases(
+      post("apps/ci/releases", bearer(prodClaim), releaseBody()),
+    );
+
+  beforeEach(() => {
+    h.orgs.personHandles.set(OWNER, "acme");
+  });
+
+  it("registry-token: Renown down", async () => {
+    h.orgs.down = true;
+    expect(await answer(token())).toMatchObject({
+      status: 503,
+      error: "SERVICE_UNAVAILABLE",
+    });
+  });
+
+  it("registry-token: Harbor failing to create the project or the robot", async () => {
+    h.deps.harbor!.createProject = async () => {
+      throw new Error("harbor: create project acme → 500");
+    };
+    expect(await answer(token())).toMatchObject({
+      status: 503,
+      error: "SERVICE_UNAVAILABLE",
+    });
+    h.deps.harbor!.createProject = async () => true;
+    h.deps.harbor!.createNamespacePushRobot = async () => {
+      throw new Error("harbor: create robot → 502");
+    };
+    expect(await answer(token())).toMatchObject({
+      status: 503,
+      error: "SERVICE_UNAVAILABLE",
+    });
+  });
+
+  it("registry-token: verdicts keep their code", async () => {
+    const res = await createCiRoutes(h.deps, fakeVerifier).registryToken(
+      post(
+        "apps/ci/registry-token",
+        bearer({ ...prodClaim, repositoryId: "9" }),
+        { appId: app.id },
+      ),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("releases: Renown down", async () => {
+    h.deps.attestations = { verify: async () => {} };
+    h.orgs.down = true;
+    expect(await answer(report())).toMatchObject({
+      status: 503,
+      error: "SERVICE_UNAVAILABLE",
+    });
+  });
+
+  it("releases: a token mint failure says so", async () => {
+    const { AttestationTokenError } = await import(
+      "../releases/attestation.js"
+    );
+    h.deps.attestations = {
+      verify: async () => {
+        throw new AttestationTokenError(new Error("github: 403"));
+      },
+    };
+    const a = await answer(report());
+    expect(a).toMatchObject({ status: 503, error: "SERVICE_UNAVAILABLE" });
+    expect(a.message).toMatch(/installation token/);
+    expect(a.message).not.toMatch(/Could not reach GitHub/);
+  });
+
+  it("releases: an attestation verdict keeps its code", async () => {
+    const { appsError } = await import("../errors.js");
+    h.deps.attestations = {
+      verify: async () => {
+        throw appsError("FORBIDDEN", "No attestation");
+      },
+    };
+    expect((await answer(report())).status).toBe(403);
+  });
+});

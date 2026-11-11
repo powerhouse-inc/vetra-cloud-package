@@ -8,6 +8,7 @@ import {
 import { GraphQLError } from "graphql";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
+import { AttestationTokenError } from "./attestation.js";
 import { assertClaimForApp, assertReportAllowed } from "./claim.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
@@ -21,22 +22,50 @@ import {
 
 const PUSH_TOKEN_MS = 60 * 60 * 1000;
 
+/**
+ * A call that reaches Renown, Harbor or GitHub. Verdicts (GraphQLErrors)
+ * pass through unchanged; any other failure is SERVICE_UNAVAILABLE (503),
+ * so CI retries instead of reading it as a refusal or a Vetra bug.
+ */
+async function upstream<T>(
+  deps: AppsDeps,
+  message: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof GraphQLError) throw err;
+    deps.logger.warn(`[vetra-apps] ${message}: ${String(err)}`);
+    throw appsError("SERVICE_UNAVAILABLE", `${message}; retry`);
+  }
+}
+const RENOWN_DOWN = "Could not reach Renown";
+const HARBOR_DOWN = "Could not reach Harbor";
+
 /** Push rights on the app's namespace (all of that owner's apps) for one CI run; `repository` is where this app pushes (spec: POST ci/registry-token). */
 export async function ciRegistryToken(
   deps: AppsDeps,
   ci: CiIdentity,
   appId: string,
 ) {
-  const app = await authorizeCi(deps, ci, appId);
+  const app = await upstream(deps, RENOWN_DOWN, () =>
+    authorizeCi(deps, ci, appId),
+  );
   assertClaimForApp(app, ci.claim);
-  if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
-  const namespace = await ensureAppNamespace(deps, app);
+  const harbor = deps.harbor;
+  if (!harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
+  const namespace = await upstream(deps, RENOWN_DOWN, () =>
+    ensureAppNamespace(deps, app),
+  );
   // false = the project exists. Safe only because ensureAppNamespace has
   // claimed the name for this owner in registry_namespaces (refusing names
   // another owner holds and reserved infrastructure names), and Vetra is the
   // only writer of these project names: an existing one is ours.
-  await deps.harbor.createProject(namespace);
-  const robot = await deps.harbor.createNamespacePushRobot(namespace, 1);
+  await upstream(deps, HARBOR_DOWN, () => harbor.createProject(namespace));
+  const robot = await upstream(deps, HARBOR_DOWN, () =>
+    harbor.createNamespacePushRobot(namespace, 1),
+  );
   const now = deps.now();
   await recordPushRobot(deps.db, {
     namespace,
@@ -133,10 +162,14 @@ export async function ciReportRelease(
   ci: CiIdentity,
   input: ReportReleaseInput,
 ): Promise<ReleaseJson> {
-  const app = await authorizeCi(deps, ci, input.appId);
+  const app = await upstream(deps, RENOWN_DOWN, () =>
+    authorizeCi(deps, ci, input.appId),
+  );
   const { run } = assertReportAllowed(app, ci.claim, input);
 
-  const namespace = await ensureAppNamespace(deps, app);
+  const namespace = await upstream(deps, RENOWN_DOWN, () =>
+    ensureAppNamespace(deps, app),
+  );
   const expectedRef = `${HARBOR_HOST}/${namespace}/${app.slug}:${input.version}`;
   if (input.image.ref !== expectedRef)
     throw appsError("BAD_USER_INPUT", `image.ref must be ${expectedRef}`);
@@ -174,7 +207,9 @@ export async function ciReportRelease(
       deps.logger.warn(`[vetra-apps] attestation check failed: ${String(err)}`);
       throw appsError(
         "SERVICE_UNAVAILABLE",
-        "Could not reach GitHub to verify the attestation; retry",
+        err instanceof AttestationTokenError
+          ? "Could not mint the GitHub installation token to verify the attestation (check the app's installation and its attestations: read permission); retry"
+          : "Could not reach GitHub to verify the attestation; retry",
       );
     }
   } else if (!deps.cfg.allowUnattestedReleases) {
