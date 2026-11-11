@@ -46,6 +46,13 @@ export interface VetraAppsConfig {
    * Reserved: no app row is ever given it, so no app document can carry it.
    */
   studioAppSlug: string;
+  /**
+   * Releases phase 2 instances. enabled=false (VETRA_APPS_INSTANCES=off)
+   * stops the reconciler. labelSuffix (VETRA_APPS_INSTANCE_LABEL_SUFFIX,
+   * e.g. "-stg") ends every instance host, so staging and production never
+   * claim the same <slug>-<name>.vetra.io.
+   */
+  instances: { enabled: boolean; labelSuffix: string };
 }
 
 type Env = Record<string, string | undefined>;
@@ -54,6 +61,23 @@ const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
   return t ? t : null;
 };
+
+/** Empty, or a dash, then up to 7 lowercase alphanumerics or dashes, ending in an alphanumeric (8 characters at most). */
+const LABEL_SUFFIX = /^(-[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?)?$/;
+
+function instancesConfig(env: Env): VetraAppsConfig["instances"] {
+  const suffix = trimmed(env.VETRA_APPS_INSTANCE_LABEL_SUFFIX) ?? "";
+  if (!LABEL_SUFFIX.test(suffix)) {
+    console.warn(
+      "[vetra-apps] VETRA_APPS_INSTANCE_LABEL_SUFFIX must be empty or look like -stg (a dash, then up to 7 lowercase letters, digits or dashes, not ending in a dash); instances are off",
+    );
+    return { enabled: false, labelSuffix: "" };
+  }
+  return {
+    enabled: trimmed(env.VETRA_APPS_INSTANCES) !== "off",
+    labelSuffix: suffix,
+  };
+}
 
 export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
   const appId = trimmed(env.GITHUB_DEPLOY_APP_ID);
@@ -123,6 +147,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
+    instances: instancesConfig(env),
   };
 }
 
