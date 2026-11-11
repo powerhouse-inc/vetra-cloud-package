@@ -526,7 +526,11 @@ describe("expired / missing App identity delegation", () => {
     const token = await tokenWithoutDelegation(OPERATOR);
     await h.db
       .updateTable("apps")
-      .set({ identity_expires_at: null, owner_org_id: "org-acme", org_disputed: true })
+      .set({
+        identity_expires_at: null,
+        owner_org_id: "org-acme",
+        org_disputed: true,
+      })
       .execute();
     const r = await createCiRoutes(h.deps, verifier).deploy(
       post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
@@ -549,10 +553,14 @@ describe("expired / missing App identity delegation", () => {
     expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
     // A plain member does not either; Renown down: nothing changes.
     h.orgs.join("org-acme", OUTSIDER, "MEMBER");
-    await createCiRoutes(h.deps, verifier).deploy(post("apps/ci/deploy", `Bearer ${token}`, deployBody()));
+    await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
     h.orgs.join("org-acme", OUTSIDER, "PUBLISHER");
     h.orgs.down = true;
-    await createCiRoutes(h.deps, verifier).deploy(post("apps/ci/deploy", `Bearer ${token}`, deployBody()));
+    await createCiRoutes(h.deps, verifier).deploy(
+      post("apps/ci/deploy", `Bearer ${token}`, deployBody()),
+    );
     expect((await getApp(h.db, app.id))?.status).toBe("ACTIVE");
   });
 
@@ -644,5 +652,115 @@ describe("GraphQL rejects App identities entirely", () => {
     expect(
       await r.Mutation.deployApp(null, { input: input() }, ownerCtx),
     ).toMatchObject({ kind: "PRODUCTION" });
+  });
+});
+
+describe("POST apps/ci/releases body", () => {
+  const DIGEST = `sha256:${"a".repeat(64)}`;
+  const body = (over: Record<string, unknown> = {}) => ({
+    appId: "",
+    version: "1.5.0",
+    kind: "release",
+    branch: "main",
+    pr: null,
+    commit: SHA,
+    notes: null,
+    image: { ref: "cr.vetra.io/acme/shop:1.5.0", digest: DIGEST, host: "cli" },
+    packages: [{ name: "@acme/shop", version: "1.5.0" }],
+    requires: { powerhouse: ">=6.2.3", services: ["db"], size: "s" },
+    migrates: false,
+    built: { powerhouse: "6.2.3", baseImage: "node@sha256:00" },
+    ...over,
+  });
+
+  const status = async (res: Promise<Response>) => {
+    const r = await res;
+    return [r.status, ((await r.json()) as { error: string }).error];
+  };
+
+  it("refuses wrongly typed fields with 400 before anything else", async () => {
+    const routes = createCiRoutes(h.deps, fakeVerifier);
+    const cases: Record<string, unknown>[] = [
+      { requires: [] },
+      { requires: { powerhouse: 6 } },
+      { requires: { size: {} } },
+      { requires: { services: "db" } },
+      { requires: { services: [1] } },
+      { notes: 5 },
+      { migrates: "true" },
+      { packages: "x" },
+      { packages: [{ name: "a", version: 1 }] },
+      { packages: ["a"] },
+      { branch: 7 },
+      { pr: "3" },
+      { pr: 1.5 },
+      { kind: "other" },
+      { image: "x" },
+      { built: null },
+    ];
+    for (const over of cases) {
+      expect(
+        await status(
+          routes.releases(
+            post(
+              "apps/ci/releases",
+              bearer(prodClaim),
+              body({ appId: app.id, ...over }),
+            ),
+          ),
+        ),
+        JSON.stringify(over),
+      ).toStrictEqual([400, "BAD_USER_INPUT"]);
+    }
+  });
+
+  it("a build with empty notes is refused like any notes", async () => {
+    h.orgs.personHandles.set(OWNER, "acme");
+    h.deps.attestations = { verify: async () => {} };
+    const routes = createCiRoutes(h.deps, fakeVerifier);
+    const res = await routes.releases(
+      post(
+        "apps/ci/releases",
+        bearer({ ...prodClaim, ref: "refs/heads/main" }),
+        body({
+          appId: app.id,
+          kind: "build",
+          version: "1.5.0-main.4",
+          notes: "",
+          image: {
+            ref: "cr.vetra.io/acme/shop:1.5.0-main.4",
+            digest: DIGEST,
+            host: "cli",
+          },
+          packages: [],
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("503 when GitHub cannot be reached for the attestation", async () => {
+    h.orgs.personHandles.set(OWNER, "acme");
+    h.deps.attestations = {
+      verify: async () => {
+        throw new Error("boom");
+      },
+    };
+    const routes = createCiRoutes(h.deps, fakeVerifier);
+    const res = await routes.releases(
+      post(
+        "apps/ci/releases",
+        bearer(prodClaim),
+        body({
+          appId: app.id,
+          image: {
+            ref: `cr.vetra.io/acme/${app.slug}:1.5.0`,
+            digest: DIGEST,
+            host: "cli",
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(503);
   });
 });

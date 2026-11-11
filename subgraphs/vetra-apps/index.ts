@@ -211,20 +211,15 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       ),
       releasePolicy,
     };
+    if (cfg.allowUnattestedReleases)
+      console.warn(
+        "[vetra-apps] VETRA_APPS_ALLOW_UNATTESTED_RELEASES is on: release reports are accepted without an attestation when no verifier is wired",
+      );
     if (deps.github) {
       const github = deps.github;
       deps.attestations = createGithubAttestationVerifier({
-        token: async (repository) => {
-          const app = await db
-            .selectFrom("apps")
-            .select("installation_id")
-            .where("repository_full_name", "=", repository)
-            .where("installation_id", "is not", null)
-            .executeTakeFirst();
-          if (!app?.installation_id)
-            throw new Error(`no GitHub installation for ${repository}`);
-          return github.installationToken(app.installation_id);
-        },
+        token: (repository, installationId) =>
+          github.installationToken(installationId, repository),
       });
     }
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);

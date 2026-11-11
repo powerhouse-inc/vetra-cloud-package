@@ -55,7 +55,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).resolves.toBeUndefined();
     expect(String(seen[0])).toContain(
       "acme\\/shop\\/\\.github\\/workflows\\/vetra\\.yml@",
@@ -69,7 +69,7 @@ describe("GitHub attestation verifier", () => {
       verifyBundle: async () => {},
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
 
@@ -83,7 +83,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
 
@@ -110,7 +110,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).resolves.toBeUndefined();
     expect(urls[1]).toBe("https://blob.example/b.json.sn");
   });
@@ -127,7 +127,7 @@ describe("GitHub attestation verifier", () => {
         verifyBundle: async () => {},
       });
       await expect(
-        v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+        v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
       ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
     }
   });
@@ -151,7 +151,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc", installationId: "9" }),
     ).rejects.toThrow(/33554432 bytes, over the limit/);
     expect(verified).toBe(false);
   });
@@ -165,7 +165,7 @@ describe("GitHub attestation verifier", () => {
         seen = e;
       },
     });
-    await v.verify({ repository: "Acme/Shop", digest: D, commit: "abc" });
+    await v.verify({ repository: "Acme/Shop", digest: D, commit: "abc", installationId: "9" });
     expect(
       seen!.identityURI.test(
         "https://github.com/acme/shop/.github/workflows/vetra.yml@refs/heads/main",
@@ -187,7 +187,7 @@ describe("GitHub attestation verifier", () => {
       ["acme/shop", `sha512:${"a".repeat(64)}`],
     ])
       await expect(
-        v.verify({ repository, digest, commit: "abc" }),
+        v.verify({ repository, digest, commit: "abc", installationId: "9" }),
       ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
 });

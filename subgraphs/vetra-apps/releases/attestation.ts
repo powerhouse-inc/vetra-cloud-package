@@ -16,6 +16,8 @@ export interface AttestationVerifier {
     repository: string;
     digest: string;
     commit: string;
+    /** The reporting app's own GitHub installation. */
+    installationId: string;
   }): Promise<void>;
 }
 
@@ -269,7 +271,7 @@ function snappyLength(blob: Uint8Array): number {
  * installation token, so private repos work.
  */
 export function createGithubAttestationVerifier(opts: {
-  token: (repository: string) => Promise<string>;
+  token: (repository: string, installationId: string) => Promise<string>;
   fetch?: typeof fetch;
   verifyBundle?: VerifyBundle;
 }): AttestationVerifier {
@@ -296,7 +298,7 @@ export function createGithubAttestationVerifier(opts: {
   }
 
   return {
-    async verify({ repository, digest, commit }) {
+    async verify({ repository, digest, commit, installationId }) {
       if (!REPOSITORY.test(repository) || repository.includes(".."))
         throw appsError("FORBIDDEN", `Invalid repository ${repository}`);
       if (!DIGEST.test(digest))
@@ -305,7 +307,7 @@ export function createGithubAttestationVerifier(opts: {
         `https://api.github.com/repos/${repository}/attestations/${digest}?predicate_type=provenance`,
         {
           headers: {
-            authorization: `Bearer ${await opts.token(repository)}`,
+            authorization: `Bearer ${await opts.token(repository, installationId)}`,
             accept: "application/vnd.github+json",
             "x-github-api-version": "2022-11-28",
           },

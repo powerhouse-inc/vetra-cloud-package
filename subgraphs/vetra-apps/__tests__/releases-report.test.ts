@@ -62,7 +62,12 @@ describe("ciReportRelease", () => {
       migrates: true,
     });
     expect(verified).toStrictEqual([
-      { repository: "acme/shop", digest: DIGEST, commit: SHA },
+      {
+        repository: "acme/shop",
+        digest: DIGEST,
+        commit: SHA,
+        installationId: app.installation_id,
+      },
     ]);
   });
 

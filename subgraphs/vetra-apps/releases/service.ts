@@ -4,6 +4,7 @@ import {
   type AppsDeps,
   type CiIdentity,
 } from "../service.js";
+import { GraphQLError } from "graphql";
 import { appsError, notConfigured } from "../errors.js";
 import { assertReportAllowed } from "./claim.js";
 import { ensureAppNamespace } from "./namespace.js";
@@ -141,7 +142,7 @@ export async function ciReportRelease(
       "BAD_USER_INPUT",
       `${off.name}@${off.version} is not at ${input.version}`,
     );
-  if (input.kind === "build" && input.notes)
+  if (input.kind === "build" && input.notes !== null)
     throw appsError("BAD_USER_INPUT", "Only a release carries notes");
   if (!input.built.powerhouse || !input.built.baseImage)
     throw appsError(
@@ -150,11 +151,24 @@ export async function ciReportRelease(
     );
 
   if (deps.attestations) {
-    await deps.attestations.verify({
-      repository: app.repository_full_name ?? "",
-      digest: input.image.digest,
-      commit: input.commit,
-    });
+    if (!app.installation_id || !app.repository_full_name)
+      throw appsError("FORBIDDEN", "The app has no GitHub installation");
+    try {
+      await deps.attestations.verify({
+        repository: app.repository_full_name,
+        digest: input.image.digest,
+        commit: input.commit,
+        installationId: app.installation_id,
+      });
+    } catch (err) {
+      // A verdict (appsError) is final; anything else is GitHub or the token mint failing.
+      if (err instanceof GraphQLError) throw err;
+      deps.logger.warn(`[vetra-apps] attestation check failed: ${String(err)}`);
+      throw appsError(
+        "SERVICE_UNAVAILABLE",
+        "Could not reach GitHub to verify the attestation; retry",
+      );
+    }
   } else if (!deps.cfg.allowUnattestedReleases) {
     throw notConfigured("GitHub attestation verification");
   }

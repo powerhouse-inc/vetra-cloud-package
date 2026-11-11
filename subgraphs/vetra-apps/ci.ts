@@ -174,6 +174,7 @@ const STATUS: Record<string, number> = {
   GITHUB_NOT_CONNECTED: 400,
   VERSION_CONFLICT: 409,
   SERVICE_NOT_CONFIGURED: 503,
+  SERVICE_UNAVAILABLE: 503,
 };
 
 const errorResponse = (
@@ -216,6 +217,79 @@ function requireString(body: Record<string, unknown>, key: string): string {
   if (typeof v !== "string" || !v)
     throw new HttpError("BAD_USER_INPUT", `${key} is required`);
   return v;
+}
+
+const bad = (message: string) => new HttpError("BAD_USER_INPUT", message);
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+/** Strict: a field of the wrong type is refused, never coerced. */
+function parseReleaseBody(b: Record<string, unknown>): ReportReleaseInput {
+  const obj = (k: string, src: Record<string, unknown> = b) => {
+    const v = src[k];
+    if (!isObject(v)) throw bad(`${k} must be an object`);
+    return v;
+  };
+  const nullableString = (k: string) => {
+    const v = b[k];
+    if (v === undefined || v === null) return null;
+    if (typeof v !== "string") throw bad(`${k} must be a string or null`);
+    return v;
+  };
+  const kind = b.kind;
+  if (kind !== "release" && kind !== "build")
+    throw bad("kind must be release or build");
+  const pr = b.pr ?? null;
+  if (pr !== null && !Number.isInteger(pr))
+    throw bad("pr must be an integer or null");
+  if (b.migrates !== undefined && typeof b.migrates !== "boolean")
+    throw bad("migrates must be a boolean");
+  if (!Array.isArray(b.packages)) throw bad("packages must be an array");
+  const packages = (b.packages as unknown[]).map((p) => {
+    if (!isObject(p)) throw bad("packages must be {name, version} objects");
+    return {
+      name: requireString(p, "name"),
+      version: requireString(p, "version"),
+    };
+  });
+  const rq = b.requires === undefined ? {} : obj("requires");
+  const requires: ReportReleaseInput["requires"] = {};
+  for (const k of ["powerhouse", "size"] as const) {
+    if (rq[k] === undefined) continue;
+    if (typeof rq[k] !== "string") throw bad(`requires.${k} must be a string`);
+    requires[k] = rq[k];
+  }
+  if (rq.services !== undefined) {
+    if (
+      !Array.isArray(rq.services) ||
+      rq.services.some((x) => typeof x !== "string")
+    )
+      throw bad("requires.services must be an array of strings");
+    requires.services = rq.services as string[];
+  }
+  const image = obj("image");
+  const built = obj("built");
+  return {
+    appId: requireString(b, "appId"),
+    version: requireString(b, "version"),
+    kind,
+    branch: nullableString("branch"),
+    pr: pr as number | null,
+    commit: requireString(b, "commit"),
+    notes: nullableString("notes"),
+    image: {
+      ref: requireString(image, "ref"),
+      digest: requireString(image, "digest"),
+      host: requireString(image, "host"),
+    },
+    packages,
+    requires,
+    migrates: b.migrates === true,
+    built: {
+      powerhouse: requireString(built, "powerhouse"),
+      baseImage: requireString(built, "baseImage"),
+    },
+  };
 }
 
 export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
@@ -271,53 +345,7 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
     releases: (request: Request) =>
       run(request, async (ci) => {
         const b = await jsonBody(request);
-        const obj = (k: string) => {
-          const v = b[k];
-          if (!v || typeof v !== "object" || Array.isArray(v))
-            throw new HttpError("BAD_USER_INPUT", `${k} must be an object`);
-          return v as Record<string, unknown>;
-        };
-        const kind = b.kind;
-        if (kind !== "release" && kind !== "build")
-          throw new HttpError(
-            "BAD_USER_INPUT",
-            "kind must be release or build",
-          );
-        const image = obj("image");
-        return ciReportRelease(deps, ci, {
-          appId: requireString(b, "appId"),
-          version: requireString(b, "version"),
-          kind,
-          branch: typeof b.branch === "string" ? b.branch : null,
-          pr: typeof b.pr === "number" ? b.pr : null,
-          commit: requireString(b, "commit"),
-          notes: typeof b.notes === "string" ? b.notes : null,
-          image: {
-            ref: requireString(image, "ref"),
-            digest: requireString(image, "digest"),
-            host: requireString(image, "host"),
-          },
-          packages: Array.isArray(b.packages)
-            ? (b.packages as unknown[]).map((p) => {
-                const o = (p ?? {}) as Record<string, unknown>;
-                return {
-                  name: requireString(o, "name"),
-                  version: requireString(o, "version"),
-                };
-              })
-            : [],
-          requires: (b.requires && typeof b.requires === "object"
-            ? b.requires
-            : {}) as ReportReleaseInput["requires"],
-          migrates: b.migrates === true,
-          built: (() => {
-            const built = obj("built");
-            return {
-              powerhouse: requireString(built, "powerhouse"),
-              baseImage: requireString(built, "baseImage"),
-            };
-          })(),
-        });
+        return ciReportRelease(deps, ci, parseReleaseBody(b));
       }),
 
     artifacts: (request: Request) =>
