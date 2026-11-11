@@ -111,7 +111,7 @@ export async function syncBranchInstances(
 ): Promise<void> {
   const wanted: Map<string, ReleaseRow> = wantsInstances(app)
     ? await branchTargets(deps.db, app)
-    : new Map();
+    : new Map<string, ReleaseRow>();
   const rows = await listInstances(deps.db, app.id, "branch");
   const nowIso = deps.now().toISOString();
   for (const [branch, release] of wanted) {
