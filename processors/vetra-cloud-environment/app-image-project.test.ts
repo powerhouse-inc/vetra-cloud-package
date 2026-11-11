@@ -166,3 +166,82 @@ describe("createAppImageProjectResolver — warm environment", () => {
     expect(lookups).toBe(0);
   });
 });
+
+describe("instance environments", () => {
+  async function seedInstance(appId: string, envId: string) {
+    await db
+      .updateTable("apps")
+      .set({ registry_namespace: "acme" })
+      .where("id", "=", appId)
+      .execute();
+    await db
+      .insertInto("instances")
+      .values({
+        id: `i-${envId}`,
+        app_id: appId,
+        kind: "branch",
+        name: "main",
+        branch: "main",
+        host: `${appId}-main`,
+        environment_id: envId,
+        status: "updating",
+        created_at: "t",
+        updated_at: "t",
+      })
+      .execute();
+  }
+
+  it("vouches for the App's registry namespace", async () => {
+    await seed();
+    await seedInstance("app-1", "instance-env");
+    const resolve = createAppImageProjectResolver(db);
+    expect(await resolve(linked("app-1"), "instance-env")).toBe("acme");
+  });
+
+  it("does not vouch when the link names another App", async () => {
+    await seed();
+    await seedInstance("app-1", "instance-env");
+    const resolve = createAppImageProjectResolver(db);
+    expect(await resolve(linked("app-2"), "instance-env")).toBeNull();
+  });
+
+  it("does not vouch for an instance when the App has no registry namespace", async () => {
+    await seed();
+    await seedInstance("app-1", "instance-env");
+    await db
+      .updateTable("apps")
+      .set({ registry_namespace: null })
+      .where("id", "=", "app-1")
+      .execute();
+    const resolve = createAppImageProjectResolver(db);
+    expect(await resolve(linked("app-1"), "instance-env")).toBeNull();
+  });
+
+  it("keeps answering for production and previews as before", async () => {
+    await seed();
+    await seedInstance("app-1", "instance-env");
+    const resolve = createAppImageProjectResolver(db);
+    expect(await resolve(linked("app-1"), "preview-env")).toBe("app-shop");
+    expect(await resolve(linked("app-1"), "prod-env")).toBe("app-shop");
+  });
+
+  it("leaves licensed environments (no app link) on the licence path", async () => {
+    await seed();
+    await seedInstance("app-1", "instance-env");
+    await db.schema
+      .createTable("license_environments")
+      .addColumn("environment_id", "varchar(255)")
+      .addColumn("app_id", "varchar(255)")
+      .execute();
+    await db
+      .insertInto("license_environments")
+      .values({ environment_id: "licensed-env", app_id: "app-1" })
+      .execute();
+    const unlinked = {} as unknown as VetraCloudEnvironmentState;
+    const resolve = createAppImageProjectResolver(db, db);
+    // Licensed env still gets the old harbor project, not the namespace.
+    expect(await resolve(unlinked, "licensed-env")).toBe("app-shop");
+    // An unlinked document is never vouched for as an instance.
+    expect(await resolve(unlinked, "instance-env")).toBeNull();
+  });
+});

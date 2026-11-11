@@ -61,10 +61,18 @@ export function createAppImageProjectResolver(
     try {
       const app = (await appsDb
         .selectFrom("apps")
-        .select(["harbor_project", "production_environment_id"])
+        .select([
+          "harbor_project",
+          "production_environment_id",
+          "registry_namespace",
+        ])
         .where("id", "=", appId)
         .executeTakeFirst()) as
-        | { harbor_project: string; production_environment_id: string }
+        | {
+            harbor_project: string;
+            production_environment_id: string;
+            registry_namespace: string | null;
+          }
         | undefined;
       if (!app) return null;
       if (app.production_environment_id === documentId)
@@ -75,7 +83,17 @@ export function createAppImageProjectResolver(
         .where("app_id", "=", appId)
         .where("environment_id", "=", documentId)
         .executeTakeFirst();
-      return preview ? app.harbor_project : null;
+      if (preview) return app.harbor_project;
+      // A releases-phase-2 instance runs the App's images from its registry
+      // namespace (cr.vetra.io/<namespace>/<slug>), vouched for by the
+      // instances table, never by the document.
+      const instance = await appsDb
+        .selectFrom("instances")
+        .select("id")
+        .where("app_id", "=", appId)
+        .where("environment_id", "=", documentId)
+        .executeTakeFirst();
+      return instance ? app.registry_namespace : null;
     } catch {
       return null;
     }
