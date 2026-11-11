@@ -62,19 +62,32 @@ const trimmed = (v: string | undefined): string | null => {
   return t ? t : null;
 };
 
-/** Empty, or a dash, then up to 7 lowercase alphanumerics or dashes, ending in an alphanumeric (8 characters at most). */
+/** Empty, or a dash, then 1-7 lowercase alphanumerics or dashes, ending in an alphanumeric (8 characters at most). */
 const LABEL_SUFFIX = /^(-[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?)?$/;
 
+const INSTANCES_OFF = new Set(["off", "false", "0", "no"]);
+const INSTANCES_ON = new Set(["", "on", "true", "1", "yes"]);
+
+/**
+ * Startup errors, not silent fallbacks: a bad suffix could point a
+ * non-production build at a production host, so it refuses to load.
+ */
 function instancesConfig(env: Env): VetraAppsConfig["instances"] {
+  // On by default; per-app instances_enabled defaults to false, so nothing runs until an app opts in.
+  const rawSwitch = (trimmed(env.VETRA_APPS_INSTANCES) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(rawSwitch) && !INSTANCES_ON.has(rawSwitch)) {
+    throw new Error(
+      `VETRA_APPS_INSTANCES "${env.VETRA_APPS_INSTANCES}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
   const suffix = trimmed(env.VETRA_APPS_INSTANCE_LABEL_SUFFIX) ?? "";
   if (!LABEL_SUFFIX.test(suffix)) {
-    console.warn(
-      "[vetra-apps] VETRA_APPS_INSTANCE_LABEL_SUFFIX must be empty or look like -stg (a dash, then up to 7 lowercase letters, digits or dashes, not ending in a dash); instances are off",
+    throw new Error(
+      `VETRA_APPS_INSTANCE_LABEL_SUFFIX "${suffix}" is invalid: it must be empty, or a dash then 1-7 lowercase letters, digits or dashes, not ending in a dash (e.g. -stg)`,
     );
-    return { enabled: false, labelSuffix: "" };
   }
   return {
-    enabled: trimmed(env.VETRA_APPS_INSTANCES) !== "off",
+    enabled: !INSTANCES_OFF.has(rawSwitch),
     labelSuffix: suffix,
   };
 }

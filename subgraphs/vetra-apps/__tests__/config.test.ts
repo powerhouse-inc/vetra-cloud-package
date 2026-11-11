@@ -18,10 +18,26 @@ describe("instances config", () => {
       labelSuffix: "",
     });
   });
-  it("turns off with VETRA_APPS_INSTANCES=off", () => {
-    expect(
-      loadAppsConfig({ VETRA_APPS_INSTANCES: "off" }).instances.enabled,
-    ).toBe(false);
+  it.each(["off", "false", "0", "no", " OFF ", "No"])(
+    "turns off with VETRA_APPS_INSTANCES=%j",
+    (v) => {
+      expect(
+        loadAppsConfig({ VETRA_APPS_INSTANCES: v }).instances.enabled,
+      ).toBe(false);
+    },
+  );
+  it.each(["on", "true", "1", "yes", "TRUE", ""])(
+    "stays on with VETRA_APPS_INSTANCES=%j",
+    (v) => {
+      expect(
+        loadAppsConfig({ VETRA_APPS_INSTANCES: v }).instances.enabled,
+      ).toBe(true);
+    },
+  );
+  it("refuses an unknown VETRA_APPS_INSTANCES value at startup", () => {
+    expect(() => loadAppsConfig({ VETRA_APPS_INSTANCES: "maybe" })).toThrow(
+      /VETRA_APPS_INSTANCES.*maybe/,
+    );
   });
   it("takes a label suffix such as -stg", () => {
     expect(
@@ -31,38 +47,27 @@ describe("instances config", () => {
       labelSuffix: "-stg",
     });
   });
-  it("accepts dashes inside the suffix but not at its end", () => {
+  it("accepts dashes inside the suffix", () => {
     expect(
       loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: "-s-1" }).instances
         .labelSuffix,
     ).toBe("-s-1");
-    expect(
-      loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: "-stg-" }).instances
-        .enabled,
-    ).toBe(false);
   });
   it("accepts at most 8 characters including the dash", () => {
     expect(
       loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: "-abcdefg" }).instances
         .labelSuffix,
     ).toBe("-abcdefg");
-    expect(
-      loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: "-abcdefgh" })
-        .instances.enabled,
-    ).toBe(false);
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: "-abcdefgh" }),
+    ).toThrow(/VETRA_APPS_INSTANCE_LABEL_SUFFIX.*-abcdefgh/);
   });
-  it("refuses a bare dash, uppercase, and a missing dash", () => {
-    for (const bad of ["-", "-STG", "stg", "--"]) {
-      expect(
-        loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: bad }).instances
-          .enabled,
-      ).toBe(false);
-    }
-  });
-  it("turns instances off on an invalid suffix rather than risk a production host", () => {
-    expect(
-      loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: ".staging" }).instances
-        .enabled,
-    ).toBe(false);
-  });
+  it.each(["-", "-stg-", "-STG", "stg", "--", ".staging"])(
+    "throws at startup on suffix %j",
+    (bad) => {
+      expect(() =>
+        loadAppsConfig({ VETRA_APPS_INSTANCE_LABEL_SUFFIX: bad }),
+      ).toThrow(/VETRA_APPS_INSTANCE_LABEL_SUFFIX/);
+    },
+  );
 });
