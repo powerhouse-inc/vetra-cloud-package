@@ -1,6 +1,21 @@
 import { createHash } from "node:crypto";
 
-const MAX_LABEL = 63;
+/**
+ * The label is the environment subdomain; the processor's getTenantId
+ * (processors/vetra-cloud-environment/gitops.ts) makes `<label>-<8 doc chars>`
+ * and Helm's release is `powerhouse-<tenantId>` (<= 53). The tightest derived
+ * name is the `<release>-switchboard` k8s resource (<= 63), so:
+ * 63 - len("powerhouse-") - len("-xxxxxxxx") - len("-switchboard") = 31.
+ * (Release <= 53 allows 33; hosts `<label>-switchboard` allow 51.)
+ */
+const RELEASE_PREFIX = "powerhouse-".length;
+const DOC_PART = 1 + 8;
+const LONGEST_SERVICE = "-switchboard".length;
+export const MAX_INSTANCE_LABEL = Math.min(
+  53 - RELEASE_PREFIX - DOC_PART,
+  63 - RELEASE_PREFIX - DOC_PART - LONGEST_SERVICE,
+);
+const MAX_LABEL = MAX_INSTANCE_LABEL;
 const HASH = 6;
 
 export class InstanceHostError extends Error {

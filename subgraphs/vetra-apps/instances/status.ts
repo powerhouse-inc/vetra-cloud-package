@@ -31,6 +31,9 @@ export function observeEnvironment(
     return { kind: "failed", reason: `the environment is ${state.status}` };
   const version =
     state.services.find((s) => s.type === "FUSION")?.version ?? null;
+  // NOTE: document READY is not proof of a deployment (Argo can fail to render
+  // while the document stays READY); the state has no health field yet, real
+  // health arrives with slice 3 (14.7).
   if (version === targetTag && state.status === "READY")
     return { kind: "ready" };
   if (runsTarget) return { kind: "updating" };
