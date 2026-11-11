@@ -62,7 +62,7 @@ classified as their own refClass. Added to the design's section 15.
 | `sha` | OIDC `sha` or null | |
 | `repository` | `owner/name` | |
 | `repositoryId` | numeric id **as a string** | |
-| `runId` | OIDC `run_id` or null | **a string of digits** (GitHub sends a string; `optionalString` also stringifies numbers, `github.ts:65-69`). Present on every Actions run. |
+| `runId` | OIDC `run_id` or null | **a string**: Renown passes GitHub's `run_id` through `optionalString`, which keeps a string and stringifies a number (`github.ts:65-69,159`); there is no digits-only check, so Vetra must validate it (e.g. `/^[1-9][0-9]*$/`) before `BigInt`. GitHub sets `run_id` on every Actions run. |
 | `runAttempt` | OIDC `run_attempt` or null | string |
 | `actor` | OIDC `actor` or null | |
 | `prNumber` | number or null | number for PREVIEW only |

@@ -80,6 +80,11 @@ Version rules:
   compared with releases: a build is never a plan's target, so nothing needs
   that comparison (semver would put `2.0.0-beta.2-next.12` after
   `2.0.0-beta.2`).
+- Two different numbers: the `<run>` in a build version is the workflow's
+  `run_number` (per workflow, small, chosen by the action, only part of the
+  name), while `releases.run` stores the workload token's `claim.runId`
+  (GitHub's run id, global, large) and is what orders builds and releases.
+  The two are never compared.
 
 ### The workflow and the action
 
@@ -474,8 +479,9 @@ carried over:
     already); restoring is CNPG point-in-time recovery to that backup, plus the
     `/data` volume snapshot taken with it.
 17. **Newest** build or release of a branch (and newest build of a PR) is the
-    one with the highest verified GitHub run id (`claim.runId`), never the one
-    that arrived last.
+    one with the highest verified GitHub run id (`claim.runId`, stored in
+    `releases.run`), never the one that arrived last, and never the
+    `run_number` in the version's `<run>` (section 3).
 18. **PR titles.** Vetra's PR check fails a PR whose title is not a
     conventional commit (squash merges make the title the commit, and
     release-please versions from it).
