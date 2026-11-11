@@ -3105,12 +3105,26 @@ export async function appRegistryCredentials(
   return registryCredentials(deps, await loadAppForOwner(deps, caller, appId));
 }
 
+/**
+ * The old deploy path (registry credentials, artifacts, deployments) serves
+ * the runs it served before Renown issued BRANCH tokens (pushes to a branch
+ * other than the production branch); those use the releases path only.
+ */
+function assertNotBranchToken(ci: CiIdentity): void {
+  if (ci.claim?.refClass === "BRANCH")
+    throw appsError(
+      "FORBIDDEN",
+      `Token for ${ci.claim.ref} (BRANCH) cannot use the deploy routes: only the production branch, v* tags and pull requests deploy`,
+    );
+}
+
 /** CI route: push/pull robot of the App's Harbor project. */
 export async function ciRegistryCredentials(
   deps: AppsDeps,
   ci: CiIdentity,
   appId: string,
 ) {
+  assertNotBranchToken(ci);
   return registryCredentials(deps, await authorizeCi(deps, ci, appId));
 }
 
@@ -3154,6 +3168,7 @@ export async function ciDeployment(
   const app = await getApp(deps.db, d.app_id);
   if (!app) return null;
   try {
+    assertNotBranchToken(ci);
     await authorizeCi(deps, ci, app.id);
   } catch {
     return null;
@@ -4608,6 +4623,7 @@ export async function ciRecordArtifact(
   ci: CiIdentity,
   input: RecordArtifactInput,
 ) {
+  assertNotBranchToken(ci);
   const app = await authorizeCi(deps, ci, input.appId);
   if (!ARTIFACT_KINDS.has(input.kind))
     throw appsError("BAD_USER_INPUT", "kind must be PACKAGE or FUSION_IMAGE");

@@ -52,6 +52,8 @@ export async function ciRegistryToken(
   const app = await upstream(deps, RENOWN_DOWN, () =>
     authorizeCi(deps, ci, appId),
   );
+  // Any refClass, BRANCH included: builds from every branch push images;
+  // releases are protected by digest pinning and the attestation check.
   assertClaimForApp(app, ci.claim);
   const harbor = deps.harbor;
   if (!harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
