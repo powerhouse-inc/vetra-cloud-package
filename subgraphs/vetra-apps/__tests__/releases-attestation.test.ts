@@ -2,11 +2,15 @@ import { readFileSync } from "node:fs";
 import { compress } from "snappyjs";
 import { describe, expect, it } from "vitest";
 import {
+  assertSourceRepository,
   createGithubAttestationVerifier,
   parseTrustedRoots,
   verifyBundleSignature,
   verifyGithubBundle,
 } from "../releases/attestation.js";
+
+// The brief used "sha256:aa"; digests are now held to 64 hex characters.
+const D = `sha256:${"a".repeat(64)}`;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
@@ -28,6 +32,7 @@ const cliCli = {
   commit: "63837fb778d6a39f02be0ce76ff89f2bc8d74bdc",
   digest:
     "sha256:4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d",
+  repository: "cli/cli",
 };
 
 describe("GitHub attestation verifier", () => {
@@ -37,7 +42,7 @@ describe("GitHub attestation verifier", () => {
       token: async () => "inst-token",
       fetch: (async (url: string) => {
         expect(url).toBe(
-          "https://api.github.com/repos/acme/shop/attestations/sha256:aa?predicate_type=provenance",
+          `https://api.github.com/repos/acme/shop/attestations/${D}?predicate_type=provenance`,
         );
         return json({
           attestations: [{ bundle: { provenanceCommit: "abc" } }],
@@ -50,7 +55,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: "sha256:aa", commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
     ).resolves.toBeUndefined();
     expect(String(seen[0])).toContain(
       "acme\\/shop\\/\\.github\\/workflows\\/vetra\\.yml@",
@@ -64,7 +69,7 @@ describe("GitHub attestation verifier", () => {
       verifyBundle: async () => {},
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: "sha256:aa", commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
 
@@ -78,7 +83,7 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: "sha256:aa", commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
     ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
   });
 
@@ -105,9 +110,68 @@ describe("GitHub attestation verifier", () => {
       },
     });
     await expect(
-      v.verify({ repository: "acme/shop", digest: "sha256:aa", commit: "abc" }),
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
     ).resolves.toBeUndefined();
     expect(urls[1]).toBe("https://blob.example/b.json.sn");
+  });
+
+  it("refuses when attestations is not an array", async () => {
+    for (const body of [
+      { attestations: { bundle: {} } },
+      { attestations: "x" },
+      null,
+    ]) {
+      const v = createGithubAttestationVerifier({
+        token: async () => "t",
+        fetch: (async () => json(body)) as never,
+        verifyBundle: async () => {},
+      });
+      await expect(
+        v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+      ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+    }
+  });
+
+  it("refuses a Snappy blob that declares more than 16 MiB", async () => {
+    // Varint 32 MiB, no payload: refused before uncompress allocates.
+    const blob = new Uint8Array([0x80, 0x80, 0x80, 0x10]);
+    let verified = false;
+    const v = createGithubAttestationVerifier({
+      token: async () => "t",
+      fetch: (async (url: string) =>
+        url.startsWith("https://blob.example/")
+          ? new Response(blob, { status: 200 })
+          : json({
+              attestations: [
+                { bundle: null, bundle_url: "https://blob.example/b" },
+              ],
+            })) as never,
+      verifyBundle: async () => {
+        verified = true;
+      },
+    });
+    await expect(
+      v.verify({ repository: "acme/shop", digest: D, commit: "abc" }),
+    ).rejects.toThrow(/33554432 bytes, over the limit/);
+    expect(verified).toBe(false);
+  });
+
+  it("matches the workflow identity case-insensitively and passes the repository on", async () => {
+    let seen: { identityURI: RegExp; repository: string } | undefined;
+    const v = createGithubAttestationVerifier({
+      token: async () => "t",
+      fetch: (async () => json({ attestations: [{ bundle: {} }] })) as never,
+      verifyBundle: async (_b, e) => {
+        seen = e;
+      },
+    });
+    await v.verify({ repository: "Acme/Shop", digest: D, commit: "abc" });
+    expect(
+      seen!.identityURI.test(
+        "https://github.com/acme/shop/.github/workflows/vetra.yml@refs/heads/main",
+      ),
+    ).toBe(true);
+    expect(seen!.repository).toBe("Acme/Shop");
   });
 
   it("refuses a repository or digest that is not well formed", async () => {
@@ -117,13 +181,45 @@ describe("GitHub attestation verifier", () => {
       verifyBundle: async () => {},
     });
     for (const [repository, digest] of [
-      ["acme/shop/../x", "sha256:aa"],
-      ["acme/shop", "sha256:aa?x=1"],
-      ["acme/shop", "sha512:aa"],
+      ["acme/shop/../x", D],
+      ["acme/shop", `${D}?x=1`],
+      ["acme/shop", "sha256:aa"],
+      ["acme/shop", `sha512:${"a".repeat(64)}`],
     ])
       await expect(
         v.verify({ repository, digest, commit: "abc" }),
       ).rejects.toMatchObject({ extensions: { code: "FORBIDDEN" } });
+  });
+});
+
+describe("assertSourceRepository", () => {
+  const ok = {
+    certificate: "https://github.com/acme/shop",
+    provenance: "git+https://github.com/acme/shop@refs/heads/main",
+  };
+  it("accepts both facts naming the repository, in any case", () => {
+    expect(() => assertSourceRepository(ok, "ACME/shop")).not.toThrow();
+  });
+  it("refuses a certificate naming another repository", () => {
+    expect(() =>
+      assertSourceRepository(
+        { ...ok, certificate: "https://github.com/evil/shop" },
+        "acme/shop",
+      ),
+    ).toThrow(/certificate source repository/);
+    expect(() =>
+      assertSourceRepository({ ...ok, certificate: undefined }, "acme/shop"),
+    ).toThrow(/certificate source repository none/);
+  });
+  it("refuses a provenance source naming another repository or a prefix of it", () => {
+    for (const provenance of [
+      "git+https://github.com/evil/shop@refs/heads/main",
+      "git+https://github.com/acme/shop-fork@refs/heads/main",
+      undefined,
+    ])
+      expect(() =>
+        assertSourceRepository({ ...ok, provenance }, "acme/shop"),
+      ).toThrow(/provenance source/);
   });
 });
 
@@ -138,6 +234,34 @@ describe("verifyGithubBundle (real bundles, offline trust roots)", () => {
     await expect(
       verifyGithubBundle(publicBundle, cliCli),
     ).resolves.toBeUndefined();
+  });
+
+  it("binds the source repository case-insensitively", async () => {
+    await expect(
+      verifyGithubBundle(
+        publicBundle,
+        { ...cliCli, repository: "CLI/Cli" },
+        roots,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("refuses a matching workflow identity built in another repository", async () => {
+    // A workflow_call from another repo signs with the callee's SAN; the
+    // source repository (cert extension and provenance) names the caller.
+    const sanMatches = {
+      ...cliCli,
+      identityURI: /^https:\/\/github\.com\/cli\/cli\//,
+    };
+    await expect(
+      verifyGithubBundle(
+        publicBundle,
+        { ...sanMatches, repository: "evil/cli" },
+        roots,
+      ),
+    ).rejects.toThrow(
+      /certificate source repository https:\/\/github\.com\/cli\/cli/,
+    );
   });
 
   it("refuses another commit", async () => {

@@ -1,6 +1,7 @@
 import { bundleFromJSON } from "@sigstore/bundle";
 import { TrustedRoot } from "@sigstore/protobuf-specs";
 import {
+  type SignedEntity,
   type Signer,
   toSignedEntity,
   toTrustMaterial,
@@ -28,6 +29,12 @@ export interface AttestationExpectation {
   commit: string;
   /** `sha256:<hex>`, one of the statement's subjects. */
   digest: string;
+  /**
+   * `owner/name` the build ran in. The SAN names the workflow file, which
+   * another repo can call (`workflow_call`); Fulcio's Source Repository URI
+   * extension and the provenance's source URI name the calling repo.
+   */
+  repository: string;
 }
 
 export type VerifyBundle = (
@@ -45,7 +52,11 @@ const ISSUER = "https://token.actions.githubusercontent.com";
 const PROVENANCE = "https://slsa.dev/provenance/v1";
 const IN_TOTO = "application/vnd.in-toto+json";
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const DIGEST = /^sha256:([0-9a-f]+)$/;
+const DIGEST = /^sha256:([0-9a-f]{64})$/;
+/** Fulcio: Source Repository URI (UTF8String), asserted from the OIDC token. */
+const OID_SOURCE_REPOSITORY_URI = "1.3.6.1.4.1.57264.1.12";
+/** A Snappy blob may not declare more than this uncompressed size. */
+export const MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
 /**
@@ -101,6 +112,13 @@ export function verifyBundleSignature(
   bundle: unknown,
   roots: GithubTrustedRoots = defaultRoots(),
 ): Signer {
+  return verifyEntity(bundle, roots).signer;
+}
+
+function verifyEntity(
+  bundle: unknown,
+  roots: GithubTrustedRoots,
+): { signer: Signer; entity: SignedEntity } {
   const parsed = bundleFromJSON(bundle);
   const onGithub = parsed.verificationMaterial.tlogEntries.length === 0;
   const verifier = onGithub
@@ -114,7 +132,53 @@ export function verifyBundleSignature(
         ctlogThreshold: 1,
         tsaThreshold: 0,
       });
-  return verifier.verify(toSignedEntity(parsed));
+  const entity = toSignedEntity(parsed);
+  return { signer: verifier.verify(entity), entity };
+}
+
+/** Reads a DER UTF8String (tag 0x0c, short or long form length). */
+function derUtf8(der: Buffer): string {
+  if (der[0] !== 0x0c) throw new Error("extension is not a UTF8String");
+  if (der.length < 2) throw new Error("extension is truncated");
+  let len = der[1];
+  let off = 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n < 1 || n > 2) throw new Error("extension length unsupported");
+    len = der.readUIntBE(2, n);
+    off = 2 + n;
+  }
+  if (off + len !== der.length) throw new Error("extension length mismatch");
+  return der.subarray(off).toString("utf8");
+}
+
+/** The leaf certificate's Fulcio Source Repository URI, if any. */
+function certificateSourceRepository(entity: SignedEntity): string | undefined {
+  if (entity.key.$case !== "certificate") return undefined;
+  const ext = entity.key.certificate.extension(OID_SOURCE_REPOSITORY_URI);
+  return ext ? derUtf8(ext.value) : undefined;
+}
+
+/**
+ * Throws unless both the certificate's Source Repository URI and the
+ * provenance's source URI name `repository` (case-insensitive, as GitHub
+ * names are).
+ */
+export function assertSourceRepository(
+  facts: { certificate: string | undefined; provenance: string | undefined },
+  repository: string,
+): void {
+  const repo = repository.toLowerCase();
+  if (facts.certificate?.toLowerCase() !== `https://github.com/${repo}`)
+    throw new Error(
+      `certificate source repository ${facts.certificate ?? "none"}`,
+    );
+  if (
+    !facts.provenance
+      ?.toLowerCase()
+      .startsWith(`git+https://github.com/${repo}@`)
+  )
+    throw new Error(`provenance source ${facts.provenance ?? "none"}`);
 }
 
 interface Statement {
@@ -123,7 +187,10 @@ interface Statement {
   subject?: { digest?: Record<string, string> }[];
   predicate?: {
     buildDefinition?: {
-      resolvedDependencies?: { digest?: { gitCommit?: string } }[];
+      resolvedDependencies?: {
+        uri?: string;
+        digest?: { gitCommit?: string };
+      }[];
     };
   };
 }
@@ -150,7 +217,7 @@ function checkGithubBundle(
   expect: AttestationExpectation,
   roots: GithubTrustedRoots,
 ): void {
-  const signer = verifyBundleSignature(bundle, roots);
+  const { signer, entity } = verifyEntity(bundle, roots);
   const issuer = signer.identity?.extensions?.issuer;
   if (issuer !== expect.issuer)
     throw new Error(`certificate issuer ${issuer ?? "none"}`);
@@ -170,11 +237,29 @@ function checkGithubBundle(
   const sha = DIGEST.exec(expect.digest)?.[1];
   if (!sha || !statement.subject?.some((s) => s.digest?.sha256 === sha))
     throw new Error(`no subject ${expect.digest}`);
-  const commit =
-    statement.predicate?.buildDefinition?.resolvedDependencies?.[0]?.digest
-      ?.gitCommit;
+  const source =
+    statement.predicate?.buildDefinition?.resolvedDependencies?.[0];
+  assertSourceRepository(
+    {
+      certificate: certificateSourceRepository(entity),
+      provenance: source?.uri,
+    },
+    expect.repository,
+  );
+  const commit = source?.digest?.gitCommit;
   if (commit !== expect.commit)
     throw new Error(`provenance commit ${commit ?? "none"}`);
+}
+
+/** The uncompressed length a raw Snappy blob declares (leading varint). */
+function snappyLength(blob: Uint8Array): number {
+  let n = 0;
+  for (let i = 0; i < 5 && i < blob.length; i++) {
+    const b = blob[i];
+    n += (b & 0x7f) * 2 ** (7 * i);
+    if (!(b & 0x80)) return n;
+  }
+  throw new Error("bundle is not Snappy data");
 }
 
 /**
@@ -202,7 +287,11 @@ export function createGithubAttestationVerifier(opts: {
       throw new Error("attestation has no bundle");
     const res = await fetchImpl(a.bundle_url);
     if (!res.ok) throw new Error(`bundle_url answered ${res.status}`);
-    const raw = uncompress(new Uint8Array(await res.arrayBuffer()));
+    const blob = new Uint8Array(await res.arrayBuffer());
+    const size = snappyLength(blob);
+    if (size > MAX_BUNDLE_BYTES)
+      throw new Error(`bundle declares ${size} bytes, over the limit`);
+    const raw = uncompress(blob);
     return JSON.parse(new TextDecoder().decode(raw)) as unknown;
   }
 
@@ -227,19 +316,26 @@ export function createGithubAttestationVerifier(opts: {
           "FORBIDDEN",
           `No attestation for ${digest} in ${repository}`,
         );
-      const body = (await res.json()) as {
-        attestations?: { bundle?: unknown; bundle_url?: string }[];
-      };
+      const body = (await res.json().catch(() => null)) as {
+        attestations?: unknown;
+      } | null;
+      const attestations = Array.isArray(body?.attestations)
+        ? (body.attestations as { bundle?: unknown; bundle_url?: string }[])
+        : [];
       const expect: AttestationExpectation = {
         issuer: ISSUER,
+        // GitHub names are case-insensitive; the repo is bound exactly by
+        // its source repository checks.
         identityURI: new RegExp(
           `^https://github\\.com/${escape(repository)}/\\.github/workflows/vetra\\.yml@`,
+          "i",
         ),
         commit,
         digest,
+        repository,
       };
       const reasons: string[] = [];
-      for (const a of body.attestations ?? []) {
+      for (const a of attestations) {
         try {
           await verifyBundle(await loadBundle(a), expect);
           return;
