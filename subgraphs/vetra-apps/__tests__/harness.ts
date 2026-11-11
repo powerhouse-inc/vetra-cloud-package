@@ -446,13 +446,16 @@ export function fakeHarbor(): HarborApi & {
   existing: Set<string>;
   deletedRobots: number[];
   deletedProjects: string[];
+  namespaceRobots: { project: string; durationDays: number; id: number }[];
 } {
   const projects: string[] = [];
   const existing = new Set<string>();
   const deletedRobots: number[] = [];
   const deletedProjects: string[] = [];
+  const namespaceRobots: { project: string; durationDays: number; id: number }[] = [];
   let robotSeq = 0;
   return {
+    namespaceRobots,
     projects,
     existing,
     deletedRobots,
@@ -469,6 +472,11 @@ export function fakeHarbor(): HarborApi & {
         name: `robot$${p}+vetra-deploy-abc123`,
         secret: "robot-secret",
       };
+    },
+    async createNamespacePushRobot(project, durationDays) {
+      const id = ++robotSeq;
+      namespaceRobots.push({ project, durationDays, id });
+      return { id, name: `robot$${project}+vetra-ci-${id}`, secret: `s-${id}` };
     },
     async deleteRobot(id) {
       deletedRobots.push(id);
@@ -607,6 +615,7 @@ export interface Harness {
   /** The observability tables (expected organisation hand-overs), same database. */
   obsDb: Kysely<ObservabilityDB>;
   clock: { now: Date };
+  advance(ms: number): void;
   close(): Promise<void>;
 }
 
@@ -656,6 +665,9 @@ export async function makeHarness(
     orgs,
     obsDb,
     clock,
+    advance: (ms) => {
+      clock.now = new Date(clock.now.getTime() + ms);
+    },
     close: () => db.destroy(),
   };
 }

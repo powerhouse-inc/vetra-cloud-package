@@ -12,6 +12,11 @@ export interface HarborApi {
   createPushRobot(
     project: string,
   ): Promise<{ id: number; name: string; secret: string }>;
+  /** A push+pull robot on `project` expiring after `durationDays` (Harbor counts whole days). */
+  createNamespacePushRobot(
+    project: string,
+    durationDays: number,
+  ): Promise<{ id: number; name: string; secret: string }>;
   /** Delete a robot (CI loses push access); an already-gone robot is fine. */
   deleteRobot(id: number): Promise<void>;
   /**
@@ -59,6 +64,34 @@ export function createHarborApi(
         description: "Vetra Apps CI push robot",
         level: "project",
         duration: -1,
+        permissions: [
+          {
+            kind: "project",
+            namespace: project,
+            access: [
+              { resource: "repository", action: "push" },
+              { resource: "repository", action: "pull" },
+            ],
+          },
+        ],
+      });
+      if (!res.ok)
+        throw new Error(`harbor: create robot for ${project} → ${res.status}`);
+      const body = (await res.json()) as {
+        id: number;
+        name: string;
+        secret: string;
+      };
+      return { id: body.id, name: body.name, secret: body.secret };
+    },
+
+    async createNamespacePushRobot(project, durationDays) {
+      const name = `vetra-ci-${randomBytes(4).toString("hex")}`;
+      const res = await post("/robots", {
+        name,
+        description: "Vetra CI push token",
+        level: "project",
+        duration: durationDays,
         permissions: [
           {
             kind: "project",

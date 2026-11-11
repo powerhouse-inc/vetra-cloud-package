@@ -61,6 +61,11 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
         "apps/ci/registry-credentials",
         { auth: "public", maxBodyBytes: 256 * 1024 },
       ],
+      [
+        "POST",
+        "apps/ci/registry-token",
+        { auth: "public", maxBodyBytes: 256 * 1024 },
+      ],
       ["POST", "apps/ci/deploy", { auth: "public", maxBodyBytes: 256 * 1024 }],
       [
         "POST",

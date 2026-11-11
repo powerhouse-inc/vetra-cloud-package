@@ -48,6 +48,7 @@ import {
   SWEEP_INTERVAL_MS,
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
+import { sweepPushRobots } from "./releases/service.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
@@ -262,6 +263,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         this.http.post("apps/ci/registry-credentials", json, (request) =>
           ci.registryCredentials(request),
         ),
+        this.http.post("apps/ci/registry-token", json, (request) =>
+          ci.registryToken(request),
+        ),
         this.http.post("apps/ci/deploy", json, (request) => ci.deploy(request)),
         this.http.post("apps/ci/artifacts", json, (request) =>
           ci.artifacts(request),
@@ -346,6 +350,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       await runIdentityExpirySweepOnce(deps);
       await runUnlaunchedStudioAppSweepOnce(deps);
     });
+
+    every(5 * 60 * 1000, "push robot sweep", () => sweepPushRobots(deps));
 
     every(DRIFT_INTERVAL_MS, "app document drift", () =>
       reportAppDocumentDrift({ db, docs: deps.docs!, logger: console }),

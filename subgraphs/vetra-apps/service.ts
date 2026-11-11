@@ -202,7 +202,7 @@ export const DEFAULT_PREVIEW_LIMIT = 5;
 export const DEFAULT_PREVIEW_TTL_DAYS = 7;
 export const PREVIEW_COMMENT_MARKER = "<!-- vetra-preview -->";
 const RELEASED_STATUSES = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
-const HARBOR_HOST = "cr.vetra.io";
+export const HARBOR_HOST = "cr.vetra.io";
 const MAX_SLUG_ATTEMPTS = 10;
 export const IDENTITY_EXPIRES_IN_DAYS = 365;
 
@@ -307,7 +307,7 @@ export interface CiIdentity {
  * leaving the org stops their CI tokens. Ownership is reconciled with Renown
  * first, so CI sees a transfer too; a Renown outage refuses org Apps only.
  */
-async function authorizeCi(
+export async function authorizeCi(
   deps: AppsDeps,
   ci: CiIdentity,
   appId: string,

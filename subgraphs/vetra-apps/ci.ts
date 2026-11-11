@@ -19,6 +19,7 @@ import {
   type CiIdentity,
   type DeployAppInput,
 } from "./service.js";
+import { ciRegistryToken } from "./releases/service.js";
 import { mirrorAppById } from "./app-document.js";
 
 /**
@@ -26,6 +27,7 @@ import { mirrorAppById } from "./app-document.js";
  * /api/@powerhousedao/vetra-cloud-package/:
  *
  *   POST apps/ci/registry-credentials  {appId}
+ *   POST apps/ci/registry-token        {appId}
  *   POST apps/ci/deploy                DeployAppInput
  *   GET  apps/ci/deployments/:id
  *
@@ -252,6 +254,12 @@ export function createCiRoutes(deps: AppsDeps, verify: CiTokenVerifier) {
       run(request, async (ci) => {
         const body = await jsonBody(request);
         return ciRegistryCredentials(deps, ci, requireString(body, "appId"));
+      }),
+
+    registryToken: (request: Request) =>
+      run(request, async (ci) => {
+        const body = await jsonBody(request);
+        return ciRegistryToken(deps, ci, requireString(body, "appId"));
       }),
 
     artifacts: (request: Request) =>
