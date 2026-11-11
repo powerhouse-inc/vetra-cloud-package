@@ -348,6 +348,17 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
       expect(databaseEnabled(yaml)).toBe("false");
     }
   });
+
+  it("renders a digest-pinned tag as given (instances pull by digest)", async () => {
+    const pinned = `1.5.0-main.1@sha256:${"a".repeat(64)}`;
+    const state = hostState([]);
+    state.services = state.services.map((s) =>
+      s.type === "FUSION" ? { ...s, version: pinned } : s,
+    );
+    const app = appBlock(await render(state));
+    expect(app).toContain("  enabled: true");
+    expect(app).toContain(`    tag: "${pinned}"`);
+  });
 });
 
 describe("generateValuesYaml — the included AI key on a FUSION-only host (spec 3.11)", () => {
