@@ -1,5 +1,6 @@
 import type { VetraClaim } from "../auth.js";
 import { appsError } from "../errors.js";
+import { isReleaseBranch, parseReleaseBranches } from "./branches.js";
 import { versionKind } from "./version.js";
 
 const RUN_ID = /^[1-9]\d*$/;
@@ -24,13 +25,35 @@ export function assertClaimForApp(
 }
 
 /**
+ * Renown vouches that the run's branch may publish releases. A Renown from
+ * before release branches sets no flag, but mints push tokens only for the
+ * production branch (refClass PRODUCTION): those count, so releases from the
+ * production branch keep working until Renown sets the flag.
+ */
+function renownSaysReleaseBranch(
+  claim: VetraClaim,
+  branch: string,
+  productionBranch: string,
+): boolean {
+  if (claim.releaseBranch !== undefined) return claim.releaseBranch;
+  return claim.refClass === "PRODUCTION" && branch === productionBranch;
+}
+
+/**
  * A CI token may report only what its own run built: the app's repository,
- * the run's commit, its branch (push) or PR (pull_request). Uses the
- * verified claim fields only; Renown's refClass is not consulted, so any
- * pushed branch can publish. Returns the run id that orders the record.
+ * the run's commit, its branch (push) or PR (pull_request). Builds come from
+ * any branch or PR. A release comes only from the production branch or one
+ * of the app's release branches (releases/branches.ts), and only with
+ * Renown's releaseBranch on the claim: Vetra and Renown both have to agree.
+ * Returns the run id that orders the record.
  */
 export function assertReportAllowed(
-  app: { repository_id: string | null },
+  app: {
+    repository_id: string | null;
+    production_branch: string;
+    /** JSON list (apps.release_branches); missing = none. */
+    release_branches?: string | null;
+  },
   verified: VetraClaim | null,
   r: ReportFacts,
 ): { run: number } {
@@ -68,5 +91,24 @@ export function assertReportAllowed(
       "FORBIDDEN",
       `Token for ${claim.ref} (${claim.eventName ?? "?"}) cannot report a ${r.kind} for ${r.branch ?? `PR #${r.pr}`}`,
     );
+  if (r.kind === "release") {
+    const branch = r.branch!;
+    if (
+      !isReleaseBranch(
+        branch,
+        app.production_branch,
+        parseReleaseBranches(app.release_branches),
+      )
+    )
+      throw appsError(
+        "FORBIDDEN",
+        `${branch} is not a release branch of this app: releases come from ${app.production_branch} or a branch listed in the app's release branches; other branches publish builds`,
+      );
+    if (!renownSaysReleaseBranch(claim, branch, app.production_branch))
+      throw appsError(
+        "FORBIDDEN",
+        `Renown did not mark ${branch} as a release branch for this token (its release branches must list ${branch} too)`,
+      );
+  }
   return { run };
 }

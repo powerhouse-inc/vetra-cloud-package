@@ -3,11 +3,13 @@ import {
   ciIdentity,
   claim,
   makeHarness,
+  owner,
   OWNER,
   seedActiveApp,
   type Harness,
 } from "./harness.js";
 import { ciReportRelease } from "../releases/service.js";
+import { updateApp } from "../service.js";
 
 let h: Harness;
 let app: Awaited<ReturnType<typeof seedActiveApp>>;
@@ -69,6 +71,30 @@ describe("ciReportRelease", () => {
         installationId: app.installation_id,
       },
     ]);
+  });
+
+  it("takes a release from another branch only once the app lists it as a release branch", async () => {
+    const next = ciIdentity(
+      claim("refs/heads/next", { runId: "600", releaseBranch: true }),
+    );
+    const beta = input({
+      version: "2.0.0-beta.1",
+      branch: "next",
+      image: {
+        ref: `cr.vetra.io/acme/${app.slug}:2.0.0-beta.1`,
+        digest: DIGEST,
+        host: "cli",
+      },
+      packages: [{ name: "@acme/shop", version: "2.0.0-beta.1" }],
+    });
+    await expect(ciReportRelease(h.deps, next, beta)).rejects.toMatchObject({
+      extensions: { code: "FORBIDDEN" },
+    });
+    await updateApp(h.deps, owner, app.id, { releaseBranches: ["next"] });
+    await expect(ciReportRelease(h.deps, next, beta)).resolves.toMatchObject({
+      version: "2.0.0-beta.1",
+      run: 600,
+    });
   });
 
   it("is a no-op on a re-run with the same digest, a conflict with another", async () => {
