@@ -67,6 +67,8 @@ export interface CreateInstanceInput {
   ownerOrgId: string | null;
   appId: string;
   gitRef: string;
+  /** The PR of a preview instance; null (or absent) for a branch instance. */
+  prNumber?: number | null;
   imageProject: string;
   image: InstanceImage;
   admins: string;
@@ -93,7 +95,7 @@ export function instanceCreateActions(i: CreateInstanceInput): Action[] {
     setAppLink({
       appId: i.appId,
       role: "PREVIEW",
-      prNumber: null,
+      prNumber: i.prNumber ?? null,
       gitRef: i.gitRef,
       imageProject: i.imageProject,
     }),

@@ -39,6 +39,33 @@ async function created(envs: FakeEnvs) {
 }
 
 describe("instanceCreateActions", () => {
+  it("links a preview instance to its PR", async () => {
+    const envs = new FakeEnvs();
+    const id = await envs.create();
+    await envs.execute(id, [
+      ...instanceCreateActions({
+        label: "Shop · pr-12",
+        host: "shop-pr-12-abc123",
+        baseDomain: "vetra.io",
+        registry: "https://registry.dev.vetra.io",
+        owner: OWNER,
+        ownerOrgId: null,
+        appId: "app-1",
+        gitRef: "refs/pull/12/head",
+        prNumber: 12,
+        imageProject: "acme",
+        image: image(),
+        admins: OWNER,
+      }),
+      approveChanges({}),
+    ]);
+    expect((await envs.getState(id))!.app).toMatchObject({
+      appId: "app-1",
+      role: "PREVIEW",
+      prNumber: 12,
+      gitRef: "refs/pull/12/head",
+    });
+  });
   it("makes a host-image environment linked to the app, pinned by digest", async () => {
     const envs = new FakeEnvs();
     const s = (await envs.getState(await created(envs)))!;
