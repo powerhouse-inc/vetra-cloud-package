@@ -161,13 +161,13 @@ export interface GithubDeployApi {
     userToken: string,
     org: string,
   ): Promise<{ state: string; role: string } | null>;
+  /** An installation token limited to one repository and attestations:read. Never log it. */
+  installationToken(installationId: string, repositoryFullName: string): Promise<string>;
   /**
    * An installation token limited to one repository with contents:write only
    * (POST /app/installations/{id}/access_tokens, app JWT). GitHub issues it
    * for one hour. Never log the token.
    */
-  /** An installation token limited to one repository and attestations:read. Never log it. */
-  installationToken(installationId: string, repositoryFullName: string): Promise<string>;
   createRepoPushToken(
     installationId: string,
     repositoryId: string,
