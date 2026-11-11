@@ -133,7 +133,7 @@ ${setup}      - uses: powerhouse-inc/vetra-publish@v1
           app-id: ${appId}
 ${commands}  # The production environment and PR previews, until releases replace them.
   deploy:
-    if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}')
+    if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}') && !startsWith(github.head_ref, 'release-please--')
     # Deploys go out in order: a newer push or PR commit supersedes a running one.
     concurrency:
       group: vetra-deploy-\${{ github.event.pull_request.number || github.ref }}

@@ -444,6 +444,8 @@ describe("workflow template", () => {
     expect(t).toContain(
       "(github.event_name == 'pull_request' || github.ref == 'refs/heads/release')",
     );
+    // release-please's PRs only bump versions: no preview for them.
+    expect(t).toContain("&& !startsWith(github.head_ref, 'release-please--')");
     expect(t).toContain('production-branch: "release"');
   });
 
