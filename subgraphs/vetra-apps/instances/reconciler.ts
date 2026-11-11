@@ -24,7 +24,7 @@ import {
   type InstanceRow,
 } from "./repo.js";
 import { observeEnvironment } from "./status.js";
-import { branchTargets, targetOf } from "./targets.js";
+import { branchTargets, targetOf, type InstanceTarget } from "./targets.js";
 
 export const INSTANCE_BASE_DOMAIN = "vetra.io";
 /** removed_reason that keeps a tombstone (the branch may come back with newer builds). */
@@ -115,7 +115,16 @@ export async function syncBranchInstances(
   const rows = await listInstances(deps.db, app.id, "branch");
   const nowIso = deps.now().toISOString();
   for (const [branch, release] of wanted) {
-    const target = targetOf(release);
+    let target: InstanceTarget;
+    try {
+      target = targetOf(release);
+    } catch (err) {
+      // One bad release never stalls the App's other branches or removals.
+      deps.logger.warn(
+        `[vetra-apps] instance ${app.slug}/${branch}: ${message(err)}`,
+      );
+      continue;
+    }
     const row = rows.find((r) => r.name === branch);
     if (!row) {
       await insertInstance(deps.db, {

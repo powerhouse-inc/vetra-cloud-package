@@ -451,6 +451,40 @@ describe("reconcileInstancesOnce — final fix wave", () => {
   });
 });
 
+describe("reconcileInstancesOnce — a bad release", () => {
+  it("skips a branch whose release has no usable image, and goes on with the rest", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ release_branches: '["next","old"]' })
+      .where("id", "=", appId)
+      .execute();
+    await seedRelease(h, appId, { version: "1.5.0-old.1", run: 90, branch: "old" });
+    await reconcileInstancesOnce(h.deps);
+    expect((await instances()).map((r) => r.name)).toEqual(["old"]);
+
+    await h.db
+      .updateTable("apps")
+      .set({ release_branches: '["next"]' })
+      .where("id", "=", appId)
+      .execute();
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await seedRelease(h, appId, { version: "2.0.0-next.1", run: 110, branch: "next" });
+    await h.db
+      .updateTable("releases")
+      .set({ image_ref: "cr.vetra.io/acme/x:other" })
+      .where("version", "=", "2.0.0-next.1")
+      .execute();
+    await reconcileInstancesOnce(h.deps);
+    const names = (await instances()).map((r) => r.name);
+    expect(names).toContain("main");
+    expect(names).not.toContain("next");
+    expect(names).not.toContain("old");
+    expect(h.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("next"),
+    );
+  });
+});
+
 describe("reconcileInstancesOnce — instance hosts", () => {
   it("is not blocked by an environment whose subdomain is a prefix of its label", async () => {
     // The product-slug rule (subdomainTaken) would see `<slug>` blocking
