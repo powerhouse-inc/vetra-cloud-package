@@ -230,19 +230,28 @@ chains to the other root, so a wrong pick only fails. Results, all live:
 Production should load the roots through TUF (they rotate); tests use
 `github-trusted-root.jsonl` to stay offline.
 
+**Phase 1 bundles the roots** (`subgraphs/vetra-apps/releases/github-trusted-root.ts`)
+instead of loading them through TUF. They fail closed: when GitHub or
+Sigstore rotates a key, every new attestation is refused (`FORBIDDEN`) until
+the file is refreshed from `gh attestation trusted-root` and redeployed.
+
 ### What to check after the signature
 
 The signature proves "a workflow run with identity SAN signed this statement".
 Vetra then checks, against the report and the claim:
 
 - SAN = `https://github.com/<claim.repository>/.github/workflows/vetra.yml@<claim.ref>`
+  (**deferred**: phase 1 checks the SAN up to `vetra.yml@` without the ref;
+  binding the ref is a later phase)
   (or, simpler and stricter, `https://github.com/${claim.workflowRef}` once
   `workflowRef` is parsed). Note the ref in the SAN is the run's ref: PR builds
   sign as `…@refs/pull/<n>/merge`, tag runs as `…@refs/tags/v…`.
 - `predicateType` = `https://slsa.dev/provenance/v1`.
 - a `subject[].digest.sha256` equals the reported image digest.
 - `resolvedDependencies[0].digest.gitCommit` = the reported commit = `claim.sha`.
-- `runDetails.metadata.invocationId` contains `/actions/runs/<claim.runId>/`.
+- `runDetails.metadata.invocationId` contains `/actions/runs/<claim.runId>/`
+  (**deferred**: phase 1 does not bind the run id to the attestation; the
+  run id comes from the verified claim only).
 
 If `vetra.yml` becomes a reusable workflow in the action repo, the SAN is the
 reusable workflow (`job_workflow_ref`), not the caller; the claim's

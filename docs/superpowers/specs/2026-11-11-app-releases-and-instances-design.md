@@ -211,7 +211,7 @@ for the next release.
 - **Customer notes** (`customer_notes`): what holders see. Starts as a copy of
   the changelog; the publisher edits it in the console until a rollout of that
   release is announced.
-- **Scan**: Harbor's Trivy scans each image; `scan_status` is `clean`,
+- **Scan** (phase 4; phase 1 has no `scan_status` column yet): Harbor's Trivy scans each image; `scan_status` is `clean`,
   `findings (n critical)` or `pending`. A rollout to customers refuses a
   release with critical findings unless the publisher overrides it (audited).
 
@@ -490,7 +490,8 @@ carried over:
     a caller's last positive answer for 24 h; callers never seen before are
     refused.
 15. **GitHub permission upgrade.** Release PRs need the Vetra GitHub App's
-    `contents: write` and `pull_requests: write`; an installation without them
+    `contents: write` and `pull_requests: write`, and verifying a release's
+    attestation needs `attestations: read`; an installation without them
     blocks publishing, and the console shows the approval link.
 16. **Backups use CNPG.** The backup before an update is an on-demand CNPG
     backup to S3 (each instance's Postgres is a CNPG cluster with S3 backups
@@ -514,7 +515,7 @@ Work outside Vetra's repos, and the phase that needs it:
 | Powerhouse monorepo (hosts) | the running version a host reports, for the health definition (14.7) | 2 |
 | Powerhouse monorepo (switchboard auth) | `ACCESS=licensed` with the 24 h grace (14.14) and `ACCESS=members` | 3 |
 | Renown (`renown-package` workload exchange) | tokens for prerelease and maintenance branches: today only `push`/`workflow_dispatch` on the one production branch, `v*` tag pushes and `pull_request` runs get one (`core/refs.ts` `classifyRun`); a push to `next` is refused with 403. Needs a list of release branches per workload identity (spike findings, section 1) | 1 |
-| GitHub App "Vetra Deploy" | `contents: write`, `pull_requests: write`; every installation approves the upgrade (14.15) | 1 |
+| GitHub App "Vetra Deploy" | `contents: write`, `pull_requests: write`, `attestations: read` (Vetra reads each release's attestation with an installation token, private repos included); every installation approves the upgrade (14.15). Rollout: add the permissions to the App before deploying phase 1; until an installation approves, its token mint fails and `ci/releases` answers 503 ("Could not mint the GitHub installation token…"), so nothing is recorded unverified | 1 |
 | Sektar repo | the new workflow, `vetra` section in `powerhouse.config.json`, root `Dockerfile` removed | 1 (workflow), 3 (switch-over) |
 
 ## 16. Removed
