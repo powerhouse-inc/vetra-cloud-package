@@ -74,6 +74,30 @@ export const schema: DocumentNode = gql`
     version: String!
   }
 
+  "A release or build an app's CI published (spec: releases and instances, section 4)."
+  type AppRelease {
+    version: String!
+    kind: String!
+    branch: String
+    pr: Int
+    commit: String!
+    notes: String
+    customerNotes: String
+    imageRef: String!
+    imageDigest: String!
+    host: String!
+    packages: [AppReleasePackage!]!
+    migrates: Boolean!
+    "The project's Powerhouse version the image was built with."
+    powerhouseVersion: String!
+    createdAt: String!
+  }
+
+  type AppReleasePackage {
+    name: String!
+    version: String!
+  }
+
   type AppDeployment {
     id: ID!
     appId: ID!
@@ -235,6 +259,7 @@ export const schema: DocumentNode = gql`
     "The Studio's product App (its agent with the launch secret header, or the owner)"
     studioProduct(studioEnvironmentId: String!): App
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
+    appReleases(appId: ID!, kind: String, limit: Int): [AppRelease!]!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment

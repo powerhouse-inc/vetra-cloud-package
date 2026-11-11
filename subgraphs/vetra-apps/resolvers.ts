@@ -1,4 +1,5 @@
 import { GraphQLError } from "graphql";
+import { appReleasesFor } from "./releases/service.js";
 import { envUrls } from "./envs.js";
 import {
   bearerHasVetraClaim,
@@ -276,6 +277,35 @@ export function createResolvers(deps: AppsDeps) {
           (await appDeploymentsFor(deps, requireCaller(ctx), appId, limit)).map(
             (d) => mapDeployment(deps, d),
           ),
+        ),
+      appReleases: (
+        _: unknown,
+        {
+          appId,
+          kind,
+          limit,
+        }: { appId: string; kind?: string | null; limit?: number | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "appReleases", async () =>
+          (
+            await appReleasesFor(deps, requireCaller(ctx), appId, kind, limit)
+          ).map((r) => ({
+            version: r.version,
+            kind: r.kind,
+            branch: r.branch,
+            pr: r.pr,
+            commit: r.commit,
+            notes: r.notes,
+            customerNotes: r.customerNotes,
+            imageRef: r.image.ref,
+            imageDigest: r.image.digest,
+            host: r.image.host,
+            packages: r.packages,
+            migrates: r.migrates,
+            powerhouseVersion: r.built.powerhouse,
+            createdAt: r.createdAt,
+          })),
         ),
       appDeployment: (_: unknown, { id }: { id: string }, ctx: AppsContext) =>
         guard(deps, "appDeployment", async () => {

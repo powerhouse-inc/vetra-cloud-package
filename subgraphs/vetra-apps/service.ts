@@ -258,7 +258,7 @@ export interface AppAccessOptions {
  * its registry credentials and read its deployments. That keeps a PR-branch
  * token from e.g. rolling back production or editing the App.
  */
-async function loadAppForOwner(
+export async function loadAppForOwner(
   deps: AppsDeps,
   caller: Caller,
   appId: string,

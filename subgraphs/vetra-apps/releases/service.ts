@@ -1,16 +1,19 @@
 import {
   authorizeCi,
   HARBOR_HOST,
+  loadAppForOwner,
   type AppsDeps,
   type CiIdentity,
 } from "../service.js";
 import { GraphQLError } from "graphql";
+import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { assertReportAllowed } from "./claim.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
   forgetPushRobot,
   insertRelease,
+  listReleases,
   pushRobotsOlderThan,
   recordPushRobot,
   type ReleaseRow,
@@ -205,4 +208,21 @@ export async function ciReportRelease(
     );
   }
   return releaseJson(row);
+}
+
+export async function appReleasesFor(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  kind: string | null | undefined,
+  limit: number | null | undefined,
+): Promise<ReleaseJson[]> {
+  const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
+  if (kind != null && kind !== "release" && kind !== "build")
+    throw appsError("BAD_USER_INPUT", "kind must be release or build");
+  const rows = await listReleases(deps.db, app.id, {
+    kind: kind ?? undefined,
+    limit: Math.min(Math.max(limit ?? 50, 1), 200),
+  });
+  return rows.map(releaseJson);
 }
