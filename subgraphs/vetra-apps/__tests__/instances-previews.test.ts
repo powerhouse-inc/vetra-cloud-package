@@ -246,6 +246,67 @@ describe("preview instances — the PR on GitHub", () => {
   });
 });
 
+describe("preview instances — when GitHub cannot say", () => {
+  it("keeps a running preview while a newer PR's check fails", async () => {
+    await setApp({ preview_limit: 1 });
+    await prBuild(1, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    const env = (await byPr(1)).environment_id!;
+    h.envs.setStatus(env, "READY");
+    h.github.prStates.set(2, "error");
+    await prBuild(2, 1, 200);
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(1)).toMatchObject({
+      status: "ready",
+      removed_at: null,
+      environment_id: env,
+    });
+    expect(h.envs.deleted).not.toContain(env);
+    expect(await byPr(2)).toBeUndefined();
+  });
+
+  it("asks GitHub once per pass while it is down", async () => {
+    await setApp({ preview_limit: 3 });
+    for (const pr of [1, 2, 3, 4, 5]) {
+      h.github.prStates.set(pr, "error");
+      await prBuild(pr, 1, pr * 100);
+    }
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(1);
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(2);
+    expect(await previews()).toEqual([]);
+  });
+
+  it("asks GitHub at most twice the limit per pass", async () => {
+    await setApp({ preview_limit: 1 });
+    for (const pr of [1, 2, 3, 4, 5]) {
+      h.github.prStates.set(pr, "closed");
+      await prBuild(pr, 1, pr * 100);
+    }
+    await reconcileInstancesOnce(h.deps);
+    expect(h.github.calls.getPullRequest).toHaveLength(2);
+  });
+
+  it("marks an evicted preview's tombstone closed, reason and all", async () => {
+    await setApp({ preview_limit: 1 });
+    await prBuild(1, 1, 100);
+    await reconcileInstancesOnce(h.deps);
+    await prBuild(2, 1, 200);
+    await reconcileInstancesOnce(h.deps);
+    expect((await byPr(1)).status).toBe("removed");
+    await setApp({ preview_limit: 2 });
+    h.github.prStates.set(1, "closed");
+    await reconcileInstancesOnce(h.deps);
+    expect(await byPr(1)).toMatchObject({
+      status: "removed",
+      reason: PR_CLOSED,
+      removed_reason: PR_CLOSED,
+    });
+  });
+});
+
 describe("old previews", () => {
   const oldPreview = (pr: number) =>
     deployApp(h.deps, owner, {

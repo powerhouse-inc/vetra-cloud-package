@@ -256,19 +256,36 @@ export async function syncPreviewInstances(
       .filter((r) => r.removed_reason && FINAL.has(r.removed_reason))
       .map((r) => r.pr!),
   );
+  // PRs left out for this pass only: GitHub could not say (or was not asked),
+  // or the build cannot be run. They hold no place, so running previews stay.
+  const skipped = new Set<number>();
   const pick = () =>
     wantsPreviews(app)
-      ? pickPreviews(candidates, excluded, app.preview_limit)
+      ? pickPreviews(
+          candidates,
+          new Set([...excluded, ...skipped]),
+          app.preview_limit,
+        )
       : new Map<number, ReleaseRow>();
   let wanted = pick();
   const nowIso = deps.now().toISOString();
+  const skip = (pr: number) => {
+    skipped.add(pr);
+    wanted = pick();
+  };
+  // After one "unknown" GitHub is not asked again this pass; and never more
+  // than twice the limit (a run of closed PRs).
+  let githubDown = false;
+  let githubCalls = 0;
+  const maxGithubCalls = 2 * app.preview_limit;
 
-  // A PR found closed (or a fork) here frees its place at once: pick again.
+  // A PR left out here frees its place at once: pick again.
   const seen = new Set<number>();
   let next: [number, ReleaseRow] | undefined;
   while ((next = [...wanted].find(([pr]) => !seen.has(pr)))) {
     const [pr, release] = next;
     seen.add(pr);
+    const row = rows.find((r) => r.pr === pr);
     let target: InstanceTarget;
     try {
       target = targetOf(release);
@@ -276,9 +293,10 @@ export async function syncPreviewInstances(
       deps.logger.warn(
         `[vetra-apps] instance ${app.slug}/${previewName(pr)}: ${message(err)}`,
       );
+      // A running preview keeps its place (and its last good target).
+      if (!row || row.removed_at) skip(pr);
       continue;
     }
-    const row = rows.find((r) => r.pr === pr);
     if (row && !row.removed_at) {
       if (
         row.target_digest !== target.target_digest ||
@@ -292,11 +310,20 @@ export async function syncPreviewInstances(
     // Still being removed: wait until its environment is gone.
     if (row && row.status !== "removed") continue;
 
+    if (githubDown || githubCalls >= maxGithubCalls) {
+      skip(pr);
+      continue;
+    }
+    githubCalls++;
     const gate = await pullRequestGate(deps, app, pr);
-    if (gate === "unknown") continue;
+    if (gate === "unknown") {
+      githubDown = true;
+      skip(pr);
+      continue;
+    }
     if (gate !== "open") {
       const reason = gate === "fork" ? PR_FORK : PR_CLOSED;
-      if (row) await patch(deps, row, { removed_reason: reason });
+      if (row) await patch(deps, row, { reason, removed_reason: reason });
       else
         await insertInstance(deps.db, {
           ...previewRow(deps, app, pr, target, nowIso),
