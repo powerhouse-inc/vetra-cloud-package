@@ -25,13 +25,14 @@ export function observeEnvironment(
   if (state.status === "STOPPED") return { kind: "stopped" };
   if (GONE.has(state.status))
     return { kind: "failed", reason: `the environment is ${state.status}` };
-  // A definite outcome, not a timeout: no start time or tag needed.
-  if (state.status === "DEPLOYMENt_FAILED")
-    return { kind: "failed", reason: "the deployment failed" };
   const version =
     state.services.find((s) => s.type === "FUSION")?.version ?? null;
-  if (version === targetTag && state.status === "READY")
-    return { kind: "ready" };
+  if (version === targetTag) {
+    if (state.status === "READY") return { kind: "ready" };
+    // Definite outcome for this rollout; a failure left on an old tag is not.
+    if (state.status === "DEPLOYMENt_FAILED")
+      return { kind: "failed", reason: "the deployment failed" };
+  }
   // The reconciler always records a start time; without a usable one (missing
   // or unparseable) an unknown status stays "updating", never "ready".
   const startedMs = updateStartedAt ? Date.parse(updateStartedAt) : Number.NaN;

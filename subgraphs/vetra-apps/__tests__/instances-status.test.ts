@@ -61,19 +61,37 @@ describe("observeEnvironment", () => {
     });
   });
 
-  it("fails a failed deployment at once, on any tag and with no start time", () => {
+  it("fails a failed deployment on the target tag at once; an old-tag failure is just not ready", () => {
     const failed = { kind: "failed", reason: "the deployment failed" };
+    const old = "1.4.0@sha256:x";
     expect(
-      observeEnvironment(
-        state("DEPLOYMENt_FAILED", "1.4.0@sha256:x"),
-        TAG,
-        null,
-        now,
-      ),
+      observeEnvironment(state("DEPLOYMENt_FAILED"), TAG, null, now),
     ).toEqual(failed);
     expect(
       observeEnvironment(state("DEPLOYMENt_FAILED"), TAG, started(1000), now),
     ).toEqual(failed);
+    expect(
+      observeEnvironment(state("DEPLOYMENt_FAILED", old), TAG, null, now),
+    ).toEqual({ kind: "updating" });
+    expect(
+      observeEnvironment(
+        state("DEPLOYMENt_FAILED", old),
+        TAG,
+        started(1000),
+        now,
+      ),
+    ).toEqual({ kind: "updating" });
+    expect(
+      observeEnvironment(
+        state("DEPLOYMENt_FAILED", old),
+        TAG,
+        started(UPDATE_TIMEOUT_MS + 1),
+        now,
+      ),
+    ).toEqual({
+      kind: "failed",
+      reason: "not ready after 20 minutes",
+    });
   });
 
   it("keeps DRAFT, unknown statuses and unparseable start times updating, never ready", () => {
