@@ -21,6 +21,24 @@ afterEach(async () => {
 const app = async () => (await getApp(h.db, appId))!;
 
 describe("branchTargets", () => {
+  it("picks the newest record of a re-run (equal run ids)", async () => {
+    // Inserted newest first, so storage order alone would pick the older one.
+    for (const [version, created, c] of [
+      ["1.5.0-main.3", "2026-11-11T03:00:00.000Z", "c"],
+      ["1.5.0-main.1", "2026-11-11T01:00:00.000Z", "a"],
+      ["1.5.0-main.2", "2026-11-11T02:00:00.000Z", "b"],
+    ] as const) {
+      await seedRelease(h, appId, { version, run: 100, digest: digest(c) });
+      await h.db
+        .updateTable("releases")
+        .set({ created_at: created })
+        .where("version", "=", version)
+        .execute();
+    }
+    const t = await branchTargets(h.db, await app());
+    expect(t.get("main")!.version).toBe("1.5.0-main.3");
+  });
+
   it("picks the highest run per release branch, builds and releases alike", async () => {
     await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
     await seedRelease(h, appId, {

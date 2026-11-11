@@ -15,7 +15,8 @@ export type InstanceTarget = Pick<
 >;
 
 /**
- * The newest build or release (highest verified run id, spec 14.17) of each
+ * The newest build or release (highest verified run id, spec 14.17; on an
+ * equal run, the newest record) of each
  * release branch that has one: the production branch and the branches
  * matching releaseBranches (overview gap 3). PR builds are not branch targets.
  */
@@ -32,6 +33,8 @@ export async function branchTargets(
     .where("branch", "is not", null)
     .orderBy("branch")
     .orderBy("run", "desc")
+    // GitHub re-runs keep the run id: the newest record of the run wins.
+    .orderBy("created_at", "desc")
     .execute();
   const patterns = parseReleaseBranches(app.release_branches);
   const out = new Map<string, ReleaseRow>();
