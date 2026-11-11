@@ -443,14 +443,17 @@ export async function ensureReleasesTables(db: Kysely<any>): Promise<void> {
   }
 }
 
-export async function ensureAppsRegistryNamespaceColumn(db: Kysely<any>): Promise<void> {
+export async function ensureAppsRegistryNamespaceColumn(
+  db: Kysely<any>,
+): Promise<void> {
   try {
     await db.schema
       .alterTable("apps")
       .addColumn("registry_namespace", "varchar(255)", (c) => c.ifNotExists())
       .execute();
   } catch (err) {
-    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+      throw err;
   }
 }
 

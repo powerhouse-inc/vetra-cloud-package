@@ -29,7 +29,17 @@ describe("assertReportAllowed", () => {
   });
 
   it("refuses a run id that is not a plain positive integer", () => {
-    for (const runId of ["1e3", "0x10", " 12 ", "0", "-5", "", "01", "1.0", undefined]) {
+    for (const runId of [
+      "1e3",
+      "0x10",
+      " 12 ",
+      "0",
+      "-5",
+      "",
+      "01",
+      "1.0",
+      undefined,
+    ]) {
       expect(
         code(() =>
           assertReportAllowed(app, claim("refs/heads/main", { runId }), {

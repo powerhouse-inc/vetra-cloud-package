@@ -383,7 +383,9 @@ export function createGithubAttestationVerifier(opts: {
       }
       // A bundle we could not fetch might have verified: no verdict.
       if (unreachable)
-        throw new Error(`attestation bundle not fetched: ${unreachable.message}`);
+        throw new Error(
+          `attestation bundle not fetched: ${unreachable.message}`,
+        );
       throw appsError(
         "FORBIDDEN",
         `No valid attestation for ${digest}: ${reasons.join("; ") || "none"}`,

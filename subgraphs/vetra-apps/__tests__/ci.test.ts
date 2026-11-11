@@ -850,9 +850,8 @@ describe("release routes: upstream failures are 503", () => {
   });
 
   it("releases: a token mint failure says so", async () => {
-    const { AttestationTokenError } = await import(
-      "../releases/attestation.js"
-    );
+    const { AttestationTokenError } =
+      await import("../releases/attestation.js");
     h.deps.attestations = {
       verify: async () => {
         throw new AttestationTokenError(new Error("github: 403"));

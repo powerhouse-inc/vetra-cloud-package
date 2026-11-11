@@ -35,7 +35,10 @@ export async function resolveNamespace(
     const handle = usable(await orgs?.orgHandle(app.owner_org_id));
     return (
       handle ??
-      `o-${app.owner_org_id.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 16)}`
+      `o-${app.owner_org_id
+        .replace(/[^a-z0-9]/gi, "")
+        .toLowerCase()
+        .slice(0, 16)}`
     );
   }
   const handle = usable(await orgs?.personHandle(app.owner_address));

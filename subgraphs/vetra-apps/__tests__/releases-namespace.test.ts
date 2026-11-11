@@ -13,8 +13,14 @@ const orgs = (o: string | null, p: string | null) => ({
   orgHandle: async () => o,
   personHandle: async () => p,
 });
-const personal = { owner_org_id: null, owner_address: "0x2BbEa0145d6fb9C6709a74C1179Ca0be71bb3aC6" };
-const org = { owner_org_id: "org-7f3a9c1b2d", owner_address: personal.owner_address };
+const personal = {
+  owner_org_id: null,
+  owner_address: "0x2BbEa0145d6fb9C6709a74C1179Ca0be71bb3aC6",
+};
+const org = {
+  owner_org_id: "org-7f3a9c1b2d",
+  owner_address: personal.owner_address,
+};
 
 describe("resolveNamespace", () => {
   it("uses the org's handle for an org app", async () => {
@@ -24,9 +30,15 @@ describe("resolveNamespace", () => {
     expect(await resolveNamespace(personal, orgs(null, "frank"))).toBe("frank");
   });
   it("falls back when there is no usable handle", async () => {
-    expect(await resolveNamespace(personal, orgs(null, null))).toBe("u-2bbea0145d6fb9c6");
-    expect(await resolveNamespace(personal, orgs(null, "Frank Ü"))).toBe("u-2bbea0145d6fb9c6");
-    expect(await resolveNamespace(org, orgs(null, "frank"))).toBe("o-org7f3a9c1b2d");
+    expect(await resolveNamespace(personal, orgs(null, null))).toBe(
+      "u-2bbea0145d6fb9c6",
+    );
+    expect(await resolveNamespace(personal, orgs(null, "Frank Ü"))).toBe(
+      "u-2bbea0145d6fb9c6",
+    );
+    expect(await resolveNamespace(org, orgs(null, "frank"))).toBe(
+      "o-org7f3a9c1b2d",
+    );
     expect(await resolveNamespace(personal, null)).toBe("u-2bbea0145d6fb9c6");
   });
   it("falls back for handles that name infrastructure or fallback projects", async () => {
@@ -42,8 +54,12 @@ describe("resolveNamespace", () => {
       "u-2bbea0145d6fb9c6",
       "o-org7f3a9c1b2d",
     ]) {
-      expect(await resolveNamespace(personal, orgs(null, h)), h).toBe("u-2bbea0145d6fb9c6");
-      expect(await resolveNamespace(org, orgs(h, null)), h).toBe("o-org7f3a9c1b2d");
+      expect(await resolveNamespace(personal, orgs(null, h)), h).toBe(
+        "u-2bbea0145d6fb9c6",
+      );
+      expect(await resolveNamespace(org, orgs(h, null)), h).toBe(
+        "o-org7f3a9c1b2d",
+      );
     }
     expect(await resolveNamespace(personal, orgs(null, "apple"))).toBe("apple");
   });
@@ -79,10 +95,16 @@ describe("ensureAppNamespace", () => {
     try {
       const app = await seedActiveApp(h);
       const ns = await ensureAppNamespace(h.deps, app);
-      expect(ns).toBe(`u-${app.owner_address.toLowerCase().replace(/^0x/, "").slice(0, 16)}`);
+      expect(ns).toBe(
+        `u-${app.owner_address.toLowerCase().replace(/^0x/, "").slice(0, 16)}`,
+      );
       expect(await stored(h, app.id)).toBe(ns);
       h.orgs.down = true; // a second call must not ask Renown
-      const again = await h.db.selectFrom("apps").selectAll().where("id", "=", app.id).executeTakeFirstOrThrow();
+      const again = await h.db
+        .selectFrom("apps")
+        .selectAll()
+        .where("id", "=", app.id)
+        .executeTakeFirstOrThrow();
       expect(await ensureAppNamespace(h.deps, again)).toBe(ns);
     } finally {
       await h.close();
@@ -93,7 +115,9 @@ describe("ensureAppNamespace", () => {
     const h = await makeHarness();
     try {
       const app = await seedActiveApp(h);
-      await expect(ensureAppNamespace({ ...h.deps, orgs: null }, app)).rejects.toThrow(/Renown/);
+      await expect(
+        ensureAppNamespace({ ...h.deps, orgs: null }, app),
+      ).rejects.toThrow(/Renown/);
       expect(await stored(h, app.id)).toBeNull();
     } finally {
       await h.close();
@@ -101,15 +125,34 @@ describe("ensureAppNamespace", () => {
   });
 
   /** A second app of the same repo, owned as `over` says (only the slug is unique). */
-  const cloneApp = async (h: Harness, a: AppRow, id: string, over: Partial<AppRow> = {}) => {
+  const cloneApp = async (
+    h: Harness,
+    a: AppRow,
+    id: string,
+    over: Partial<AppRow> = {},
+  ) => {
     await h.db
       .insertInto("apps")
-      .values({ ...a, id, slug: `${a.slug}-${id}`, registry_namespace: null, ...over })
+      .values({
+        ...a,
+        id,
+        slug: `${a.slug}-${id}`,
+        registry_namespace: null,
+        ...over,
+      })
       .execute();
-    return h.db.selectFrom("apps").selectAll().where("id", "=", id).executeTakeFirstOrThrow();
+    return h.db
+      .selectFrom("apps")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
   };
   const claimRow = (h: Harness, ns: string) =>
-    h.db.selectFrom("registry_namespaces").selectAll().where("namespace", "=", ns).executeTakeFirst();
+    h.db
+      .selectFrom("registry_namespaces")
+      .selectAll()
+      .where("namespace", "=", ns)
+      .executeTakeFirst();
 
   it("claims the namespace for its owner; the same owner's other apps share it", async () => {
     const h = await makeHarness();
