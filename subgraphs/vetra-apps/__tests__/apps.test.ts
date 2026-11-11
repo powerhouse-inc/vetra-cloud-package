@@ -514,13 +514,41 @@ describe("App identity + settings", () => {
       );
     };
     const err = await updateApp(h.deps, owner, app.id, {
+      productionBranch: "trunk",
       releaseBranches: ["next"],
     }).catch((e: { extensions?: { code?: string }; message: string }) => e);
     expect(err).toMatchObject({
       extensions: { code: "SERVICE_UNAVAILABLE" },
-      message: expect.stringContaining("release branches"),
+      message: expect.stringMatching(/release branches.*nothing was saved/),
     });
-    expect((await getApp(h.deps.db, app.id))?.release_branches).toBe("[]");
+    expect(await getApp(h.deps.db, app.id)).toMatchObject({
+      release_branches: "[]",
+      production_branch: "main",
+    });
+  });
+
+  it("updateApp: concurrent saves leave Renown and the App row agreeing", async () => {
+    const app = await seedActiveApp(h);
+    let renownList: string[] | undefined;
+    let releaseFirst = () => {};
+    const firstDone = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    let calls = 0;
+    h.renown.updateWorkloadIdentity = async (_did, patch) => {
+      renownList = patch.releaseBranches;
+      // The first save's Renown call lands at once but answers late: without
+      // a lock the second save overtakes it and the row ends up older.
+      if (calls++ === 0)
+        await Promise.race([firstDone, new Promise((r) => setTimeout(r, 200))]);
+    };
+    const a = updateApp(h.deps, owner, app.id, { releaseBranches: ["a"] });
+    const b = updateApp(h.deps, owner, app.id, {
+      releaseBranches: ["b"],
+    }).finally(releaseFirst);
+    await Promise.all([a, b]);
+    const row = await getApp(h.deps.db, app.id);
+    expect(JSON.parse(row!.release_branches!)).toStrictEqual(renownList);
   });
 
   it("owner-level calls: owner + admin allowed; strangers and App identities refused", async () => {

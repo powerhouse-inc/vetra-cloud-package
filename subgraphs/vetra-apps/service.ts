@@ -57,7 +57,11 @@ import {
   canView,
   isOrgMember,
 } from "../../shared/org-access.js";
-import { withEnvLock, withKeyLock } from "../../shared/key-lock.js";
+import {
+  withAppLock,
+  withEnvLock,
+  withKeyLock,
+} from "../../shared/key-lock.js";
 import { isStudioAgentPackage, isStudioState } from "../../shared/studio-package.js";
 import {
   assertStudioAgent,
@@ -2817,57 +2821,69 @@ export async function updateApp(
   }
   if (input.previewsEnabled != null)
     patch.previews_enabled = input.previewsEnabled;
+  const productionBranch = input.productionBranch?.trim();
+  if (productionBranch != null) assertBranch(productionBranch);
+  const releaseBranches =
+    input.releaseBranches != null
+      ? validateReleaseBranches(input.releaseBranches)
+      : null;
   // Renown decides which ref may mint production / registry tokens: both
-  // branch settings are written there first, in one call.
-  const renownPatch: { productionBranch?: string; releaseBranches?: string[] } =
-    {};
-  if (
-    input.productionBranch != null &&
-    input.productionBranch.trim() !== app.production_branch
-  ) {
-    const branch = input.productionBranch.trim();
-    assertBranch(branch);
-    renownPatch.productionBranch = branch;
-    patch.production_branch = branch;
-  }
-  if (input.releaseBranches != null) {
-    const list = validateReleaseBranches(input.releaseBranches);
+  // branch settings are written there first, in one call. Under the App's
+  // lock, so concurrent saves reach Renown and the row in the same order.
+  await withAppLock(app.id, async () => {
+    const current = (await getApp(deps.db, app.id)) ?? app;
+    const renownPatch: {
+      productionBranch?: string;
+      releaseBranches?: string[];
+    } = {};
     if (
-      JSON.stringify(list) !==
-      JSON.stringify(parseReleaseBranches(app.release_branches))
+      productionBranch != null &&
+      productionBranch !== current.production_branch
     ) {
-      renownPatch.releaseBranches = list;
-      patch.release_branches = JSON.stringify(list);
+      renownPatch.productionBranch = productionBranch;
+      patch.production_branch = productionBranch;
     }
-  }
-  if (Object.keys(renownPatch).length > 0) {
-    if (!hasCiIdentity(app))
-      throw appsError(
-        "BAD_USER_INPUT",
-        appRepository(app)
-          ? "A Studio product launches from its Studio, not from a branch"
-          : "This App has no repository",
-      );
-    if (!deps.renown) throw notConfigured("Renown workload identities");
-    try {
-      await deps.renown.updateWorkloadIdentity(app.identity_did, renownPatch);
-    } catch (err) {
-      // Never store a list Renown does not have: the two would disagree.
-      if (isRenownReleaseBranchesUnsupported(err))
+    if (releaseBranches != null) {
+      if (
+        JSON.stringify(releaseBranches) !==
+        JSON.stringify(parseReleaseBranches(current.release_branches))
+      ) {
+        renownPatch.releaseBranches = releaseBranches;
+        patch.release_branches = JSON.stringify(releaseBranches);
+      }
+    }
+    if (Object.keys(renownPatch).length > 0) {
+      if (!hasCiIdentity(current))
         throw appsError(
-          "SERVICE_UNAVAILABLE",
-          "Renown does not support release branches yet; nothing was saved. Try again once Renown is updated.",
+          "BAD_USER_INPUT",
+          appRepository(current)
+            ? "A Studio product launches from its Studio, not from a branch"
+            : "This App has no repository",
         );
-      throw err;
+      if (!deps.renown) throw notConfigured("Renown workload identities");
+      try {
+        await deps.renown.updateWorkloadIdentity(
+          current.identity_did,
+          renownPatch,
+        );
+      } catch (err) {
+        // Never store a list Renown does not have: the two would disagree.
+        if (isRenownReleaseBranchesUnsupported(err))
+          throw appsError(
+            "SERVICE_UNAVAILABLE",
+            "Renown does not support release branches yet; nothing was saved (no setting in this save, the production branch included). Try again once Renown is updated.",
+          );
+        throw err;
+      }
     }
-  }
-  if (Object.keys(patch).length > 0) {
-    await deps.db
-      .updateTable("apps")
-      .set({ ...patch, updated_at: deps.now().toISOString() })
-      .where("id", "=", app.id)
-      .execute();
-  }
+    if (Object.keys(patch).length > 0) {
+      await deps.db
+        .updateTable("apps")
+        .set({ ...patch, updated_at: deps.now().toISOString() })
+        .where("id", "=", app.id)
+        .execute();
+    }
+  });
   const updated = (await getApp(deps.db, app.id))!;
   await mirrorAppRow(deps, updated);
   return updated;

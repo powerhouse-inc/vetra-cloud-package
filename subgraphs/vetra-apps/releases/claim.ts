@@ -36,6 +36,8 @@ function renownSaysReleaseBranch(
   productionBranch: string,
 ): boolean {
   if (claim.releaseBranch !== undefined) return claim.releaseBranch;
+  // TODO: make this `claim.releaseBranch === true` only, once Renown with
+  // release branches (sets the flag on every token) is in production.
   return claim.refClass === "PRODUCTION" && branch === productionBranch;
 }
 
