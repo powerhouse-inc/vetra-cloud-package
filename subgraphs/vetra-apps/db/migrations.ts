@@ -123,6 +123,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureDeploymentTriggerColumns(db);
   await ensureStudioRepositoryColumns(db);
   await ensureExternalChangesColumns(db);
+  await ensureReleasesTables(db);
+  await ensureAppsRegistryNamespaceColumn(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -400,4 +402,53 @@ export async function ensureAppsStudioColumn(db: Kysely<any>): Promise<void> {
 export function isConcurrentIndexError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   return code === "42P07" || code === "23505";
+}
+
+export async function ensureReleasesTables(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("releases")
+      .ifNotExists()
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("version", "varchar(255)", (c) => c.notNull())
+      .addColumn("kind", "varchar(16)", (c) => c.notNull())
+      .addColumn("branch", "varchar(255)")
+      .addColumn("pr", "integer")
+      .addColumn("run", "bigint", (c) => c.notNull())
+      .addColumn("commit", "varchar(64)", (c) => c.notNull())
+      .addColumn("notes", "text")
+      .addColumn("customer_notes", "text")
+      .addColumn("image_ref", "varchar(512)", (c) => c.notNull())
+      .addColumn("image_digest", "varchar(128)", (c) => c.notNull())
+      .addColumn("host", "varchar(64)", (c) => c.notNull())
+      .addColumn("packages", "text", (c) => c.notNull())
+      .addColumn("requires", "text", (c) => c.notNull())
+      .addColumn("migrates", "boolean", (c) => c.notNull())
+      .addColumn("powerhouse_version", "varchar(64)", (c) => c.notNull())
+      .addColumn("base_image", "varchar(512)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("releases_pk", ["app_id", "version"])
+      .execute();
+    await db.schema
+      .createTable("namespace_push_robots")
+      .ifNotExists()
+      .addColumn("robot_id", "integer", (c) => c.primaryKey())
+      .addColumn("namespace", "varchar(255)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    // Two boots racing on CREATE TABLE IF NOT EXISTS (see ensureStudioLaunchSecretsTable).
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+export async function ensureAppsRegistryNamespaceColumn(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("apps")
+      .addColumn("registry_namespace", "varchar(255)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
 }

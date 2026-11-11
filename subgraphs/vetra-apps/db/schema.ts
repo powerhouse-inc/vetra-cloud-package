@@ -22,6 +22,8 @@ export type AppDeploymentStatus =
 
 export interface AppsTable {
   id: string;
+  /** Registry namespace (Harbor project) holding this app's images. */
+  registry_namespace: string | null;
   slug: string;
   name: string;
   /** Lowercased EthereumAddress of the owner (Renown did:pkh address). */
@@ -141,4 +143,37 @@ export interface VetraAppsDB {
   app_previews: AppPreviewsTable;
   app_deployments: AppDeploymentsTable;
   github_deploy_connections: GithubDeployConnectionsTable;
+  releases: ReleasesTable;
+  namespace_push_robots: NamespacePushRobotsTable;
+}
+
+export interface ReleasesTable {
+  app_id: string;
+  version: string;
+  kind: "release" | "build";
+  branch: string | null;
+  pr: number | null;
+  /** The verified GitHub run id (claim.runId): orders builds and releases of a branch. */
+  run: number;
+  commit: string;
+  notes: string | null;
+  customer_notes: string | null;
+  image_ref: string;
+  image_digest: string;
+  host: string;
+  /** JSON: [{ name, version }] */
+  packages: string;
+  /** JSON: { powerhouse?, services?, size? } */
+  requires: string;
+  migrates: boolean;
+  /** What the image was built on, for rebuilds after base-layer fixes (spec section 8). */
+  powerhouse_version: string;
+  base_image: string;
+  created_at: string;
+}
+
+export interface NamespacePushRobotsTable {
+  robot_id: number;
+  namespace: string;
+  created_at: string;
 }
