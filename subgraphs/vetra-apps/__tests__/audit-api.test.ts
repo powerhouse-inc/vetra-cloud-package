@@ -58,6 +58,29 @@ describe("audit log", () => {
     });
   });
 
+  it("pages rows that share one at, each exactly once", async () => {
+    const at = h.deps.now().toISOString();
+    for (let i = 0; i < 4; i++)
+      await recordAudit(h.db, {
+        appId,
+        at,
+        actor: "vetra",
+        source: "system",
+        action: "instance.status",
+        subject: `instance:i${i}`,
+      });
+    const seen: string[] = [];
+    let before: string | null = null;
+    for (let guard = 0; guard < 10; guard++) {
+      const p = await appAuditFor(h.deps, owner, appId, 1, before);
+      seen.push(...p.entries.map((e) => e.subject));
+      before = p.nextBefore;
+      if (!before) break;
+    }
+    expect(seen).toHaveLength(4);
+    expect(new Set(seen).size).toBe(4);
+  });
+
   it("clamps the page size and refuses a malformed cursor", async () => {
     await seed(3);
     expect(

@@ -81,13 +81,9 @@ export async function listAudit(
 ): Promise<AppAuditRow[]> {
   let q = db.selectFrom("app_audit").selectAll().where("app_id", "=", appId);
   const b = o.before;
+  // A row comparison: one range scan of app_audit_app_at_idx (app_id, at, id).
   if (b)
-    q = q.where((eb) =>
-      eb.or([
-        eb("at", "<", b.at),
-        eb.and([eb("at", "=", b.at), eb("id", "<", b.id)]),
-      ]),
-    );
+    q = q.where((eb) => eb(eb.refTuple("at", "id"), "<", eb.tuple(b.at, b.id)));
   return q.orderBy("at", "desc").orderBy("id", "desc").limit(o.limit).execute();
 }
 
