@@ -9,6 +9,7 @@ import { digest, seedRelease } from "./instances-fixtures.js";
 import type { InstanceHealthConfig } from "../config.js";
 import { listInstances } from "../instances/repo.js";
 import { reconcileInstancesOnce } from "../instances/reconciler.js";
+import { DEGRADED_AFTER_MS, HEALTH_STABLE_MS } from "../instances/status.js";
 import {
   monitorInstancesOnce,
   pickDue,
@@ -279,5 +280,160 @@ describe("pickDue", () => {
     }));
     expect(pickDue(rows, 4, 3).map((r) => r.i)).toEqual([0, 1, 2, 4]);
     expect(pickDue(rows, 10, 1).map((r) => r.i)).toEqual([0, 4, 5]);
+  });
+});
+
+const WINDOW = 300_000;
+/** One health check then one reconciler pass, ms later. */
+const pass = async (ms = PROBE_EVERY_MS + 1) => {
+  await monitor(ms);
+  await reconcileInstancesOnce(h.deps);
+};
+const fusionVersion = async (envId: string) =>
+  (await h.envs.getState(envId))!.services.find((s) => s.type === "FUSION")!
+    .version;
+
+/** Instance ready on build a by health (enforce). */
+async function readyHealthy() {
+  const envId = await created();
+  await setCluster(envId, [{ digest: digest("a") }]);
+  await pass();
+  expect((await one()).status).toBe("updating");
+  await pass(HEALTH_STABLE_MS);
+  expect(await one()).toMatchObject({
+    status: "ready",
+    running_digest: digest("a"),
+  });
+  return envId;
+}
+async function updateToB() {
+  await seedRelease(h, appId, {
+    version: "1.5.0-main.2",
+    run: 200,
+    digest: digest("b"),
+  });
+  await reconcileInstancesOnce(h.deps);
+  expect((await one()).status).toBe("updating");
+}
+
+describe("enforce: status follows health", () => {
+  beforeEach(() => setup({ mode: "enforce", unhealthyWindowMs: WINDOW }));
+
+  it("never calls a crash-looping first deploy ready, and fails it after the window", async () => {
+    const envId = await created();
+    await setCluster(envId, [
+      {
+        digest: digest("a"),
+        ready: false,
+        restarts: 3,
+        waiting: "CrashLoopBackOff",
+      },
+    ]);
+    await pass();
+    expect((await one()).status).toBe("updating");
+    await pass(WINDOW);
+    expect(await one()).toMatchObject({
+      status: "failed",
+      reason:
+        "unhealthy (crash: the container does not start (CrashLoopBackOff))",
+    });
+  });
+
+  it("fails a crashing update and goes back to the last healthy digest", async () => {
+    const envId = await readyHealthy();
+    await updateToB();
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.2@${digest("b")}`);
+    await setCluster(envId, [
+      { digest: digest("a") },
+      {
+        digest: digest("b"),
+        ready: false,
+        restarts: 2,
+        waiting: "CrashLoopBackOff",
+      },
+    ]);
+    await pass();
+    await pass(WINDOW);
+    expect(await one()).toMatchObject({
+      status: "failed",
+      failed_digest: digest("b"),
+      running_digest: digest("a"),
+    });
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.1@${digest("a")}`);
+  });
+
+  it("fails an update Argo cannot render and goes back", async () => {
+    const envId = await readyHealthy();
+    await updateToB();
+    await setCluster(envId, [{ digest: digest("a") }], {
+      drift: true,
+      message: "helm template failed",
+    });
+    await pass();
+    await pass(WINDOW);
+    expect(await one()).toMatchObject({
+      status: "failed",
+      reason:
+        "unhealthy (gitops: Argo CD cannot apply the environment (helm template failed))",
+    });
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.1@${digest("a")}`);
+  });
+
+  it("degrades a ready instance that stops serving, without touching it, then recovers", async () => {
+    const envId = await readyHealthy();
+    const writes = h.envs.executed.length;
+    await setCluster(envId, [{ digest: digest("a"), ready: false }]);
+    await pass();
+    expect((await one()).status).toBe("ready");
+    await pass(DEGRADED_AFTER_MS);
+    expect(await one()).toMatchObject({
+      status: "degraded",
+      reason: "pod: the pod is starting",
+      health: "unknown",
+    });
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await pass();
+    expect((await one()).status).toBe("degraded");
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({ status: "ready", reason: null });
+    expect(h.envs.executed.length).toBe(writes);
+  });
+
+  it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {
+    const envId = await readyHealthy();
+    h.envs.setStatus(envId, "STOPPED");
+    await pass();
+    expect((await one()).status).toBe("stopped");
+    h.envs.setStatus(envId, "DEPLOYING");
+    await setCluster(envId, [{ digest: digest("a"), ready: false }]);
+    await pass();
+    await pass(DEGRADED_AFTER_MS);
+    expect((await one()).status).toBe("degraded");
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect((await one()).status).toBe("ready");
+  });
+});
+
+describe("report: health is shown, status keeps the document's rule", () => {
+  beforeEach(() => setup({ mode: "report" }));
+
+  it("calls a crash loop ready (as before) but records it unhealthy", async () => {
+    const envId = await created();
+    await setCluster(envId, [
+      {
+        digest: digest("a"),
+        ready: false,
+        restarts: 3,
+        waiting: "CrashLoopBackOff",
+      },
+    ]);
+    await pass();
+    expect(await one()).toMatchObject({
+      status: "ready",
+      health: "unhealthy",
+      health_check: "crash",
+    });
   });
 });

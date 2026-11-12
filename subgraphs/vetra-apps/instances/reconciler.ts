@@ -3,6 +3,7 @@ import { approveChanges } from "../../../document-models/vetra-cloud-environment
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { withEnvLock, withKeyLock } from "../../../shared/key-lock.js";
 import { expectOrgHandover } from "../../vetra-cloud-observability/env-protection.js";
+import { instanceHealth } from "../config.js";
 import { notConfigured } from "../errors.js";
 import {
   hasCiIdentity,
@@ -32,7 +33,7 @@ import {
   type InstancePatch,
   type InstanceRow,
 } from "./repo.js";
-import { observeEnvironment } from "./status.js";
+import { healthView, observeEnvironment, observeHealth } from "./status.js";
 import { pullRequestGate } from "./pull-requests.js";
 import {
   branchTargets,
@@ -619,13 +620,26 @@ async function reconcileEnvironment(
     return;
   }
 
-  const seen = observeEnvironment(
-    state,
-    image.tag,
-    row.update_started_at,
-    deps.now(),
-    !!row.running_digest && row.running_digest === row.target_digest,
-  );
+  const health = instanceHealth(deps.cfg);
+  // enforce: spec 14.7 health decides; report/off: slice 1's interim rule (health is only shown).
+  const seen =
+    health.mode === "enforce"
+      ? observeHealth(
+          state,
+          { tag: image.tag, digest: row.target_digest! },
+          row,
+          healthView(row),
+          deps.now(),
+          health.unhealthyWindowMs,
+        )
+      : observeEnvironment(
+          state,
+          image.tag,
+          row.update_started_at,
+          deps.now(),
+          !!row.running_digest && row.running_digest === row.target_digest,
+        );
+  if (seen.kind === "unchanged") return;
   if (seen.kind === "ready") {
     if (row.status !== "ready" || row.running_digest !== row.target_digest)
       await patch(deps, row, {
@@ -640,6 +654,12 @@ async function reconcileEnvironment(
   if (seen.kind === "stopped" || seen.kind === "updating") {
     if (row.status !== seen.kind)
       await patch(deps, row, { status: seen.kind, reason: null });
+    return;
+  }
+  if (seen.kind === "degraded") {
+    // Surfaced, never reverted: nothing was updated, the target already ran healthy.
+    if (row.status !== "degraded" || row.reason !== seen.reason)
+      await patch(deps, row, { status: "degraded", reason: seen.reason });
     return;
   }
   // Failed: keep the target from being retried, and go back to what ran (spec section 6).
@@ -689,10 +709,7 @@ async function claimHost(
       reason,
       failed_digest: row.target_digest,
     });
-  if (
-    (await isHostUsed(deps.db, host)) ||
-    (await deps.subdomainUsed?.(host))
-  ) {
+  if ((await isHostUsed(deps.db, host)) || (await deps.subdomainUsed?.(host))) {
     await fail(`the host ${host} is taken`);
     return null;
   }
