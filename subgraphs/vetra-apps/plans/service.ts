@@ -1,5 +1,6 @@
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
+import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf } from "../config.js";
@@ -101,8 +102,11 @@ async function checkTarget(
 async function loadPlan(deps: AppsDeps, caller: Caller, planId: string) {
   const plan = await getPlan(deps.db, planId);
   if (!plan) throw appsError("NOT_FOUND", "Plan not found");
-  // Throws NOT_FOUND / FORBIDDEN as for the App itself.
-  const app = await loadAppForOwner(deps, caller, plan.app_id);
+  // Throws NOT_FOUND / FORBIDDEN as for the App itself; operators and
+  // release managers (spec section 10).
+  const app = await loadAppForOwner(deps, caller, plan.app_id, {
+    need: "release",
+  });
   return { plan, app };
 }
 
@@ -122,7 +126,9 @@ export async function createPlan(
 ): Promise<PlanJson> {
   if (!plansConfigOf(deps.cfg).enabled)
     throw appsError("BAD_USER_INPUT", "Plans are not enabled on this Vetra");
-  const app = await loadAppForOwner(deps, caller, input.appId);
+  const app = await loadAppForOwner(deps, caller, input.appId, {
+    need: "release",
+  });
   if (!deps.licensingDb) throw notConfigured("The licensing tables");
   const kind = checkText("kind", input.kind.trim());
   if (!kind)
@@ -176,30 +182,50 @@ export async function createPlan(
   const target = input.targetVersion
     ? await checkTarget(deps, app.id, input.targetVersion)
     : null;
-  const row = await insertPlan(deps.db, {
-    id: deps.newId(),
-    app_id: app.id,
-    slug,
-    name,
-    kind,
-    access,
-    size,
-    target_version: target,
-    policy: "manual",
-    notice_hours: 72,
-    status: "active",
-    created_by: caller.address,
-    created_at: nowIso,
-    updated_at: nowIso,
-  }).catch((err: unknown) => {
-    // A concurrent createPlan took the slug or kind after the checks above.
-    if (isUniqueViolation(err))
-      throw appsError(
-        "BAD_USER_INPUT",
-        `The App already has a plan called ${slug} or for the term ${kind}`,
-      );
-    throw err;
-  });
+  const row = await deps.db
+    .transaction()
+    .execute(async (trx) => {
+      const p = await insertPlan(trx, {
+        id: deps.newId(),
+        app_id: app.id,
+        slug,
+        name,
+        kind,
+        access,
+        size,
+        target_version: target,
+        policy: "manual",
+        notice_hours: 72,
+        status: "active",
+        created_by: caller.address,
+        created_at: nowIso,
+        updated_at: nowIso,
+      });
+      await auditCaller(trx, caller, {
+        appId: app.id,
+        at: nowIso,
+        action: "plan.created",
+        subject: `plan:${p.id}`,
+        detail: {
+          slug: p.slug,
+          name: p.name,
+          kind: p.kind,
+          access: p.access,
+          size: p.size,
+          targetVersion: p.target_version,
+        },
+      });
+      return p;
+    })
+    .catch((err: unknown) => {
+      // A concurrent createPlan took the slug or kind after the checks above.
+      if (isUniqueViolation(err))
+        throw appsError(
+          "BAD_USER_INPUT",
+          `The App already has a plan called ${slug} or for the term ${kind}`,
+        );
+      throw err;
+    });
   return planJson(row);
 }
 
@@ -213,16 +239,29 @@ export async function updatePlanFor(
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
   if (name !== undefined) checkText("name", name);
+  const patch = {
+    ...(name ? { name } : {}),
+    ...(input.size ? { size: parseSize(input.size) } : {}),
+  };
+  const changes: Record<string, { from: string; to: string }> = {};
+  if (patch.name !== undefined && patch.name !== plan.name)
+    changes.name = { from: plan.name, to: patch.name };
+  if (patch.size !== undefined && patch.size !== plan.size)
+    changes.size = { from: plan.size, to: patch.size };
+  const nowIso = deps.now().toISOString();
   return planJson(
-    await updatePlan(
-      deps.db,
-      plan.id,
-      {
-        ...(name ? { name } : {}),
-        ...(input.size ? { size: parseSize(input.size) } : {}),
-      },
-      deps.now().toISOString(),
-    ),
+    await deps.db.transaction().execute(async (trx) => {
+      const p = await updatePlan(trx, plan.id, patch, nowIso);
+      if (Object.keys(changes).length > 0)
+        await auditCaller(trx, caller, {
+          appId: plan.app_id,
+          at: nowIso,
+          action: "plan.updated",
+          subject: `plan:${plan.id}`,
+          detail: { slug: plan.slug, changes },
+        });
+      return p;
+    }),
   );
 }
 
@@ -240,13 +279,25 @@ export async function setPlanTarget(
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
   const target = await checkTarget(deps, plan.app_id, version);
+  const nowIso = deps.now().toISOString();
   return planJson(
-    await updatePlan(
-      deps.db,
-      plan.id,
-      { target_version: target },
-      deps.now().toISOString(),
-    ),
+    await deps.db.transaction().execute(async (trx) => {
+      const p = await updatePlan(
+        trx,
+        plan.id,
+        { target_version: target },
+        nowIso,
+      );
+      if (plan.target_version !== target)
+        await auditCaller(trx, caller, {
+          appId: plan.app_id,
+          at: nowIso,
+          action: "plan.target_set",
+          subject: `plan:${plan.id}`,
+          detail: { slug: plan.slug, from: plan.target_version, to: target },
+        });
+      return p;
+    }),
   );
 }
 
@@ -258,12 +309,18 @@ export async function retirePlan(
 ): Promise<PlanJson> {
   const { plan } = await loadPlan(deps, caller, planId);
   if (plan.status === "retired") return planJson(plan);
+  const nowIso = deps.now().toISOString();
   return planJson(
-    await updatePlan(
-      deps.db,
-      plan.id,
-      { status: "retired" },
-      deps.now().toISOString(),
-    ),
+    await deps.db.transaction().execute(async (trx) => {
+      const p = await updatePlan(trx, plan.id, { status: "retired" }, nowIso);
+      await auditCaller(trx, caller, {
+        appId: plan.app_id,
+        at: nowIso,
+        action: "plan.retired",
+        subject: `plan:${plan.id}`,
+        detail: { slug: plan.slug },
+      });
+      return p;
+    }),
   );
 }
