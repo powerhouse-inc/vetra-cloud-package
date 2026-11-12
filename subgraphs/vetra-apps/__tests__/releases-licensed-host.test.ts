@@ -23,6 +23,8 @@ function appDocs() {
     docs,
     executed: [] as Action[][],
     failing: false,
+    /** Delay before a state read answers, to interleave concurrent reports. */
+    readDelayMs: 0,
     async create(id: string) {
       docs.set(id, utils.createDocument());
     },
@@ -30,10 +32,13 @@ function appDocs() {
       return docs.has(id);
     },
     async getState(id: string) {
-      return (docs.get(id)?.state.global ?? null) as Record<
+      const state = (docs.get(id)?.state.global ?? null) as Record<
         string,
         unknown
       > | null;
+      if (this.readDelayMs)
+        await new Promise((r) => setTimeout(r, this.readDelayMs));
+      return state;
     },
     async execute(id: string, actions: Action[]) {
       if (this.failing) throw new Error("reactor down");
@@ -217,6 +222,16 @@ describe("a release feeds licensed environments' host image", () => {
       "1.5.0",
       "1.6.0",
     ]);
+  });
+
+  it("leaves the channel on the newer release when two reports race", async () => {
+    await report("1.0.0");
+    docs.readDelayMs = 50;
+    await Promise.all([
+      report("1.6.0", {}, "refs/heads/main", "501"),
+      report("1.5.0", {}, "refs/heads/main", "502"),
+    ]);
+    expect(await pointer("LATEST")).toBe("1.6.0");
   });
 
   it("keeps the release when the document write fails, asks CI to retry, and the retry records it", async () => {

@@ -1,4 +1,5 @@
 import { GraphQLError } from "graphql";
+import { keyedMutex } from "../vetra-licensing/keyed-mutex.js";
 import { sql, type Kysely } from "kysely";
 import type { Action } from "document-model";
 import {
@@ -4768,6 +4769,8 @@ async function channelFor(
     : rec.channel;
 }
 
+const withAppArtifacts = keyedMutex();
+
 /** The version a channel of an artifact points at in an App document's global state. */
 export function channelPointer(
   state: Record<string, unknown> | null,
@@ -4800,61 +4803,65 @@ export async function recordAppArtifact(
 ): Promise<AppArtifactRecord["channel"]> {
   const docs = deps.docs;
   if (!docs) throw notConfigured("The App document store");
-  const requested = rec.channel;
-  let channel = requested === null ? null : await channelFor(deps, app, rec);
+  // One write per App at a time: the channel's current version is read and
+  // then moved, and two reports must not both read the old one.
+  return withAppArtifacts(app.id, async () => {
+    const requested = rec.channel;
+    let channel = requested === null ? null : await channelFor(deps, app, rec);
 
-  // Create-on-demand: an App registered before the document backfill ran still
-  // has to be able to publish.
-  const created = !(await docs.exists(app.id));
-  if (
-    channel !== null &&
-    moveFrom &&
-    !moveFrom(
-      created
-        ? null
-        : channelPointer(
-            await docs.getState(app.id),
-            rec.kind,
-            rec.name,
-            channel,
-          ),
-    )
-  ) {
-    channel = null;
-  }
+    // Create-on-demand: an App registered before the document backfill ran still
+    // has to be able to publish.
+    const created = !(await docs.exists(app.id));
+    if (
+      channel !== null &&
+      moveFrom &&
+      !moveFrom(
+        created
+          ? null
+          : channelPointer(
+              await docs.getState(app.id),
+              rec.kind,
+              rec.name,
+              channel,
+            ),
+      )
+    ) {
+      channel = null;
+    }
 
-  const actions: Action[] = [
-    recordArtifactVersion({
-      kind: rec.kind,
-      name: rec.name,
-      version: rec.version,
-      reference: rec.reference,
-      commitSha: rec.commitSha,
-      runId: rec.runId,
-      publishedAt: deps.now().toISOString(),
-    }),
-  ];
-  if (channel !== null) {
-    actions.push(
-      setArtifactChannel({
+    const actions: Action[] = [
+      recordArtifactVersion({
         kind: rec.kind,
         name: rec.name,
-        channel,
         version: rec.version,
+        reference: rec.reference,
+        commitSha: rec.commitSha,
+        runId: rec.runId,
+        publishedAt: deps.now().toISOString(),
       }),
+    ];
+    if (channel !== null) {
+      actions.push(
+        setArtifactChannel({
+          kind: rec.kind,
+          name: rec.name,
+          channel,
+          version: rec.version,
+        }),
+      );
+    }
+
+    if (created) await docs.create(app.id);
+    await docs.execute(app.id, actions);
+    if (created) await protectNewAppDocument(docs, app.id, deps.logger);
+
+    deps.logger.info(
+      `[vetra-apps] App ${app.slug}: recorded ${rec.kind} ${rec.name}@${rec.version}` +
+        (channel ? ` and pointed ${channel} at it` : "") +
+        (channel === "STAGING" && requested === "LATEST"
+          ? ` (the App is gated; ${requested} moves on promotion)`
+          : ""),
     );
-  }
-
-  if (created) await docs.create(app.id);
-  await docs.execute(app.id, actions);
-  if (created) await protectNewAppDocument(docs, app.id, deps.logger);
-
-  deps.logger.info(
-    `[vetra-apps] App ${app.slug}: recorded ${rec.kind} ${rec.name}@${rec.version}` +
-      (channel ? ` and pointed ${channel} at it` : "") +
-      (channel === "STAGING" && requested === "LATEST"
-        ? ` (the App is gated; ${requested} moves on promotion)`
-        : ""),
-  );
-  return channel;
+    return channel;
+  });
 }
