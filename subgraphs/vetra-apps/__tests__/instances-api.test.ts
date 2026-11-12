@@ -91,6 +91,22 @@ describe("appInstancesFor", () => {
       observedDigestSource: "pod",
     });
   });
+  it("shows the settings revision it should run and the one it last ran healthy", async () => {
+    await updateApp(h.deps, owner, appId, { instancesEnabled: true });
+    await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
+    await reconcileInstancesOnce(h.deps);
+    const [row] = await listInstances(h.db, appId);
+    expect(row.target_settings).toMatch(/^[0-9a-f]{16}$/);
+    const [before] = await appInstancesFor(h.deps, owner, appId);
+    expect(before).toMatchObject({
+      settingsRevision: row.target_settings,
+      runningSettingsRevision: null,
+    });
+    h.envs.setStatus(row.environment_id!, "READY");
+    await reconcileInstancesOnce(h.deps);
+    const [after] = await appInstancesFor(h.deps, owner, appId);
+    expect(after.runningSettingsRevision).toBe(row.target_settings);
+  });
   it("is refused to strangers", async () => {
     await expect(appInstancesFor(h.deps, stranger, appId)).rejects.toThrow();
   });

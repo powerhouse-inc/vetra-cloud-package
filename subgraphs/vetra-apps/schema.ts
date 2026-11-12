@@ -114,6 +114,10 @@ export const schema: DocumentNode = gql`
     targetDigest: String
     runningVersion: String
     runningDigest: String
+    "The App settings revision the instance should run (VETRA_SETTINGS_REVISION)"
+    settingsRevision: String
+    "The settings revision it last ran healthy"
+    runningSettingsRevision: String
     "healthy | unhealthy | unknown; null until first checked (spec 14.7)"
     health: String
     "The check behind it: gitops | image | crash | restarts | pod | switchboard | connect | stopped | data"
