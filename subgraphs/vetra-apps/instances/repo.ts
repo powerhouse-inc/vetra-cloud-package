@@ -5,6 +5,11 @@ import type {
   InstancesTable,
   VetraAppsDB,
 } from "../db/schema.js";
+import {
+  AUDIT_SYSTEM_ACTOR,
+  recordAudit,
+  type AuditEntry,
+} from "../audit/repo.js";
 
 export type InstanceRow = Selectable<InstancesTable>;
 export type NewInstance = Insertable<InstancesTable>;
@@ -60,20 +65,68 @@ export async function insertInstance(
   );
 }
 
+/** The audit row of an instance status change (spec section 10; source system). */
+export function instanceStatusEntry(
+  row: InstanceRow,
+  from: string,
+  at: string,
+): AuditEntry {
+  return {
+    appId: row.app_id,
+    at,
+    actor: AUDIT_SYSTEM_ACTOR,
+    source: "system",
+    action: "instance.status",
+    subject: `instance:${row.id}`,
+    detail: {
+      kind: row.kind,
+      name: row.name,
+      from,
+      to: row.status,
+      reason: row.reason,
+      targetVersion: row.target_version,
+      runningVersion: row.running_version,
+      planId: row.plan_id ?? null,
+    },
+  };
+}
+
+/**
+ * The only writer of instances.status. A patch that sets a status reads the
+ * old one under a row lock and audits a change, atomically with the write; a
+ * patch without a status is the single UPDATE it always was (the reconciler's
+ * hot path; it patches only on change anyway).
+ */
 export async function updateInstance(
   db: Kysely<VetraAppsDB>,
   id: string,
   patch: InstancePatch,
   nowIso: string,
 ): Promise<InstanceRow> {
-  return normalize(
-    await db
-      .updateTable("instances")
-      .set({ ...patch, updated_at: nowIso })
-      .where("id", "=", id)
-      .returningAll()
-      .executeTakeFirstOrThrow(),
-  );
+  const write = async (q: Kysely<VetraAppsDB>): Promise<InstanceRow> => {
+    const before =
+      patch.status === undefined
+        ? undefined
+        : await q
+            .selectFrom("instances")
+            .select("status")
+            .where("id", "=", id)
+            .forUpdate()
+            .executeTakeFirst();
+    const row = normalize(
+      await q
+        .updateTable("instances")
+        .set({ ...patch, updated_at: nowIso })
+        .where("id", "=", id)
+        .returningAll()
+        .executeTakeFirstOrThrow(),
+    );
+    if (before && before.status !== row.status)
+      await recordAudit(q, instanceStatusEntry(row, before.status, nowIso));
+    return row;
+  };
+  if (patch.status === undefined || db.isTransaction) return write(db);
+  return db.transaction().execute(write);
 }
 
 export async function deleteInstance(
