@@ -191,6 +191,30 @@ export interface DatabaseRestores {
   completedAt: string | null;
 }
 
+/**
+ * /data archives of host-image instances (vetra-apps releases phase 3 slice
+ * 4): `tar | zstd` of the app's data PVC, stored next to the database dumps
+ * under `<tenant>/data/<id>.tar.zst`. `sha256` is the stored object's
+ * checksum; a data restore checks it before it touches /data.
+ */
+export interface DataArchives {
+  id: string;
+  documentId: string;
+  tenantId: string;
+  requestedBy: string;
+  status: string; // PENDING | RUNNING | READY | FAILED
+  pvcName: string;
+  jobName: string | null;
+  s3Key: string | null;
+  sizeBytes: number | null;
+  sha256: string | null;
+  errorMessage: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  expiresAt: string;
+}
+
 /** Cached studio product identity from the BrandSheet, pulled by the
  * clint-pull-worker so /user/products survives studio hibernation. */
 export interface StudioBrand {
@@ -211,6 +235,7 @@ export interface ObservabilityDB {
   clint_runtime_endpoints: ClintRuntimeEndpoint;
   database_dumps: DatabaseDumps;
   database_restores: DatabaseRestores;
+  data_archives: DataArchives;
   studio_brand: StudioBrand;
   /** Document permissions Vetra granted for organisation access (revoked only by Vetra). */
   org_document_grants: {
