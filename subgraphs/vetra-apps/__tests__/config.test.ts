@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INSTANCE_HEALTH, loadAppsConfig } from "../config.js";
+import {
+  DEFAULT_INSTANCE_HEALTH,
+  DEFAULT_PLANS,
+  loadAppsConfig,
+  plansConfigOf,
+} from "../config.js";
 
 describe("Studio Apps config", () => {
   it("reads no Vetra-managed GitHub org: Studio App repos live in the user's own GitHub", () => {
@@ -106,5 +111,37 @@ describe("instance health config", () => {
     ["VETRA_APPS_INSTANCE_PROBES_PER_APP", "21"],
   ])("throws at startup on %s=%j", (name, value) => {
     expect(() => loadAppsConfig({ [name]: value })).toThrow(new RegExp(name));
+  });
+});
+
+describe("plans config", () => {
+  it("is off with a 14-day stop by default", () => {
+    expect(loadAppsConfig({}).plans).toEqual({
+      enabled: false,
+      stopAfterDays: 14,
+    });
+    expect(DEFAULT_PLANS).toEqual({ enabled: false, stopAfterDays: 14 });
+  });
+  it("turns on with VETRA_APPS_PLANS=on and takes the stop window", () => {
+    expect(
+      loadAppsConfig({
+        VETRA_APPS_PLANS: " On ",
+        VETRA_APPS_PLAN_STOP_AFTER_DAYS: "7",
+      }).plans,
+    ).toEqual({ enabled: true, stopAfterDays: 7 });
+  });
+  it("refuses unknown values at startup", () => {
+    expect(() => loadAppsConfig({ VETRA_APPS_PLANS: "maybe" })).toThrow(
+      /VETRA_APPS_PLANS.*maybe/,
+    );
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_PLAN_STOP_AFTER_DAYS: "0" }),
+    ).toThrow(/VETRA_APPS_PLAN_STOP_AFTER_DAYS/);
+  });
+  it("reads a config without plans as off", () => {
+    const { plans: _drop, ...rest } = loadAppsConfig({
+      VETRA_APPS_PLANS: "on",
+    });
+    expect(plansConfigOf(rest)).toEqual(DEFAULT_PLANS);
   });
 });
