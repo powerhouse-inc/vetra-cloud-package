@@ -4,6 +4,7 @@ import type { VetraAppsDB } from "../db/schema.js";
 import { appsError } from "../errors.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import {
+  isIsoAt,
   listAudit,
   recordAudit,
   sweepAudit,
@@ -85,7 +86,9 @@ export function decodeAuditCursor(s: string): AuditCursor {
   const i = raw.indexOf("|");
   if (i <= 0 || i === raw.length - 1)
     throw appsError("BAD_USER_INPUT", "Invalid audit cursor");
-  return { at: raw.slice(0, i), id: raw.slice(i + 1) };
+  const at = raw.slice(0, i);
+  if (!isIsoAt(at)) throw appsError("BAD_USER_INPUT", "Invalid audit cursor");
+  return { at, id: raw.slice(i + 1) };
 }
 
 /** The App's audit log, newest first (spec section 10). Anyone who may view the App. */

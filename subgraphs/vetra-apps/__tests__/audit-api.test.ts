@@ -199,4 +199,36 @@ describe("audit log", () => {
       Buffer.byteLength(boundDetail({ a: "é".repeat(400) })),
     ).toBeLessThanOrEqual(AUDIT_DETAIL_MAX_BYTES);
   });
+
+  it("refuses a cursor whose at is not an ISO time", async () => {
+    const cursor = (raw: string) => Buffer.from(raw).toString("base64url");
+    await expect(
+      appAuditFor(h.deps, owner, appId, 10, cursor("yesterday|abc")),
+    ).rejects.toMatchObject(code("BAD_USER_INPUT"));
+    await expect(
+      appAuditFor(h.deps, owner, appId, 10, cursor("2026-10-02|abc")),
+    ).rejects.toMatchObject(code("BAD_USER_INPUT"));
+    await expect(
+      appAuditFor(
+        h.deps,
+        owner,
+        appId,
+        10,
+        cursor("2026-10-02T12:00:00.000Z|abc"),
+      ),
+    ).resolves.toMatchObject({ entries: [] });
+  });
+
+  it("writes only ISO times", async () => {
+    await expect(
+      recordAudit(h.db, {
+        appId,
+        at: "2026-10-02 12:00:00",
+        actor: "vetra",
+        source: "system",
+        action: "instance.status",
+        subject: "instance:x",
+      }),
+    ).rejects.toThrow(/ISO/);
+  });
 });

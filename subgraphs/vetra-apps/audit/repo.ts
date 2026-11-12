@@ -61,11 +61,22 @@ export function boundDetail(d: Record<string, unknown> = {}): string {
     : json;
 }
 
+/**
+ * `at` is compared as text (paging, retention), so it must be the one form
+ * Date#toISOString writes: YYYY-MM-DDTHH:mm:ss.sssZ.
+ */
+export const isIsoAt = (s: string): boolean => {
+  const t = Date.parse(s);
+  return Number.isFinite(t) && new Date(t).toISOString() === s;
+};
+
 /** Appends one row. Pass the transaction of the change it describes. */
 export async function recordAudit(
   db: Kysely<VetraAppsDB>,
   e: AuditEntry,
 ): Promise<AppAuditRow> {
+  if (!isIsoAt(e.at))
+    throw new Error(`audit at must be an ISO time (toISOString): ${e.at}`);
   return db
     .insertInto("app_audit")
     .values({
