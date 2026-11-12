@@ -4,6 +4,8 @@ import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf } from "../config.js";
+import type { PlanAccess } from "../db/schema.js";
+import { gateFloorError } from "../gate/service.js";
 import { grantKinds, hasLicensedEnvironments } from "./holders.js";
 import {
   getPlan,
@@ -83,11 +85,16 @@ export interface UpdatePlanInput {
   size?: string | null;
 }
 
-/** A plan's target is a recorded release of its App, never a build (spec section 2). */
+/**
+ * A plan's target is a recorded release of its App, never a build (spec
+ * section 2); a shared plan's is built on a Powerhouse with the licence gate
+ * while the gate is on (D9).
+ */
 async function checkTarget(
   deps: AppsDeps,
   appId: string,
   version: string,
+  access: PlanAccess,
 ): Promise<string> {
   const r = await releaseByVersion(deps.db, appId, version);
   if (!r)
@@ -97,6 +104,10 @@ async function checkTarget(
       "BAD_USER_INPUT",
       `${version} is a build; a plan targets releases only`,
     );
+  if (access === "shared") {
+    const floor = gateFloorError(deps.cfg, r);
+    if (floor) throw appsError("BAD_USER_INPUT", floor);
+  }
   return r.version;
 }
 
@@ -181,7 +192,7 @@ export async function createPlan(
     );
   const nowIso = deps.now().toISOString();
   const target = input.targetVersion
-    ? await checkTarget(deps, app.id, input.targetVersion)
+    ? await checkTarget(deps, app.id, input.targetVersion, access)
     : null;
   const row = await deps.db
     .transaction()
@@ -281,7 +292,7 @@ export async function setPlanTarget(
   const { plan } = await loadPlan(deps, caller, planId);
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
-  const target = await checkTarget(deps, plan.app_id, version);
+  const target = await checkTarget(deps, plan.app_id, version, plan.access);
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {

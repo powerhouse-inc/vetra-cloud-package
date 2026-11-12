@@ -1,5 +1,7 @@
 import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
 import { auditCaller } from "../audit/service.js";
+import { gateConfigOf, type VetraAppsConfig } from "../config.js";
+import { powerhouseAtLeast } from "../releases/version.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { getInstance, type InstanceRow } from "../instances/repo.js";
@@ -169,4 +171,21 @@ export function withGate(
     },
   ].sort(byName);
   return { revision: settingsRevision(plain, secrets), plain, secrets };
+}
+
+/**
+ * D9: with the gate on, a shared plan's release must be built on a Powerhouse
+ * that enforces ACCESS=licensed (VETRA_APPS_GATE_MIN_POWERHOUSE). The reason
+ * it is not, or null (gate off, or the floor is met). An unparseable or
+ * missing Powerhouse version is below the floor.
+ */
+export function gateFloorError(
+  cfg: VetraAppsConfig,
+  r: { version: string; powerhouse_version: string | null },
+): string | null {
+  const gate = gateConfigOf(cfg);
+  if (!gate.enabled || !gate.minPowerhouse) return null;
+  if (powerhouseAtLeast(r.powerhouse_version ?? "", gate.minPowerhouse))
+    return null;
+  return `${r.version} was built on Powerhouse ${r.powerhouse_version || "(unknown)"}; shared plans need ${gate.minPowerhouse} or newer for the licence gate. Rebuild the App on it and release again.`;
 }
