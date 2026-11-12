@@ -4,6 +4,8 @@ import {
   DEFAULT_PLANS,
   loadAppsConfig,
   plansConfigOf,
+  rolloutsEnabled,
+  rolloutsHeld,
 } from "../config.js";
 
 describe("Studio Apps config", () => {
@@ -143,5 +145,30 @@ describe("plans config", () => {
       VETRA_APPS_PLANS: "on",
     });
     expect(plansConfigOf(rest)).toEqual(DEFAULT_PLANS);
+  });
+  it("runs rollouts with plans, and holds them with VETRA_APPS_ROLLOUTS_HOLD", () => {
+    expect(rolloutsEnabled(loadAppsConfig({}))).toBe(false);
+    const on = loadAppsConfig({ VETRA_APPS_PLANS: "on" });
+    expect(rolloutsEnabled(on)).toBe(true);
+    expect(rolloutsHeld(on)).toBe(false);
+    expect(on.plans).toEqual({ enabled: true, stopAfterDays: 14 });
+    expect(
+      rolloutsEnabled(
+        loadAppsConfig({ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "off" }),
+      ),
+    ).toBe(false);
+    const held = loadAppsConfig({
+      VETRA_APPS_PLANS: "on",
+      VETRA_APPS_ROLLOUTS_HOLD: " Yes ",
+    });
+    expect(rolloutsHeld(held)).toBe(true);
+    expect(held.plans).toEqual({
+      enabled: true,
+      stopAfterDays: 14,
+      rolloutsHold: true,
+    });
+    expect(() => loadAppsConfig({ VETRA_APPS_ROLLOUTS_HOLD: "later" })).toThrow(
+      /VETRA_APPS_ROLLOUTS_HOLD.*later/,
+    );
   });
 });

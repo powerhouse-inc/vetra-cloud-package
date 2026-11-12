@@ -90,12 +90,29 @@ export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
 export interface PlansConfig {
   enabled: boolean;
   stopAfterDays: number;
+  /**
+   * VETRA_APPS_ROLLOUTS_HOLD=on: no rollout step and no policy rollout starts
+   * (decision R1); a moving step still settles. Present only when on.
+   */
+  rolloutsHold?: boolean;
 }
 
 export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
+
+/**
+ * Rollouts are part of plans (releases phase 3 slice 3, decision R1): they
+ * run whenever plan instances do. There is no separate switch, because with
+ * plans on nothing else moves a shared or own instance's target.
+ */
+export const rolloutsEnabled = (cfg: VetraAppsConfig): boolean =>
+  plansConfigOf(cfg).enabled && cfg.instances.enabled;
+
+/** The brake: nothing starts while it is on. */
+export const rolloutsHeld = (cfg: VetraAppsConfig): boolean =>
+  plansConfigOf(cfg).rolloutsHold === true;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -144,7 +161,18 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+    ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
   };
+}
+
+/** An on/off switch that is off when unset; anything else refuses to boot. */
+function switchOn(env: Env, name: string): boolean {
+  const raw = (trimmed(env[name]) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw))
+    throw new Error(
+      `${name} "${env[name]}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  return raw !== "" && INSTANCES_ON.has(raw);
 }
 
 function intIn(
