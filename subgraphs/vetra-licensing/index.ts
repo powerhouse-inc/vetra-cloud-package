@@ -99,6 +99,7 @@ import {
   type RelayDeps,
   type ReportingDeps,
 } from "./reporting.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 /** As vetra-access-codes: the same role and key prefix, so stored keys still decrypt. */
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
@@ -512,9 +513,11 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       now: () => new Date().toISOString(),
     }) as Record<string, Record<string, unknown>>;
 
-    this.resolvers = mergeResolvers(
-      mergeResolvers(mergeResolvers(machineResolvers, publisherResolvers), subscriptionResolvers),
-      releaseResolvers,
+    this.resolvers = withoutStacktraces(
+      mergeResolvers(
+        mergeResolvers(mergeResolvers(machineResolvers, publisherResolvers), subscriptionResolvers),
+        releaseResolvers,
+      ),
     );
 
     // vetra-app and licence documents are system-write-only. Protect every

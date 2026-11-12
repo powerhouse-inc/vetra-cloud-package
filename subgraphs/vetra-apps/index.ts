@@ -71,6 +71,7 @@ import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
 import { createSettingsVault } from "./settings/vault.js";
 import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
 import { environmentConnections } from "../vetra-github-auth/db/installations.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -262,7 +263,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     deps.onPreviewRemoved = (app, preview, reason) =>
       reportPreviewRemovedToGithub(deps, app, preview, reason);
 
-    this.resolvers = createResolvers(deps);
+    this.resolvers = withoutStacktraces(createResolvers(deps));
     // Licensing's personal app list adopts transferred Apps through us.
     setPersonAppAdopter((address) => adoptPersonApps(deps, address));
 

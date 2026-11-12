@@ -5,6 +5,7 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraGithubAuthDB } from "./db/schema.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 /**
  * Binds a user's Renown identity to the GitHub App installation they own, and
@@ -25,6 +26,6 @@ export class VetraGithubAuthSubgraph extends BaseSubgraph {
     )) as unknown as Kysely<VetraGithubAuthDB>;
 
     await up(db as Kysely<any>);
-    this.resolvers = createResolvers(db);
+    this.resolvers = withoutStacktraces(createResolvers(db));
   }
 }

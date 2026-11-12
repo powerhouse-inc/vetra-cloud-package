@@ -46,6 +46,7 @@ import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
 import { isNotConfigured } from "../vetra-llm/errors.js";
 import { createProcessBroker } from "../vetra-llm/factory.js";
 import { appsTrustedIds, createStudioAccessDeps } from "../vetra-licensing/studio-access-factory.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 const DEFAULT_TRANSIT_ROLE = "vetra-secrets";
 const ENV_DOC_TYPE = "powerhouse/vetra-cloud-environment";
@@ -221,7 +222,7 @@ export class VetraStudioPoolSubgraph extends BaseSubgraph {
       );
     };
 
-    this.resolvers = createResolvers({ claim, version: cfg.version });
+    this.resolvers = withoutStacktraces(createResolvers({ claim, version: cfg.version }));
 
     // Reconcile the `environments` read-model + gitops tenant dir when a
     // document is deleted via `deleteDocument(identifier)`. That path never
