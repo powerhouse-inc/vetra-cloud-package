@@ -146,7 +146,7 @@ describe("rollout controls (spec 7 step 5)", () => {
     );
   });
 
-  it("cancel sends a retried step's instance back too (its target is still the new release)", async () => {
+  it("cancel leaves a retried step's instance on its old release (a failure already sent it back)", async () => {
     const r = await start();
     await advance();
     await failUpdate(h, "o1");
@@ -155,7 +155,7 @@ describe("rollout controls (spec 7 step 5)", () => {
     await retryRolloutStep(h.deps, owner, (await step(r.id, "o1")).id);
     expect(await step(r.id, "o1")).toMatchObject({
       status: "pending",
-      target_moved: true,
+      target_moved: false,
     });
     await cancelRollout(h.deps, owner, r.id);
     expect(await step(r.id, "o1")).toMatchObject({

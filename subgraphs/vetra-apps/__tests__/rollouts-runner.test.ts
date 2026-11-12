@@ -292,4 +292,21 @@ describe("the rollout runner (spec 7 step 4)", () => {
       (await listAudit(h.db, appId, { limit: 50 })).map((a) => a.action),
     ).not.toContain("rollout.paused");
   });
+
+  it("a failed update leaves the instance targeting its old release, so a later settings change never retries the bad one", async () => {
+    const r = await start(["p-pro"]);
+    await advance();
+    await failUpdate(h, "o1");
+    await advance();
+    expect((await stepsOf(h.db, r.id))[0]).toMatchObject({
+      status: "failed",
+      target_moved: false,
+    });
+    // The reconciler's failedOn would retry target_digest once the settings change; there is nothing new to retry.
+    expect(await instance(h, "o1")).toMatchObject({
+      target_version: "1.4.0",
+      target_digest: digest("b"),
+      failed_digest: null,
+    });
+  });
 });

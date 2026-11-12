@@ -124,12 +124,14 @@ async function endStep(
 }
 
 /**
- * A step failed: `failed` (forward) or `revert_failed` (rollback), the
- * instance sent back to `sendBackTo` when given (a timeout; the reconciler
- * already went back after a failed update), and the rollout paused with an
- * alert row (spec 7 step 4). A forward step of a rollout that is no longer
- * open (cancelled while it moved) is not left failed: its instance goes back
- * to `from_version` and the step is skipped; nothing pauses.
+ * A step failed: `failed` (forward) or `revert_failed` (rollback), and the
+ * rollout paused with an alert row (spec 7 step 4). The instance's target is
+ * set to the release it is left on: `from_version` after a forward failure,
+ * `to_version` after a failed way back (the reconciler already reverted the
+ * image, or the runner sends it after a timeout). A failed target is never
+ * left on a customer instance: the reconciler would retry it on the next
+ * settings change, outside the rollout. A forward step of a rollout that is
+ * no longer open (cancelled while it moved) is skipped; nothing pauses.
  */
 async function failStep(
   deps: AppsDeps,
@@ -137,7 +139,6 @@ async function failStep(
   step: RolloutStepRow,
   to: "failed" | "revert_failed",
   error: string,
-  sendBackTo: string | null,
 ): Promise<void> {
   const nowIso = deps.now().toISOString();
   let paused = false;
@@ -146,8 +147,7 @@ async function failStep(
     const closed = r.status !== "active" && r.status !== "paused";
     const status: RolloutStepStatus =
       closed && to === "failed" ? "skipped" : to;
-    const back =
-      sendBackTo ?? (status === "skipped" ? step.from_version : null);
+    const back = to === "failed" ? step.from_version : step.to_version;
     const note =
       status === "skipped" ? `rollout ${r.status}; back on ${back}` : step.note;
     const done = await transitionStep(
@@ -159,7 +159,7 @@ async function failStep(
         error,
         note,
         finished_at: nowIso,
-        ...(back ? { target_moved: false } : {}),
+        ...(back && to === "failed" ? { target_moved: false } : {}),
       },
       nowIso,
     );
@@ -236,14 +236,7 @@ async function settle(
   }
   const to = back ? "revert_failed" : "failed";
   if (inst.status === "failed" && inst.failed_digest === inst.target_digest) {
-    await failStep(
-      deps,
-      app,
-      step,
-      to,
-      inst.reason ?? "the update failed",
-      null,
-    );
+    await failStep(deps, app, step, to, inst.reason ?? "the update failed");
     return false;
   }
   if (
@@ -256,7 +249,6 @@ async function settle(
       step,
       to,
       `not healthy after the update: ${inst.reason ?? "degraded"}`,
-      null,
     );
     return false;
   }
@@ -271,7 +263,6 @@ async function settle(
       step,
       to,
       `not ready on ${want} after ${STEP_TIMEOUT_MS / 60_000} minutes`,
-      back ? null : step.from_version,
     );
     return false;
   }
@@ -387,7 +378,6 @@ async function startRevert(
       s,
       "revert_failed",
       `the App has no release ${back}`,
-      null,
     );
     return false;
   }
