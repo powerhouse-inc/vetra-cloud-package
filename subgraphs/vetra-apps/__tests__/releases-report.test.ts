@@ -8,6 +8,7 @@ import {
   seedActiveApp,
   type Harness,
 } from "./harness.js";
+import { sql } from "kysely";
 import { listAudit } from "../audit/repo.js";
 import { ciReportRelease } from "../releases/service.js";
 import { updateApp } from "../service.js";
@@ -238,6 +239,36 @@ describe("ciReportRelease and the audit log", () => {
         }),
       ),
     ).rejects.toMatchObject({ extensions: { code: "VERSION_CONFLICT" } });
+    expect(
+      (await listAudit(h.db, app.id, { limit: 10 })).map((r) => r.action),
+    ).toEqual(["release.recorded"]);
+  });
+});
+
+describe("ciReportRelease when the audit insert fails", () => {
+  it("answers SERVICE_UNAVAILABLE, stores nothing, and a retry records once", async () => {
+    await sql`ALTER TABLE app_audit ADD CONSTRAINT audit_down CHECK (false) NOT VALID`.execute(
+      h.db,
+    );
+    await expect(ciReportRelease(h.deps, ci(), input())).rejects.toMatchObject({
+      extensions: { code: "SERVICE_UNAVAILABLE" },
+    });
+    expect(
+      await h.db
+        .selectFrom("releases")
+        .selectAll()
+        .where("app_id", "=", app.id)
+        .execute(),
+    ).toHaveLength(0);
+    await sql`ALTER TABLE app_audit DROP CONSTRAINT audit_down`.execute(h.db);
+    await ciReportRelease(h.deps, ci(), input());
+    expect(
+      await h.db
+        .selectFrom("releases")
+        .selectAll()
+        .where("app_id", "=", app.id)
+        .execute(),
+    ).toHaveLength(1);
     expect(
       (await listAudit(h.db, app.id, { limit: 10 })).map((r) => r.action),
     ).toEqual(["release.recorded"]);
