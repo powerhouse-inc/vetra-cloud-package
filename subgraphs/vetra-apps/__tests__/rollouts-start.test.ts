@@ -13,7 +13,12 @@ import { listAudit } from "../audit/repo.js";
 import { getPlan } from "../plans/repo.js";
 import { setPlanTarget } from "../plans/service.js";
 import { stepsOf } from "../rollouts/repo.js";
-import { checkRolloutFor, startRollout } from "../rollouts/service.js";
+import { getApp } from "../repo.js";
+import {
+  beginRollout,
+  checkRolloutFor,
+  startRollout,
+} from "../rollouts/service.js";
 
 let h: Harness;
 let appId: string;
@@ -269,6 +274,30 @@ describe("starting a rollout (spec 7 steps 1 and 3)", () => {
     await expect(
       setPlanTarget(h.deps, owner, "p-pro", "1.4.1"),
     ).rejects.toThrow(/not enabled/);
+    expect((await getPlan(h.db, "p-pro"))?.target_version).toBe("1.4.0");
+  });
+
+  it("a plan retired after it was read is not rolled out (re-checked under its row lock)", async () => {
+    const stale = (await getPlan(h.db, "p-pro"))!;
+    await h.db
+      .updateTable("plans")
+      .set({ status: "retired" })
+      .where("id", "=", "p-pro")
+      .execute();
+    await expect(
+      beginRollout(
+        h.deps,
+        (await getApp(h.db, appId))!,
+        "1.4.1",
+        [stale],
+        {
+          actor: "vetra",
+          source: "policy",
+        },
+        null,
+      ),
+    ).rejects.toThrow(/retired/);
+    expect(await h.db.selectFrom("rollouts").selectAll().execute()).toEqual([]);
     expect((await getPlan(h.db, "p-pro"))?.target_version).toBe("1.4.0");
   });
 });

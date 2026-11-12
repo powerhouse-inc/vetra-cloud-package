@@ -272,6 +272,17 @@ export async function beginRollout(
   );
   const moving = steps.some((s) => s.status === "pending");
   return deps.db.transaction().execute(async (trx) => {
+    // Re-checked under the plans' row locks: retirePlan takes only that lock.
+    const locked = new Map<string, PlanRow>();
+    for (const p of plans) {
+      const cur = await lockPlan(trx, p.id);
+      if (cur.status === "retired")
+        throw appsError(
+          "BAD_USER_INPUT",
+          `Cannot roll out ${version}: ${cur.slug} is retired`,
+        );
+      locked.set(p.id, cur);
+    }
     const rollout = await insertRollout(trx, {
       id,
       app_id: app.id,
@@ -327,7 +338,7 @@ export async function beginRollout(
       })),
     );
     for (const p of plans) {
-      const cur = await lockPlan(trx, p.id);
+      const cur = locked.get(p.id)!;
       if (cur.target_version === version) continue;
       await updatePlan(trx, p.id, { target_version: version }, nowIso);
       await auditAs(trx, who, {
