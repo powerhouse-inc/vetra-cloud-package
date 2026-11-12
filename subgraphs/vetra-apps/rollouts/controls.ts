@@ -172,18 +172,10 @@ export async function cancelRollout(
       if (s.status !== "pending" && s.status !== "failed") continue;
       // A failed step, or a retried one (pending again), targets the new release: back it goes.
       const back = s.target_moved && !!s.from_version;
-      if (back)
-        await pointInstanceAt(
-          trx,
-          app.id,
-          s.instance_id,
-          s.from_version!,
-          nowIso,
-        );
       const note = back
         ? `rollout cancelled; back on ${s.from_version}`
         : "rollout cancelled";
-      await transitionStep(
+      const done = await transitionStep(
         trx,
         s.id,
         [s.status],
@@ -195,6 +187,16 @@ export async function cancelRollout(
         },
         nowIso,
       );
+      // Only what this cancel changed is moved and audited.
+      if (!done) continue;
+      if (back)
+        await pointInstanceAt(
+          trx,
+          app.id,
+          s.instance_id,
+          s.from_version!,
+          nowIso,
+        );
       await recordAudit(trx, stepEntry(s, "skipped", nowIso, { note }, who));
     }
     await updateRollout(
