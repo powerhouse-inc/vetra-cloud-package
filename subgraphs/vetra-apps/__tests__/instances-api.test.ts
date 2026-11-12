@@ -70,7 +70,7 @@ describe("appInstancesFor", () => {
     await seedRelease(h, appId, { version: "1.5.0-main.1", run: 100 });
     await reconcileInstancesOnce(h.deps);
     const [row] = await listInstances(h.db, appId);
-    await recordHealth(h.db, row.id, {
+    await recordHealth(h.db, row, {
       health: "unhealthy",
       health_check: "crash",
       health_reason: "the container does not start (CrashLoopBackOff)",

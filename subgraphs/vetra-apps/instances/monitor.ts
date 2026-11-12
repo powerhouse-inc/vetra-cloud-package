@@ -140,7 +140,7 @@ async function stamp(
 ): Promise<void> {
   const at = deps.now().toISOString();
   const verdict: HealthVerdict = { ...NO_DATA, reason };
-  await recordHealth(deps.db, row.id, {
+  await recordHealth(deps.db, row, {
     health: verdict.health,
     health_check: verdict.check,
     health_reason: verdict.reason,
@@ -211,7 +211,7 @@ async function checkInstance(
   }
 
   const at = deps.now().toISOString();
-  await recordHealth(deps.db, row.id, {
+  await recordHealth(deps.db, row, {
     health: verdict.health,
     health_check: verdict.check,
     health_reason: verdict.reason,

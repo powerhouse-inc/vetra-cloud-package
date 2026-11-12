@@ -131,16 +131,21 @@ export type HealthStamp = Pick<
   | "health_since"
 >;
 
-/** Health columns only: never status, reason, targets or updated_at; a row removed meanwhile is left alone. */
+/**
+ * Health columns only: never status, reason, targets or updated_at. A row
+ * removed meanwhile, or whose environment changed since it was read (the
+ * reconciler recreated it), is left alone: the check was about another one.
+ */
 export async function recordHealth(
   db: Kysely<VetraAppsDB>,
-  id: string,
+  row: Pick<InstanceRow, "id" | "environment_id">,
   r: HealthRecord | HealthStamp,
 ): Promise<void> {
   await db
     .updateTable("instances")
     .set(r)
-    .where("id", "=", id)
+    .where("id", "=", row.id)
+    .where("environment_id", "=", row.environment_id)
     .where("removed_at", "is", null)
     .execute();
 }

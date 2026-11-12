@@ -7,7 +7,7 @@ import {
 } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
 import type { InstanceHealthConfig } from "../config.js";
-import { listInstances } from "../instances/repo.js";
+import { listInstances, recordHealth } from "../instances/repo.js";
 import { reconcileInstancesOnce } from "../instances/reconciler.js";
 import { DEGRADED_AFTER_MS, HEALTH_STABLE_MS } from "../instances/status.js";
 import {
@@ -343,6 +343,25 @@ describe("monitorInstancesOnce", () => {
       health_check: "data",
     });
     expect((await one()).health_reason).toMatch(/read model down/);
+  });
+
+  it("never records a check on a row whose environment changed meanwhile", async () => {
+    await created();
+    const checkedRow = await one();
+    await h.db
+      .updateTable("instances")
+      .set({ environment_id: "recreated" })
+      .where("id", "=", checkedRow.id)
+      .execute();
+    const at = h.clock.now.toISOString();
+    await recordHealth(h.db, checkedRow, {
+      health: "unhealthy",
+      health_check: "crash",
+      health_reason: "x",
+      health_checked_at: at,
+      health_since: at,
+    });
+    expect((await one()).health).toBeNull();
   });
 
   it("does nothing when health is off", async () => {
