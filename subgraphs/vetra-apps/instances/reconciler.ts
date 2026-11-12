@@ -35,9 +35,11 @@ import {
   imageTag,
   instanceCreateActions,
   instanceUpdateActions,
+  domainActions,
   isInstanceRole,
   type InstanceImage,
 } from "./render.js";
+import { appliedDomainOf } from "../domains/service.js";
 import { deliverSettings } from "../settings/deliver.js";
 import { listAppSettings } from "../settings/repo.js";
 import {
@@ -902,7 +904,21 @@ async function reconcileEnvironment(
   const want = envSettings(settings);
 
   const image = targetImage(row);
+  // A PLAN document carries its holder's custom domain once DNS points at
+  // Vetra (plan 7 Task 8). Also the drift repair: a re-created environment,
+  // or one changed by hand, gets it back. A STOPPED one is changed without
+  // waking it: it serves the domain on its next start.
+  let domain =
+    state.app?.role === "PLAN"
+      ? domainActions(state, appliedDomainOf(row))
+      : [];
+  if (domain.length > 0 && state.status === "STOPPED") {
+    await deps.envs.execute(envId, domain);
+    domain = [];
+  }
   if (failedOn(row, settings)) {
+    // The domain is the holder's choice, not part of the failed target.
+    if (domain.length > 0) await apply(deps, envId, domain);
     // Not retried; but a revert that did not land is.
     const back = revertImage(row);
     if (back && fusionVersion(state) === image.tag) {
@@ -920,7 +936,7 @@ async function reconcileEnvironment(
   }
 
   // Throws for anything that is not an instance (licensed, not a PREVIEW or PLAN).
-  const updates = instanceUpdateActions(
+  const imageUpdates = instanceUpdateActions(
     state,
     image,
     admins,
@@ -928,6 +944,7 @@ async function reconcileEnvironment(
     start,
     size,
   );
+  const updates = [...domain, ...imageUpdates];
   if (
     updates.length === 0 &&
     state.status === "STOPPED" &&

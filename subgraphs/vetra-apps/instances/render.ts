@@ -4,6 +4,7 @@ import {
   initialize,
   setApexService,
   setAppLink,
+  setCustomDomain,
   setFusionConfig,
   setLabel,
   setOwner,
@@ -253,4 +254,36 @@ export function instanceUpdateActions(
   return state.status === "STOPPED"
     ? [wakeEnvironment({}), ...changes]
     : changes;
+}
+
+/**
+ * SET_CUSTOM_DOMAIN (and SET_APEX_SERVICE FUSION when it is not) to bring a
+ * PLAN document to `domain` (null: none); [] when it already carries it or is
+ * going away. Same guard as instanceUpdateActions, narrower: PLAN documents
+ * only (custom domains are for own instances, spec 17).
+ */
+export function domainActions(
+  state: VetraCloudEnvironmentState,
+  domain: string | null,
+): Action[] {
+  if (state.managedBy)
+    throw new Error(
+      `Environment ${envName(state)} is licensed (managedBy set): not an instance`,
+    );
+  if (state.app?.role !== "PLAN")
+    throw new Error(
+      `Environment ${envName(state)} is not a plan instance (not an app PLAN)`,
+    );
+  if (GONE.has(state.status)) return [];
+  const current = state.customDomain;
+  if (!domain)
+    return current?.enabled || current?.domain
+      ? [setCustomDomain({ enabled: false, domain: null })]
+      : [];
+  const out: Action[] = [];
+  if (!current?.enabled || current.domain !== domain)
+    out.push(setCustomDomain({ enabled: true, domain }));
+  if (state.apexService !== "FUSION")
+    out.push(setApexService({ type: "FUSION" }));
+  return out;
 }
