@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import type { Kysely } from "kysely";
 import { generateValuesYaml } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
@@ -111,6 +112,23 @@ describe("gitops — standalone envs are unchanged", () => {
     await expect(await render(envState())).toMatchFileSnapshot(
       "./__golden__/standalone-values.yaml",
     );
+  });
+
+  it("is the same golden, byte for byte, with a hold lookup that finds no hold", async () => {
+    const golden = readFileSync(
+      new URL("./__golden__/standalone-values.yaml", import.meta.url),
+      "utf-8",
+    );
+    const unheld = await generateValuesYaml(
+      dbStub,
+      envState(),
+      DOC_ID,
+      null,
+      null,
+      null,
+      async () => false,
+    );
+    expect(unheld).toBe(golden);
   });
 
   it("treats a document without the `app` key (pre-migration) like app: null", async () => {

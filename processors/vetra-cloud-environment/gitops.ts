@@ -1227,7 +1227,15 @@ export function generateFusionBlock(
   // resolved from the vetra-apps tables by the caller (state.app.imageProject
   // is NOT trusted: an unsigned SET_APP_LINK could forge it).
   const appProject = opts.appImageProject ?? null;
-  if (!allowedProjects.includes(project) && project !== appProject) {
+  // A held app runs no pod and so pulls no image: it skips the check, so an
+  // allowlist or vetra-apps hiccup can never render it disabled (which drops
+  // the CNPG cluster, and CNPG deletes the database with it). The check
+  // applies again on the render that releases the hold.
+  if (
+    !opts.held &&
+    !allowedProjects.includes(project) &&
+    project !== appProject
+  ) {
     logger.warn(
       `FUSION image ${image} for tenant ${opts.tenantId}: Harbor project '${project}' is not in FUSION_IMAGE_PROJECTS — not rendering`,
     );

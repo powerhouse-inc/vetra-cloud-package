@@ -149,6 +149,44 @@ describe("a held FUSION host (database-backed licensed environment)", () => {
   });
 });
 
+describe("a held FUSION host whose image is not vouched for this render", () => {
+  // An allowlist or vetra-apps hiccup must never drop the CNPG cluster of a
+  // held environment: a held app runs no pod, so it pulls no image.
+  it("still keeps its database at 0 replicas when FUSION_IMAGE_PROJECTS is missing its project", async () => {
+    const vouched = await render(envState(), true);
+    vi.stubEnv("FUSION_IMAGE_PROJECTS", "");
+    const yaml = await render(envState(), true);
+    const app = block(yaml, "app");
+    expect(app).toContain("  enabled: true");
+    expect(app).toContain("  replicaCount: 0");
+    expect(app).toMatch(/  ingress:\n    enabled: false/);
+    expect(app).toContain("  database:\n    enabled: true");
+    expect(yaml).toMatch(/^database:\n  cnpg:\n    enabled: true/m);
+    expect(yaml).toBe(vouched);
+  });
+
+  it("an unheld one is still not rendered (app disabled), as before", async () => {
+    vi.stubEnv("FUSION_IMAGE_PROJECTS", "");
+    const yaml = await render(envState(), false);
+    expect(block(yaml, "app")).toBe("app:\n  enabled: false");
+  });
+
+  it("a held one without any image stays disabled (it never had a database)", async () => {
+    const yaml = await render(
+      envState({
+        fusion: {
+          image: null as unknown as string,
+          env: [],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+      true,
+    );
+    expect(block(yaml, "app")).toBe("app:\n  enabled: false");
+  });
+});
+
 describe("a held switchboard environment", () => {
   const sbState = () =>
     envState({
