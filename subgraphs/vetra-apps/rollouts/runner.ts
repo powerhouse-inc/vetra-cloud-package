@@ -16,6 +16,7 @@ import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 import { releaseProblem } from "./check.js";
 import {
+  getStep,
   lastFinishedStep,
   lockRollout,
   movingStep,
@@ -165,7 +166,8 @@ async function failStep(
       nowIso,
     );
     if (!done) return;
-    if (back)
+    // A release that is gone cannot be pointed at: the target stays (never throws every pass).
+    if (back && (await releaseByVersion(trx, app.id, back)))
       await pointInstanceAt(trx, app.id, step.instance_id, back, nowIso);
     await recordAudit(trx, stepEntry(step, status, nowIso, { error, note }));
     if (closed) return;
@@ -432,6 +434,40 @@ async function windowsOf(
   return new Map(rows.map((x) => [x.id, parseWindow(x.window)]));
 }
 
+const message = (err: unknown) =>
+  (err instanceof Error ? err.message : String(err)).slice(0, 400);
+
+/**
+ * Runs a step's start; an error fails the step (and pauses its rollout)
+ * instead of throwing again on every pass and blocking the App's rollouts.
+ * True when an instance now moves, or the step failed (nothing else starts).
+ */
+async function guarded(
+  deps: AppsDeps,
+  app: AppRow,
+  s: RolloutStepRow,
+  run: () => Promise<boolean>,
+): Promise<boolean> {
+  try {
+    return await run();
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] rollout step ${s.id} of ${app.slug} could not start: ${message(err)}`,
+    );
+    const cur = (await getStep(deps.db, s.id)) ?? s;
+    await failStep(
+      deps,
+      app,
+      cur,
+      cur.status === "revert_pending" || cur.status === "reverting"
+        ? "revert_failed"
+        : "failed",
+      `could not start: ${message(err)}`,
+    );
+    return true;
+  }
+}
+
 /** Starts the next due step of the App's active rollouts, oldest rollout first; at most one moves. */
 async function startNext(deps: AppsDeps, app: AppRow): Promise<void> {
   const now = deps.now();
@@ -442,7 +478,9 @@ async function startNext(deps: AppsDeps, app: AppRow): Promise<void> {
       const queue = steps
         .filter((s) => s.status === "revert_pending")
         .sort((a, b) => b.position - a.position);
-      for (const s of queue) if (await startRevert(deps, app, s)) return;
+      for (const s of queue)
+        if (await guarded(deps, app, s, () => startRevert(deps, app, s)))
+          return;
       continue;
     }
     // A forward step succeeds only on health (decision R2): none starts while health is not enforced.
@@ -458,7 +496,7 @@ async function startNext(deps: AppsDeps, app: AppRow): Promise<void> {
         const w = windows.get(s.plan_id);
         if (w && !inWindow(w, now)) continue;
       }
-      if (await startStep(deps, app, s)) return;
+      if (await guarded(deps, app, s, () => startStep(deps, app, s))) return;
     }
   }
 }
@@ -597,7 +635,23 @@ export async function advanceRollouts(
   if (!rolloutsEnabled(deps.cfg)) return;
   if (!rolloutsHeld(deps.cfg)) await runPolicies(deps, app);
   const moving = await movingStep(deps.db, app.id);
-  const stillMoving = moving ? await settle(deps, app, moving) : false;
+  let stillMoving = false;
+  if (moving) {
+    try {
+      stillMoving = await settle(deps, app, moving);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] rollout step ${moving.id} of ${app.slug} could not settle: ${message(err)}`,
+      );
+      await failStep(
+        deps,
+        app,
+        moving,
+        moving.status === "reverting" ? "revert_failed" : "failed",
+        `could not settle: ${message(err)}`,
+      );
+    }
+  }
   if (
     !stillMoving &&
     !rolloutsHeld(deps.cfg) &&

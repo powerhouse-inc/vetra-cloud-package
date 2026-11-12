@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { owner, type Harness } from "./harness.js";
+import { sql } from "kysely";
 import { digest } from "./instances-fixtures.js";
 import {
   becomeReady,
@@ -347,5 +348,26 @@ describe("the rollout runner (spec 7 step 4)", () => {
       .execute();
     await advance();
     expect(await statuses(r.id)).toEqual(["o1:skipped", "o2:applying"]);
+  });
+
+  it("a step that cannot start (an error every pass) fails and pauses instead of blocking the App", async () => {
+    // The database refuses to move o1 off 1.4.0.
+    await h.db.schema
+      .alterTable("instances")
+      .addCheckConstraint(
+        "test_o1_stays",
+        sql`id <> 'o1' or target_version = '1.4.0'`,
+      )
+      .execute();
+    const r = await start(["p-pro"]);
+    await advance();
+    expect((await stepsOf(h.db, r.id))[0]).toMatchObject({
+      instance_id: "o1",
+      status: "failed",
+      error: expect.stringMatching(/could not start/),
+    });
+    expect((await getRollout(h.db, r.id))?.status).toBe("paused");
+    await advance();
+    expect(await statuses(r.id)).toEqual(["o1:failed", "o2:pending"]);
   });
 });
