@@ -8,6 +8,21 @@ const VERIFIED_TTL_MS = 5 * 60_000;
 const VERIFIED_MAX = 10_000;
 const ANY = "*";
 
+/**
+ * Whom the unknown-token bucket is keyed by: the client address the nearest
+ * proxy saw. The host runs behind the ingress with trustProxy on, and the
+ * ingress appends the peer it saw as the last X-Forwarded-For entry, so that
+ * entry is the one a client cannot write; entries before it are
+ * client-supplied and ignored. X-Real-IP (also set by the ingress) is the
+ * fallback, and with neither every caller shares one global key.
+ */
+export function gateClientKey(request: Request): string {
+  const xff = request.headers.get("x-forwarded-for");
+  const last = xff?.split(",").pop()?.trim();
+  if (last) return last;
+  return request.headers.get("x-real-ip")?.trim() || ANY;
+}
+
 const json = (
   status: number,
   body: unknown,
@@ -24,10 +39,13 @@ const json = (
  * never cached here (G5).
  *
  * Rate limits (G6): a token whose hash was not verified in the last 5 minutes
- * takes from one global bucket before its lookup (a malformed one too), so
- * random tokens cost no database read once it is empty; a verified token
- * gives its token back. A known instance has its own bucket, keyed after the
- * lookup so unverified input never fills that map.
+ * takes from its client address's bucket before its lookup (a malformed one
+ * too), so random tokens cost no database read once it is empty and one
+ * flooding client never empties another's; a verified token gives its token
+ * back. Every success refreshes the hash's 5 minutes (sliding), so a host
+ * that keeps checking never falls back onto a bucket. A known instance has
+ * its own bucket, keyed after the lookup so unverified input never fills
+ * that map.
  */
 export function createGateRoutes(
   deps: AppsDeps,
@@ -79,16 +97,17 @@ export function createGateRoutes(
         (request.headers.get("authorization") ?? "").trim(),
       );
       const token = m?.[1] ?? "";
+      const client = gateClientKey(request);
       if (!isGateTokenShape(token))
-        return badTokens.take(ANY) ? unauthorized() : limited();
+        return badTokens.take(client) ? unauthorized() : limited();
       const hash = hashGateToken(token);
       const known = isVerified(hash);
-      if (!known && !badTokens.take(ANY)) return limited();
+      if (!known && !badTokens.take(client)) return limited();
       let body: unknown;
       try {
         body = await request.json();
       } catch {
-        if (!known) badTokens.refund(ANY);
+        if (!known) badTokens.refund(client);
         return json(400, {
           error: "BAD_USER_INPUT",
           message: "Body must be JSON",
@@ -99,7 +118,7 @@ export function createGateRoutes(
           ? (body as { address?: unknown }).address
           : undefined;
       if (typeof address !== "string" || !ADDRESS.test(address)) {
-        if (!known) badTokens.refund(ANY);
+        if (!known) badTokens.refund(client);
         return json(400, {
           error: "BAD_USER_INPUT",
           message: "address must be a 0x address (40 hex digits)",
@@ -111,15 +130,13 @@ export function createGateRoutes(
           verified.delete(hash);
           return unauthorized();
         }
-        if (!known) {
-          badTokens.refund(ANY);
-          remember(hash);
-        }
+        if (!known) badTokens.refund(client);
+        remember(hash);
         if (!perInstance.take(res.instanceId)) return limited();
         counters.hit(res.instanceId, res.answer.allowed);
         return json(200, res.answer);
       } catch (err) {
-        if (!known) badTokens.refund(ANY);
+        if (!known) badTokens.refund(client);
         counters.failed();
         // The error never carries the token (only its hash reaches the database).
         deps.logger.warn(

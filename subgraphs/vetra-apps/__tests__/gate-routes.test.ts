@@ -30,16 +30,23 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await h.close();
 });
 
-const post = (t: string | null, body: unknown, raw = false) =>
+const post = (
+  t: string | null,
+  body: unknown,
+  raw = false,
+  forwardedFor?: string,
+) =>
   new Request(
     "https://x/api/@powerhousedao/vetra-cloud-package/apps/gate/check",
     {
       method: "POST",
       headers: {
         ...(t === null ? {} : { authorization: `Bearer ${t}` }),
+        ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
         "content-type": "application/json",
       },
       body: raw ? (body as string) : JSON.stringify(body),
@@ -132,6 +139,63 @@ describe("POST apps/gate/check", () => {
     expect((await gate.check(post(token, { address: HOLDER }))).status).toBe(
       200,
     );
+  });
+
+  it("keys unknown tokens by client address: a flood never blocks a known host", async () => {
+    const gate = createGateRoutes(h.deps, { badTokens: new TokenBucket(1, 2) });
+    const ATTACKER = "203.0.113.7";
+    const HOST = "10.0.0.5";
+    for (let i = 0; i < 20; i++)
+      await gate.check(
+        post(newGateToken(), { address: HOLDER }, false, ATTACKER),
+      );
+    expect(
+      (
+        await gate.check(
+          post(newGateToken(), { address: HOLDER }, false, ATTACKER),
+        )
+      ).status,
+    ).toBe(429);
+    // A client-written entry before the proxy's own does not move the key.
+    expect(
+      (
+        await gate.check(
+          post(
+            newGateToken(),
+            { address: HOLDER },
+            false,
+            `${HOST}, ${ATTACKER}`,
+          ),
+        )
+      ).status,
+    ).toBe(429);
+    // The host (first check, not yet verified) still has its own bucket.
+    expect(
+      (await gate.check(post(token, { address: HOLDER }, false, HOST))).status,
+    ).toBe(200);
+  });
+
+  it("slides the verified window: a host checking past 5 minutes still passes an empty bucket", async () => {
+    const start = Date.now();
+    let now = start;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const gate = createGateRoutes(h.deps, {
+      badTokens: new TokenBucket(0, 1, 10, () => now),
+    });
+    expect((await gate.check(post(token, { address: HOLDER }))).status).toBe(
+      200,
+    );
+    // An attacker on the same (global) key empties the bucket for good.
+    await gate.check(post(newGateToken(), { address: HOLDER }));
+    expect(
+      (await gate.check(post(newGateToken(), { address: HOLDER }))).status,
+    ).toBe(429);
+    for (let i = 0; i < 4; i++) {
+      now += 3 * 60_000;
+      expect((await gate.check(post(token, { address: HOLDER }))).status).toBe(
+        200,
+      );
+    }
   });
 
   it("fails with 503 when the licence lookup fails, never logging the token", async () => {
