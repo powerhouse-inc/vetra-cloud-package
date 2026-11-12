@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 
 /**
@@ -108,12 +108,31 @@ export function createAppImageProjectResolver(
   };
 }
 
+/** Whether the App recorded a release or build whose image is in `repository` (no tag). */
+async function releasedFrom(
+  appsDb: Kysely<any>,
+  appId: string,
+  repository: string,
+): Promise<boolean> {
+  try {
+    const row = await appsDb
+      .selectFrom("releases")
+      .select("version")
+      .where("app_id", "=", appId)
+      .where(sql<boolean>`starts_with(image_ref, ${`${repository}:`})`)
+      .executeTakeFirst();
+    return row !== undefined;
+  } catch {
+    return false; // no releases table yet: the App's Harbor project only
+  }
+}
+
 /**
  * An environment Vetra provisioned for a licence (a holder's dedicated env,
  * e.g. a Sektar cloud host) runs its licence's App's image: the
  * `license_environments` row (vetra-licensing tables, written by provisioning,
- * never by the document) names the App, whose Harbor project or registry
- * namespace it may pull from (the document's image only picks which of the
+ * never by the document) names the App, whose Harbor project or own released
+ * repository it may pull from (the document's image only picks which of the
  * two is answered). Missing tables or any failure → null.
  */
 async function licensedImageProject(
@@ -143,19 +162,20 @@ async function licensedImageProject(
     }
     const app = (await appsDb
       .selectFrom("apps")
-      .select(["harbor_project", "registry_namespace"])
+      .select("harbor_project")
       .where("id", "=", appId)
-      .executeTakeFirst()) as
-      | { harbor_project: string | null; registry_namespace: string | null }
-      | undefined;
+      .executeTakeFirst()) as { harbor_project: string | null } | undefined;
     if (!app) return null;
-    // The App's releases (vetra-publish) live in its registry namespace,
-    // claimed for the App's owner in registry_namespaces: the ci/releases
-    // bridge points licensed environments there. Older images stay in the
-    // App's own Harbor project.
-    const project = image?.split("/")[1] ?? null;
-    if (app.registry_namespace && project === app.registry_namespace)
-      return app.registry_namespace;
+    // The App's releases (vetra-publish) live in its registry namespace: the
+    // ci/releases bridge points licensed environments there. Only this App's
+    // own repository is vouched for, proven by a release it recorded
+    // (ci/releases checked image.ref is cr.vetra.io/<namespace>/<slug>), never
+    // the rest of the owner's namespace. A release keeps its repository when
+    // the App is renamed or changes hands. Older images stay in the App's
+    // own Harbor project.
+    if (image && (await releasedFrom(appsDb, appId, image))) {
+      return image.split("/")[1] ?? null;
+    }
     return app.harbor_project ?? null;
   } catch {
     return null;
