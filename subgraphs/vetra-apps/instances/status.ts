@@ -72,6 +72,10 @@ export interface HealthView {
   since: string | null;
   digest: string | null;
   observedDigest: string | null;
+  /** The settings revision the check judged. */
+  settings: string | null;
+  /** The settings revision a ready host pod runs. */
+  observedSettings: string | null;
 }
 
 export const healthView = (r: {
@@ -82,6 +86,8 @@ export const healthView = (r: {
   health_since: string | null;
   health_digest: string | null;
   observed_digest: string | null;
+  health_settings?: string | null;
+  observed_settings?: string | null;
 }): HealthView => ({
   health: r.health,
   check: r.health_check,
@@ -90,6 +96,8 @@ export const healthView = (r: {
   since: r.health_since,
   digest: r.health_digest,
   observedDigest: r.observed_digest,
+  settings: r.health_settings ?? null,
+  observedSettings: r.observed_settings ?? null,
 });
 
 const msOf = (iso: string | null) => (iso ? Date.parse(iso) : Number.NaN);
@@ -102,10 +110,11 @@ const msOf = (iso: string | null) => (iso ? Date.parse(iso) : Number.NaN);
  */
 export function observeHealth(
   state: VetraCloudEnvironmentState,
-  target: { tag: string; digest: string },
+  target: { tag: string; digest: string; settings?: string | null },
   row: {
     update_started_at: string | null;
     running_digest: string | null;
+    running_settings?: string | null;
     status?: string;
   },
   h: HealthView,
@@ -116,7 +125,11 @@ export function observeHealth(
   if (GONE.has(state.status))
     return { kind: "failed", reason: `the environment is ${state.status}` };
   const t = now.getTime();
-  const inFlight = row.running_digest !== target.digest;
+  // With a target revision, new settings on the running digest are an update too.
+  const wantSettings = target.settings ?? null;
+  const settingsMoved =
+    wantSettings !== null && (row.running_settings ?? null) !== wantSettings;
+  const inFlight = row.running_digest !== target.digest || settingsMoved;
   const started = msOf(row.update_started_at);
   const checked = msOf(h.checkedAt);
   const onTarget =
@@ -126,6 +139,7 @@ export function observeHealth(
     h.health !== null &&
     onTarget &&
     h.digest === target.digest &&
+    (wantSettings === null || h.settings === wantSettings) &&
     t - checked <= HEALTH_STALE_MS &&
     (!inFlight || !Number.isFinite(started) || checked > started);
   const label = h.check
@@ -141,6 +155,7 @@ export function observeHealth(
     if (
       h.health === "healthy" &&
       h.observedDigest === target.digest &&
+      (wantSettings === null || h.observedSettings === wantSettings) &&
       forMs >= HEALTH_STABLE_MS
     )
       return { kind: "ready" };

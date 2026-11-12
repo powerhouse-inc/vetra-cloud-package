@@ -8,12 +8,14 @@ import {
   judgeProbes,
   NO_DATA,
   observedDigest,
+  observedSettings,
   STOPPED,
   type HealthVerdict,
   type ProbeResult,
 } from "./health.js";
 import type { HttpProbe } from "./probe.js";
 import { INSTANCE_BASE_DOMAIN, ours } from "./reconciler.js";
+import { settingsRevisionOf } from "./render.js";
 import { listDueForHealth, recordHealth, type InstanceRow } from "./repo.js";
 
 /** An instance is checked at most this often. */
@@ -113,16 +115,18 @@ export async function monitorInstancesOnce(deps: AppsDeps): Promise<number> {
   return checked;
 }
 
-/** When the clock restarts: any change of value or digest, or leaving the STOPPED check. */
+/** When the clock restarts: any change of value, digest or settings revision, or leaving the STOPPED check. */
 function sinceOf(
   row: InstanceRow,
   verdict: HealthVerdict,
   digest: string | null,
+  settings: string | null,
   at: string,
 ): string {
   const changed =
     row.health === null ||
     row.health_digest !== digest ||
+    (row.health_settings ?? null) !== settings ||
     row.health !== verdict.health ||
     (row.health_check === "stopped") !== (verdict.check === "stopped");
   return changed || !row.health_since ? at : row.health_since;
@@ -145,7 +149,13 @@ async function stamp(
     health_check: verdict.check,
     health_reason: verdict.reason,
     health_checked_at: at,
-    health_since: sinceOf(row, verdict, row.health_digest, at),
+    health_since: sinceOf(
+      row,
+      verdict,
+      row.health_digest,
+      row.health_settings ?? null,
+      at,
+    ),
   });
 }
 
@@ -166,12 +176,14 @@ async function checkInstance(
   const version =
     state.services.find((s) => s.type === "FUSION")?.version ?? null;
   const wanted = digestOf(version);
+  const wantedSettings = settingsRevisionOf(state);
   let verdict: HealthVerdict = NO_DATA;
   let restarts: number | null = null;
   let observed: {
     digest: string | null;
     source: "pod" | "document" | null;
   } = { digest: null, source: null };
+  let seenSettings: string | null = null;
 
   if (state.status === "STOPPED") verdict = STOPPED;
   else {
@@ -193,11 +205,15 @@ async function checkInstance(
         reason: "the cluster data is older than 5 minutes",
       };
     else if (cluster) {
-      const judged = judgedPods(cluster.hostPods, wanted);
+      const judged = judgedPods(cluster.hostPods, wanted, wantedSettings);
       restarts = judged.reduce((n, p) => n + p.restartCount, 0);
       observed = observedDigest(cluster.hostPods, wanted, version);
+      seenSettings = observedSettings(cluster.hostPods, wantedSettings);
       const previous =
-        row.health_digest === wanted ? row.health_restarts : null;
+        row.health_digest === wanted &&
+        (row.health_settings ?? null) === wantedSettings
+          ? row.health_restarts
+          : null;
       const fromCluster = judgeCluster(cluster.argo, judged, previous);
       if (fromCluster) verdict = fromCluster;
       else if (deps.probe) {
@@ -216,11 +232,13 @@ async function checkInstance(
     health_check: verdict.check,
     health_reason: verdict.reason,
     health_checked_at: at,
-    health_since: sinceOf(row, verdict, wanted, at),
+    health_since: sinceOf(row, verdict, wanted, wantedSettings, at),
     health_digest: wanted,
     health_restarts: restarts,
     observed_digest: observed.digest,
     observed_digest_source: observed.source,
+    health_settings: wantedSettings,
+    observed_settings: seenSettings,
   });
   return true;
 }
