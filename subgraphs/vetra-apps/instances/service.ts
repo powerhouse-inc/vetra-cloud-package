@@ -10,6 +10,8 @@ export interface InstanceJson {
   planId: string | null;
   /** own: the holder's address. */
   holder: string | null;
+  /** own: the release the publisher pinned it to; rollouts skip it. */
+  pinnedVersion: string | null;
   name: string;
   branch: string | null;
   pr: number | null;
@@ -40,6 +42,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     kind: r.kind,
     planId: r.plan_id ?? null,
     holder: r.holder_address ?? null,
+    pinnedVersion: r.pinned_version ?? null,
     name: r.name,
     branch: r.branch,
     pr: r.pr,
