@@ -729,7 +729,7 @@ describe("monitorInstancesOnce — settings revision", () => {
     expect(await one()).toMatchObject({
       health: "unknown",
       health_check: "pod",
-      health_reason: "no pod runs the target image yet",
+      health_reason: "no pod runs the target image and settings yet",
       health_settings: "r2",
       observed_settings: "r1",
     });

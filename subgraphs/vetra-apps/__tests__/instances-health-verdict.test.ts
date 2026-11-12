@@ -320,8 +320,27 @@ describe("settings revision", () => {
   });
 
   it("observes the wanted revision when a ready pod runs it, else what a ready pod runs", () => {
-    expect(observedSettings([p("r1"), p("r2")], "r2")).toBe("r2");
-    expect(observedSettings([p("r1"), p("r2", false)], "r2")).toBe("r1");
-    expect(observedSettings([p("r1", false)], "r1")).toBeNull();
+    expect(observedSettings([p("r1"), p("r2")], A, "r2")).toBe("r2");
+    expect(observedSettings([p("r1"), p("r2", false)], A, "r2")).toBe("r1");
+    expect(observedSettings([p("r1", false)], A, "r1")).toBeNull();
+  });
+
+  it("observes only pods on the target digest", () => {
+    const onB = pod({
+      settingsRevision: "r2",
+      image: `${REPO}:1.6.0@${B}`,
+      imageId: `${REPO}@${B}`,
+    });
+    expect(observedSettings([onB, p("r1")], A, "r2")).toBe("r1");
+    expect(observedSettings([onB], A, "r2")).toBeNull();
+    expect(observedSettings([onB], B, "r2")).toBe("r2");
+  });
+
+  it("says the settings too when no pod runs the target image and revision", () => {
+    expect(judgeCluster(argo, [], null, "r2")).toEqual({
+      health: "unknown",
+      check: "pod",
+      reason: "no pod runs the target image and settings yet",
+    });
   });
 });

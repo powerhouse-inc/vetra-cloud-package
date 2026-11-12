@@ -208,13 +208,18 @@ async function checkInstance(
       const judged = judgedPods(cluster.hostPods, wanted, wantedSettings);
       restarts = judged.reduce((n, p) => n + p.restartCount, 0);
       observed = observedDigest(cluster.hostPods, wanted, version);
-      seenSettings = observedSettings(cluster.hostPods, wantedSettings);
+      seenSettings = observedSettings(cluster.hostPods, wanted, wantedSettings);
       const previous =
         row.health_digest === wanted &&
         (row.health_settings ?? null) === wantedSettings
           ? row.health_restarts
           : null;
-      const fromCluster = judgeCluster(cluster.argo, judged, previous);
+      const fromCluster = judgeCluster(
+        cluster.argo,
+        judged,
+        previous,
+        wantedSettings,
+      );
       if (fromCluster) verdict = fromCluster;
       else if (deps.probe) {
         const p = await probeHost(

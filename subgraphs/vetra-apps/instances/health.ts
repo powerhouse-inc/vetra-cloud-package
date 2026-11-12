@@ -99,6 +99,7 @@ export function judgeCluster(
   argo: ArgoSnapshot | null,
   judged: PodSnapshot[],
   previousRestarts: number | null,
+  wantedSettings: string | null = null,
 ): HealthVerdict | null {
   if (argo && (argo.drift || argo.syncStatus === "UNKNOWN"))
     return {
@@ -135,7 +136,9 @@ export function judgeCluster(
     return {
       health: "unknown",
       check: "pod",
-      reason: "no pod runs the target image yet",
+      reason: wantedSettings
+        ? "no pod runs the target image and settings yet"
+        : "no pod runs the target image yet",
     };
   if (!judged.every((p) => p.ready && p.phase === "RUNNING"))
     return { health: "unknown", check: "pod", reason: "the pod is starting" };
@@ -209,13 +212,24 @@ export function observedDigest(
   return { digest: digestOf(documentVersion), source: "document" };
 }
 
-/** The settings revision a ready host pod runs: the wanted one when a ready pod has it. */
+/**
+ * The settings revision a ready host pod on the target digest runs: the
+ * wanted one when such a pod has it. A pod on another image says nothing
+ * about the target's settings.
+ */
 export function observedSettings(
   hostPods: PodSnapshot[],
+  wanted: string | null,
   wantedSettings: string | null,
 ): string | null {
   const revs = hostPods
-    .filter((p) => p.ready && p.phase === "RUNNING")
+    .filter(
+      (p) =>
+        p.ready &&
+        p.phase === "RUNNING" &&
+        (wanted === null ||
+          (digestOf(p.imageId) ?? digestOf(p.image)) === wanted),
+    )
     .map((p) => p.settingsRevision ?? null)
     .filter((r): r is string => !!r);
   if (revs.length === 0) return null;
