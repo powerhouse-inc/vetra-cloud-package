@@ -83,6 +83,22 @@ export async function ensureGateToken(
   return out;
 }
 
+/** One rotation per instance per minute (issuing the first token is none). */
+export const GATE_ROTATE_COOLDOWN_MS = 60_000;
+
+function coolDown(
+  t: Pick<GateTokenRow, "created_at" | "rotated_at">,
+  nowMs: number,
+): void {
+  if (t.rotated_at === t.created_at) return;
+  const wait = Date.parse(t.rotated_at) + GATE_ROTATE_COOLDOWN_MS - nowMs;
+  if (wait > 0)
+    throw appsError(
+      "RATE_LIMITED",
+      `The gate token was rotated less than a minute ago; try again in ${Math.ceil(wait / 1000)} s`,
+    );
+}
+
 /**
  * A new gate token for a shared instance (operators and release managers,
  * audited gate.token_rotated). Delivered on the reconciler's next pass as a
@@ -104,18 +120,24 @@ export async function rotateInstanceGateToken(
     );
   const vault = deps.settingsVault;
   if (!vault) throw notConfigured(GATE_VAULT);
-  if (!(await getGateToken(deps.db, row.id)))
+  const nowMs = deps.now().getTime();
+  const have = await getGateToken(deps.db, row.id);
+  if (!have)
     throw appsError("BAD_USER_INPUT", "The instance has no gate token yet");
+  coolDown(have, nowMs);
   const token = newGateToken();
   const next = {
     token_hash: hashGateToken(token),
     token_ciphertext: await vault.encrypt(token),
     token_id: deps.newId(),
   };
-  const nowIso = deps.now().toISOString();
+  const nowIso = new Date(nowMs).toISOString();
   return deps.db.transaction().execute(async (trx) => {
-    if (!(await lockGateToken(trx, row.id)))
+    const cur = await lockGateToken(trx, row.id);
+    if (!cur)
       throw appsError("BAD_USER_INPUT", "The instance has no gate token yet");
+    // Again under the lock: two concurrent rotations make one.
+    coolDown(cur, nowMs);
     const after = await replaceGateToken(trx, row.id, next, nowIso);
     await auditCaller(trx, caller, {
       appId: row.app_id,

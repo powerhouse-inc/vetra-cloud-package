@@ -224,6 +224,7 @@ describe("issuing and rotating gate tokens", () => {
       .updateTable("instance_gate_tokens")
       .set({ delivered_at: "2026-10-02T00:00:00.000Z" })
       .execute();
+    g.advance(60_000);
     const r2 = await rotateInstanceGateToken(g.deps, owner, row.id);
     expect(r2.previous_hash).toBe(r.token_hash);
     const rotated = (await audit()).filter(
@@ -239,6 +240,27 @@ describe("issuing and rotating gate tokens", () => {
       expect(all).not.toContain(x.token_hash);
       expect(all).not.toContain(await fakeVault().decrypt(x.token_ciphertext));
     }
+  });
+
+  it("rotates an instance at most once a minute", async () => {
+    const row = await shared();
+    await ensureGateToken(g.deps, row);
+    // Right after issuing is fine: that was no rotation.
+    const r = await rotateInstanceGateToken(g.deps, owner, row.id);
+    await expect(
+      rotateInstanceGateToken(g.deps, owner, row.id),
+    ).rejects.toMatchObject({ extensions: { code: "RATE_LIMITED" } });
+    g.advance(59_000);
+    await expect(
+      rotateInstanceGateToken(g.deps, owner, row.id),
+    ).rejects.toMatchObject({ extensions: { code: "RATE_LIMITED" } });
+    expect((await getGateToken(g.db, row.id))!.token_id).toBe(r.token_id);
+    g.advance(1_000);
+    const r2 = await rotateInstanceGateToken(g.deps, owner, row.id);
+    expect(r2.token_id).not.toBe(r.token_id);
+    expect(
+      (await audit()).filter((x) => x.action === "gate.token_rotated"),
+    ).toHaveLength(2);
   });
 
   it("refuses strangers, own instances, shared ones without a token, and works only with the vault", async () => {

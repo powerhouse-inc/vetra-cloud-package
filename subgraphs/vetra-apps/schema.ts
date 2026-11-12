@@ -511,7 +511,7 @@ export const schema: DocumentNode = gql`
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!
     removeAppRole(appId: ID!, address: String!, role: String): Boolean!
-    "A new licence gate token for a shared instance, delivered on the next pass; the old one works until 15 minutes after that"
+    "A new licence gate token for a shared instance (at most once a minute, else RATE_LIMITED), delivered on the next pass; the old one works until 15 minutes after the instance runs the new one"
     rotateInstanceGateToken(instanceId: ID!): AppInstance!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
     openAppSetupPullRequest(appId: ID!): String!
