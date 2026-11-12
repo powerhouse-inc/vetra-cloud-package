@@ -61,12 +61,15 @@ export interface InstanceSettingsEnv {
   revision: string;
   plain: Array<{ name: string; value: string }>;
   secretNames: string[];
+  /** Secrets Vetra writes by other paths (AI key, reporting token); declared after the generated ones. */
+  vetraSecretNames?: string[];
 }
 
 export const envSettings = (s: InstanceSettings): InstanceSettingsEnv => ({
   revision: s.revision,
   plain: s.plain,
   secretNames: s.secrets.map((x) => x.name),
+  vetraSecretNames: s.vetraSecrets,
 });
 
 /**
@@ -89,7 +92,11 @@ export function fusionEnv(
       isSecret: false,
     })),
     { name: SETTINGS_REVISION_ENV, value: settings.revision, isSecret: false },
-    ...[...VETRA_GENERATED_SECRETS, ...settings.secretNames].map((name) => ({
+    ...[
+      ...VETRA_GENERATED_SECRETS,
+      ...[...(settings.vetraSecretNames ?? [])].sort(),
+      ...settings.secretNames,
+    ].map((name) => ({
       name,
       value: null,
       isSecret: true,

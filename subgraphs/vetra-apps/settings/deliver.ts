@@ -2,11 +2,12 @@ import { randomBytes } from "node:crypto";
 import { notConfigured } from "../errors.js";
 import type { AppsDeps } from "../service.js";
 import { VETRA_GENERATED_SECRETS } from "./names.js";
-import type { InstanceSettings } from "./resolve.js";
+import type { InstanceSettings, ResolvedSecret } from "./resolve.js";
 
 /**
  * Writes an instance's secrets to its tenant (spec 5 and 14.2): Vetra's
- * generated keys once (never replaced), the publisher's secrets in one batch,
+ * generated keys once (never replaced), the publisher's and the holder's
+ * secrets in one batch,
  * secrets the environment declared but no longer wants deleted, then a notify
  * so the controller materializes <tenant>-secrets now (its namespace may only
  * now exist). Values exist in plaintext only in this call.
@@ -24,18 +25,26 @@ export async function deliverSettings(
       randomBytes(32).toString("hex"),
     );
   if (settings.secrets.length > 0) {
-    const vault = deps.settingsVault;
-    if (!vault) throw notConfigured("Secret settings (OPENBAO_ADDR)");
+    const vaultOf = (s: ResolvedSecret) => {
+      // Holder secrets are under their own transit key (instance-settings).
+      const vault =
+        s.vault === "holder" ? deps.holderVault : deps.settingsVault;
+      if (!vault) throw notConfigured("Secret settings (OPENBAO_ADDR)");
+      return vault;
+    };
     const entries = await Promise.all(
       settings.secrets.map(async (s) => ({
         key: s.name,
-        value: await vault.decrypt(s.ciphertext),
+        value: await vaultOf(s).decrypt(s.ciphertext),
       })),
     );
     await secrets.setSecrets(tenantId, entries);
   }
+  // Vetra's per-instance secrets (AI key, reporting token) are written by
+  // their own paths: never written or deleted here.
   const wanted = new Set([
     ...VETRA_GENERATED_SECRETS,
+    ...settings.vetraSecrets,
     ...settings.secrets.map((s) => s.name),
   ]);
   for (const name of declared)

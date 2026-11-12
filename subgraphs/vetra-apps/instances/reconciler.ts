@@ -40,7 +40,11 @@ import {
 } from "./render.js";
 import { deliverSettings } from "../settings/deliver.js";
 import { listAppSettings } from "../settings/repo.js";
-import { settingsForKind, type InstanceSettings } from "../settings/resolve.js";
+import {
+  settingsForInstance,
+  type InstanceSettings,
+} from "../settings/resolve.js";
+import { listInstanceSettings } from "../settings/holder-repo.js";
 import {
   deleteInstance,
   getInstance,
@@ -211,9 +215,14 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
       );
     }
   }
-  // Read once per pass: every instance of a kind gets the same revision.
+  // Read once per pass: every instance of a kind gets the same App layers;
+  // own instances add their holder's (one query for all of them).
   const settingRows = await listAppSettings(deps.db, app.id);
   const rows = await listInstances(deps.db, app.id);
+  const holderRows = await listInstanceSettings(
+    deps.db,
+    rows.filter((r) => r.kind === "own").map((r) => r.id),
+  );
   // Removals first: an evicted preview frees its place before a new one is
   // created (spec 14.13). Array.prototype.sort is stable.
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
@@ -224,7 +233,12 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         deps,
         app,
         row,
-        settingsForKind(settingRows, row.kind),
+        settingsForInstance(
+          settingRows,
+          holderRows.get(row.id) ?? [],
+          row.kind,
+          vetraSecretsOf(app, row),
+        ),
       );
     } catch (err) {
       // One bad instance never stops the others.
@@ -272,6 +286,14 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
+
+/**
+ * Secret names Vetra writes to an instance's tenant by other paths (the AI
+ * key and the reporting token, plan 7 Tasks 10-11). None yet.
+ */
+export function vetraSecretsOf(_app: AppRow, _row: InstanceRow): string[] {
+  return [];
+}
 
 /** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
 export function adminsOf(app: AppRow, row: InstanceRow): string {

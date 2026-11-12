@@ -133,6 +133,8 @@ export const schema: DocumentNode = gql`
     "pod | document (the environment's tag, while the pod reports no imageID)"
     observedDigestSource: String
     environmentId: String
+    "own: how many settings its holder set (their names stay the holder's)"
+    holderSettingsCount: Int!
     updatedAt: String!
   }
 
