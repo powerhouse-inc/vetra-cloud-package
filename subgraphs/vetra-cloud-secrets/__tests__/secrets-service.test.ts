@@ -172,6 +172,21 @@ describe("ensureSecret (managed secrets)", () => {
     await notifyDb.destroy();
   });
 
+  it("notifyTenant notifies the controller without writing anything", async () => {
+    const pglite = new PGlite();
+    const notifyDb = new Kysely<SecretsDB>({ dialect: new PGliteDialect(pglite) });
+    await up(notifyDb);
+    const notified: string[] = [];
+    await pglite.listen(NOTIFY_CHANNEL, (payload) => notified.push(payload));
+    const s = createSecretsService({ db: notifyDb, transit: mockTransit });
+    await s.notifyTenant("tenant-a");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(notified).toEqual(["tenant-a"]);
+    expect(await s.listSecretKeys("tenant-a")).toEqual([]);
+    expect(await s.listEnvVars("tenant-a")).toEqual([]);
+    await notifyDb.destroy();
+  });
+
   it("is scoped per tenant", async () => {
     await service.ensureSecret("tenant-a", WORKFLOWS_MASTER_KEY, () => "a");
     expect(

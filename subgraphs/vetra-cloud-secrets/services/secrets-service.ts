@@ -190,6 +190,12 @@ export interface SecretsService {
    */
   purgeTenant(tenantId: string): Promise<{ envVars: number; secrets: number }>;
   /**
+   * Ask the controller to (re)materialize a tenant's ConfigMap/Secret without
+   * writing anything: its namespace may only now exist (rows written before
+   * it did were skipped until the 5-minute sweep).
+   */
+  notifyTenant(tenantId: string): Promise<void>;
+  /**
    * Replace a tenant's whole configuration: every env var and every secret
    * not in `entries` is deleted (managed secrets such as the workflows master
    * key are kept), the entries are written (secrets encrypted first), in one
@@ -503,6 +509,10 @@ export function createSecretsService({
 
     async purgeTenant(tenantId) {
       return purgeTenantRows(db, tenantId);
+    },
+
+    async notifyTenant(tenantId) {
+      await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(db);
     },
   };
 }
