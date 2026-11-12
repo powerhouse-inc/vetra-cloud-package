@@ -152,6 +152,7 @@ describe("gate config", () => {
     VETRA_APPS_GATE_URL:
       "https://switchboard.staging.vetra.io/api/@powerhousedao/vetra-cloud-package/apps/gate/check",
     VETRA_APPS_GATE_MIN_POWERHOUSE: "6.2.3-dev.102",
+    OPENBAO_ADDR: "http://openbao:8200",
   };
   it("is off by default and needs nothing then", () => {
     expect(gateConfigOf(loadAppsConfig({}))).toEqual({
@@ -169,6 +170,18 @@ describe("gate config", () => {
       url: base.VETRA_APPS_GATE_URL,
       minPowerhouse: "6.2.3-dev.102",
     });
+  });
+  it("refuses to start when on without the settings vault (OPENBAO_ADDR)", () => {
+    const { OPENBAO_ADDR: _drop, ...noVault } = base;
+    expect(() => loadAppsConfig({ VETRA_APPS_GATE: "on", ...noVault })).toThrow(
+      /OPENBAO_ADDR/,
+    );
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_GATE: "on", ...noVault, OPENBAO_ADDR: " " }),
+    ).toThrow(/OPENBAO_ADDR/);
+    expect(
+      gateConfigOf(loadAppsConfig({ VETRA_APPS_GATE: "off", ...noVault })),
+    ).toEqual({ enabled: false, url: null, minPowerhouse: null });
   });
   it("refuses to start when on without a URL or floor, or with bad values", () => {
     expect(() => loadAppsConfig({ VETRA_APPS_GATE: "on" })).toThrow(

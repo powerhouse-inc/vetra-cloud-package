@@ -176,7 +176,7 @@ function plansConfig(env: Env): PlansConfig {
   };
 }
 
-/** Off unless VETRA_APPS_GATE is on; then the URL and the Powerhouse floor are required (startup error otherwise). */
+/** Off unless VETRA_APPS_GATE is on; then the URL, the Powerhouse floor and OPENBAO_ADDR are required (startup error otherwise). */
 function gateConfig(env: Env): GateConfig {
   const raw = (trimmed(env.VETRA_APPS_GATE) ?? "").toLowerCase();
   if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
@@ -211,6 +211,12 @@ function gateConfig(env: Env): GateConfig {
   if (!parseVersion(min))
     throw new Error(
       `VETRA_APPS_GATE_MIN_POWERHOUSE "${min}" is not a semver version`,
+    );
+  // Gate tokens are kept under the settings vault's transit key and reach
+  // tenants through the tenant secrets: both need OpenBao.
+  if (!trimmed(env.OPENBAO_ADDR))
+    throw new Error(
+      "VETRA_APPS_GATE=on needs OPENBAO_ADDR (gate tokens are kept and delivered through the settings vault)",
     );
   return { enabled: true, url, minPowerhouse: min };
 }
