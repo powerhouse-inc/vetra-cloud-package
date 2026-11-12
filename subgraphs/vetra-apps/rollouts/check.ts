@@ -15,12 +15,27 @@ export interface ReleaseRequires {
   size?: string;
 }
 
-export function requiresOf(r: Pick<ReleaseRow, "requires">): ReleaseRequires {
+const strings = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every((x) => typeof x === "string");
+
+/** The release's requires; null when it is not JSON of that shape (never read as none). */
+export function requiresOf(
+  r: Pick<ReleaseRow, "requires">,
+): ReleaseRequires | null {
+  let v: unknown;
   try {
-    return (JSON.parse(r.requires) as ReleaseRequires | null) ?? {};
+    v = JSON.parse(r.requires);
   } catch {
-    return {};
+    return null;
   }
+  if (v === null) return {};
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (o.services !== undefined && !strings(o.services)) return null;
+  if (o.size !== undefined && typeof o.size !== "string") return null;
+  if (o.powerhouse !== undefined && typeof o.powerhouse !== "string")
+    return null;
+  return o as ReleaseRequires;
 }
 
 /** Why `version` cannot be a plan's target (spec section 2, 14.3), or null. */
@@ -66,6 +81,8 @@ export function planFitProblem(
   gateMin: string | null = LICENCE_GATE_MIN_POWERHOUSE,
 ): string | null {
   const req = requiresOf(r);
+  // Fail closed: what a release needs is never guessed.
+  if (!req) return `${r.version}'s requires cannot be read`;
   const services = req.services ?? [];
   if (services.length > 0)
     return `${r.version} needs ${services.join(", ")}; plan instances run the App's host only`;

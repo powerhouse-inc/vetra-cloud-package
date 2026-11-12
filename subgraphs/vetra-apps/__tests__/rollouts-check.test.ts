@@ -79,4 +79,20 @@ describe("rollout checks (spec 7 step 1, 14.3)", () => {
     expect(powerhouseAtLeast("6.3.0-dev.152", "6.3.0")).toBe(true);
     expect(powerhouseAtLeast("6.2.9", "6.3.0")).toBe(false);
   });
+
+  it("refuses a release whose requires cannot be read, rather than reading it as no requirements", () => {
+    for (const requires of [
+      "{not json",
+      "[]",
+      '"S"',
+      '{"services":"DOCLING"}',
+      '{"services":[1]}',
+      '{"size":3}',
+      '{"powerhouse":6}',
+    ])
+      expect(planFitProblem(rel({ requires }), pro)).toMatch(
+        /1.5.0's requires cannot be read/,
+      );
+    expect(planFitProblem(rel({ requires: "null" }), pro)).toBeNull();
+  });
 });
