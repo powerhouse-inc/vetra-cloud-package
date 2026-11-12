@@ -281,6 +281,34 @@ describe("instance settings", () => {
     expect((await one()).status).toBe("updating"); // a new revision is tried
   });
 
+  it("a failed image and settings update goes back to the image only, and says the settings were kept", async () => {
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+
+    await set("FOO", "2");
+    await seedRelease(h, appId, {
+      version: "1.5.0-main.2",
+      run: 200,
+      digest: digest("b"),
+    });
+    await reconcileInstancesOnce(h.deps);
+    h.envs.setStatus(envId, "DEPLOYMENt_FAILED");
+    await reconcileInstancesOnce(h.deps);
+    const row = await one();
+    expect(row).toMatchObject({
+      status: "failed",
+      reason: `the deployment failed (settings kept: ${row.target_settings})`,
+      failed_digest: digest("b"),
+    });
+    expect(await version()).toBe(`1.5.0-main.1@${digest("a")}`);
+    expect((await envValue("FOO"))!.value).toBe("2");
+    expect((await envValue("VETRA_SETTINGS_REVISION"))!.value).toBe(
+      row.target_settings,
+    );
+  });
+
   it("purges the tenant's secrets when the instance goes", async () => {
     await reconcileInstancesOnce(h.deps);
     const t = await tenant();

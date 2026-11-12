@@ -854,15 +854,20 @@ async function reconcileEnvironment(
   }
   // Failed: keep the target from being retried, and go back to what ran (spec section 6).
   const settingsOnly = row.running_digest === row.target_digest;
+  // Null when only the settings changed: old secret values are not kept, nothing to go back to.
+  const back = revertImage(row);
+  // The revert goes back to the image only: new settings stay, say so.
+  const kept =
+    back && row.running_settings !== settings.revision
+      ? ` (settings kept: ${settings.revision})`
+      : "";
   await patch(deps, row, {
     status: "failed",
     reason: settingsOnly
       ? `${AFTER_SETTINGS_CHANGE}: ${seen.reason}`
-      : seen.reason,
+      : `${seen.reason}${kept}`,
     ...failure(row, settings),
   });
-  // Null when only the settings changed: old secret values are not kept, nothing to go back to.
-  const back = revertImage(row);
   if (back) {
     const revert = instanceUpdateActions(state, back, app.owner_address, want);
     if (revert.length > 0) await apply(deps, envId, revert);
