@@ -1,3 +1,4 @@
+import { auditCaller } from "../audit/service.js";
 import type { Caller } from "../auth.js";
 import type { AppSettingScope } from "../db/schema.js";
 import { appsError, notConfigured } from "../errors.js";
@@ -80,14 +81,15 @@ function scopeOf(s: AppSettingScopeName | null | undefined): AppSettingScope {
 
 /**
  * The App's settings (spec 14.2) and the ones Vetra sets itself. Operators
- * only: plain values may be private. Secrets come back as names and metadata.
+ * and release managers only: plain values may be private. Secrets come back as
+ * names and metadata.
  */
 export async function appSettingsFor(
   deps: AppsDeps,
   caller: Caller,
   appId: string,
 ): Promise<AppSettingsJson> {
-  const app = await loadAppForOwner(deps, caller, appId);
+  const app = await loadAppForOwner(deps, caller, appId, { need: "release" });
   const rows = await listAppSettings(deps.db, app.id);
   rows.sort(
     (a, b) =>
@@ -108,7 +110,9 @@ export async function setAppSetting(
   caller: Caller,
   input: SetAppSettingInput,
 ): Promise<AppSettingJson> {
-  const app = await loadAppForOwner(deps, caller, input.appId);
+  const app = await loadAppForOwner(deps, caller, input.appId, {
+    need: "release",
+  });
   const scope = scopeOf(input.scope);
   try {
     checkSettingName(input.name);
@@ -161,6 +165,19 @@ export async function setAppSetting(
         `An App has at most ${MAX_SETTINGS_PER_APP} settings; delete one first`,
       );
     await upsertAppSetting(trx, row);
+    // Never the value: the audit log is readable by every viewer of the App.
+    await auditCaller(trx, caller, {
+      appId: app.id,
+      at: row.updated_at,
+      action: "setting.set",
+      subject: `setting:${FROM_SCOPE[scope]}/${row.name}`,
+      detail: {
+        name: row.name,
+        scope: FROM_SCOPE[scope],
+        secret: row.secret,
+        replaced: replaces,
+      },
+    });
   });
   // Names only: values never reach a log.
   deps.logger.info(
@@ -177,9 +194,20 @@ export async function deleteAppSetting(
   name: string,
   scope?: AppSettingScopeName | null,
 ): Promise<boolean> {
-  const app = await loadAppForOwner(deps, caller, appId);
+  const app = await loadAppForOwner(deps, caller, appId, { need: "release" });
   const s = scopeOf(scope);
-  const deleted = await deleteRow(deps.db, app.id, s, name);
+  const deleted = await deps.db.transaction().execute(async (trx) => {
+    const gone = await deleteRow(trx, app.id, s, name);
+    if (gone)
+      await auditCaller(trx, caller, {
+        appId: app.id,
+        at: deps.now().toISOString(),
+        action: "setting.deleted",
+        subject: `setting:${FROM_SCOPE[s]}/${name}`,
+        detail: { name, scope: FROM_SCOPE[s] },
+      });
+    return gone;
+  });
   if (deleted)
     deps.logger.info(
       `[vetra-apps] setting ${name} (${s}) of ${app.slug} deleted by ${caller.address}`,
