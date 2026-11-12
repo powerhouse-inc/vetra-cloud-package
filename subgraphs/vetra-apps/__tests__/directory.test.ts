@@ -149,6 +149,37 @@ describe("app directory", () => {
     expect(runsApp(row({ id: "i", fusion: fusion("cr.vetra.io/app-sektar/app") }), APP, { packages: [], imagePrefix: null })).toBe(false);
   });
 
+  it("never lists a PLAN environment through its owner: only its holders see it", async () => {
+    const plan = row({ id: "plan-env", appId: APP, appRole: "PLAN", fusion: JSON.stringify({ image: "cr.vetra.io/app-sektar/app" }) });
+    const pkgs = { packages: [PKG], imagePrefix: "cr.vetra.io/app-sektar/" };
+    expect(runsApp(plan, APP, pkgs)).toBe(false);
+    expect(await listDirectory(deps([plan], { "plan-env": hostState("plan-env") }), ME, APP)).toStrictEqual([]);
+  });
+
+  it("appends the caller's plan instances (holderInstances), with their URL and the environment's status, once each", async () => {
+    const d = deps([row({ id: "mine", appId: APP, appRole: "PRODUCTION" })], {
+      mine: state("calm-bat"),
+      "own-env": hostState("own-host"),
+      "shared-env": { ...hostState("shared-host"), status: "STOPPED" },
+    });
+    const asked: Array<[string, string]> = [];
+    d.holderInstances = async (appId, address) => {
+      asked.push([appId, address]);
+      return [
+        { environmentId: "own-env", name: "Sektar Pro", url: "https://frank.sektar.app", status: "ready" },
+        { environmentId: "shared-env", name: "Sektar Starter", url: "https://shared-host.vetra.io", status: "stopped" },
+        { environmentId: "mine", name: "dup", url: "https://dup", status: "ready" },
+      ];
+    };
+    const out = await listDirectory(d, ME.toUpperCase().replace("0X", "0x"), APP);
+    expect(asked).toStrictEqual([[APP, ME]]);
+    expect(out).toStrictEqual([
+      { environmentId: "mine", name: "calm-bat", connectUrl: "https://calm-bat-connect.vetra.io", kind: "vetra", status: "READY" },
+      { environmentId: "own-env", name: "Sektar Pro", connectUrl: "https://frank.sektar.app", kind: "vetra", status: "READY" },
+      { environmentId: "shared-env", name: "Sektar Starter", connectUrl: "https://shared-host.vetra.io", kind: "vetra", status: "STOPPED" },
+    ]);
+  });
+
   it("lists nothing for an organisation env when Renown is unreachable", async () => {
     const d = deps([row({ id: "org", owner: OTHER, ownerOrgId: "org-mine", appId: APP })], { org: state("o") });
     d.orgs = { membership: async () => { throw new Error("down"); } } as DirectoryDeps["orgs"];

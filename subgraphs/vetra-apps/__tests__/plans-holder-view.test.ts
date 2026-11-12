@@ -10,7 +10,8 @@ import {
 import { digest, seedLicence, seedRelease } from "./instances-fixtures.js";
 import { reconcileInstancesOnce } from "../instances/reconciler.js";
 import { insertPlan } from "../plans/repo.js";
-import { myInstancesFor } from "../plans/holder-view.js";
+import { holderInstancesFor, myInstancesFor } from "../plans/holder-view.js";
+import { publicHostOf, publicUrlOf } from "../instances/public-host.js";
 import type { Caller } from "../auth.js";
 import { instanceJson } from "../instances/service.js";
 import { listInstances } from "../instances/repo.js";
@@ -120,5 +121,80 @@ describe("AppInstance", () => {
       planId: null,
       holder: null,
     });
+  });
+});
+
+describe("holderInstancesFor (the App directory)", () => {
+  it("lists the holder's own instance and the shared instances of their live kinds, with environments", async () => {
+    const out = await holderInstancesFor(h.deps, appId, HOLDER.toUpperCase());
+    const rows = await listInstances(h.db, appId);
+    const ownRow = rows.find((r) => r.kind === "own")!;
+    const sharedRow = rows.find((r) => r.kind === "shared")!;
+    expect(out).toEqual([
+      {
+        environmentId: ownRow.environment_id,
+        name: "Shop (Pro)",
+        url: publicUrlOf(ownRow),
+        status: ownRow.status,
+      },
+      {
+        environmentId: sharedRow.environment_id,
+        name: "Shop (Starter)",
+        url: publicUrlOf(sharedRow),
+        status: sharedRow.status,
+      },
+    ]);
+    expect(out[0].url).toMatch(/^https:\/\/.+\.vetra\.io$/);
+  });
+
+  it("lists nothing for a stranger, another App, or a lapsed holder's shared plan", async () => {
+    expect(await holderInstancesFor(h.deps, appId, stranger.address)).toEqual(
+      [],
+    );
+    expect(await holderInstancesFor(h.deps, "other-app", HOLDER)).toEqual([]);
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "EXPIRED" })
+      .where("license_id", "=", "l2")
+      .execute();
+    expect(
+      (await holderInstancesFor(h.deps, appId, HOLDER)).map((i) => i.name),
+    ).toEqual(["Shop (Pro)"]);
+  });
+
+  it("lists nothing of a deleted App or a removed instance", async () => {
+    await h.db
+      .updateTable("instances")
+      .set({ status: "removed" })
+      .where("kind", "=", "own")
+      .execute();
+    expect(
+      (await holderInstancesFor(h.deps, appId, HOLDER)).map((i) => i.name),
+    ).toEqual(["Shop (Starter)"]);
+    await h.db
+      .updateTable("apps")
+      .set({ status: "DELETED" })
+      .where("id", "=", appId)
+      .execute();
+    expect(await holderInstancesFor(h.deps, appId, HOLDER)).toEqual([]);
+  });
+});
+
+describe("publicHostOf", () => {
+  const r = { host: "frank-pro", custom_domain: "frank.sektar.app" };
+  it("is the custom domain once active, else the generated host", () => {
+    expect(publicHostOf({ ...r, custom_domain_status: "active" })).toBe(
+      "frank.sektar.app",
+    );
+    for (const st of ["dns", "issuing", "failed", null])
+      expect(publicHostOf({ ...r, custom_domain_status: st })).toBe(
+        "frank-pro.vetra.io",
+      );
+    expect(publicHostOf({ host: "frank-pro" })).toBe("frank-pro.vetra.io");
+    expect(publicHostOf({ host: null })).toBeNull();
+    expect(publicUrlOf({ ...r, custom_domain_status: "active" })).toBe(
+      "https://frank.sektar.app",
+    );
+    expect(publicUrlOf({ host: null })).toBeNull();
   });
 });

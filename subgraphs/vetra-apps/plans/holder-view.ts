@@ -1,5 +1,6 @@
 import type { Caller } from "../auth.js";
-import { INSTANCE_BASE_DOMAIN } from "../instances/reconciler.js";
+import type { HolderDirectoryEntry } from "../directory.js";
+import { publicUrlOf } from "../instances/public-host.js";
 import type { AppsDeps } from "../service.js";
 import { liveKindsOfHolder } from "./holders.js";
 
@@ -63,6 +64,61 @@ export async function myInstancesFor(
     );
   return [...own, ...shared].map(({ host, ...r }) => ({
     ...r,
-    url: host ? `https://${host}.${INSTANCE_BASE_DOMAIN}` : null,
+    url: publicUrlOf({ host }),
+  }));
+}
+
+/**
+ * The App directory's plan instances for `address` ("Open your Sektar"): its
+ * own instances of the App, and the App's shared instances of the plan kinds
+ * it holds live. Not removed, of a live App, with an environment. Holder-only:
+ * the service identity owns these documents, so the owner path never lists
+ * them (directory.ts runsApp).
+ */
+export async function holderInstancesFor(
+  deps: AppsDeps,
+  appId: string,
+  address: string,
+): Promise<HolderDirectoryEntry[]> {
+  if (!deps.licensingDb) return [];
+  const holder = address.toLowerCase();
+  const base = () =>
+    deps.db
+      .selectFrom("instances")
+      .innerJoin("plans", "plans.id", "instances.plan_id")
+      .innerJoin("apps", "apps.id", "instances.app_id")
+      .select([
+        "instances.environment_id as environmentId",
+        "apps.name as appName",
+        "plans.name as planName",
+        "instances.host as host",
+        "instances.status as status",
+      ])
+      .where("instances.app_id", "=", appId)
+      .where("instances.status", "!=", "removed")
+      .where("instances.environment_id", "is not", null)
+      .where("apps.status", "!=", "DELETED");
+  const own = await base()
+    .where("instances.kind", "=", "own")
+    .where("instances.holder_address", "=", holder)
+    .orderBy("instances.created_at")
+    .execute();
+  const kinds = (
+    await liveKindsOfHolder(deps.licensingDb, holder, deps.now().toISOString())
+  ).filter((k) => k.appId === appId);
+  const shared: typeof own = [];
+  for (const k of kinds)
+    shared.push(
+      ...(await base()
+        .where("instances.kind", "=", "shared")
+        .where("plans.access", "=", "shared")
+        .where("plans.kind", "=", k.kind)
+        .execute()),
+    );
+  return [...own, ...shared].map((r) => ({
+    environmentId: r.environmentId!,
+    name: `${r.appName} (${r.planName})`,
+    url: publicUrlOf(r),
+    status: r.status,
   }));
 }

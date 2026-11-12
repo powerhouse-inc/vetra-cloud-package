@@ -1,6 +1,6 @@
 import type { Caller } from "../auth.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { INSTANCE_BASE_DOMAIN } from "./reconciler.js";
+import { publicUrlOf } from "./public-host.js";
 import { listInstances, type InstanceRow } from "./repo.js";
 
 export interface InstanceJson {
@@ -46,7 +46,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     name: r.name,
     branch: r.branch,
     pr: r.pr,
-    url: r.host ? `https://${r.host}.${INSTANCE_BASE_DOMAIN}` : null,
+    url: publicUrlOf(r),
     status: r.status,
     reason: r.reason,
     targetVersion: r.target_version,

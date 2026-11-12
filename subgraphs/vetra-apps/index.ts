@@ -66,6 +66,7 @@ import {
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
+import { holderInstancesFor } from "./plans/holder-view.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
@@ -349,6 +350,11 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         candidates: candidatesIn(envReadModel),
         getState: (id: string) => deps.envs.getState(id),
         orgs: deps.orgs ?? null,
+        // Holders find their plan instances ("Open your Sektar").
+        holderInstances: deps.licensingDb
+          ? (appId: string, address: string) =>
+              holderInstancesFor(deps, appId, address)
+          : undefined,
       };
       this.routeHandles.push(
         this.http.get(
