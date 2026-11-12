@@ -4,6 +4,7 @@ import {
   DEFAULT_PLANS,
   loadAppsConfig,
   plansConfigOf,
+  switchoverConfigOf,
 } from "../config.js";
 
 describe("Studio Apps config", () => {
@@ -143,5 +144,58 @@ describe("plans config", () => {
       VETRA_APPS_PLANS: "on",
     });
     expect(plansConfigOf(rest)).toEqual(DEFAULT_PLANS);
+  });
+});
+
+describe("switch-over config", () => {
+  it("is off by default, with the plan's defaults", () => {
+    expect(loadAppsConfig({}).switchover).toStrictEqual({
+      enabled: false,
+      leadHours: 24,
+      holdDays: 30,
+      confirmHours: 72,
+      restoreJobs: 4,
+    });
+  });
+  it("reads the switch and the numbers", () => {
+    const c = loadAppsConfig({
+      VETRA_APPS_SWITCHOVER: "on",
+      VETRA_APPS_SWITCHOVER_LEAD_HOURS: "6",
+      VETRA_APPS_SWITCHOVER_HOLD_DAYS: "45",
+      VETRA_APPS_SWITCHOVER_CONFIRM_HOURS: "48",
+      VETRA_APPS_SWITCHOVER_RESTORE_JOBS: "2",
+    }).switchover;
+    expect(c).toStrictEqual({
+      enabled: true,
+      leadHours: 6,
+      holdDays: 45,
+      confirmHours: 48,
+      restoreJobs: 2,
+    });
+  });
+  it("refuses a bad switch value and non-positive numbers", () => {
+    expect(() => loadAppsConfig({ VETRA_APPS_SWITCHOVER: "maybe" })).toThrow(
+      /VETRA_APPS_SWITCHOVER/,
+    );
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_SWITCHOVER_HOLD_DAYS: "0" }),
+    ).toThrow(/HOLD_DAYS/);
+  });
+  it("is off whenever plans are off", () => {
+    expect(
+      switchoverConfigOf(loadAppsConfig({ VETRA_APPS_SWITCHOVER: "on" })).enabled,
+    ).toBe(false);
+    expect(
+      switchoverConfigOf(
+        loadAppsConfig({ VETRA_APPS_SWITCHOVER: "on", VETRA_APPS_PLANS: "on" }),
+      ).enabled,
+    ).toBe(true);
+  });
+  it("reads a config without a switch-over block as off", () => {
+    const { switchover: _drop, ...rest } = loadAppsConfig({
+      VETRA_APPS_SWITCHOVER: "on",
+      VETRA_APPS_PLANS: "on",
+    });
+    expect(switchoverConfigOf(rest).enabled).toBe(false);
   });
 });
