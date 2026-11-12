@@ -57,9 +57,14 @@ export async function seedLicence(
     root?: string;
     status?: string;
     endAt?: string | null;
+    createdAt?: string;
+    /** Leave out the license_chain row (a licence the chain table never got). */
+    noChain?: boolean;
+    /** Leave out the license_lifecycle row. */
+    noLifecycle?: boolean;
   },
 ): Promise<void> {
-  const at = "2026-10-01T00:00:00.000Z";
+  const at = o.createdAt ?? "2026-10-01T00:00:00.000Z";
   await lic(h)
     .insertInto("app_license_grants")
     .values({
@@ -73,32 +78,39 @@ export async function seedLicence(
       user_did: `did:pkh:eip155:1:${o.holder.toLowerCase()}`,
     })
     .execute();
-  await lic(h)
-    .insertInto("license_chain")
-    .values({
-      license_id: o.licenseId,
-      root_license_id: o.root ?? o.licenseId,
-      app_id: o.appId,
-      label: null,
-      created_at: at,
-    })
-    .execute();
-  await lic(h)
-    .insertInto("license_lifecycle")
-    .values({
-      license_id: o.licenseId,
-      status: o.status ?? "ACTIVE",
-      end_at: o.endAt ?? null,
-      replaced_by: null,
-      updated_at: at,
-    })
-    .execute();
+  if (!o.noChain)
+    await lic(h)
+      .insertInto("license_chain")
+      .values({
+        license_id: o.licenseId,
+        root_license_id: o.root ?? o.licenseId,
+        app_id: o.appId,
+        label: null,
+        created_at: at,
+      })
+      .execute();
+  if (!o.noLifecycle)
+    await lic(h)
+      .insertInto("license_lifecycle")
+      .values({
+        license_id: o.licenseId,
+        status: o.status ?? "ACTIVE",
+        end_at: o.endAt ?? null,
+        replaced_by: null,
+        updated_at: at,
+      })
+      .execute();
 }
 
 /** A licensed environment of the old model for a chain (Sektar's kind of row). */
 export async function seedLicensedEnvironment(
   h: Harness,
-  o: { appId: string; root: string; environmentId?: string },
+  o: {
+    appId: string;
+    root: string;
+    environmentId?: string;
+    endedAt?: string | null;
+  },
 ): Promise<void> {
   const at = "2026-10-01T00:00:00.000Z";
   await lic(h)
@@ -112,7 +124,7 @@ export async function seedLicensedEnvironment(
       template_id: "template-1",
       label: null,
       template_hash: "h",
-      ended_at: null,
+      ended_at: o.endedAt ?? null,
       stopped_at: null,
       delete_after: null,
       created_at: at,

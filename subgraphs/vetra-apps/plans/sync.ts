@@ -16,6 +16,7 @@ import {
   chainKinds,
   licensedRoots,
   liveChains,
+  type ChainEntry,
   type ChainHead,
 } from "./holders.js";
 import { listPlans, type PlanRow } from "./repo.js";
@@ -104,18 +105,23 @@ async function ownPlanResolver(
 ): Promise<(head: ChainHead) => PlanRow | undefined> {
   const byKind = new Map(plans.map((p) => [p.kind, p]));
   const own = (p: PlanRow | undefined) => (p?.access === "own" ? p : undefined);
-  const needsHistory =
-    plans.some((p) => p.access === "own") &&
-    [...live.values()].some((h) => !h.kind || !byKind.has(h.kind));
+  // Only chains whose head is of no plan's kind need their history.
+  const roots = plans.some((p) => p.access === "own")
+    ? [...live.values()]
+        .filter((h) => !h.kind || !byKind.has(h.kind))
+        .map((h) => h.root)
+    : [];
   const history =
-    needsHistory && deps.licensingDb
-      ? await chainKinds(deps.licensingDb, app.id)
-      : new Map<string, Array<string | null>>();
+    roots.length > 0 && deps.licensingDb
+      ? await chainKinds(deps.licensingDb, app.id, roots)
+      : new Map<string, ChainEntry[]>();
   return (head) => {
     if (head.kind && byKind.has(head.kind)) return own(byKind.get(head.kind));
-    const kinds = history.get(head.root) ?? [];
-    for (let i = kinds.length - 1; i >= 0; i--) {
-      const k = kinds[i];
+    const entries = history.get(head.root) ?? [];
+    // Grants after the head (issued, never activated) are not the chain's past.
+    const at = entries.findIndex((e) => e.licenseId === head.licenseId);
+    for (let i = (at === -1 ? entries.length : at) - 1; i >= 0; i--) {
+      const k = entries[i].kind;
       if (k && byKind.has(k)) return own(byKind.get(k));
     }
     return undefined;

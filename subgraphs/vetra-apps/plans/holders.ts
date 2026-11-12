@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { VetraLicensingDB } from "../../vetra-licensing/db/schema.js";
 import { isLiveEntry } from "../../vetra-licensing/lifecycle.js";
 
@@ -36,6 +36,8 @@ export async function liveChains(
       "l.end_at as endAt",
     ])
     .where("g.app_id", "=", appId)
+    // isLiveEntry decides; this only spares reading every ended licence.
+    .where("l.status", "=", "ACTIVE")
     .orderBy("g.created_at", "asc")
     .orderBy("g.license_id", "asc")
     .execute();
@@ -55,14 +57,23 @@ export async function liveChains(
   return out;
 }
 
+export interface ChainEntry {
+  licenseId: string;
+  kind: string | null;
+}
+
 /**
- * The kinds of every licence of each chain of the App (live or not), oldest
- * first (the order liveChains picks heads by), keyed by root. Unknown kinds are null.
+ * The licences of each of `roots` (live or not), oldest first (the order
+ * liveChains picks heads by), keyed by root. Unknown kinds are null.
  */
 export async function chainKinds(
   db: Kysely<VetraLicensingDB>,
   appId: string,
-): Promise<Map<string, Array<string | null>>> {
+  roots: Iterable<string>,
+): Promise<Map<string, ChainEntry[]>> {
+  const wanted = [...new Set(roots)];
+  const out = new Map<string, ChainEntry[]>();
+  if (wanted.length === 0) return out;
   const rows = await db
     .selectFrom("app_license_grants as g")
     .leftJoin("license_chain as c", "c.license_id", "g.license_id")
@@ -72,15 +83,19 @@ export async function chainKinds(
       "c.root_license_id as root",
     ])
     .where("g.app_id", "=", appId)
+    .where(
+      sql<string>`coalesce(${sql.ref("c.root_license_id")}, ${sql.ref("g.license_id")})`,
+      "in",
+      wanted,
+    )
     .orderBy("g.created_at", "asc")
     .orderBy("g.license_id", "asc")
     .execute();
-  const out = new Map<string, Array<string | null>>();
   for (const r of rows) {
     const root = r.root ?? r.licenseId;
-    const kinds = out.get(root) ?? [];
-    kinds.push(r.kind);
-    out.set(root, kinds);
+    const entries = out.get(root) ?? [];
+    entries.push({ licenseId: r.licenseId, kind: r.kind });
+    out.set(root, entries);
   }
   return out;
 }
@@ -125,6 +140,10 @@ export async function liveKindsOfHolder(
       "l.end_at as endAt",
     ])
     .where("g.user_address", "=", address.toLowerCase())
+    .where("l.status", "=", "ACTIVE")
+    .where("g.kind", "is not", null)
+    .orderBy("g.created_at", "asc")
+    .orderBy("g.license_id", "asc")
     .execute();
   const seen = new Set<string>();
   const out: Array<{ appId: string; kind: string }> = [];

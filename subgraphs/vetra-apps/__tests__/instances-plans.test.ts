@@ -330,6 +330,28 @@ describe("syncPlanInstances", () => {
       ["own", "c1"],
     ]);
   });
+
+  it("ignores a chain's grants newer than its live head (issued, not yet active)", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "enterprise",
+      holder: HOLDER,
+      licenseId: "d1",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "d2",
+      root: "d1",
+      status: "ISSUED",
+      createdAt: "2026-10-05T00:00:00.000Z",
+    });
+    await sync();
+    expect(await rows()).toEqual([]);
+  });
 });
 
 const SERVICE = "0x9999999999999999999999999999999999999999";
