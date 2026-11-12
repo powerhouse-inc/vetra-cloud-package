@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { generateSubdomain } from "../../../shared/subdomain-generator.js";
 
 /**
  * The label is the environment subdomain; the processor's getTenantId
@@ -47,13 +48,16 @@ const cut = (s: string, n: number) =>
  * so two apps, two branches, or a branch named like another's staging form
  * (`main-stg`) never share a label. Only the slug and branch parts are
  * truncated, never the hash or suffix. The unique index stays the last guard
- * (24-bit hash).
+ * (24-bit hash). `identity` (default: the branch) feeds the hash: plan
+ * instances pass `plan:<slug>` / `own:<root>` so they never share a branch's
+ * label.
  */
 export function instanceLabel(
   appId: string,
   slug: string,
   branch: string,
   suffix = "",
+  identity = branch,
 ): string {
   // Room for "<slug-part>-<branch-part>" before "-<h><suffix>".
   const budget = MAX_LABEL - HASH - 1 - suffix.length;
@@ -74,5 +78,42 @@ export function instanceLabel(
     s = cut(s, budget);
     b = cut(b, budget);
   }
-  return [s, b, instanceHash(appId, branch)].filter(Boolean).join("-") + suffix;
+  return (
+    [s, b, instanceHash(appId, identity)].filter(Boolean).join("-") + suffix
+  );
+}
+
+/**
+ * The host label of a plan instance (releases phase 3). Shared: the plan's
+ * slug, hashed as `plan:<slug>`. Own: a generated name (spec section 5:
+ * `calm-bat-b4qzzqbb`) when it fits with the suffix, else `<slug>-own-<h>`
+ * hashed on the licence chain.
+ */
+export function planInstanceLabel(
+  app: { id: string; slug: string },
+  row: {
+    id: string;
+    kind: string;
+    name: string;
+    licence_root_id?: string | null;
+  },
+  suffix: string,
+): string {
+  if (row.kind === "shared")
+    return instanceLabel(
+      app.id,
+      app.slug,
+      row.name,
+      suffix,
+      `plan:${row.name}`,
+    );
+  const generated = `${generateSubdomain(row.id)}${suffix}`;
+  if (generated.length <= MAX_INSTANCE_LABEL) return generated;
+  return instanceLabel(
+    app.id,
+    app.slug,
+    "own",
+    suffix,
+    `own:${row.licence_root_id ?? row.id}`,
+  );
 }
