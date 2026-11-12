@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   makeHarness,
+  owner,
   seedActiveApp,
   testConfig,
   type Harness,
@@ -9,7 +10,12 @@ import { digest, seedRelease } from "./instances-fixtures.js";
 import type { InstanceHealthConfig } from "../config.js";
 import { listInstances, recordHealth } from "../instances/repo.js";
 import { reconcileInstancesOnce } from "../instances/reconciler.js";
+import {
+  instanceUpdateActions,
+  settingsRevisionOf,
+} from "../instances/render.js";
 import { DEGRADED_AFTER_MS, HEALTH_STABLE_MS } from "../instances/status.js";
+import { setAppSetting } from "../settings/service.js";
 import {
   monitorInstancesOnce,
   pickDue,
@@ -62,6 +68,7 @@ type Pod = {
   restarts?: number;
   waiting?: string | null;
   imageId?: boolean;
+  settings?: string | null;
 };
 /** What observability would hold for the instance's tenant. */
 async function setCluster(
@@ -80,6 +87,9 @@ async function setCluster(
     .where("tenantId", "=", tenantId)
     .execute();
   const at = h.clock.now.toISOString();
+  // Pods started after the environment asked for its settings revision run it, unless told otherwise.
+  const state = await h.envs.getState(envId);
+  const revision = state ? settingsRevisionOf(state) : null;
   await h.obsDb
     .insertInto("environment_status")
     .values({
@@ -111,6 +121,7 @@ async function setCluster(
         image: `${repo()}:v@${p.digest}`,
         imageId: p.imageId === false ? null : `${repo()}@${p.digest}`,
         waitingReason: p.waiting ?? null,
+        settingsRevision: p.settings === undefined ? revision : p.settings,
         updatedAt: at,
       })
       .execute();
@@ -603,6 +614,36 @@ describe("enforce: status follows health", () => {
     });
   });
 
+  it("is ready on a settings change only once a healthy pod runs the new revision", async () => {
+    const envId = await readyHealthy();
+    const old = (await one()).running_settings!;
+    await setAppSetting(h.deps, owner, {
+      appId,
+      name: "FOO",
+      value: "1",
+      secret: false,
+    });
+    await reconcileInstancesOnce(h.deps);
+    const want = (await one()).target_settings!;
+    expect(want).not.toBe(old);
+    expect((await one()).status).toBe("updating");
+    // The old pod still serves the old revision: healthy, but not the target.
+    await setCluster(envId, [{ digest: digest("a"), settings: old }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      running_settings: old,
+    });
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({
+      status: "ready",
+      running_settings: want,
+    });
+  });
+
   it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {
     const envId = await readyHealthy();
     h.envs.setStatus(envId, "STOPPED");
@@ -638,6 +679,86 @@ describe("report: health is shown, status keeps the document's rule", () => {
       status: "ready",
       health: "unhealthy",
       health_check: "crash",
+    });
+  });
+});
+
+describe("monitorInstancesOnce — settings revision", () => {
+  beforeEach(() => setup());
+
+  /** The instance environment asks for settings revision `rev`. */
+  async function wantSettings(envId: string, rev: string) {
+    const state = (await h.envs.getState(envId))!;
+    const env = state.fusion!.env;
+    const value = (n: string) => env.find((e) => e.name === n)!.value!;
+    const actions = instanceUpdateActions(
+      state,
+      {
+        repository: state.fusion!.image!,
+        tag: state.services.find((s) => s.type === "FUSION")!.version!,
+        phHost: value("PH_HOST"),
+      },
+      value("ADMINS"),
+      { revision: rev, plain: [], secretNames: [] },
+    );
+    expect(actions.map((a) => a.type)).toEqual(["SET_FUSION_CONFIG"]);
+    await h.envs.execute(envId, actions);
+    h.envs.setStatus(envId, "READY");
+  }
+
+  it("judges the pod on the wanted revision and records the revision seen", async () => {
+    const envId = await created();
+    await wantSettings(envId, "r2");
+    await setCluster(envId, [
+      { digest: digest("a"), settings: "r1" },
+      { digest: digest("a"), settings: "r2" },
+    ]);
+    await monitor();
+    expect(await one()).toMatchObject({
+      health: "healthy",
+      health_settings: "r2",
+      observed_settings: "r2",
+    });
+  });
+
+  it("a new revision between two checks restarts health_since and does not carry the restarts", async () => {
+    const envId = await created();
+    await wantSettings(envId, "r1");
+    await setCluster(envId, [{ digest: digest("a"), restarts: 2 }]);
+    await monitor();
+    const first = await one();
+    expect(first).toMatchObject({
+      health: "healthy",
+      health_settings: "r1",
+      health_restarts: 2,
+    });
+
+    h.advance(60_000);
+    await wantSettings(envId, "r2");
+    await setCluster(envId, [{ digest: digest("a"), restarts: 5 }]);
+    await monitor();
+    const second = await one();
+    expect(second).toMatchObject({
+      health: "healthy",
+      health_settings: "r2",
+      health_restarts: 5,
+    });
+    expect(second.health_check).not.toBe("restarts");
+    expect(second.health_since).not.toBe(first.health_since);
+    expect(second.health_since).toBe(second.health_checked_at);
+  });
+
+  it("with only the old revision running, no pod runs the target yet", async () => {
+    const envId = await created();
+    await wantSettings(envId, "r2");
+    await setCluster(envId, [{ digest: digest("a"), settings: "r1" }]);
+    await monitor();
+    expect(await one()).toMatchObject({
+      health: "unknown",
+      health_check: "pod",
+      health_reason: "no pod runs the target image and settings yet",
+      health_settings: "r2",
+      observed_settings: "r1",
     });
   });
 });

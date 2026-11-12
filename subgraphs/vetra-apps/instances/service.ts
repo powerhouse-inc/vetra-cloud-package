@@ -16,6 +16,10 @@ export interface InstanceJson {
   targetDigest: string | null;
   runningVersion: string | null;
   runningDigest: string | null;
+  /** The App settings revision the instance should run (VETRA_SETTINGS_REVISION). */
+  settingsRevision: string | null;
+  /** The settings revision it last ran healthy. */
+  runningSettingsRevision: string | null;
   health: string | null;
   healthCheck: string | null;
   healthReason: string | null;
@@ -40,6 +44,8 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     targetDigest: r.target_digest,
     runningVersion: r.running_version,
     runningDigest: r.running_digest,
+    settingsRevision: r.target_settings,
+    runningSettingsRevision: r.running_settings,
     health: r.health,
     healthCheck: r.health_check,
     healthReason: r.health_reason,

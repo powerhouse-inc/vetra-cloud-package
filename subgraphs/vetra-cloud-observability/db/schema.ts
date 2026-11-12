@@ -38,6 +38,8 @@ export interface EnvironmentPods {
   imageId?: string | null;
   /** First `state.waiting.reason` of any container (CrashLoopBackOff, ImagePullBackOff, …); null when none waits. */
   waitingReason?: string | null;
+  /** VETRA_SETTINGS_REVISION of the first container's env (vetra-apps instances, slice 4); null when absent. */
+  settingsRevision?: string | null;
   updatedAt: string;
 }
 

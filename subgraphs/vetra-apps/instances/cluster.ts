@@ -42,6 +42,7 @@ export async function readCluster(
       "image",
       "imageId",
       "waitingReason",
+      "settingsRevision",
     ])
     .where("tenantId", "=", tenantId)
     .orderBy("id")
@@ -73,6 +74,7 @@ export async function readCluster(
         image: p.image ?? null,
         imageId: p.imageId ?? null,
         waitingReason: p.waitingReason ?? null,
+        settingsRevision: p.settingsRevision ?? null,
       })),
   };
 }

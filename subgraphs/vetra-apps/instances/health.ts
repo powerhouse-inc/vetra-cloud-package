@@ -26,6 +26,8 @@ export interface PodSnapshot {
   image: string | null;
   imageId: string | null;
   waitingReason: string | null;
+  /** VETRA_SETTINGS_REVISION the pod was started with (null: none or not recorded). */
+  settingsRevision?: string | null;
 }
 
 export interface ArgoSnapshot {
@@ -76,14 +78,19 @@ export function digestOf(ref: string | null | undefined): string | null {
   return ref.includes("@") && DIGEST.test(d) ? d : null;
 }
 
-/** Live pods whose spec pulls the wanted digest. */
+/** Live pods whose spec pulls the wanted digest (and, when one is wanted, runs the wanted settings revision). */
 export function judgedPods(
   pods: PodSnapshot[],
   wanted: string | null,
+  wantedSettings: string | null = null,
 ): PodSnapshot[] {
   if (!wanted) return [];
   return pods.filter(
-    (p) => !DEAD_PHASES.has(p.phase) && digestOf(p.image) === wanted,
+    (p) =>
+      !DEAD_PHASES.has(p.phase) &&
+      digestOf(p.image) === wanted &&
+      (wantedSettings === null ||
+        (p.settingsRevision ?? null) === wantedSettings),
   );
 }
 
@@ -92,6 +99,7 @@ export function judgeCluster(
   argo: ArgoSnapshot | null,
   judged: PodSnapshot[],
   previousRestarts: number | null,
+  wantedSettings: string | null = null,
 ): HealthVerdict | null {
   if (argo && (argo.drift || argo.syncStatus === "UNKNOWN"))
     return {
@@ -128,7 +136,9 @@ export function judgeCluster(
     return {
       health: "unknown",
       check: "pod",
-      reason: "no pod runs the target image yet",
+      reason: wantedSettings
+        ? "no pod runs the target image and settings yet"
+        : "no pod runs the target image yet",
     };
   if (!judged.every((p) => p.ready && p.phase === "RUNNING"))
     return { health: "unknown", check: "pod", reason: "the pod is starting" };
@@ -200,4 +210,30 @@ export function observedDigest(
       source: "pod",
     };
   return { digest: digestOf(documentVersion), source: "document" };
+}
+
+/**
+ * The settings revision a ready host pod on the target digest runs: the
+ * wanted one when such a pod has it. A pod on another image says nothing
+ * about the target's settings.
+ */
+export function observedSettings(
+  hostPods: PodSnapshot[],
+  wanted: string | null,
+  wantedSettings: string | null,
+): string | null {
+  const revs = hostPods
+    .filter(
+      (p) =>
+        p.ready &&
+        p.phase === "RUNNING" &&
+        (wanted === null ||
+          (digestOf(p.imageId) ?? digestOf(p.image)) === wanted),
+    )
+    .map((p) => p.settingsRevision ?? null)
+    .filter((r): r is string => !!r);
+  if (revs.length === 0) return null;
+  return wantedSettings && revs.includes(wantedSettings)
+    ? wantedSettings
+    : revs[0];
 }

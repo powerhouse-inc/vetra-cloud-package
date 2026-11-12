@@ -114,6 +114,10 @@ export const schema: DocumentNode = gql`
     targetDigest: String
     runningVersion: String
     runningDigest: String
+    "The App settings revision the instance should run (VETRA_SETTINGS_REVISION)"
+    settingsRevision: String
+    "The settings revision it last ran healthy"
+    runningSettingsRevision: String
     "healthy | unhealthy | unknown; null until first checked (spec 14.7)"
     health: String
     "The check behind it: gitops | image | crash | restarts | pod | switchboard | connect | stopped | data"
@@ -126,6 +130,51 @@ export const schema: DocumentNode = gql`
     observedDigestSource: String
     environmentId: String
     updatedAt: String!
+  }
+
+  "Where a publisher setting applies: every instance of the App, or only its branch or preview instances (wins over ALL for the same name)."
+  enum AppSettingScope {
+    ALL
+    BRANCH
+    PREVIEW
+  }
+
+  "A publisher setting (spec 14.2). Secrets are write-only: value is null for them."
+  type AppSetting {
+    name: String!
+    scope: AppSettingScope!
+    secret: Boolean!
+    value: String
+    updatedAt: String!
+    updatedBy: String!
+  }
+
+  "A setting Vetra sets on every instance; publishers cannot set or override it."
+  type VetraInstanceSetting {
+    name: String!
+    secret: Boolean!
+    "What Vetra sets (a description where the value differs per instance)"
+    value: String!
+  }
+
+  type AppSettings {
+    settings: [AppSetting!]!
+    vetra: [VetraInstanceSetting!]!
+    "Names no setting may have"
+    reservedNames: [String!]!
+    "Prefixes no setting name may start with"
+    reservedPrefixes: [String!]!
+  }
+
+  input SetAppSettingInput {
+    appId: ID!
+    "Capitals, digits and _ (e.g. SEKTAR_OAUTH_RELAY_BASE)"
+    name: String!
+    value: String!
+    "Secret: stored encrypted, never shown again"
+    secret: Boolean!
+    "Default ALL"
+    scope: AppSettingScope
   }
 
   type AppDeployment {
@@ -298,6 +347,8 @@ export const schema: DocumentNode = gql`
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appReleases(appId: ID!, kind: String, limit: Int): [AppRelease!]!
     appInstances(appId: ID!): [AppInstance!]!
+    "The App's settings and the ones Vetra sets (operators)"
+    appSettings(appId: ID!): AppSettings!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment
@@ -314,6 +365,14 @@ export const schema: DocumentNode = gql`
     ensureStudioProduct(input: EnsureStudioProductInput!): App!
     confirmAppIdentity(appId: ID!): App!
     updateApp(appId: ID!, input: UpdateAppInput!): App!
+    "Set or replace a publisher setting; every instance of the App (or of the scope) rolls on the next pass"
+    setAppSetting(input: SetAppSettingInput!): AppSetting!
+    "Delete a publisher setting (default scope ALL); instances roll without it"
+    deleteAppSetting(
+      appId: ID!
+      name: String!
+      scope: AppSettingScope
+    ): Boolean!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
     openAppSetupPullRequest(appId: ID!): String!
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!

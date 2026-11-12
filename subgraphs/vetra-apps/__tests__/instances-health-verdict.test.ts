@@ -11,6 +11,7 @@ import {
   judgedPods,
   judgeProbes,
   observedDigest,
+  observedSettings,
   type PodSnapshot,
 } from "../instances/health.js";
 
@@ -247,6 +248,7 @@ describe("readCluster", () => {
       restartCount: 2,
       imageId: null,
       waitingReason: null,
+      settingsRevision: "r1",
       updatedAt: at,
     };
     await db
@@ -286,6 +288,7 @@ describe("readCluster", () => {
         image: `${REPO}:1.5.0@${A}`,
         imageId: null,
         waitingReason: null,
+        settingsRevision: "r1",
       },
     ]);
     // Any row older than 5 minutes: observability stopped refreshing, nothing is evidence.
@@ -304,5 +307,40 @@ describe("readCluster", () => {
       "hostPods",
     );
     await db.destroy();
+  });
+});
+
+describe("settings revision", () => {
+  const p = (rev: string | null, ready = true) =>
+    pod({ ready, settingsRevision: rev });
+
+  it("judges only pods on the wanted digest and revision", () => {
+    expect(judgedPods([p("r1"), p("r2")], A, "r2")).toEqual([p("r2")]);
+    expect(judgedPods([p("r1")], A, null)).toEqual([p("r1")]);
+  });
+
+  it("observes the wanted revision when a ready pod runs it, else what a ready pod runs", () => {
+    expect(observedSettings([p("r1"), p("r2")], A, "r2")).toBe("r2");
+    expect(observedSettings([p("r1"), p("r2", false)], A, "r2")).toBe("r1");
+    expect(observedSettings([p("r1", false)], A, "r1")).toBeNull();
+  });
+
+  it("observes only pods on the target digest", () => {
+    const onB = pod({
+      settingsRevision: "r2",
+      image: `${REPO}:1.6.0@${B}`,
+      imageId: `${REPO}@${B}`,
+    });
+    expect(observedSettings([onB, p("r1")], A, "r2")).toBe("r1");
+    expect(observedSettings([onB], A, "r2")).toBeNull();
+    expect(observedSettings([onB], B, "r2")).toBe("r2");
+  });
+
+  it("says the settings too when no pod runs the target image and revision", () => {
+    expect(judgeCluster(argo, [], null, "r2")).toEqual({
+      health: "unknown",
+      check: "pod",
+      reason: "no pod runs the target image and settings yet",
+    });
   });
 });

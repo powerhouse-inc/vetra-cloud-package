@@ -13,6 +13,12 @@ import {
   isConcurrentIndexError,
   up,
 } from "../db/migrations.js";
+import {
+  deleteAppSetting,
+  deleteAppSettings,
+  listAppSettings,
+  upsertAppSetting,
+} from "../settings/repo.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -485,4 +491,49 @@ it("adds the instance health columns, idempotently", async () => {
     running_degraded: true,
   });
   await db.destroy();
+});
+
+describe("app_settings and instance settings columns", () => {
+  it("are created idempotently and hold a setting per app, scope and name", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db);
+    await up(db); // second run: no error
+    const row = {
+      app_id: "app-1",
+      scope: "all" as const,
+      name: "FOO",
+      secret: false,
+      value: "1",
+      ciphertext: null,
+      write_id: "w1",
+      updated_at: "2026-11-12T00:00:00.000Z",
+      updated_by: "0xaa",
+    };
+    await upsertAppSetting(db, row);
+    await upsertAppSetting(db, { ...row, value: "2", write_id: "w2" });
+    await upsertAppSetting(db, { ...row, scope: "preview", value: "p" });
+    expect(
+      (await listAppSettings(db, "app-1")).map((r) => [r.scope, r.name, r.value]),
+    ).toEqual([
+      ["all", "FOO", "2"],
+      ["preview", "FOO", "p"],
+    ]);
+    expect(await deleteAppSetting(db, "app-1", "preview", "FOO")).toBe(true);
+    expect(await deleteAppSetting(db, "app-1", "preview", "FOO")).toBe(false);
+    expect(await deleteAppSettings(db, "app-1")).toBe(1);
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns WHERE table_name = 'instances'`.execute(db);
+    const names = cols.rows.map((c) => c.column_name);
+    for (const c of [
+      "target_settings",
+      "running_settings",
+      "failed_settings",
+      "settings_delivered",
+      "settings_delivered_at",
+      "health_settings",
+      "observed_settings",
+    ])
+      expect(names).toContain(c);
+    await db.destroy();
+  });
 });

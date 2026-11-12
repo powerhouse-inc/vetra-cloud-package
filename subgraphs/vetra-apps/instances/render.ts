@@ -12,6 +12,12 @@ import {
   wakeEnvironment,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
+import { WORKFLOWS_MASTER_KEY } from "../../vetra-cloud-secrets/services/secrets-service.js";
+import {
+  SETTINGS_REVISION_ENV,
+  VETRA_GENERATED_SECRETS,
+} from "../settings/names.js";
+import type { InstanceSettings } from "../settings/resolve.js";
 
 /** What an instance runs: repository (no tag), `<version>@<digest>`, and its host (PH_HOST). */
 export interface InstanceImage {
@@ -46,16 +52,64 @@ const GONE = new Set<VetraCloudEnvironmentState["status"]>([
 
 type FusionEnvEntry = { name: string; value: string | null; isSecret: boolean };
 
-/** The settings Vetra sets on every instance in this slice (spec section 5; slice 4 adds the rest). */
+/** What an instance's environment document carries of its settings (secret values never). */
+export interface InstanceSettingsEnv {
+  revision: string;
+  plain: Array<{ name: string; value: string }>;
+  secretNames: string[];
+}
+
+export const envSettings = (s: InstanceSettings): InstanceSettingsEnv => ({
+  revision: s.revision,
+  plain: s.plain,
+  secretNames: s.secrets.map((x) => x.name),
+});
+
+/**
+ * The FUSION env of an instance (spec section 5 + 14.2). Plain entries render
+ * inline; secret entries are names the processor turns into secretEnv refs to
+ * <tenant>-secrets, whose values the reconciler delivered (settings/deliver.ts).
+ * Order is fixed: sameEnv compares it.
+ */
 export function fusionEnv(
   image: InstanceImage,
   admins: string,
+  settings: InstanceSettingsEnv,
 ): FusionEnvEntry[] {
   return [
     { name: "PH_HOST", value: image.phHost, isSecret: false },
     { name: "ADMINS", value: admins, isSecret: false },
+    ...settings.plain.map((p) => ({
+      name: p.name,
+      value: p.value,
+      isSecret: false,
+    })),
+    { name: SETTINGS_REVISION_ENV, value: settings.revision, isSecret: false },
+    ...[...VETRA_GENERATED_SECRETS, ...settings.secretNames].map((name) => ({
+      name,
+      value: null,
+      isSecret: true,
+    })),
   ];
 }
+
+/** Created by this slice or later: its database never saw a self-generated master key. */
+export const declaresVetraSecrets = (state: VetraCloudEnvironmentState) =>
+  (state.fusion?.env ?? []).some(
+    (e) => e.name === WORKFLOWS_MASTER_KEY && e.isSecret === true,
+  );
+
+/** Secret names the environment declares (Vetra's and the publisher's). */
+export const declaredSecretNames = (state: VetraCloudEnvironmentState) =>
+  (state.fusion?.env ?? [])
+    .filter((e) => e.isSecret === true)
+    .map((e) => e.name);
+
+/** The settings revision the environment asks for (what its pods should run). */
+export const settingsRevisionOf = (state: VetraCloudEnvironmentState) =>
+  (state.fusion?.env ?? []).find(
+    (e) => e.name === SETTINGS_REVISION_ENV && !e.isSecret,
+  )?.value ?? null;
 
 export interface CreateInstanceInput {
   label: string;
@@ -72,6 +126,9 @@ export interface CreateInstanceInput {
   imageProject: string;
   image: InstanceImage;
   admins: string;
+  settings: InstanceSettingsEnv;
+  /** Set the FUSION version (the host starts). False: the reconciler starts it once the tenant's secrets are in place. */
+  start: boolean;
 }
 
 /**
@@ -103,11 +160,13 @@ export function instanceCreateActions(i: CreateInstanceInput): Action[] {
     setApexService({ type: "FUSION" }),
     setFusionConfig({
       image: i.image.repository,
-      env: fusionEnv(i.image, i.admins),
+      env: fusionEnv(i.image, i.admins, i.settings),
       autoUpdate: false,
       autoUpdateTagPattern: null,
     }),
-    setServiceVersion({ type: "FUSION", version: i.image.tag }),
+    ...(i.start
+      ? [setServiceVersion({ type: "FUSION", version: i.image.tag })]
+      : []),
   ];
 }
 
@@ -130,6 +189,8 @@ export function instanceUpdateActions(
   state: VetraCloudEnvironmentState,
   image: InstanceImage,
   admins: string,
+  settings: InstanceSettingsEnv,
+  start = true,
 ): Action[] {
   if (state.managedBy)
     throw new Error(
@@ -142,7 +203,7 @@ export function instanceUpdateActions(
   if (GONE.has(state.status)) return [];
   assertVersioned(image);
   const fusion = state.services.find((s) => s.type === "FUSION");
-  const env = fusionEnv(image, admins);
+  const env = fusionEnv(image, admins, settings);
   const changes: Action[] = [];
   if (!fusion?.enabled)
     changes.push(enableService({ type: "FUSION", prefix: "fusion" }));
@@ -160,7 +221,8 @@ export function instanceUpdateActions(
       }),
     );
   }
-  if (fusion?.version !== image.tag)
+  // Not started yet (no version) and not allowed to start: env and image only.
+  if (fusion?.version !== image.tag && (start || !!fusion?.version))
     changes.push(setServiceVersion({ type: "FUSION", version: image.tag }));
   if (changes.length === 0) return [];
   // STOPPED ignores changes (no CHANGES_PENDING): wake first.

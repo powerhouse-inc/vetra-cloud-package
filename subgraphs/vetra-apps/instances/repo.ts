@@ -35,6 +35,18 @@ export async function listInstances(
   return rows.map(normalize);
 }
 
+export async function getInstance(
+  db: Kysely<VetraAppsDB>,
+  id: string,
+): Promise<InstanceRow | null> {
+  const r = await db
+    .selectFrom("instances")
+    .selectAll()
+    .where("id", "=", id)
+    .executeTakeFirst();
+  return r ? normalize(r) : null;
+}
+
 export async function insertInstance(
   db: Kysely<VetraAppsDB>,
   row: NewInstance,
@@ -93,6 +105,10 @@ export interface HealthRecord {
   health_restarts: number | null;
   observed_digest: string | null;
   observed_digest_source: "pod" | "document" | null;
+  /** The settings revision the check judged (the environment's VETRA_SETTINGS_REVISION). */
+  health_settings: string | null;
+  /** The settings revision a ready host pod runs. */
+  observed_settings: string | null;
 }
 
 /** Live instances with an environment and a host, not checked since dueBeforeIso, never-checked first. */
