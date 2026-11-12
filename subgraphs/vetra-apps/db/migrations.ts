@@ -134,6 +134,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesSettingsColumns(db);
   await ensurePlansTable(db);
   await ensureInstancesPlanColumns(db);
+  await ensureAppAuditTable(db);
+  await ensureAppRolesTable(db);
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
@@ -242,6 +244,60 @@ export async function ensureInstancesPlanColumns(
       .on("instances")
       .columns(["app_id", "licence_root_id"])
       .where(sql.ref("licence_root_id"), "is not", null)
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** The audit log (releases phase 3 slice 2, spec section 10). Schema builder only (namespaced). */
+export async function ensureAppAuditTable(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("app_audit")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("at", "varchar(64)", (c) => c.notNull())
+      .addColumn("actor", "varchar(255)", (c) => c.notNull())
+      .addColumn("source", "varchar(16)", (c) => c.notNull())
+      .addColumn("action", "varchar(64)", (c) => c.notNull())
+      .addColumn("subject", "varchar(512)", (c) => c.notNull())
+      .addColumn("detail", "text", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  for (const [name, columns] of [
+    ["app_audit_app_at_idx", ["app_id", "at", "id"]],
+    ["app_audit_at_idx", ["at"]],
+  ] as const) {
+    try {
+      await db.schema
+        .createIndex(name)
+        .ifNotExists()
+        .on("app_audit")
+        .columns([...columns])
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err)) throw err;
+    }
+  }
+}
+
+/** Per-App roles (release managers, releases phase 3 D7). Schema builder only (namespaced). */
+export async function ensureAppRolesTable(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("app_roles")
+      .ifNotExists()
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("address", "varchar(255)", (c) => c.notNull())
+      .addColumn("role", "varchar(32)", (c) => c.notNull())
+      .addColumn("owner_scope", "varchar(320)", (c) => c.notNull())
+      .addColumn("granted_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("granted_at", "varchar(64)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("app_roles_pk", ["app_id", "address", "role"])
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err)) throw err;
