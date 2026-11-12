@@ -2,7 +2,7 @@ import type { Caller } from "../auth.js";
 import type { AppRoleName } from "../db/schema.js";
 import { appsError } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
-import { loadAppForOwner, type AppsDeps } from "../service.js";
+import { didAddress, loadAppForOwner, type AppsDeps } from "../service.js";
 import { allows, isReleaseManager, ownerScopeOf } from "./access.js";
 import {
   deleteAppRole,
@@ -74,6 +74,12 @@ export async function setAppRole(
     need: "administer",
   });
   const who = parseAddress(address);
+  // The App's workload identity only deploys; it is never a release manager.
+  if (who === didAddress(app.identity_did))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "That is the App's own identity; name a person",
+    );
   const name = parseRole(role);
   const scope = ownerScopeOf(app);
   const nowIso = deps.now().toISOString();

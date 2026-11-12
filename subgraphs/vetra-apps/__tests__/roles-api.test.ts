@@ -160,6 +160,19 @@ describe("release managers of a personal App", () => {
     expect(await appRolesFor(h.deps, orgAdmin, appId)).toEqual([]);
   });
 
+  it("refuses the App's own identity address", async () => {
+    const self = `0x${"9".repeat(40)}`;
+    await h.db
+      .updateTable("apps")
+      .set({ identity_did: `did:pkh:eip155:1:${self}` })
+      .where("id", "=", appId)
+      .execute();
+    expect(await code(setAppRole(h.deps, owner, appId, self, null))).toBe(
+      "BAD_USER_INPUT",
+    );
+    expect(await appRolesFor(h.deps, owner, appId)).toEqual([]);
+  });
+
   it("removing a grant of a previous owner is a no-op, not audited", async () => {
     await h.db
       .insertInto("app_roles")

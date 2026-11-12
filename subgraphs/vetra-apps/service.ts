@@ -1932,7 +1932,7 @@ export interface StudioGithubConnection {
 }
 
 /** The address a did:pkh names, lowercased ("" for any other DID). */
-const didAddress = (did: string) =>
+export const didAddress = (did: string): string =>
   did.startsWith("did:pkh:") ? (did.split(":").pop() ?? "").toLowerCase() : "";
 
 /**
