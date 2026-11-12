@@ -263,4 +263,12 @@ describe("starting a rollout (spec 7 steps 1 and 3)", () => {
       }),
     ).rejects.toThrow(/already run 1\.4\.1/);
   });
+
+  it("setPlanTarget refuses while rollouts cannot run (instances off)", async () => {
+    h.deps.cfg.instances = { ...h.deps.cfg.instances, enabled: false };
+    await expect(
+      setPlanTarget(h.deps, owner, "p-pro", "1.4.1"),
+    ).rejects.toThrow(/not enabled/);
+    expect((await getPlan(h.db, "p-pro"))?.target_version).toBe("1.4.0");
+  });
 });

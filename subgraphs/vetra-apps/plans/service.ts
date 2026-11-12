@@ -4,7 +4,7 @@ import { appsError, notConfigured } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { plansConfigOf } from "../config.js";
+import { plansConfigOf, rolloutsEnabled } from "../config.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
 import { releaseProblem } from "../rollouts/check.js";
 import { appInstancesLock } from "../rollouts/repo.js";
@@ -352,6 +352,12 @@ export async function setPlanTarget(
   version: string,
 ): Promise<PlanJson> {
   const { plan, app } = await loadPlan(deps, caller, planId);
+  // It starts a rollout: refused whenever startRollout is.
+  if (!rolloutsEnabled(deps.cfg))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Plans and rollouts are not enabled on this Vetra",
+    );
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
   const target = await checkTarget(deps, plan.app_id, version);
