@@ -42,6 +42,7 @@ import {
 } from "../service.js";
 import type { Caller } from "../auth.js";
 import type { ProbeResult } from "../instances/health.js";
+import type { SettingsVault } from "../settings/vault.js";
 
 export const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 export const STRANGER = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -634,6 +635,59 @@ export function testConfig(
   };
 }
 
+/** The tenant secrets store as instances use it: values in memory, notifications recorded. */
+export function fakeTenantSecrets() {
+  const store = new Map<string, Map<string, string>>();
+  const notified: string[] = [];
+  const purged: string[] = [];
+  const of = (t: string) => {
+    if (!store.has(t)) store.set(t, new Map());
+    return store.get(t)!;
+  };
+  return {
+    store,
+    notified,
+    purged,
+    async ensureSecret(tenantId: string, key: string, generate: () => string) {
+      const m = of(tenantId);
+      if (m.has(key)) return false;
+      m.set(key, generate());
+      return true;
+    },
+    async setSecrets(
+      tenantId: string,
+      entries: Array<{ key: string; value: string }>,
+    ) {
+      for (const e of entries) of(tenantId).set(e.key, e.value);
+      if (entries.length > 0) notified.push(tenantId);
+    },
+    async deleteSecret(tenantId: string, key: string) {
+      return of(tenantId).delete(key);
+    },
+    async notifyTenant(tenantId: string) {
+      notified.push(tenantId);
+    },
+    async purgeTenant(tenantId: string) {
+      purged.push(tenantId);
+      const m = of(tenantId);
+      let secrets = 0;
+      for (const k of [...m.keys()])
+        if (k !== "PH_WORKFLOWS_SECRETS_MASTER_KEY") {
+          m.delete(k);
+          secrets++;
+        }
+      return { envVars: 0, secrets };
+    },
+  };
+}
+
+/** Reversible stand-in for OpenBao transit. */
+export const fakeVault = (): SettingsVault => ({
+  encrypt: async (p) => `vault:${Buffer.from(p).toString("base64")}`,
+  decrypt: async (c) =>
+    Buffer.from(c.slice("vault:".length), "base64").toString(),
+});
+
 export interface Harness {
   deps: AppsDeps;
   db: Kysely<VetraAppsDB>;
@@ -651,6 +705,8 @@ export interface Harness {
   probes: Map<string, ProbeResult>;
   /** Every URL probed, in order. */
   probed: string[];
+  /** The tenant secrets store instances write to (deps.instanceSecrets). */
+  secrets: ReturnType<typeof fakeTenantSecrets>;
   advance(ms: number): void;
   close(): Promise<void>;
 }
@@ -676,6 +732,7 @@ export async function makeHarness(
   const tenants = new Map<string, string>();
   const probes = new Map<string, ProbeResult>();
   const probed: string[] = [];
+  const secrets = fakeTenantSecrets();
   const deps: AppsDeps = {
     db,
     envs,
@@ -707,6 +764,8 @@ export async function makeHarness(
     },
     newId: () => `id-${++idSeq}`,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    instanceSecrets: secrets,
+    settingsVault: fakeVault(),
   };
   return {
     deps,
@@ -721,6 +780,7 @@ export async function makeHarness(
     tenants,
     probes,
     probed,
+    secrets,
     advance: (ms) => {
       clock.now = new Date(clock.now.getTime() + ms);
     },

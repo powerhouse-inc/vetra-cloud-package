@@ -67,6 +67,7 @@ import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
+import { createSettingsVault } from "./settings/vault.js";
 import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
 import { environmentConnections } from "../vetra-github-auth/db/installations.js";
 
@@ -165,22 +166,27 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       "vetra-cloud-observability",
     )) as unknown as Kysely<ObservabilityDB>;
 
-    // A Studio's launch secret is written through the tenant secrets
-    // (OpenBao transit); without OpenBao the rotation answers
-    // SERVICE_NOT_CONFIGURED.
+    // A Studio's launch secret and instances' secrets are written through the
+    // tenant secrets, publisher secrets are kept encrypted under the
+    // app-settings transit key; one OpenBao transit client serves both.
+    // Without OpenBao these answer SERVICE_NOT_CONFIGURED.
     const openbaoAddr = process.env.OPENBAO_ADDR;
-    const studioSecrets = openbaoAddr
+    const transit = openbaoAddr
+      ? new OpenBaoTransitClient({
+          addr: openbaoAddr,
+          role: process.env.OPENBAO_TRANSIT_ROLE ?? "vetra-secrets",
+          keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
+        })
+      : null;
+    const tenantSecrets = transit
       ? createSecretsService({
           db: (await this.relationalDb.createNamespace(
             "vetra-cloud-secrets",
           )) as unknown as Kysely<SecretsDB>,
-          transit: new OpenBaoTransitClient({
-            addr: openbaoAddr,
-            role: process.env.OPENBAO_TRANSIT_ROLE ?? "vetra-secrets",
-            keyNamePrefix: process.env.OPENBAO_TRANSIT_KEY_PREFIX,
-          }),
+          transit,
         })
       : null;
+    const studioSecrets = tenantSecrets;
 
     // The GitHub connections Studios made the old way (vetra-github-auth's
     // namespace, read only): a Studio's product carries that repository over
@@ -210,6 +216,16 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       envTenant: tenantOfIn(envReadModel),
       probe: fetchProbe,
       studioSecrets,
+      instanceSecrets: tenantSecrets,
+      settingsVault: createSettingsVault(transit),
+      // A namespace exists once observability has seen one of its pods (the database comes first).
+      tenantLive: async (tenantId) =>
+        !!(await orgHandoverDb
+          .selectFrom("environment_pods")
+          .select("id")
+          .where("tenantId", "=", tenantId)
+          .limit(1)
+          .executeTakeFirst()),
       studioGithubConnections: (studioEnvironmentId) =>
         environmentConnections(githubAuthDb, studioEnvironmentId),
       // A product's <slug>.vetra.io must not collide with an env's hosts.

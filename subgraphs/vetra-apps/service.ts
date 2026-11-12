@@ -79,6 +79,7 @@ import {
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import type { HttpProbe } from "./instances/probe.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { SettingsVault } from "./settings/vault.js";
 import {
   adoptOrgApps,
   adoptPersonApps,
@@ -184,6 +185,26 @@ export interface AppsDeps {
    * (rotateStudioLaunchSecret). Null/absent: OpenBao is not configured.
    */
   studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
+  /** Publisher secrets at rest (settings/vault.ts). Null/absent: secret settings are refused (SERVICE_NOT_CONFIGURED). */
+  settingsVault?: SettingsVault | null;
+  /**
+   * Vetra's own writer of tenant secrets, for instances (generated keys and
+   * publisher secrets). Null/absent: instances cannot be created or given
+   * settings (SERVICE_NOT_CONFIGURED on the instance).
+   */
+  instanceSecrets?: Pick<
+    SecretsService,
+    | "ensureSecret"
+    | "setSecrets"
+    | "deleteSecret"
+    | "notifyTenant"
+    | "purgeTenant"
+  > | null;
+  /**
+   * Whether a tenant's namespace exists (observability has a pod of it). Absent:
+   * an instance's first start does not wait for it (tests).
+   */
+  tenantLive?: ((tenantId: string) => Promise<boolean>) | null;
   /**
    * Whether a generic subdomain would collide with an existing env's hosts
    * (ensureStudioProduct puts a product at <slug>.vetra.io). Absent: only the
