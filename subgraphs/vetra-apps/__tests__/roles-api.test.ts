@@ -7,6 +7,7 @@ import {
   MEMBER,
   ORG,
   owner,
+  OWNER,
   seedActiveApp,
   stranger,
   STRANGER,
@@ -157,6 +158,25 @@ describe("release managers of a personal App", () => {
     h.orgs.join(ORG, ORG_ADMIN, "ADMIN");
     expect(await release(stranger)).toBe("FORBIDDEN");
     expect(await appRolesFor(h.deps, orgAdmin, appId)).toEqual([]);
+  });
+
+  it("stays lapsed when the App comes back to its first owner (A to B to A)", async () => {
+    await setAppRole(h.deps, owner, appId, STRANGER, null);
+    await moveToOrg();
+    h.orgs.publishers.set(APP_DID, { orgId: null, address: OWNER });
+    await appForOwner(h.deps, admin, appId);
+    expect(
+      await h.db
+        .selectFrom("apps")
+        .select(["owner_org_id", "owner_address"])
+        .where("id", "=", appId)
+        .executeTakeFirst(),
+    ).toEqual({ owner_org_id: null, owner_address: OWNER });
+    expect(await release(stranger)).toBe("FORBIDDEN");
+    expect(await appRolesFor(h.deps, owner, appId)).toEqual([]);
+    expect(await h.db.selectFrom("app_roles").selectAll().execute()).toEqual(
+      [],
+    );
   });
 });
 

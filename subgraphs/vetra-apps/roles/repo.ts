@@ -3,6 +3,32 @@ import type { AppRoleName, AppRolesTable, VetraAppsDB } from "../db/schema.js";
 
 export type AppRoleRow = Selectable<AppRolesTable>;
 
+/** The owner a grant is made under: a role from a previous owner has no effect. */
+export const ownerScopeOf = (app: {
+  owner_org_id?: string | null;
+  owner_address: string;
+}): string =>
+  app.owner_org_id
+    ? `org:${app.owner_org_id}`
+    : `user:${app.owner_address.toLowerCase()}`;
+
+/**
+ * Drops the App's grants made under any owner but `ownerScope`: when the App
+ * changes hands its roles lapse for good, even if it comes back (A to B to A).
+ */
+export async function deleteAppRolesOfOtherOwners(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+  ownerScope: string,
+): Promise<number> {
+  const r = await db
+    .deleteFrom("app_roles")
+    .where("app_id", "=", appId)
+    .where("owner_scope", "<>", ownerScope)
+    .executeTakeFirst();
+  return Number(r.numDeletedRows);
+}
+
 export async function getAppRole(
   db: Kysely<VetraAppsDB>,
   appId: string,

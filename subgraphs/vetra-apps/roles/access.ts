@@ -7,18 +7,12 @@ import type { Caller } from "../auth.js";
 import { appResource, callerAccess } from "../org-ownership.js";
 import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
-import { hasAppRole } from "./repo.js";
+import { hasAppRole, ownerScopeOf } from "./repo.js";
 
 /** What a caller needs to do with an App (loadAppForOwner). */
 export type AppNeed = "view" | "operate" | "release" | "administer";
 
-/** The owner a grant is made under: a role from a previous owner has no effect. */
-export const ownerScopeOf = (
-  app: Pick<AppRow, "owner_org_id" | "owner_address">,
-): string =>
-  app.owner_org_id
-    ? `org:${app.owner_org_id}`
-    : `user:${app.owner_address.toLowerCase()}`;
+export { ownerScopeOf } from "./repo.js";
 
 /**
  * A release manager in effect (spec section 10, D7): granted under the App's
