@@ -4,6 +4,14 @@ import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf } from "../config.js";
+import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
+import { releaseProblem } from "../rollouts/check.js";
+import { parsePolicy, policyText } from "../rollouts/policy.js";
+import {
+  checkWindow,
+  parseWindow,
+  type UpdateWindow,
+} from "../rollouts/window.js";
 import { grantKinds, hasLicensedEnvironments } from "./holders.js";
 import {
   getPlan,
@@ -14,6 +22,7 @@ import {
   type PlanRow,
 } from "./repo.js";
 import {
+  checkNoticeHours,
   checkPlanSlug,
   parseAccess,
   parseSize,
@@ -31,9 +40,22 @@ export interface PlanJson {
   targetVersion: string | null;
   policy: string;
   noticeHours: number;
+  /** When the plan's instances may be updated; null: any time after the notice. */
+  updateWindow: UpdateWindow | null;
+  /** "<version>: <reason>" of the policy's last refused rollout. */
+  policyNote: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A stored window that does not parse reads as none (never throws on a read). */
+function storedWindow(json: string | null | undefined): UpdateWindow | null {
+  try {
+    return parseWindow(json);
+  } catch {
+    return null;
+  }
 }
 
 export const planJson = (p: PlanRow): PlanJson => ({
@@ -47,6 +69,8 @@ export const planJson = (p: PlanRow): PlanJson => ({
   targetVersion: p.target_version,
   policy: p.policy,
   noticeHours: p.notice_hours,
+  updateWindow: storedWindow(p.update_window),
+  policyNote: p.policy_note ?? null,
   status: p.status,
   createdAt: p.created_at,
   updatedAt: p.updated_at,
@@ -81,23 +105,30 @@ export interface UpdatePlanInput {
   planId: string;
   name?: string | null;
   size?: string | null;
+  /** manual | patches | minor | follow:<branch> (a release branch of the App). */
+  policy?: string | null;
+  /** Hours between a rollout's start and the plan's updates (0-720). */
+  noticeHours?: number | null;
+  /** When the plan's instances may be updated (spec 14.8). */
+  updateWindow?: UpdateWindow | null;
+  /** Removes the window: updates any time after the notice. */
+  clearUpdateWindow?: boolean | null;
 }
 
-/** A plan's target is a recorded release of its App, never a build (spec section 2). */
+/** A plan's target is a recorded, unwithdrawn release of its App (spec section 2, 14.3). */
 async function checkTarget(
   deps: AppsDeps,
   appId: string,
   version: string,
 ): Promise<string> {
   const r = await releaseByVersion(deps.db, appId, version);
-  if (!r)
-    throw appsError("BAD_USER_INPUT", `The App has no release ${version}`);
-  if (r.kind !== "release")
+  const problem = releaseProblem(version, r);
+  if (problem)
     throw appsError(
       "BAD_USER_INPUT",
-      `${version} is a build; a plan targets releases only`,
+      problem.charAt(0).toUpperCase() + problem.slice(1),
     );
-  return r.version;
+  return r!.version;
 }
 
 async function loadPlan(deps: AppsDeps, caller: Caller, planId: string) {
@@ -235,26 +266,68 @@ export async function updatePlanFor(
   caller: Caller,
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
-  const { plan } = await loadPlan(deps, caller, input.planId);
+  const { plan, app } = await loadPlan(deps, caller, input.planId);
   const name = input.name == null ? undefined : input.name.trim();
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
   if (name !== undefined) checkText("name", name);
+  const policy =
+    input.policy == null ? undefined : policyText(parsePolicy(input.policy));
+  if (policy?.startsWith("follow:")) {
+    const branch = policy.slice("follow:".length);
+    if (
+      !isReleaseBranch(
+        branch,
+        app.production_branch,
+        parseReleaseBranches(app.release_branches),
+      )
+    )
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${branch} is not a release branch of the App`,
+      );
+  }
+  if (input.updateWindow && input.clearUpdateWindow)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Give an update window or clear it, not both",
+    );
+  const window = input.clearUpdateWindow
+    ? null
+    : input.updateWindow
+      ? JSON.stringify(checkWindow(input.updateWindow))
+      : undefined;
   const patch = {
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
+    ...(policy !== undefined ? { policy } : {}),
+    ...(input.noticeHours != null
+      ? { notice_hours: checkNoticeHours(input.noticeHours) }
+      : {}),
+    ...(window !== undefined ? { update_window: window } : {}),
   };
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
       // Re-read under lock: a concurrent change is audited once, from what is stored.
       const cur = await lockPlan(trx, plan.id);
-      const changes: Record<string, { from: string; to: string }> = {};
-      if (patch.name !== undefined && patch.name !== cur.name)
-        changes.name = { from: cur.name, to: patch.name };
-      if (patch.size !== undefined && patch.size !== cur.size)
-        changes.size = { from: cur.size, to: patch.size };
-      const p = await updatePlan(trx, plan.id, patch, nowIso);
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+      const note = (key: string, from: unknown, to: unknown) => {
+        if (to !== undefined && to !== from) changes[key] = { from, to };
+      };
+      note("name", cur.name, patch.name);
+      note("size", cur.size, patch.size);
+      note("policy", cur.policy, patch.policy);
+      note("noticeHours", cur.notice_hours, patch.notice_hours);
+      // The window audits its stored JSON text, from and to.
+      note("updateWindow", cur.update_window ?? null, patch.update_window);
+      const p = await updatePlan(
+        trx,
+        plan.id,
+        // A new policy starts over: its last refusal no longer applies.
+        changes.policy ? { ...patch, policy_note: null } : patch,
+        nowIso,
+      );
       if (Object.keys(changes).length > 0)
         await auditCaller(trx, caller, {
           appId: plan.app_id,
