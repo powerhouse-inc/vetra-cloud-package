@@ -15,6 +15,7 @@ import {
   createEnvAccess,
   type EnvAccessRow,
 } from "../vetra-cloud-observability/env-access.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 const DEFAULT_ROLE = "vetra-secrets";
 
@@ -70,20 +71,22 @@ export class VetraCloudSecretsSubgraph extends BaseSubgraph {
       "vetra-apps",
     )) as unknown as Kysely<any>;
 
-    this.resolvers = createResolvers(db, transit, {
-      tenantEnvironments: async (tenantId) =>
-        (await envDb
-          .selectFrom("environments")
-          .select(["owner", "ownerOrgId", "appId"])
-          .where("tenantId", "=", tenantId)
-          .execute()) as EnvAccessRow[],
-      access: createEnvAccess({
-        orgs: defaultRenownOrgs(),
-        appDidOf: appDidLookup(appsDb),
-        appOrgDisputed: appDisputeLookup(appsDb),
+    this.resolvers = withoutStacktraces(
+      createResolvers(db, transit, {
+        tenantEnvironments: async (tenantId) =>
+          (await envDb
+            .selectFrom("environments")
+            .select(["owner", "ownerOrgId", "appId"])
+            .where("tenantId", "=", tenantId)
+            .execute()) as EnvAccessRow[],
+        access: createEnvAccess({
+          orgs: defaultRenownOrgs(),
+          appDidOf: appDidLookup(appsDb),
+          appOrgDisputed: appDisputeLookup(appsDb),
+        }),
+        tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
       }),
-      tenantWait: { timeoutMs: 10_000, intervalMs: 500 },
-    });
+    );
 
     // One-shot cleanup of env vars and secrets whose environment was deleted
     // before deletion purged them (tenant-purge.ts). Dry run by default: it

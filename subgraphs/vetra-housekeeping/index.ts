@@ -22,6 +22,7 @@ import {
   sleepEnvironment,
   wakeEnvironment,
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 /**
  * Studio housekeeping subgraph. Server-side home of the sleep/wake transitions,
@@ -120,13 +121,15 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
     });
     this.keeper = keeper;
 
-    this.resolvers = createResolvers({
-      powerState,
-      sleep,
-      wake,
-      studioActivity: () => keeper.classifyAll(),
-      readyStudios,
-    });
+    this.resolvers = withoutStacktraces(
+      createResolvers({
+        powerState,
+        sleep,
+        wake,
+        studioActivity: () => keeper.classifyAll(),
+        readyStudios,
+      }),
+    );
 
     // DEPRECATION: this in-process detector is being extracted to the standalone
     // tier-aware housekeeping service (see docs/superpowers/specs/2026-07-17-

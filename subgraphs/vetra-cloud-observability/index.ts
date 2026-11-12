@@ -61,6 +61,7 @@ import {
   vetraServiceAddress,
   type EnvProtectionTarget,
 } from "./env-protection.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -166,16 +167,18 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       );
     }
 
-    this.resolvers = createResolvers(db, {
-      prometheusUrl,
-      lokiUrl,
-      envDb,
-      dispatch,
-      dumpDeps: dumpDeps ?? undefined,
-      restartDeps,
-      access,
-      orgSync,
-    });
+    this.resolvers = withoutStacktraces(
+      createResolvers(db, {
+        prometheusUrl,
+        lokiUrl,
+        envDb,
+        dispatch,
+        dumpDeps: dumpDeps ?? undefined,
+        restartDeps,
+        access,
+        orgSync,
+      }),
+    );
 
     // FUSION auto-deploy: follow the newest matching Harbor tag per env.
     // Needs a Harbor reader robot; without it the feature is simply off.

@@ -28,6 +28,7 @@ import { createLlmResolvers } from "./resolvers.js";
 import { claimedStudiosFrom, migrateStudiosToOpenRouter } from "./migrate.js";
 import { runLlmSweepOnce, SWEEP_INTERVAL_MS } from "./sweeper.js";
 import { schema } from "./schema.js";
+import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
 /**
  * Vetra LLM: the OpenRouter key broker. One capped key per Studio, from the
@@ -98,67 +99,69 @@ export class VetraLlmSubgraph extends BaseSubgraph {
     const budgetOverride = (environmentId: string) =>
       budgets.getOverride(environmentId);
 
-    this.resolvers = createLlmResolvers({
-      broker,
-      tenantOwners: createTenantOwnersCheck(
-        async (tenantId) =>
+    this.resolvers = withoutStacktraces(
+      createLlmResolvers({
+        broker,
+        tenantOwners: createTenantOwnersCheck(
+          async (tenantId) =>
+            (
+              await envDb
+                .selectFrom("environments")
+                .select("owner")
+                .where("tenantId", "=", tenantId)
+                .execute()
+            ).map((r) => r.owner?.toLowerCase() ?? null),
+          { timeoutMs: 10_000, intervalMs: 500 },
+          "[vetra-llm] provisionStudioLlm",
+        ),
+        envIdsByTenant: async (tenantId) =>
           (
             await envDb
               .selectFrom("environments")
-              .select("owner")
+              .select("id")
               .where("tenantId", "=", tenantId)
               .execute()
-          ).map((r) => r.owner?.toLowerCase() ?? null),
-        { timeoutMs: 10_000, intervalMs: 500 },
-        "[vetra-llm] provisionStudioLlm",
-      ),
-      envIdsByTenant: async (tenantId) =>
-        (
-          await envDb
+          ).map((r) => r.id),
+        envRow: async (environmentId) =>
+          (await envDb
             .selectFrom("environments")
-            .select("id")
-            .where("tenantId", "=", tenantId)
-            .execute()
-        ).map((r) => r.id),
-      envRow: async (environmentId) =>
-        (await envDb
-          .selectFrom("environments")
-          .select(["owner", "ownerOrgId", "appId", "tenantId"])
-          .where("id", "=", environmentId)
-          .executeTakeFirst()) ?? null,
-      keyStatus: async (environmentId) =>
-        (await createLlmKeyStore(db).get(environmentId))?.status ?? null,
-      envState: (environmentId) => envs.getState(environmentId),
-      access: createEnvAccess({
-        orgs: defaultRenownOrgs(),
-        appDidOf: appDidLookup(appsDb),
-        appOrgDisputed: appDisputeLookup(appsDb),
+            .select(["owner", "ownerOrgId", "appId", "tenantId"])
+            .where("id", "=", environmentId)
+            .executeTakeFirst()) ?? null,
+        keyStatus: async (environmentId) =>
+          (await createLlmKeyStore(db).get(environmentId))?.status ?? null,
+        envState: (environmentId) => envs.getState(environmentId),
+        access: createEnvAccess({
+          orgs: defaultRenownOrgs(),
+          appDidOf: appDidLookup(appsDb),
+          appOrgDisputed: appDisputeLookup(appsDb),
+        }),
+        secrets,
+        logger: console,
+        budgets,
+        now: () => new Date(),
+        migrate: (opts) =>
+          migrateStudiosToOpenRouter(
+            {
+              listClaimedStudios: async () =>
+                claimedStudiosFrom(
+                  await envDb
+                    .selectFrom("environments")
+                    .select(["id", "tenantId", "owner", "status", "packages"])
+                    .where("owner", "is not", null)
+                    .where("tenantId", "is not", null)
+                    .execute(),
+                ),
+              budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
+              budgetOverride,
+              provision: (input) => broker.provisionVetraKey(input),
+              secrets,
+              logger: console,
+            },
+            opts,
+          ),
       }),
-      secrets,
-      logger: console,
-      budgets,
-      now: () => new Date(),
-      migrate: (opts) =>
-        migrateStudiosToOpenRouter(
-          {
-            listClaimedStudios: async () =>
-              claimedStudiosFrom(
-                await envDb
-                  .selectFrom("environments")
-                  .select(["id", "tenantId", "owner", "status", "packages"])
-                  .where("owner", "is not", null)
-                  .where("tenantId", "is not", null)
-                  .execute(),
-              ),
-            budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
-            budgetOverride,
-            provision: (input) => broker.provisionVetraKey(input),
-            secrets,
-            logger: console,
-          },
-          opts,
-        ),
-    });
+    );
 
     if (openrouter && keyVault && secrets) {
       let busy = false;
