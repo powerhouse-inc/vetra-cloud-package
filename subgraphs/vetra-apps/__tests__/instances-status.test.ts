@@ -533,6 +533,41 @@ describe("observeHealth — settings revision", () => {
     ).toBe("updating");
   });
 
+  it("is not ready on a check that judged another revision, even if a pod runs the target one", () => {
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        row(HEALTH_STABLE_MS + 3000),
+        view({ settings: "r1", observedSettings: "r2" }),
+        now,
+        W,
+      ).kind,
+    ).not.toBe("ready");
+  });
+
+  it("never fails a settings update on unhealthy checks of the old revision", () => {
+    const h = view({
+      health: "unhealthy",
+      check: "crash",
+      reason: "the container does not start (CrashLoopBackOff)",
+      settings: "r1",
+      observedDigest: null,
+      observedSettings: null,
+      since: started(W + CONFIRM_MS + 2000),
+    });
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        row(W + CONFIRM_MS + 3000),
+        h,
+        now,
+        W,
+      ).kind,
+    ).not.toBe("failed");
+  });
+
   it("fails a settings update that stays unhealthy past the window", () => {
     const h = view({
       health: "unhealthy",
