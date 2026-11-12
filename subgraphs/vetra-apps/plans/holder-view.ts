@@ -2,6 +2,10 @@ import { plansConfigOf } from "../config.js";
 import type { Caller } from "../auth.js";
 import type { HolderDirectoryEntry } from "../directory.js";
 import { publicUrlOf } from "../instances/public-host.js";
+import {
+  customDomainJson,
+  type InstanceCustomDomainJson,
+} from "../domains/service.js";
 import type { AppsDeps } from "../service.js";
 import { liveKindsOfHolder } from "./holders.js";
 
@@ -15,6 +19,8 @@ export interface HolderInstanceJson {
   status: string;
   reason: string | null;
   runningVersion: string | null;
+  /** own: the holder's custom domain (null: none). */
+  customDomain: InstanceCustomDomainJson | null;
 }
 
 /** The instances the caller holds a licence for (spec section 11: a holder's own instances under their licences). */
@@ -38,6 +44,8 @@ export async function myInstancesFor(
         "instances.host as host",
         "instances.custom_domain as custom_domain",
         "instances.custom_domain_status as custom_domain_status",
+        "instances.custom_domain_reason as custom_domain_reason",
+        "instances.custom_domain_since as custom_domain_since",
         "instances.status as status",
         "instances.reason as reason",
         "instances.running_version as runningVersion",
@@ -66,10 +74,23 @@ export async function myInstancesFor(
         .execute()),
     );
   return [...own, ...shared].map(
-    ({ host, custom_domain, custom_domain_status, ...r }) => ({
-      ...r,
-      url: publicUrlOf({ host, custom_domain, custom_domain_status }),
-    }),
+    ({
+      host,
+      custom_domain,
+      custom_domain_status,
+      custom_domain_reason,
+      custom_domain_since,
+      ...r
+    }) => {
+      const d = {
+        host,
+        custom_domain,
+        custom_domain_status,
+        custom_domain_reason,
+        custom_domain_since,
+      };
+      return { ...r, url: publicUrlOf(d), customDomain: customDomainJson(d) };
+    },
   );
 }
 

@@ -18,6 +18,8 @@ import {
 import { namespaceExists } from "./instances/cluster.js";
 import { fetchProbe } from "./instances/probe.js";
 import { monitorInstancesOnce } from "./instances/monitor.js";
+import { defaultDomainProbe } from "./domains/dns.js";
+import { checkDomainsOnce } from "./domains/service.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createGithubAttestationVerifier } from "./releases/attestation.js";
@@ -245,6 +247,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       subdomainUsed: subdomainUsedIn(envReadModel),
       // Custom domains: one holder per domain across environments and instances.
       customDomainUsed: customDomainUsedIn(envReadModel),
+      domainProbe: defaultDomainProbe,
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,
@@ -443,6 +446,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       every(WATCH_INTERVAL_MS, "instance health", () =>
         monitorInstancesOnce(deps),
       );
+      // Holders' custom domains: dns → issuing → active (plan 7 Task 8).
+      if (plansConfigOf(cfg).enabled)
+        every(60_000, "custom domains", () => checkDomainsOnce(deps));
     } else {
       console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");
     }

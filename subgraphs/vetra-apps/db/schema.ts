@@ -404,6 +404,10 @@ export interface InstancesTable {
   custom_domain_reason?: string | null;
   /** When custom_domain_status last changed. */
   custom_domain_since?: string | null;
+  /** active: when the daily TLS check last ran. */
+  custom_domain_checked_at?: string | null;
+  /** active: failed daily TLS checks in a row. */
+  custom_domain_failures?: number | null;
   created_at: string;
   updated_at: string;
 }

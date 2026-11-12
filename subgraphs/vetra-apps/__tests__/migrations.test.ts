@@ -822,6 +822,8 @@ describe("instances custom domain columns (plan 7 Task 7)", () => {
     "custom_domain_status",
     "custom_domain_reason",
     "custom_domain_since",
+    "custom_domain_checked_at",
+    "custom_domain_failures",
   ];
   const instance = (id: string, domain: string | null = null) => ({
     id,

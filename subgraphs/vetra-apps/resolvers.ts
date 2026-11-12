@@ -1,3 +1,8 @@
+import {
+  moveCustomDomainToInstance,
+  removeMyInstanceCustomDomain,
+  setMyInstanceCustomDomain,
+} from "./domains/service.js";
 import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
 import { appInstancesFor } from "./instances/service.js";
@@ -533,6 +538,30 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "deleteMyInstanceSetting", () =>
           deleteMyInstanceSetting(deps, person(ctx), instanceId, name),
+        ),
+      setMyInstanceCustomDomain: (
+        _: unknown,
+        { instanceId, domain }: { instanceId: string; domain: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setMyInstanceCustomDomain", () =>
+          setMyInstanceCustomDomain(deps, person(ctx), instanceId, domain),
+        ),
+      removeMyInstanceCustomDomain: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "removeMyInstanceCustomDomain", () =>
+          removeMyInstanceCustomDomain(deps, person(ctx), instanceId),
+        ),
+      moveCustomDomainToInstance: (
+        _: unknown,
+        args: { fromEnvironmentId: string; instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "moveCustomDomainToInstance", () =>
+          moveCustomDomainToInstance(deps, person(ctx), args),
         ),
       createPlan: (
         _: unknown,

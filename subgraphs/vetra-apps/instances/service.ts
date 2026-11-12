@@ -1,6 +1,10 @@
 import type { Caller } from "../auth.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { publicUrlOf } from "./public-host.js";
+import {
+  customDomainJson,
+  type InstanceCustomDomainJson,
+} from "../domains/service.js";
 import { listInstances, type InstanceRow } from "./repo.js";
 
 export interface InstanceJson {
@@ -33,6 +37,7 @@ export interface InstanceJson {
   environmentId: string | null;
   /** own: how many settings its holder set (never their names, H2). */
   holderSettingsCount: number;
+  customDomain: InstanceCustomDomainJson | null;
   updatedAt: string;
 }
 
@@ -63,6 +68,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
     holderSettingsCount: 0,
+    customDomain: customDomainJson(r),
     updatedAt: r.updated_at,
   };
 }

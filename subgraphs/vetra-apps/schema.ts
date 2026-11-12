@@ -135,6 +135,8 @@ export const schema: DocumentNode = gql`
     environmentId: String
     "own: how many settings its holder set (their names stay the holder's)"
     holderSettingsCount: Int!
+    "own: the holder's custom domain"
+    customDomain: InstanceCustomDomain
     updatedAt: String!
   }
 
@@ -171,6 +173,34 @@ export const schema: DocumentNode = gql`
     status: String!
     reason: String
     runningVersion: String
+    "own: the custom domain the holder set"
+    customDomain: InstanceCustomDomain
+  }
+
+  "Where a holder's custom domain stands: DNS (waiting for the holder's DNS), ISSUING (applied, certificate pending), ACTIVE (served), FAILED (see reason)"
+  enum CustomDomainStatus {
+    DNS
+    ISSUING
+    ACTIVE
+    FAILED
+  }
+
+  "A DNS record the holder sets"
+  type DnsRecordHint {
+    type: String!
+    host: String!
+    value: String!
+  }
+
+  "A holder's custom domain on their own instance. Applying it moves the instance's host: the generated host stops serving, and HTTPS works once the certificate is issued (minutes)."
+  type InstanceCustomDomain {
+    domain: String!
+    status: CustomDomainStatus!
+    reason: String
+    since: String
+    records: [DnsRecordHint!]!
+    "A CNAME instead of the A record (not at an apex domain)"
+    alternative: DnsRecordHint
   }
 
   "A holder setting's kind: plain (value shown), secret or file (write-only)"
@@ -532,6 +562,12 @@ export const schema: DocumentNode = gql`
     setMyInstanceSetting(input: SetHolderSettingInput!): HolderSetting!
     "Delete a setting from the caller's own instance (holder only)"
     deleteMyInstanceSetting(instanceId: ID!, name: String!): Boolean!
+    "Point the caller's own instance at a custom domain (holder only); applied once DNS points at Vetra, and then the generated host stops serving"
+    setMyInstanceCustomDomain(instanceId: ID!, domain: String!): InstanceCustomDomain!
+    "Drop the custom domain of the caller's own instance (holder only); it is served at its generated host again"
+    removeMyInstanceCustomDomain(instanceId: ID!): Boolean!
+    "Platform admins: slice 9 moves a licensed environment's domain to the holder's instance."
+    moveCustomDomainToInstance(fromEnvironmentId: ID!, instanceId: ID!): InstanceCustomDomain!
     "Turn a licensing term into a plan (shared or own instances)"
     createPlan(input: CreatePlanInput!): AppPlan!
     updatePlan(input: UpdatePlanInput!): AppPlan!

@@ -23,6 +23,7 @@ import {
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { AttestationVerifier } from "./releases/attestation.js";
+import type { DomainProbe } from "./domains/dns.js";
 import type { VetraAppsConfig } from "./config.js";
 import type {
   AppDeploymentKind,
@@ -228,6 +229,8 @@ export interface AppsDeps {
    * Whether a live environment other than `exceptEnvironmentId` holds this
    * custom domain (plan 7 Task 7). Absent: only instances' own domains are checked.
    */
+  /** DNS and TLS checks of holders' custom domains. Absent: domains stay where they are (no checker). */
+  domainProbe?: DomainProbe | null;
   customDomainUsed?:
     | ((domain: string, exceptEnvironmentId: string | null) => Promise<boolean>)
     | null;
