@@ -260,7 +260,56 @@ describe("monitorInstancesOnce", () => {
     await h.envs.manage(envId);
     await monitor();
     expect(h.probed).toEqual([]);
-    expect((await one()).health).toBeNull();
+    // Stamped as checked (no data) so it never starves the caps.
+    expect(await one()).toMatchObject({
+      health: "unknown",
+      health_check: "data",
+      health_digest: null,
+      observed_digest: null,
+    });
+  });
+
+  it("never lets skipped instances starve an app's cap", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ release_branches: '["b1","b2","b3"]' })
+      .where("id", "=", appId)
+      .execute();
+    for (const [i, branch] of ["main", "b1", "b2", "b3"].entries())
+      await seedRelease(h, appId, {
+        version: `1.5.0-${branch}.1`,
+        run: 100 + i,
+        branch,
+      });
+    await reconcileInstancesOnce(h.deps);
+    const rows = (await listInstances(h.db, appId)).sort((a, b) =>
+      a.id < b.id ? -1 : 1,
+    );
+    expect(rows).toHaveLength(4);
+    for (const r of rows.slice(0, 3)) await h.envs.manage(r.environment_id!);
+    const normal = rows[3];
+    h.envs.setStatus(normal.environment_id!, "READY");
+    await setCluster(normal.environment_id!, [{ digest: digest("a") }]);
+    await monitor();
+    await monitor();
+    const after = (await listInstances(h.db, appId)).find(
+      (r) => r.id === normal.id,
+    )!;
+    expect(after.health).toBe("healthy");
+  });
+
+  it("stamps an instance whose check throws, so the pass moves on", async () => {
+    const envId = await created();
+    await setCluster(envId, [{ digest: digest("a") }]);
+    h.deps.envTenant = async () => {
+      throw new Error("read model down");
+    };
+    expect(await monitor()).toBe(0);
+    expect(await one()).toMatchObject({
+      health: "unknown",
+      health_check: "data",
+    });
+    expect((await one()).health_reason).toMatch(/read model down/);
   });
 
   it("does nothing when health is off", async () => {

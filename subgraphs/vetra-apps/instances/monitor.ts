@@ -102,9 +102,51 @@ export async function monitorInstancesOnce(deps: AppsDeps): Promise<number> {
       deps.logger.warn(
         `[vetra-apps] health of instance ${row.id}: ${String(err).slice(0, 300)}`,
       );
+      // Stamped all the same: a row that always throws must not starve the caps.
+      await stamp(
+        deps,
+        row,
+        `the check failed: ${String(err).slice(0, 200)}`,
+      ).catch(() => undefined);
     }
   });
   return checked;
+}
+
+/** When the clock restarts: any change of value or digest, or leaving the STOPPED check. */
+function sinceOf(
+  row: InstanceRow,
+  verdict: HealthVerdict,
+  digest: string | null,
+  at: string,
+): string {
+  const changed =
+    row.health === null ||
+    row.health_digest !== digest ||
+    row.health !== verdict.health ||
+    (row.health_check === "stopped") !== (verdict.check === "stopped");
+  return changed || !row.health_since ? at : row.health_since;
+}
+
+/**
+ * Records a check that judged nothing (gone, not ours, managed, or an error) as
+ * unknown with no data, keeping the digests: it counts as checked, so the
+ * oldest-first caps move on to the next instance.
+ */
+async function stamp(
+  deps: AppsDeps,
+  row: InstanceRow,
+  reason: string,
+): Promise<void> {
+  const at = deps.now().toISOString();
+  const verdict: HealthVerdict = { ...NO_DATA, reason };
+  await recordHealth(deps.db, row.id, {
+    health: verdict.health,
+    health_check: verdict.check,
+    health_reason: verdict.reason,
+    health_checked_at: at,
+    health_since: sinceOf(row, verdict, row.health_digest, at),
+  });
 }
 
 async function checkInstance(
@@ -113,7 +155,14 @@ async function checkInstance(
 ): Promise<boolean> {
   const state = await deps.envs.getState(row.environment_id!);
   // Gone (the reconciler recreates it), or not this App's instance: never read, never probed.
-  if (!state || !ours(state, row)) return false;
+  if (!state) {
+    await stamp(deps, row, "the environment is gone");
+    return false;
+  }
+  if (!ours(state, row)) {
+    await stamp(deps, row, "the environment is not this App's instance");
+    return false;
+  }
   const version =
     state.services.find((s) => s.type === "FUSION")?.version ?? null;
   const wanted = digestOf(version);
@@ -156,19 +205,12 @@ async function checkInstance(
   }
 
   const at = deps.now().toISOString();
-  // Any change of value (unknown ↔ unhealthy too) or of digest restarts the
-  // clock, and so does leaving the STOPPED check: windows count agreeing checks.
-  const flipped =
-    row.health === null ||
-    row.health_digest !== wanted ||
-    row.health !== verdict.health ||
-    (row.health_check === "stopped") !== (verdict.check === "stopped");
   await recordHealth(deps.db, row.id, {
     health: verdict.health,
     health_check: verdict.check,
     health_reason: verdict.reason,
     health_checked_at: at,
-    health_since: flipped || !row.health_since ? at : row.health_since,
+    health_since: sinceOf(row, verdict, wanted, at),
     health_digest: wanted,
     health_restarts: restarts,
     observed_digest: observed.digest,

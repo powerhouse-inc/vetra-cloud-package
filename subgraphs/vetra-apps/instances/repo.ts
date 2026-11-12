@@ -121,11 +121,21 @@ export async function listDueForHealth(
   return rows.map(normalize);
 }
 
+/** A check that judged nothing (skipped or errored): the verdict and when, the rest kept. */
+export type HealthStamp = Pick<
+  HealthRecord,
+  | "health"
+  | "health_check"
+  | "health_reason"
+  | "health_checked_at"
+  | "health_since"
+>;
+
 /** Health columns only: never status, reason, targets or updated_at; a row removed meanwhile is left alone. */
 export async function recordHealth(
   db: Kysely<VetraAppsDB>,
   id: string,
-  r: HealthRecord,
+  r: HealthRecord | HealthStamp,
 ): Promise<void> {
   await db
     .updateTable("instances")
