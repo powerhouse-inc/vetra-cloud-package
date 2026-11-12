@@ -56,15 +56,6 @@ export interface PlanJson {
   updatedAt: string;
 }
 
-/** A stored window that does not parse reads as none (never throws on a read). */
-function storedWindow(json: string | null | undefined): UpdateWindow | null {
-  try {
-    return parseWindow(json);
-  } catch {
-    return null;
-  }
-}
-
 export const planJson = (p: PlanRow): PlanJson => ({
   id: p.id,
   appId: p.app_id,
@@ -76,7 +67,8 @@ export const planJson = (p: PlanRow): PlanJson => ({
   targetVersion: p.target_version,
   policy: p.policy,
   noticeHours: p.notice_hours,
-  updateWindow: storedWindow(p.update_window),
+  // A stored window that does not parse reads as one that is never open.
+  updateWindow: parseWindow(p.update_window),
   policyNote: p.policy_note ?? null,
   status: p.status,
   createdAt: p.created_at,

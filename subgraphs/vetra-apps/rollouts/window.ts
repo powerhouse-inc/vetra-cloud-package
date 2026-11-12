@@ -27,14 +27,27 @@ const WEEKDAY: Record<string, number> = {
 };
 const MINUTE_MS = 60_000;
 
-function validTimeZone(tz: string): boolean {
+const formatters = new Map<string, Intl.DateTimeFormat>();
+/** The zone's local weekday/hour/minute formatter; null for an unknown zone (not cached). */
+function formatterOf(timeZone: string): Intl.DateTimeFormat | null {
+  const cached = formatters.get(timeZone);
+  if (cached) return cached;
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    formatters.set(timeZone, f);
+    return f;
   } catch {
-    return false;
+    return null;
   }
 }
+
+const validTimeZone = (tz: string) => formatterOf(tz) !== null;
 
 /** Throws BAD_USER_INPUT on anything malformed; days come back sorted and unique. */
 export function checkWindow(w: UpdateWindow): UpdateWindow {
@@ -60,27 +73,52 @@ export function checkWindow(w: UpdateWindow): UpdateWindow {
   return { days, start: w.start, end: w.end, timeZone: w.timeZone };
 }
 
+/** A window that is never open: what a stored window that does not parse reads as. */
+const NEVER: UpdateWindow = Object.freeze({
+  days: [],
+  start: "",
+  end: "",
+  timeZone: "",
+}) as UpdateWindow;
+
+/**
+ * The stored window; null: none (any time). Never throws: JSON that does not
+ * parse comes back as a window that is never open (fail closed, as every
+ * window that does not check: see usable).
+ */
 export function parseWindow(
   json: string | null | undefined,
 ): UpdateWindow | null {
-  return json ? (JSON.parse(json) as UpdateWindow) : null;
+  if (!json) return null;
+  try {
+    const v: unknown = JSON.parse(json);
+    if (v && typeof v === "object") return v as UpdateWindow;
+  } catch {
+    // fall through: never open
+  }
+  return NEVER;
 }
 
-const formatters = new Map<string, Intl.DateTimeFormat>();
+/** Whether a (stored) window is well formed: what checkWindow accepts. */
+export function usable(w: UpdateWindow): boolean {
+  return (
+    Array.isArray(w.days) &&
+    w.days.length > 0 &&
+    w.days.every((x) => Number.isInteger(x) && x >= 1 && x <= 7) &&
+    typeof w.start === "string" &&
+    HHMM.test(w.start) &&
+    typeof w.end === "string" &&
+    HHMM.test(w.end) &&
+    typeof w.timeZone === "string" &&
+    validTimeZone(w.timeZone)
+  );
+}
+
 function local(at: Date, timeZone: string): { day: number; minute: number } {
-  let f = formatters.get(timeZone);
-  if (!f) {
-    f = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    });
-    formatters.set(timeZone, f);
-  }
   const p = Object.fromEntries(
-    f.formatToParts(at).map((x) => [x.type, x.value]),
+    formatterOf(timeZone)!
+      .formatToParts(at)
+      .map((x) => [x.type, x.value]),
   );
   return {
     day: WEEKDAY[p.weekday],
@@ -88,7 +126,13 @@ function local(at: Date, timeZone: string): { day: number; minute: number } {
   };
 }
 
+/**
+ * Whether `at` is inside the window. start == end: the whole of each listed
+ * day (local midnight to midnight). False, never a throw, for a window that
+ * is not usable or a date that is not one (fail closed).
+ */
 export function inWindow(w: UpdateWindow, at: Date): boolean {
+  if (Number.isNaN(at.getTime()) || !usable(w)) return false;
   const { day, minute } = local(at, w.timeZone);
   const s = minutesOf(w.start);
   const e = minutesOf(w.end);
@@ -101,16 +145,42 @@ export function inWindow(w: UpdateWindow, at: Date): boolean {
   );
 }
 
-/** The first minute at or after `from` inside the window; `from` itself when inside. */
-export function nextWindowStart(w: UpdateWindow, from: Date): Date {
+const SEGMENT_MS = 30 * MINUTE_MS;
+const DAY_MINUTES = 24 * 60;
+
+/**
+ * The first minute at or after `from` inside the window; `from` itself when
+ * inside; null when there is none within 8 days (a window that is not usable,
+ * or a date that is not one): never due.
+ *
+ * Steps by boundaries, not minutes: zones change their offset only on UTC
+ * half hours, so within each half hour local time runs straight and the
+ * window can only open where local time reaches its start or midnight, or at
+ * the half hour itself (a DST jump).
+ */
+export function nextWindowStart(w: UpdateWindow, from: Date): Date | null {
+  if (Number.isNaN(from.getTime()) || !usable(w)) return null;
   if (inWindow(w, from)) return from;
-  const last = from.getTime() + 8 * 24 * 60 * MINUTE_MS;
+  const first = Math.ceil(from.getTime() / MINUTE_MS) * MINUTE_MS;
+  const last = from.getTime() + 8 * DAY_MINUTES * MINUTE_MS;
+  const entries = [minutesOf(w.start), 0];
   for (
-    let t = Math.ceil(from.getTime() / MINUTE_MS) * MINUTE_MS;
-    t <= last;
-    t += MINUTE_MS
-  )
-    if (inWindow(w, new Date(t))) return new Date(t);
-  // Unreachable for a checked window (at least one day a week).
-  return from;
+    let g = Math.floor(first / SEGMENT_MS) * SEGMENT_MS;
+    g <= last;
+    g += SEGMENT_MS
+  ) {
+    const m = local(new Date(g), w.timeZone).minute;
+    const candidates = [
+      g,
+      ...entries.map(
+        (e) => g + ((e - m + DAY_MINUTES) % DAY_MINUTES) * MINUTE_MS,
+      ),
+      ...(g < first && first < g + SEGMENT_MS ? [first] : []),
+    ]
+      .filter((c) => c >= first && c < g + SEGMENT_MS)
+      .sort((a, b) => a - b);
+    for (const c of candidates)
+      if (inWindow(w, new Date(c))) return new Date(c);
+  }
+  return null;
 }
