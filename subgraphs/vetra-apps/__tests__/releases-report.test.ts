@@ -8,6 +8,7 @@ import {
   seedActiveApp,
   type Harness,
 } from "./harness.js";
+import { listAudit } from "../audit/repo.js";
 import { ciReportRelease } from "../releases/service.js";
 import { updateApp } from "../service.js";
 
@@ -170,5 +171,75 @@ describe("ciReportRelease", () => {
     await expect(ciReportRelease(h.deps, ci(), input())).rejects.toBeTruthy();
     const rows = await h.deps.db.selectFrom("releases").selectAll().execute();
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("ciReportRelease and the audit log", () => {
+  it("records a release and a build once each, as CI for the address it acts for", async () => {
+    await ciReportRelease(h.deps, ci(), input());
+    await ciReportRelease(h.deps, ci(), input());
+    await ciReportRelease(
+      h.deps,
+      ci("refs/heads/main", "501"),
+      input({
+        version: "1.5.0-main.4",
+        kind: "build",
+        notes: null,
+        image: {
+          ref: `cr.vetra.io/acme/${app.slug}:1.5.0-main.4`,
+          digest: DIGEST,
+          host: "cli",
+        },
+        packages: [],
+      }),
+    );
+    const rows = await listAudit(h.db, app.id, { limit: 10 });
+    expect(rows.map((r) => [r.action, r.subject, r.actor, r.source])).toEqual([
+      ["build.recorded", "release:1.5.0-main.4", OWNER, "ci"],
+      ["release.recorded", "release:1.5.0", OWNER, "ci"],
+    ]);
+    expect(JSON.parse(rows[1].detail)).toEqual({
+      version: "1.5.0",
+      kind: "release",
+      branch: "main",
+      pr: null,
+      commit: SHA,
+      run: 500,
+      digest: DIGEST,
+      githubActor: "octocat",
+      githubRun: "500",
+    });
+  });
+
+  it("records nothing when the report is refused", async () => {
+    h.deps.attestations = {
+      verify: async () => {
+        throw Object.assign(new Error("no"), {
+          extensions: { code: "FORBIDDEN" },
+        });
+      },
+    };
+    await expect(ciReportRelease(h.deps, ci(), input())).rejects.toBeTruthy();
+    expect(await listAudit(h.db, app.id, { limit: 10 })).toEqual([]);
+  });
+
+  it("records nothing for a re-run under another digest (VERSION_CONFLICT)", async () => {
+    await ciReportRelease(h.deps, ci(), input());
+    await expect(
+      ciReportRelease(
+        h.deps,
+        ci("refs/heads/main", "501"),
+        input({
+          image: {
+            ref: `cr.vetra.io/acme/${app.slug}:1.5.0`,
+            digest: `sha256:${"b".repeat(64)}`,
+            host: "cli",
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ extensions: { code: "VERSION_CONFLICT" } });
+    expect(
+      (await listAudit(h.db, app.id, { limit: 10 })).map((r) => r.action),
+    ).toEqual(["release.recorded"]);
   });
 });
