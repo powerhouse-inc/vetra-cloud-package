@@ -40,6 +40,9 @@ export async function upsertPod(
         phase: row.phase,
         ready: row.ready,
         restartCount: row.restartCount,
+        image: row.image ?? null,
+        imageId: row.imageId ?? null,
+        waitingReason: row.waitingReason ?? null,
         service: row.service,
         component: row.component,
         agent: row.agent,
@@ -67,11 +70,15 @@ export interface PodLike {
     namespace?: string;
     labels?: Record<string, string>;
   };
+  spec?: { containers?: Array<{ name?: string; image?: string }> };
   status?: {
     phase?: string;
     containerStatuses?: Array<{
+      name?: string;
       ready?: boolean;
       restartCount?: number;
+      imageID?: string;
+      state?: { waiting?: { reason?: string } };
     }>;
   };
 }
@@ -95,6 +102,14 @@ export function podToRow(
   const component = labels["app.kubernetes.io/component"] ?? null;
   const agent = labels["clint.vetra.io/agent"] ?? null;
 
+  const main = pod.spec?.containers?.[0];
+  const mainStatus =
+    containerStatuses.find((cs) => main?.name && cs.name === main.name) ??
+    containerStatuses[0];
+  const waitingReason =
+    containerStatuses.map((cs) => cs.state?.waiting?.reason).find((r) => !!r) ??
+    null;
+
   return {
     id: `${tenantId}/${name}`,
     tenantId,
@@ -105,6 +120,9 @@ export function podToRow(
     phase: toUpperEnum(pod.status?.phase ?? "Unknown"),
     ready,
     restartCount,
+    image: main?.image ?? null,
+    imageId: mainStatus?.imageID || null,
+    waitingReason,
     updatedAt: now,
   };
 }

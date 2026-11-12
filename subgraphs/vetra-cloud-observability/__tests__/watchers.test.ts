@@ -11,6 +11,7 @@ import {
   pruneEvents,
   handlePodWatchEvent,
   reconcilePods,
+  podToRow,
   type PodLike,
 } from "../watchers.js";
 
@@ -488,5 +489,83 @@ describe("reconcilePods", () => {
 
     expect(Object.fromEntries(res.stale)).toEqual({ t1: 2 });
     expect(await podIds()).toEqual(["t1/a", "t1/b", "t2/c"]);
+  });
+});
+
+describe("podToRow — image and waiting reason", () => {
+  const pod = (
+    over: Partial<NonNullable<PodLike["status"]>> = {},
+  ): PodLike => ({
+    metadata: {
+      name: "app-0",
+      namespace: "t1",
+      labels: { "app.kubernetes.io/component": "app" },
+    },
+    spec: {
+      containers: [
+        { name: "app", image: "cr.vetra.io/acme/shop:1.5.0@sha256:aa" },
+      ],
+    },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        {
+          name: "app",
+          ready: false,
+          restartCount: 3,
+          imageID: "cr.vetra.io/acme/shop@sha256:aa",
+          state: { waiting: { reason: "CrashLoopBackOff" } },
+        },
+      ],
+      ...over,
+    },
+  });
+
+  it("records the spec image, the running imageID and why the container waits", () => {
+    expect(podToRow(pod(), "2026-11-12T00:00:00.000Z")).toMatchObject({
+      image: "cr.vetra.io/acme/shop:1.5.0@sha256:aa",
+      imageId: "cr.vetra.io/acme/shop@sha256:aa",
+      waitingReason: "CrashLoopBackOff",
+      restartCount: 3,
+      ready: 0,
+    });
+  });
+
+  it("leaves imageId null while the image is pulled (empty imageID)", () => {
+    const row = podToRow(
+      pod({
+        containerStatuses: [
+          {
+            name: "app",
+            imageID: "",
+            state: { waiting: { reason: "ImagePullBackOff" } },
+          },
+        ],
+      }),
+    );
+    expect(row).toMatchObject({
+      imageId: null,
+      waitingReason: "ImagePullBackOff",
+    });
+  });
+
+  it("stores and updates the new columns", async () => {
+    const row = podToRow(pod())!;
+    await upsertPod(db, row);
+    await upsertPod(db, {
+      ...row,
+      imageId: "cr.vetra.io/acme/shop@sha256:bb",
+      waitingReason: null,
+    });
+    const stored = await db
+      .selectFrom("environment_pods")
+      .selectAll()
+      .where("id", "=", row.id)
+      .executeTakeFirstOrThrow();
+    expect(stored).toMatchObject({
+      imageId: "cr.vetra.io/acme/shop@sha256:bb",
+      waitingReason: null,
+      image: row.image,
+    });
   });
 });

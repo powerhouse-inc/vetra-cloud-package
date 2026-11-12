@@ -32,6 +32,12 @@ export interface EnvironmentPods {
   phase: string;
   ready: number; // 0/1
   restartCount: number;
+  /** Spec image of the pod's first container (`<repo>:<tag>[@<digest>]`); null on rows written before it was recorded. */
+  image?: string | null;
+  /** containerStatuses[].imageID of that container (what runs); null while pulling. */
+  imageId?: string | null;
+  /** First `state.waiting.reason` of any container (CrashLoopBackOff, ImagePullBackOff, …); null when none waits. */
+  waitingReason?: string | null;
   updatedAt: string;
 }
 

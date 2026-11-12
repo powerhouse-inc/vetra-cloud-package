@@ -96,6 +96,24 @@ export async function up(db: Kysely<any>): Promise<void> {
     }
   }
 
+  // Instance health (vetra-apps releases phase 2 slice 3) reads what a pod
+  // runs and why it waits. Same idempotent ADD COLUMN pattern as above.
+  for (const [col, type] of [
+    ["image", "varchar(512)"],
+    ["imageId", "varchar(512)"],
+    ["waitingReason", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("environment_pods")
+        .addColumn(col, type)
+        .execute();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/already exists|duplicate column/i.test(msg)) throw err;
+    }
+  }
+
   // Runtime-announced endpoints from clint agents. Upserted on each
   // announcement; rows are keyed by (documentId, prefix, endpointId) so a
   // single env can host N agents (distinguished by prefix), each
