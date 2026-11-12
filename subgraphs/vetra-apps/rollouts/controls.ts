@@ -264,7 +264,7 @@ export async function skipRolloutStep(
   const who = callerActor(caller);
   return underLock(deps, app.id, r.id, async (trx, cur, nowIso) => {
     const step = (await getStep(trx, s.id))!;
-    let note: string;
+    let note = "";
     let back = false;
     if (step.status === "pending" || step.status === "failed") {
       // A failed (or retried, now pending) step's instance targets the new release: back it goes.
@@ -275,9 +275,9 @@ export async function skipRolloutStep(
     } else if (
       step.status === "revert_pending" ||
       step.status === "revert_failed"
-    )
-      note = `left on ${step.to_version}`;
-    else
+    ) {
+      // The note is set below, from where the instance is left.
+    } else
       throw appsError(
         "BAD_USER_INPUT",
         `Only a pending or failed step is skipped (this one is ${step.status})`,
@@ -296,6 +296,12 @@ export async function skipRolloutStep(
       const inst = await getInstance(trx, step.instance_id);
       if (inst && !inst.removed_at && inst.target_version !== step.to_version)
         await pointInstanceAt(trx, app.id, inst.id, step.to_version, nowIso);
+    }
+    if (step.status === "revert_pending" || step.status === "revert_failed") {
+      // Skipping the way back leaves the instance where its target is now
+      // (a failed forward step is already back on from_version).
+      const inst = await getInstance(trx, step.instance_id);
+      note = `left on ${inst?.target_version ?? step.to_version}`;
     }
     await transitionStep(
       trx,

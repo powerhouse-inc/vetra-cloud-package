@@ -284,4 +284,25 @@ describe("rolling back (spec section 7, image swap)", () => {
       "o9:reverting",
     ]);
   });
+
+  it("skipping a way back that has not started says where the instance is left (a failed step is already back)", async () => {
+    const r = await startRollout(h.deps, owner, {
+      appId,
+      version: "1.4.1",
+      planIds: ["p-pro"],
+      noticeHours: 0,
+    });
+    await advance();
+    await failUpdate(h, "o1");
+    await advance();
+    expect((await instance(h, "o1")).target_version).toBe("1.4.0");
+    await rollBackRollout(h.deps, owner, r.id);
+    const o1 = (await stepsOf(h.db, r.id)).find((s) => s.instance_id === "o1")!;
+    expect(o1.status).toBe("revert_pending");
+    await skipRolloutStep(h.deps, owner, o1.id);
+    expect(
+      (await stepsOf(h.db, r.id)).find((s) => s.instance_id === "o1"),
+    ).toMatchObject({ status: "skipped", note: "left on 1.4.0" });
+    expect((await instance(h, "o1")).target_version).toBe("1.4.0");
+  });
 });
