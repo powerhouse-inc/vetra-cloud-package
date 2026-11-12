@@ -666,4 +666,55 @@ describe("reconcileInstancesOnce — plan instances", () => {
       reason: PLAN_NEEDS_NEW_SECRETS,
     });
   });
+
+  it("wakes on renewal even when a crash came between sleeping and recording it", async () => {
+    const envId = await readyThenDue();
+    const real = h.deps.envs;
+    h.deps.envs = Object.assign(Object.create(real) as typeof real, {
+      execute: async (
+        id: string,
+        actions: Parameters<typeof real.execute>[1],
+      ) => {
+        const after = await real.execute(id, actions);
+        if (actions.some((a) => a.type === "SLEEP_ENVIRONMENT"))
+          throw new Error("crashed after sleeping");
+        return after;
+      },
+    });
+    await reconcileInstancesOnce(h.deps);
+    h.deps.envs = real;
+    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    await renew();
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).not.toBe("STOPPED");
+    expect((await planRows())[0]).toMatchObject({
+      status: "updating",
+      stopped_by_vetra: false,
+    });
+  });
+
+  it("approves a leftover CHANGES_PENDING before stopping", async () => {
+    const envId = await readyThenDue();
+    h.envs.setStatus(envId, "CHANGES_PENDING");
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("CHANGES_APPROVED");
+    expect((await planRows())[0].stop_reason).toBe(LICENCE_ENDED);
+  });
+
+  it("neither sleeps nor wakes an environment that is not a PLAN instance", async () => {
+    const envId = await readyThenDue();
+    const state = (await h.envs.getState(envId))!;
+    setGlobal(envId, { app: { ...state.app!, role: "PRODUCTION" } });
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("READY");
+    expect((await planRows())[0].stopped_by_vetra).not.toBe(true);
+    // A STOPPED one Vetra once slept is not woken either once it is no PLAN.
+    setGlobal(envId, { app: state.app!, status: "READY" });
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    setGlobal(envId, { app: { ...state.app!, role: "PRODUCTION" } });
+    await renew();
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+  });
 });

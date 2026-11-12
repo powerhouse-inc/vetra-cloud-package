@@ -97,6 +97,8 @@ export const RECREATING_FOR_SETTINGS =
 /** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
 export const PLAN_NEEDS_NEW_SECRETS =
   "the environment predates Vetra's secrets master key; a plan instance keeps its data, so it is not recreated (needs an operator)";
+export const NOT_A_PLAN_ENVIRONMENT =
+  "the environment is not a PLAN instance; Vetra neither stops nor wakes it";
 export const WAITING_FOR_NAMESPACE =
   "waiting for the environment's namespace to give it its secrets";
 /** Failed, but retried each pass: it heals once the namespace appears. */
@@ -299,18 +301,33 @@ async function stopPlanInstance(
   await withEnvLock(envId, async () => {
     const state = await deps.envs.getState(envId);
     if (!state || !ours(state, row)) return;
+    if (state.app?.role !== "PLAN") {
+      if (row.reason !== NOT_A_PLAN_ENVIRONMENT)
+        await patch(deps, row, { reason: NOT_A_PLAN_ENVIRONMENT });
+      return;
+    }
+    if (state.status === "CHANGES_PENDING") {
+      // Changes sent but never approved (as reconcileEnvironment does); it sleeps once settled.
+      await deps.envs.execute(envId, [approveChanges({})]);
+      return;
+    }
     if (state.status === "READY" || state.status === "DEPLOYMENt_FAILED") {
+      // Recorded before sleeping: a crash in between must not leave an
+      // environment Vetra slept that a renewal never wakes.
+      if (!row.stopped_by_vetra)
+        row = await patch(deps, row, { stopped_by_vetra: true });
       await deps.envs.execute(envId, [sleepEnvironment({})]);
-      await patch(deps, row, {
-        status: "stopped",
-        reason,
-        stopped_by_vetra: true,
-      });
+      await patch(deps, row, { status: "stopped", reason });
       return;
     }
     if (state.status === "STOPPED") {
       if (row.status !== "stopped" || row.reason !== reason)
-        await patch(deps, row, { status: "stopped", reason });
+        await patch(deps, row, {
+          status: "stopped",
+          reason,
+          // Not yet recorded as stopped: Vetra stopped it (or wanted it stopped).
+          ...(row.status !== "stopped" ? { stopped_by_vetra: true } : {}),
+        });
       return;
     }
     const waiting = `${reason}: stopped once the environment settles (${state.status})`;
@@ -766,7 +783,11 @@ async function reconcileEnvironment(
     await deps.envs.execute(envId, [approveChanges({})]);
     return;
   }
-  if (state.status === "STOPPED" && row.stopped_by_vetra) {
+  if (
+    state.status === "STOPPED" &&
+    row.stopped_by_vetra &&
+    state.app?.role === "PLAN"
+  ) {
     // Stopped by Vetra (licence ended, plan retired) and wanted again.
     await apply(deps, envId, [wakeEnvironment({})]);
     await patch(deps, row, {
