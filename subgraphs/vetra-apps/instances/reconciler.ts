@@ -27,6 +27,7 @@ import {
   type AppsDeps,
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { advanceRollouts } from "../rollouts/runner.js";
 import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
   declaredSecretNames,
@@ -209,6 +210,12 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
       deps.logger.warn(
         `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
       );
+    }
+    try {
+      // Before the rows are read: a target a step moves is applied in this pass.
+      await advanceRollouts(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] rollouts of ${app.slug}: ${message(err)}`);
     }
   }
   // Read once per pass: every instance of a kind gets the same revision.
