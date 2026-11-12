@@ -28,7 +28,48 @@ export interface HarborApi {
    * anything was pushed); an already-gone project is fine.
    */
   deleteProject(project: string): Promise<void>;
+  /**
+   * Makes the project's stable release tags immutable (RELEASE_TAG_RULE),
+   * once: true = the rule was added, false = the project already had it.
+   */
+  ensureImmutableReleaseTags(project: string): Promise<boolean>;
 }
+
+/**
+ * Harbor's immutable tag rule for a namespace project: no tag without a `-`
+ * may be overwritten or deleted, in any repository. vetra-publish tags
+ * images with the version: a stable release is `X.Y.Z`, a prerelease
+ * `X.Y.Z-beta.N`, a build `X.Y.Z-main.N`. Licensed environments pull a
+ * release by its tag, so it must never move. Harbor's doublestar selector
+ * cannot say "X.Y.Z" exactly (`*` also matches `-`, `[0-9]*.[0-9]*.[0-9]*`
+ * covers builds too), so the rule excludes `*-*` (tags with a `-`) instead.
+ * One selector per dimension, as every Harbor 2.x evaluates it. Builds and
+ * prereleases stay mutable; vetra-publish never re-pushes an existing tag
+ * anyway.
+ */
+export const RELEASE_TAG_RULE = {
+  action: "immutable",
+  template: "immutable_template",
+  disabled: false,
+  scope_selectors: {
+    repository: [
+      { kind: "doublestar", decoration: "repoMatches", pattern: "**" },
+    ],
+  },
+  tag_selectors: [
+    { kind: "doublestar", decoration: "excludes", pattern: "*-*" },
+  ],
+};
+
+type Selector = { kind?: string; decoration?: string; pattern?: string };
+const sameSelectors = (a: Selector[] | undefined, b: Selector[]) =>
+  (a ?? []).length === b.length &&
+  b.every(
+    (x, i) =>
+      a![i]?.kind === x.kind &&
+      a![i]?.decoration === x.decoration &&
+      a![i]?.pattern === x.pattern,
+  );
 
 type FetchLike = typeof fetch;
 
@@ -49,6 +90,42 @@ export function createHarborApi(
     });
 
   return {
+    async ensureImmutableReleaseTags(project) {
+      const url = `${cfg.url}/api/v2.0/projects/${encodeURIComponent(project)}/immutabletagrules`;
+      const headers = {
+        authorization: auth,
+        accept: "application/json",
+        "x-is-resource-name": "true",
+      };
+      const list = await fetchImpl(url, { method: "GET", headers });
+      if (!list.ok)
+        throw new Error(
+          `harbor: immutable tag rules of ${project} → ${list.status}`,
+        );
+      const rules = (await list.json()) as Array<{
+        scope_selectors?: { repository?: Selector[] };
+        tag_selectors?: Selector[];
+      }>;
+      const has = rules.some(
+        (r) =>
+          sameSelectors(
+            r.scope_selectors?.repository,
+            RELEASE_TAG_RULE.scope_selectors.repository,
+          ) && sameSelectors(r.tag_selectors, RELEASE_TAG_RULE.tag_selectors),
+      );
+      if (has) return false;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(RELEASE_TAG_RULE),
+      });
+      if (!res.ok)
+        throw new Error(
+          `harbor: add immutable tag rule to ${project} → ${res.status}`,
+        );
+      return true;
+    },
+
     async createProject(project) {
       const res = await post("/projects", {
         project_name: project,
