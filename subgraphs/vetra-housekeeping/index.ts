@@ -18,11 +18,20 @@ import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
 import { createLokiClient } from "./loki.js";
 import { HousekeepingKeeper, loadKeeperConfig, studioHost } from "./keeper.js";
 import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
+import { createReactorEnvGateway } from "../vetra-apps/envs.js";
+import {
+  createEnvironmentStopper,
+  stopKeepsDatabase,
+} from "../vetra-apps/holds/stop.js";
+import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import {
   sleepEnvironment,
   wakeEnvironment,
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
+
+/** The reason of a housekeeping hold (VETRA_STOP_KEEPS_DATABASE). */
+const HOUSEKEEPING_HOLD_REASON = "idle (housekeeping)";
 
 /**
  * Studio housekeeping subgraph. Server-side home of the sleep/wake transitions,
@@ -56,21 +65,49 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
 
     const result = studioPowerResult;
 
+    // VETRA_STOP_KEEPS_DATABASE (default off): a database-backed studio is
+    // held instead of slept (a sleep deletes its database). Off, studios
+    // sleep and wake by dispatch exactly as before.
+    const stopper = stopKeepsDatabase()
+      ? createEnvironmentStopper(
+          {
+            db: (await this.relationalDb.createNamespace(
+              "vetra-apps",
+            )) as unknown as Kysely<VetraAppsDB>,
+            envs: createReactorEnvGateway(this.reactorClient as never),
+            now: () => new Date(),
+          },
+          { keepsDatabase: true, reason: HOUSEKEEPING_HOLD_REASON },
+        )
+      : null;
+    const stopEnv = async (envId: string) => {
+      if (stopper) await stopper.stop(envId);
+      else await dispatch(envId, sleepEnvironment({}));
+    };
+    const resumeEnv = async (envId: string) => {
+      if (stopper) await stopper.resume(envId);
+      else await dispatch(envId, wakeEnvironment({}));
+    };
+    const powerOf = async (row: Awaited<ReturnType<typeof findStudioByHost>>) =>
+      row && stopper && (await stopper.isStopped(row.envId))
+        ? ("SLEEPING" as const)
+        : deriveStudioPowerState(row ?? undefined);
+
     const powerState = async (host: string): Promise<StudioPowerStateResult> => {
       const row = await findStudioByHost(envDb, host);
-      return result(host, row, deriveStudioPowerState(row ?? undefined));
+      return result(host, row, await powerOf(row));
     };
 
     const sleep = async (host: string): Promise<StudioPowerStateResult> => {
       const row = await findStudioByHost(envDb, host);
       if (!row) throw new Error("STUDIO_NOT_FOUND");
       // Idempotent: already asleep / waking → just report state.
-      const current = deriveStudioPowerState(row);
+      const current = await powerOf(row);
       if (current === "SLEEPING") return result(host, row, "SLEEPING");
       if (!isEligibleForSleep(row, { allowlist })) {
         throw new Error("STUDIO_NOT_ELIGIBLE");
       }
-      await dispatch(row.envId, sleepEnvironment({}));
+      await stopEnv(row.envId);
       return result(host, row, "SLEEPING");
     };
 
@@ -79,8 +116,9 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
     )) as unknown as Kysely<VetraLicensingDB>;
     const wake = createWake({
       findStudioByHost: (h) => findStudioByHost(envDb, h),
-      dispatchWake: (id) => dispatch(id, wakeEnvironment({})),
+      dispatchWake: resumeEnv,
       isLicenceStopped: (id) => isLicenceStopped(licensingDb, id),
+      ...(stopper ? { isHeld: (id: string) => stopper.isStopped(id) } : {}),
     });
 
     // Raw candidate rows for the external idle detector (Task 1.1): same source
@@ -115,7 +153,7 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
     const keeper = new HousekeepingKeeper({
       listStudios: () => listReadyStudios(envDb),
       loki,
-      sleepEnv: (documentId) => dispatch(documentId, sleepEnvironment({})),
+      sleepEnv: stopEnv,
       config: keeperConfig,
       logger: console,
     });

@@ -192,6 +192,31 @@ describe("offboarding against rows", () => {
     expect(deps.wake).not.toHaveBeenCalled();
   });
 
+  it("re-licensing resumes an environment offboarding held (VETRA_STOP_KEEPS_DATABASE), which never reads STOPPED", async () => {
+    const held = new Set<string>();
+    deps.sleep = vi.fn(async (id: string) => { held.add(id); }); // a hold: the status stays READY
+    deps.wake = vi.fn(async (id: string) => { held.delete(id); });
+    deps.isHeld = async (id: string) => held.has(id);
+    await markEnded(deps, "e1");
+    now = at(14);
+    await tickOffboarding(deps, [(await row())!]);
+    expect(held.has("e1")).toBe(true);
+    expect((await row())!.stopped_at).toBe(at(14));
+    // the next tick holds again (a no-op for a hold), never sleeps
+    await tickOffboarding(deps, [(await row())!]);
+    expect((await row())!.stopped_at).toBe(at(14));
+    await markResumed(deps, "e1");
+    expect(deps.wake).toHaveBeenCalledWith("e1");
+    expect(held.has("e1")).toBe(false);
+  });
+
+  it("markResumed leaves alone an environment held by someone else when offboarding never stopped it", async () => {
+    deps.isHeld = async () => true;
+    await markEnded(deps, "e1");
+    await markResumed(deps, "e1");
+    expect(deps.wake).not.toHaveBeenCalled();
+  });
+
   it("markResumed never wakes an environment the holder stopped themselves", async () => {
     status.set("e1", "STOPPED");
     await markEnded(deps, "e1");
