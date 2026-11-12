@@ -43,7 +43,10 @@ const RERENDERABLE = new Set([
  * so a licensed (managedBy) environment re-renders too. Pending changes are
  * approved as they are (the hold must take effect).
  */
-async function rerender(envs: EnvGateway, environmentId: string): Promise<void> {
+export async function rerender(
+  envs: EnvGateway,
+  environmentId: string,
+): Promise<void> {
   const state = await envs.getState(environmentId);
   if (!state || !RERENDERABLE.has(state.status)) return;
   if (state.status === "CHANGES_PENDING") {
@@ -100,6 +103,30 @@ export async function isHeld(
 
 /** Workload pods a hold removes (chart `app.kubernetes.io/component`). */
 const WORKLOAD_COMPONENTS = ["app", "switchboard", "connect"];
+
+/**
+ * Whether observability, with fresh data, still records an app, switchboard
+ * or Connect pod for the tenant (a held environment whose render never
+ * happened). False when it cannot tell.
+ */
+export async function workloadPodSeen(
+  deps: Pick<HoldDeps, "now" | "observabilityDb">,
+  tenantId: string,
+): Promise<boolean> {
+  const db = deps.observabilityDb;
+  if (!db) return false;
+  const pod = await db
+    .selectFrom("environment_pods")
+    .select("updatedAt")
+    .where("tenantId", "=", tenantId)
+    .where("component", "in", WORKLOAD_COMPONENTS)
+    .limit(1)
+    .executeTakeFirst();
+  return (
+    !!pod &&
+    Date.parse(pod.updatedAt) >= deps.now().getTime() - CLUSTER_STALE_MS
+  );
+}
 
 /**
  * Whether the tenant runs no app, switchboard or Connect pod, as observability
