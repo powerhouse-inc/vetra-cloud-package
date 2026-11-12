@@ -1,3 +1,4 @@
+import { GraphQLError } from "graphql";
 import type { Kysely } from "kysely";
 import {
   AUDIT_SYSTEM_ACTOR,
@@ -9,13 +10,15 @@ import type { RolloutStepStatus, VetraAppsDB } from "../db/schema.js";
 import { getInstance, updateInstance } from "../instances/repo.js";
 import { UPDATE_TIMEOUT_MS } from "../instances/status.js";
 import { targetOf } from "../instances/targets.js";
-import { releaseByVersion } from "../releases/repo.js";
+import { listPlans, updatePlan } from "../plans/repo.js";
+import { listReleases, releaseByVersion } from "../releases/repo.js";
 import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 import { releaseProblem } from "./check.js";
 import {
   lockRollout,
   movingStep,
+  openRolloutOfPlan,
   openRollouts,
   stepsOf,
   transitionStep,
@@ -23,7 +26,8 @@ import {
   type RolloutRow,
   type RolloutStepRow,
 } from "./repo.js";
-import type { RolloutActor } from "./service.js";
+import { parsePolicy, policyCandidate, type Policy } from "./policy.js";
+import { beginRollout, type RolloutActor } from "./service.js";
 import { inWindow, parseWindow, type UpdateWindow } from "./window.js";
 
 /** The reconciler's update timeout plus 10 minutes (decision R10). */
@@ -504,6 +508,72 @@ async function finishDone(deps: AppsDeps, app: AppRow): Promise<void> {
   }
 }
 
+const POLICY = { actor: AUDIT_SYSTEM_ACTOR, source: "policy" as const };
+
+/**
+ * Policies start rollouts by themselves (spec section 7; decision R13): one
+ * plan per rollout, as Vetra, with the plan's notice. A plan in an open
+ * rollout waits for it (R7). A refusal is recorded once per plan and version.
+ * An unexpected error of one plan is logged and passed by: it never blocks
+ * the other plans or the steps of this pass.
+ */
+async function runPolicies(deps: AppsDeps, app: AppRow): Promise<void> {
+  const plans = (await listPlans(deps.db, app.id)).filter(
+    (p) => p.status === "active" && p.policy !== "manual" && !!p.target_version,
+  );
+  if (plans.length === 0) return;
+  const releases = await listReleases(deps.db, app.id, {
+    kind: "release",
+    limit: 200,
+  });
+  for (const plan of plans) {
+    let policy: Policy;
+    try {
+      policy = parsePolicy(plan.policy);
+    } catch {
+      continue;
+    }
+    const want = policyCandidate(policy, plan.target_version!, releases);
+    const nowIso = deps.now().toISOString();
+    if (!want) {
+      if (plan.policy_note)
+        await updatePlan(deps.db, plan.id, { policy_note: null }, nowIso);
+      continue;
+    }
+    if (await openRolloutOfPlan(deps.db, plan.id)) continue;
+    try {
+      await beginRollout(deps, app, want.version, [plan], POLICY, null);
+      if (plan.policy_note)
+        await updatePlan(deps.db, plan.id, { policy_note: null }, nowIso);
+    } catch (err) {
+      if (!(err instanceof GraphQLError)) {
+        deps.logger.warn(
+          `[vetra-apps] policy ${plan.policy} of ${app.slug}/${plan.slug} failed: ${String(err)}`,
+        );
+        continue;
+      }
+      const note = `${want.version}: ${err.message}`.slice(0, 500);
+      if (plan.policy_note === note) continue;
+      await deps.db.transaction().execute(async (trx) => {
+        await updatePlan(trx, plan.id, { policy_note: note }, nowIso);
+        await recordAudit(trx, {
+          appId: app.id,
+          at: nowIso,
+          ...POLICY,
+          action: "rollout.policy_refused",
+          subject: `plan:${plan.id}`,
+          detail: {
+            slug: plan.slug,
+            version: want.version,
+            policy: plan.policy,
+            reason: err.message,
+          },
+        });
+      });
+    }
+  }
+}
+
 /**
  * One pass of the App's rollouts (spec section 7). Runs inside the
  * reconciler's per-App pass, under appInstancesLock (never taken here):
@@ -516,6 +586,7 @@ export async function advanceRollouts(
   app: AppRow,
 ): Promise<void> {
   if (!rolloutsEnabled(deps.cfg)) return;
+  if (!rolloutsHeld(deps.cfg)) await runPolicies(deps, app);
   const moving = await movingStep(deps.db, app.id);
   const stillMoving = moving ? await settle(deps, app, moving) : false;
   if (!stillMoving && !rolloutsHeld(deps.cfg)) await startNext(deps, app);
