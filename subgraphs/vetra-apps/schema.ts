@@ -133,7 +133,46 @@ export const schema: DocumentNode = gql`
     "pod | document (the environment's tag, while the pod reports no imageID)"
     observedDigestSource: String
     environmentId: String
+    "restore:<id> while a backup is restored into it; held:<id> after a failed restore (stays stopped until a restore succeeds)"
+    maintenance: String
     updatedAt: String!
+  }
+
+  "A backup of a shared or own instance: its database and /data, taken together (releases phase 3 slice 4)"
+  type InstanceBackup {
+    id: ID!
+    instanceId: ID!
+    "pre_update | daily | manual | pre_restore | pre_stop"
+    reason: String!
+    "pending | ready | failed"
+    status: String!
+    "The release the instance ran when it was taken"
+    version: String
+    sizeBytes: Float
+    error: String
+    requestedBy: String!
+    createdAt: String!
+    finishedAt: String
+    expiresAt: String!
+    rolloutStepId: ID
+  }
+
+  type InstanceRestore {
+    id: ID!
+    instanceId: ID!
+    backupId: ID!
+    "rollback | failed_update | manual"
+    purpose: String!
+    "safety_backup | stopping | restoring_db | restoring_data | starting | succeeded | failed"
+    status: String!
+    "The release the instance runs afterwards (null: unchanged)"
+    thenVersion: String
+    error: String
+    "Failed with /data possibly half restored: the instance stays stopped"
+    held: Boolean!
+    requestedBy: String!
+    createdAt: String!
+    finishedAt: String
   }
 
   "What holders of one licensing term get (spec: releases and instances, section 7). The plan adopted the term by its kind."
@@ -450,6 +489,10 @@ export const schema: DocumentNode = gql`
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appReleases(appId: ID!, kind: String, limit: Int): [AppRelease!]!
     appInstances(appId: ID!): [AppInstance!]!
+    "An instance's backups, newest first (shared and own instances; metadata only)"
+    instanceBackups(instanceId: ID!, limit: Int): [InstanceBackup!]!
+    "An instance's restores, newest first"
+    instanceRestores(instanceId: ID!): [InstanceRestore!]!
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
     appPlans(appId: ID!): [AppPlan!]!
@@ -491,6 +534,10 @@ export const schema: DocumentNode = gql`
     "Move the plan's instances to a release at once (no notice; replaced by rollouts)"
     setPlanTarget(planId: ID!, version: String!): AppPlan!
     retirePlan(planId: ID!): AppPlan!
+    "Back up a shared or own instance now (database and /data)"
+    backUpInstance(instanceId: ID!): InstanceBackup!
+    "Restore one of the instance's backups into it; acceptDataLoss must be true (data written since is lost)"
+    restoreInstanceBackup(instanceId: ID!, backupId: ID!, acceptDataLoss: Boolean!): InstanceRestore!
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!
     removeAppRole(appId: ID!, address: String!, role: String): Boolean!

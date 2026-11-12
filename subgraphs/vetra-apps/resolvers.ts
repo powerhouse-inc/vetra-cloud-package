@@ -2,6 +2,12 @@ import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
 import { appInstancesFor } from "./instances/service.js";
 import {
+  backUpInstanceFor,
+  instanceBackupsFor,
+  instanceRestoresFor,
+  restoreInstanceBackupFor,
+} from "./backups/api.js";
+import {
   appPlansFor,
   createPlan,
   retirePlan,
@@ -322,6 +328,10 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "appInstances", () =>
           appInstancesFor(deps, requireCaller(ctx), appId),
         ),
+      instanceBackups: (_: unknown, { instanceId, limit }: { instanceId: string; limit?: number | null }, ctx: AppsContext) =>
+        guard(deps, "instanceBackups", () => instanceBackupsFor(deps, requireCaller(ctx), instanceId, limit ?? 50)),
+      instanceRestores: (_: unknown, { instanceId }: { instanceId: string }, ctx: AppsContext) =>
+        guard(deps, "instanceRestores", () => instanceRestoresFor(deps, requireCaller(ctx), instanceId)),
       appSettings: (
         _: unknown,
         { appId }: { appId: string },
@@ -528,6 +538,13 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "setPlanTarget", () =>
           setPlanTarget(deps, person(ctx), planId, version),
         ),
+      backUpInstance: (_: unknown, { instanceId }: { instanceId: string }, ctx: AppsContext) =>
+        guard(deps, "backUpInstance", () => backUpInstanceFor(deps, person(ctx), instanceId)),
+      restoreInstanceBackup: (
+        _: unknown,
+        args: { instanceId: string; backupId: string; acceptDataLoss: boolean },
+        ctx: AppsContext,
+      ) => guard(deps, "restoreInstanceBackup", () => restoreInstanceBackupFor(deps, person(ctx), args)),
       retirePlan: (
         _: unknown,
         { planId }: { planId: string },

@@ -31,6 +31,8 @@ export interface InstanceJson {
   observedDigest: string | null;
   observedDigestSource: string | null;
   environmentId: string | null;
+  /** restore:<id> while a backup is restored into it; held:<id> after a failed restore. */
+  maintenance: string | null;
   updatedAt: string;
 }
 
@@ -59,6 +61,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigest: r.observed_digest,
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
+    maintenance: r.maintenance ?? null,
     updatedAt: r.updated_at,
   };
 }
