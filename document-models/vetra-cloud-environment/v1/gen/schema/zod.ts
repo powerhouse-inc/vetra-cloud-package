@@ -82,7 +82,11 @@ export const definedNonNullAnySchema = z
   .any()
   .refine((v) => isDefinedNonNullAny(v));
 
-export const AppEnvironmentRoleSchema = z.enum(["PREVIEW", "PRODUCTION", "PLAN"]);
+export const AppEnvironmentRoleSchema = z.enum([
+  "PLAN",
+  "PREVIEW",
+  "PRODUCTION",
+]);
 
 export const AutoUpdateChannelSchema = z.enum(["DEV", "LATEST", "STAGING"]);
 
