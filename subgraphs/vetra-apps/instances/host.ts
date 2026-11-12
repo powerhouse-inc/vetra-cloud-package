@@ -88,6 +88,14 @@ export function instanceLabel(
  * slug, hashed as `plan:<slug>`. Own: a generated name (spec section 5:
  * `calm-bat-b4qzzqbb`) when it fits with the suffix, else `<slug>-own-<h>`
  * hashed on the licence chain.
+ *
+ * A generated own label does not end in instanceLabel's 6-hex segment: it has
+ * the shape of an old-path environment subdomain (generateSubdomain of a
+ * document id), seeded with the instance row's id instead. Its uniqueness
+ * rests on the first 8 characters of that id (fresh per row) and, among
+ * instances, on the unique host index; nothing checks it against old-path
+ * subdomains, which the spec accepted. It depends on the row id, not the
+ * licence chain: a new row for the same chain gets a new host.
  */
 export function planInstanceLabel(
   app: { id: string; slug: string },
