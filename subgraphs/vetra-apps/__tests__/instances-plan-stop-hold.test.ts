@@ -184,6 +184,54 @@ describe("plan instances stop by hold, never by sleep", () => {
     expect((await planRow()).status).toBe("ready");
   });
 
+  it("a release whose re-render failed re-renders on the next tick (the hold is gone, the app pod too)", async () => {
+    const envId = await readyThenDue();
+    await reconcileInstancesOnce(h.deps);
+    h.envs.setStatus(envId, "READY");
+    await cluster(false);
+    await reconcileInstancesOnce(h.deps);
+    expect((await planRow()).status).toBe("stopped");
+
+    await renew();
+    const execute = h.envs.execute.bind(h.envs);
+    let failures = 1;
+    h.envs.execute = async (...args: Parameters<typeof execute>) => {
+      if (failures-- > 0) throw new Error("reactor unavailable");
+      return execute(...args);
+    };
+    h.envs.executed.length = 0;
+    await reconcileInstancesOnce(h.deps).catch(() => {});
+    // the hold went, its re-render did not: still Vetra's to start again
+    expect(await getHold(h.db, envId)).toBeNull();
+    expect(executedTypes()).toEqual([]);
+    expect(await planRow()).toMatchObject({ stopped_by_vetra: true });
+
+    await reconcileInstancesOnce(h.deps);
+    expect(executedTypes()).toEqual(["SET_LABEL", "APPROVE_CHANGES"]);
+    expect(executedTypes()).not.toContain("WAKE_ENVIRONMENT");
+    expect(await planRow()).toMatchObject({
+      status: "updating",
+      stopped_by_vetra: false,
+    });
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    expect((await planRow()).status).toBe("ready");
+  });
+
+  it("clears the flag without a re-render when there is no hold and the app still runs", async () => {
+    const envId = await readyThenDue();
+    // recorded before holding, then a crash before the hold was made
+    await h.db
+      .updateTable("instances")
+      .set({ stopped_by_vetra: true })
+      .where("environment_id", "=", envId)
+      .execute();
+    await renew();
+    await reconcileInstancesOnce(h.deps);
+    expect(executedTypes()).not.toContain("SET_LABEL");
+    expect(await planRow()).toMatchObject({ stopped_by_vetra: false });
+  });
+
   it("re-renders a hold left without its render (a crash between the two)", async () => {
     const envId = await readyThenDue();
     await h.db

@@ -852,7 +852,25 @@ async function reconcileEnvironment(
       });
       return;
     }
-    if (!hold) await patch(deps, row, { stopped_by_vetra: false });
+    if (!hold) {
+      if (
+        await appPodGone(deps, await tenantOf(deps, envId, state, row))
+      ) {
+        // The hold went but its release's re-render did not happen (it
+        // failed, or a crash in between): the held render is still in
+        // place. Re-rendered before the flag is cleared, so a failure here
+        // is retried on the next tick.
+        await rerender(deps.envs, envId);
+        await patch(deps, row, {
+          status: "updating",
+          reason: "starting again",
+          stopped_by_vetra: false,
+          update_started_at: deps.now().toISOString(),
+        });
+        return;
+      }
+      await patch(deps, row, { stopped_by_vetra: false });
+    }
   }
   const admins = adminsOf(app, row);
   const size = sizeOf(row);
