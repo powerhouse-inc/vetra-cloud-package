@@ -220,7 +220,8 @@ describe("readCluster", () => {
     });
     await upObservability(db as Kysely<any>);
     const at = "2026-11-12T00:00:00.000Z";
-    expect(await readCluster(db, "t1", REPO)).toBeNull();
+    const now = new Date(Date.parse(at) + 60_000);
+    expect(await readCluster(db, "t1", REPO, now)).toBeNull();
     await db
       .insertInto("environment_status")
       .values({
@@ -267,7 +268,10 @@ describe("readCluster", () => {
         },
       ])
       .execute();
-    const view = await readCluster(db, "t1", REPO);
+    const view = (await readCluster(db, "t1", REPO, now)) as Exclude<
+      Awaited<ReturnType<typeof readCluster>>,
+      "stale"
+    >;
     expect(view!.argo).toEqual({
       syncStatus: "SYNCED",
       healthStatus: "HEALTHY",
@@ -284,6 +288,21 @@ describe("readCluster", () => {
         waitingReason: null,
       },
     ]);
+    // Any row older than 5 minutes: observability stopped refreshing, nothing is evidence.
+    const later = new Date(Date.parse(at) + 5 * 60_000 + 1);
+    expect(await readCluster(db, "t1", REPO, later)).toBe("stale");
+    await db
+      .updateTable("environment_status")
+      .set({ updatedAt: later.toISOString() })
+      .execute();
+    expect(await readCluster(db, "t1", REPO, later)).toBe("stale");
+    await db
+      .updateTable("environment_pods")
+      .set({ updatedAt: later.toISOString() })
+      .execute();
+    expect((await readCluster(db, "t1", REPO, later)) as object).toHaveProperty(
+      "hostPods",
+    );
     await db.destroy();
   });
 });

@@ -5,7 +5,8 @@ export const UPDATE_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type Observation =
   | { kind: "ready" }
-  | { kind: "updating" }
+  /** reason: why an update past its timeout is still waiting. */
+  | { kind: "updating"; reason?: string }
   | { kind: "stopped" }
   | { kind: "degraded"; reason: string }
   | { kind: "failed"; reason: string }
@@ -158,7 +159,21 @@ export function observeHealth(
   }
   if (!inFlight) return { kind: "unchanged" };
   // The reconciler always records a start time; without one an update never times out (as observeEnvironment).
-  if (Number.isFinite(started) && t - started > UPDATE_TIMEOUT_MS)
+  if (Number.isFinite(started) && t - started > UPDATE_TIMEOUT_MS) {
+    // No recent check, or one that had no cluster data: the monitor or
+    // observability is down, which says nothing about the update. Never
+    // fail (and revert) on silence; keep waiting and say why.
+    const noData =
+      h.health === null ||
+      !Number.isFinite(checked) ||
+      t - checked > HEALTH_STALE_MS ||
+      h.check === "data";
+    if (noData)
+      return {
+        kind: "updating",
+        reason:
+          "not healthy after 20 minutes, but there is no fresh health data; waiting for it",
+      };
     return {
       kind: "failed",
       reason:
@@ -166,5 +181,6 @@ export function observeHealth(
           ? `not healthy after 20 minutes (${label})`
           : "not healthy after 20 minutes",
     };
+  }
   return { kind: "updating" };
 }

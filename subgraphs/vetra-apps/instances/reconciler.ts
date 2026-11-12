@@ -652,8 +652,9 @@ async function reconcileEnvironment(
     return;
   }
   if (seen.kind === "stopped" || seen.kind === "updating") {
-    if (row.status !== seen.kind)
-      await patch(deps, row, { status: seen.kind, reason: null });
+    const reason = (seen.kind === "updating" && seen.reason) || null;
+    if (row.status !== seen.kind || row.reason !== reason)
+      await patch(deps, row, { status: seen.kind, reason });
     return;
   }
   if (seen.kind === "degraded") {

@@ -125,8 +125,22 @@ async function created() {
   return envId;
 }
 
+/** Observability refreshes its rows every minute; until now they are as fresh as the clock. */
+async function refreshCluster() {
+  const at = h.clock.now.toISOString();
+  await h.obsDb
+    .updateTable("environment_pods")
+    .set({ updatedAt: at })
+    .execute();
+  await h.obsDb
+    .updateTable("environment_status")
+    .set({ updatedAt: at })
+    .execute();
+}
+
 const monitor = async (ms = PROBE_EVERY_MS + 1) => {
   h.advance(ms);
+  await refreshCluster();
   return monitorInstancesOnce(h.deps);
 };
 
@@ -245,6 +259,25 @@ describe("monitorInstancesOnce", () => {
       health: "unknown",
       health_check: "data",
     });
+  });
+
+  it("knows nothing from cluster rows older than 5 minutes", async () => {
+    const envId = await created();
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await monitor();
+    expect((await one()).health).toBe("healthy");
+    h.advance(5 * 60_000 + 1);
+    await monitorInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      health: "unknown",
+      health_check: "data",
+      health_reason: "the cluster data is older than 5 minutes",
+    });
+    expect(h.probed.length).toBeGreaterThan(0);
+    const probes = h.probed.length;
+    await monitor();
+    expect((await one()).health).toBe("healthy");
+    expect(h.probed.length).toBeGreaterThan(probes);
   });
 
   it("does not check an instance again within 30 s", async () => {
@@ -478,6 +511,25 @@ describe("enforce: status follows health", () => {
     expect(row).toMatchObject({ health: "unknown", health_check: "pod" });
     expect(row.health_since).toBe(row.health_checked_at);
     expect(row.status).not.toBe("degraded");
+  });
+
+  it("never reverts an update that times out without fresh cluster data", async () => {
+    const envId = await readyHealthy();
+    await updateToB();
+    await setCluster(envId, [{ digest: digest("a") }]);
+    // Observability stops: its rows age, nothing new arrives.
+    for (let i = 0; i < 45; i++) {
+      h.advance(PROBE_EVERY_MS + 1);
+      await monitorInstancesOnce(h.deps);
+      await reconcileInstancesOnce(h.deps);
+    }
+    expect(await one()).toMatchObject({
+      status: "updating",
+      reason:
+        "not healthy after 20 minutes, but there is no fresh health data; waiting for it",
+      failed_digest: null,
+    });
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.2@${digest("b")}`);
   });
 
   it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {

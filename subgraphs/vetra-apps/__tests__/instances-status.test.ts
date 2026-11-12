@@ -374,6 +374,59 @@ describe("observeHealth", () => {
       { kind: "unchanged" },
     );
   });
+  it("never fails an update at the timeout without fresh health data: keeps updating and says why", () => {
+    const late = {
+      ...inFlight,
+      update_started_at: started(UPDATE_TIMEOUT_MS + 1),
+    };
+    const waiting = {
+      kind: "updating",
+      reason:
+        "not healthy after 20 minutes, but there is no fresh health data; waiting for it",
+    };
+    // The monitor stopped: the last check is stale.
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        late,
+        view({
+          health: "unhealthy",
+          check: "crash",
+          checkedAt: started(600_000),
+        }),
+        now,
+        W,
+      ),
+    ).toEqual(waiting);
+    // Never checked.
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        late,
+        view({ health: null, checkedAt: null, since: null }),
+        now,
+        W,
+      ),
+    ).toEqual(waiting);
+    // Checked, but the cluster data is missing or stale.
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        late,
+        view({
+          health: "unknown",
+          check: "data",
+          reason: "the cluster data is older than 5 minutes",
+          since: started(UPDATE_TIMEOUT_MS),
+        }),
+        now,
+        W,
+      ),
+    ).toEqual(waiting);
+  });
   it("keeps stopped and gone environments as before", () => {
     expect(
       observeHealth(state("STOPPED"), target, steady, view({}), now, W),

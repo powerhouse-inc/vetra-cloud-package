@@ -184,9 +184,15 @@ async function checkInstance(
             deps.observabilityDb,
             tenant,
             state.fusion?.image ?? null,
+            deps.now(),
           )
         : null;
-    if (cluster) {
+    if (cluster === "stale")
+      verdict = {
+        ...NO_DATA,
+        reason: "the cluster data is older than 5 minutes",
+      };
+    else if (cluster) {
       const judged = judgedPods(cluster.hostPods, wanted);
       restarts = judged.reduce((n, p) => n + p.restartCount, 0);
       observed = observedDigest(cluster.hostPods, wanted, version);
