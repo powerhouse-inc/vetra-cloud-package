@@ -220,7 +220,10 @@ export async function liveKindsOfHolder(
  * Whether `address` holds a live licence of `kind` for the App (the licence
  * gate, releases phase 3 slice 5), and until when: null when any live licence
  * is open-ended, else the latest end_at. One range read of
- * app_license_grants_app_user_idx.
+ * app_license_grants_app_user_idx: user_address is compared exactly, not
+ * lower(user_address), because every grant is stored lowercase (written
+ * through addressOfDid; older backfilled rows are lowercased by the
+ * vetra-licensing migration), which keeps the index usable.
  */
 export async function liveLicenceOf(
   db: Kysely<VetraLicensingDB>,
