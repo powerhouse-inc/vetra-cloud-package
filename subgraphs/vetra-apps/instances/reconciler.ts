@@ -1,11 +1,18 @@
 import type { Action } from "document-model";
 import { GraphQLError } from "graphql";
-import { approveChanges } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import {
+  approveChanges,
+  sleepEnvironment,
+  wakeEnvironment,
+} from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { withEnvLock, withKeyLock } from "../../../shared/key-lock.js";
 import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
-import { expectOrgHandover } from "../../vetra-cloud-observability/env-protection.js";
-import { instanceHealth } from "../config.js";
+import {
+  expectOrgHandover,
+  vetraServiceAddress,
+} from "../../vetra-cloud-observability/env-protection.js";
+import { instanceHealth, plansConfigOf } from "../config.js";
 import { notConfigured } from "../errors.js";
 import {
   hasCiIdentity,
@@ -19,7 +26,8 @@ import {
   PREVIEWS_FROM_INSTANCES,
   type AppsDeps,
 } from "../service.js";
-import { instanceLabel } from "./host.js";
+import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
   declaredSecretNames,
   declaresVetraSecrets,
@@ -27,6 +35,7 @@ import {
   imageTag,
   instanceCreateActions,
   instanceUpdateActions,
+  isInstanceRole,
   type InstanceImage,
 } from "./render.js";
 import { deliverSettings } from "../settings/deliver.js";
@@ -186,6 +195,17 @@ async function sweepClosedPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
   await syncPreviewInstances(deps, app);
+  const plans = plansConfigOf(deps.cfg);
+  if (plans.enabled && wantsInstances(app)) {
+    try {
+      await syncPlanInstances(deps, app);
+    } catch (err) {
+      // Licensing's tables may not exist yet (boot order); branch and preview instances go on.
+      deps.logger.warn(
+        `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
+      );
+    }
+  }
   // Read once per pass: every instance of a kind gets the same revision.
   const settingRows = await listAppSettings(deps.db, app.id);
   const rows = await listInstances(deps.db, app.id);
@@ -193,6 +213,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   // created (spec 14.13). Array.prototype.sort is stable.
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
   for (const row of rows) {
+    if (isPlanKind(row.kind) && !plans.enabled) continue;
     try {
       await reconcileInstance(
         deps,
@@ -246,6 +267,53 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
+
+/** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
+export function adminsOf(app: AppRow, row: InstanceRow): string {
+  return row.kind === "own" && row.holder_address
+    ? row.holder_address
+    : app.owner_address;
+}
+
+const sizeOf = (row: InstanceRow) =>
+  (row.target_size ?? null) as Parameters<typeof instanceUpdateActions>[5];
+
+/**
+ * A plan instance Vetra wants stopped (licence ended, plan retired): its
+ * environment sleeps once it is READY or failed; nothing is deleted.
+ */
+async function stopPlanInstance(
+  deps: AppsDeps,
+  row: InstanceRow,
+): Promise<void> {
+  const reason = row.stop_reason!;
+  if (!row.environment_id) {
+    if (row.status !== "stopped" || row.reason !== reason)
+      await patch(deps, row, { status: "stopped", reason });
+    return;
+  }
+  const envId = row.environment_id;
+  await withEnvLock(envId, async () => {
+    const state = await deps.envs.getState(envId);
+    if (!state || !ours(state, row)) return;
+    if (state.status === "READY" || state.status === "DEPLOYMENt_FAILED") {
+      await deps.envs.execute(envId, [sleepEnvironment({})]);
+      await patch(deps, row, {
+        status: "stopped",
+        reason,
+        stopped_by_vetra: true,
+      });
+      return;
+    }
+    if (state.status === "STOPPED") {
+      if (row.status !== "stopped" || row.reason !== reason)
+        await patch(deps, row, { status: "stopped", reason });
+      return;
+    }
+    const waiting = `${reason}: stopped once the environment settles (${state.status})`;
+    if (row.reason !== waiting) await patch(deps, row, { reason: waiting });
+  });
+}
 
 /** A fresh start: nothing runs, nothing failed. */
 const CLEAN: InstancePatch = {
@@ -596,6 +664,7 @@ export async function reconcileInstance(
     return row.environment_id
       ? withEnvLock(row.environment_id, () => removeInstance(deps, row))
       : removeInstance(deps, row);
+  if (row.stop_reason) return stopPlanInstance(deps, row);
   if (!row.target_digest) return;
   if (row.target_settings !== settings.revision) {
     await patch(deps, row, { target_settings: settings.revision });
@@ -689,11 +758,24 @@ async function reconcileEnvironment(
       });
     return;
   }
-  if (state.status === "CHANGES_PENDING" && state.app?.role === "PREVIEW") {
+  if (state.status === "CHANGES_PENDING" && isInstanceRole(state)) {
     // Changes sent but never approved (a crash between the two calls).
     await deps.envs.execute(envId, [approveChanges({})]);
     return;
   }
+  if (state.status === "STOPPED" && row.stopped_by_vetra) {
+    // Stopped by Vetra (licence ended, plan retired) and wanted again.
+    await apply(deps, envId, [wakeEnvironment({})]);
+    await patch(deps, row, {
+      status: "updating",
+      reason: "waking up",
+      stopped_by_vetra: false,
+      update_started_at: deps.now().toISOString(),
+    });
+    return;
+  }
+  const admins = adminsOf(app, row);
+  const size = sizeOf(row);
 
   if (!declaresVetraSecrets(state)) {
     // Made before slice 4: its host generated its own master key on an
@@ -766,21 +848,24 @@ async function reconcileEnvironment(
       const revert = instanceUpdateActions(
         state,
         back,
-        app.owner_address,
+        admins,
         want,
+        true,
+        size,
       );
       if (revert.length > 0) await apply(deps, envId, revert);
     }
     return;
   }
 
-  // Throws for anything that is not an instance (licensed, not a PREVIEW).
+  // Throws for anything that is not an instance (licensed, not a PREVIEW or PLAN).
   const updates = instanceUpdateActions(
     state,
     image,
-    app.owner_address,
+    admins,
     want,
     start,
+    size,
   );
   if (updates.length > 0) {
     await apply(deps, envId, updates);
@@ -873,7 +958,7 @@ async function reconcileEnvironment(
     ...failure(row, settings),
   });
   if (back) {
-    const revert = instanceUpdateActions(state, back, app.owner_address, want);
+    const revert = instanceUpdateActions(state, back, admins, want, true, size);
     if (revert.length > 0) await apply(deps, envId, revert);
   }
 }
@@ -901,12 +986,9 @@ async function claimHost(
   settings: InstanceSettings,
 ): Promise<string | null> {
   if (row.host) return row.host;
-  const host = instanceLabel(
-    app.id,
-    app.slug,
-    row.name,
-    deps.cfg.instances.labelSuffix,
-  );
+  const host = isPlanKind(row.kind)
+    ? planInstanceLabel(app, row, deps.cfg.instances.labelSuffix)
+    : instanceLabel(app.id, app.slug, row.name, deps.cfg.instances.labelSuffix);
   const fail = (reason: string) =>
     patch(deps, row, { status: "failed", reason, ...failure(row, settings) });
   if ((await isHostUsed(deps.db, host)) || (await deps.subdomainUsed?.(host))) {
@@ -934,7 +1016,7 @@ async function createEnvironment(
 ): Promise<void> {
   if (!deps.instanceSecrets)
     throw notConfigured("The tenant secrets store (OPENBAO_ADDR)");
-  if (app.owner_org_id && !deps.orgHandoverDb)
+  if (app.owner_org_id && !deps.orgHandoverDb && !isPlanKind(row.kind))
     throw notConfigured("The organisation hand-over store");
   if (!app.registry_namespace)
     throw new Error("the App has no registry namespace yet");
@@ -976,7 +1058,7 @@ async function initEnvironment(
     update_started_at: deps.now().toISOString(),
   });
   try {
-    if (app.owner_org_id)
+    if (app.owner_org_id && !isPlanKind(row.kind))
       await expectOrgHandover(
         deps.orgHandoverDb!,
         envId,
@@ -990,21 +1072,29 @@ async function initEnvironment(
         label: `${app.name} · ${row.name}`,
         host,
         baseDomain: INSTANCE_BASE_DOMAIN,
-        registry: deps.cfg.previewRegistry,
-        owner: app.owner_address,
-        ownerOrgId: app.owner_org_id,
+        registry: isPlanKind(row.kind)
+          ? deps.cfg.productionRegistry
+          : deps.cfg.previewRegistry,
+        // Plan instances: no person owns the document (overview D2, spec 14.5).
+        owner: isPlanKind(row.kind)
+          ? (deps.serviceOwner ?? vetraServiceAddress())
+          : app.owner_address,
+        ownerOrgId: isPlanKind(row.kind) ? null : app.owner_org_id,
         appId: app.id,
-        gitRef:
-          row.kind === "preview"
+        gitRef: isPlanKind(row.kind)
+          ? null
+          : row.kind === "preview"
             ? `refs/pull/${row.pr}/head`
             : `refs/heads/${row.branch}`,
         prNumber: row.kind === "preview" ? row.pr : null,
         imageProject: app.registry_namespace!,
         image,
-        admins: app.owner_address,
+        admins: adminsOf(app, row),
         settings: envSettings(settings),
         // Started by reconcileEnvironment once its tenant has the secrets.
         start: false,
+        role: isPlanKind(row.kind) ? "PLAN" : "PREVIEW",
+        size: sizeOf(row),
       }),
     );
     return true;
@@ -1026,6 +1116,10 @@ async function initEnvironment(
 }
 
 async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
+  if (isPlanKind(row.kind))
+    throw new Error(
+      "plan instances are never removed by the reconciler (releases phase 3: stopped, not deleted)",
+    );
   if (row.status === "removed") return;
   if (row.environment_id) {
     const envId = row.environment_id;
