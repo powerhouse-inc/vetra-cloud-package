@@ -224,3 +224,17 @@ export function subdomainUsedIn(
       .where("subdomain", "=", candidate)
       .executeTakeFirst());
 }
+
+/** The processor's tenant id for an environment (null: not rendered yet). */
+export function tenantOfIn(
+  db: Kysely<EnvironmentsDB>,
+): (environmentId: string) => Promise<string | null> {
+  return async (id) =>
+    (
+      await db
+        .selectFrom("environments")
+        .select("tenantId")
+        .where("id", "=", id)
+        .executeTakeFirst()
+    )?.tenantId ?? null;
+}

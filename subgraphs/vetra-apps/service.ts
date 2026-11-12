@@ -77,6 +77,7 @@ import {
   withdrawOrgHandover,
 } from "../vetra-cloud-observability/env-protection.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
+import type { HttpProbe } from "./instances/probe.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import {
   adoptOrgApps,
@@ -160,6 +161,12 @@ export interface AppsDeps {
    * moves are reverted by the observability protection hook.
    */
   orgHandoverDb?: Kysely<ObservabilityDB> | null;
+  /** Observability tables instance health reads (environment_status, environment_pods). Absent: health is "unknown (data)". */
+  observabilityDb?: Kysely<ObservabilityDB> | null;
+  /** An environment's tenant id (its namespace) from the processor's read model. Absent: health is "unknown (data)". */
+  envTenant?: ((environmentId: string) => Promise<string | null>) | null;
+  /** The GET instance health probes use. Absent: no probes; a host the cluster calls ready stays "unknown (data)". */
+  probe?: HttpProbe | null;
   /**
    * Re-protects an App's vetra-app document for `owner` (and revokes every
    * other grant) when the App changes hands. Absent: no document permissions.

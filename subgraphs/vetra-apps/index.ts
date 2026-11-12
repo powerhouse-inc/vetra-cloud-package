@@ -12,7 +12,9 @@ import {
   createReactorEnvGateway,
   subdomainTakenIn,
   subdomainUsedIn,
+  tenantOfIn,
 } from "./envs.js";
+import { fetchProbe } from "./instances/probe.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createGithubAttestationVerifier } from "./releases/attestation.js";
@@ -203,6 +205,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       logger: console,
       orgs: defaultRenownOrgs(),
       orgHandoverDb,
+      observabilityDb: orgHandoverDb,
+      envTenant: tenantOfIn(envReadModel),
+      probe: fetchProbe,
       studioSecrets,
       studioGithubConnections: (studioEnvironmentId) =>
         environmentConnections(githubAuthDb, studioEnvironmentId),

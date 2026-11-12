@@ -41,6 +41,7 @@ import {
   type DeployAppInput,
 } from "../service.js";
 import type { Caller } from "../auth.js";
+import type { ProbeResult } from "../instances/health.js";
 
 export const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 export const STRANGER = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -644,6 +645,12 @@ export interface Harness {
   /** The observability tables (expected organisation hand-overs), same database. */
   obsDb: Kysely<ObservabilityDB>;
   clock: { now: Date };
+  /** Environment id → tenant id (the processor's read model). */
+  tenants: Map<string, string>;
+  /** URL → what the fake host probe answers (absent: 200, a page on "/"). */
+  probes: Map<string, ProbeResult>;
+  /** Every URL probed, in order. */
+  probed: string[];
   advance(ms: number): void;
   close(): Promise<void>;
 }
@@ -666,6 +673,9 @@ export async function makeHarness(
   const renown = fakeRenown();
   const clock = { now: new Date("2026-10-02T12:00:00.000Z") };
   let idSeq = 0;
+  const tenants = new Map<string, string>();
+  const probes = new Map<string, ProbeResult>();
+  const probed: string[] = [];
   const deps: AppsDeps = {
     db,
     envs,
@@ -675,6 +685,20 @@ export async function makeHarness(
     renown,
     orgs,
     orgHandoverDb: obsDb,
+    observabilityDb: obsDb,
+    envTenant: async (id) => tenants.get(id) ?? null,
+    probe: async (url) => {
+      probed.push(url);
+      return (
+        probes.get(url) ?? {
+          status: 200,
+          contentType: url.endsWith("/")
+            ? "text/html; charset=utf-8"
+            : "text/plain",
+          error: null,
+        }
+      );
+    },
     generateSubdomain: (id) => `sub-${id}`,
     now: () => {
       // strictly increasing timestamps keep created_at ordering deterministic
@@ -694,6 +718,9 @@ export async function makeHarness(
     orgs,
     obsDb,
     clock,
+    tenants,
+    probes,
+    probed,
     advance: (ms) => {
       clock.now = new Date(clock.now.getTime() + ms);
     },

@@ -1,4 +1,10 @@
+import { PGlite } from "@electric-sql/pglite";
+import { Kysely } from "kysely";
+import { PGliteDialect } from "kysely-pglite-dialect";
 import { describe, expect, it } from "vitest";
+import { up as upObservability } from "../../vetra-cloud-observability/db/migrations.js";
+import type { ObservabilityDB } from "../../vetra-cloud-observability/db/schema.js";
+import { readCluster } from "../instances/cluster.js";
 import {
   digestOf,
   judgeCluster,
@@ -204,5 +210,80 @@ describe("observedDigest", () => {
       digest: null,
       source: null,
     });
+  });
+});
+
+describe("readCluster", () => {
+  it("returns Argo's view and the tenant's host pods only", async () => {
+    const db = new Kysely<ObservabilityDB>({
+      dialect: new PGliteDialect(new PGlite()),
+    });
+    await upObservability(db as Kysely<any>);
+    const at = "2026-11-12T00:00:00.000Z";
+    expect(await readCluster(db, "t1", REPO)).toBeNull();
+    await db
+      .insertInto("environment_status")
+      .values({
+        tenantId: "t1",
+        argoSyncStatus: "SYNCED",
+        argoHealthStatus: "HEALTHY",
+        argoLastSyncedAt: at,
+        argoMessage: null,
+        configDriftDetected: 1,
+        tlsCertValid: null,
+        tlsCertExpiresAt: null,
+        domainResolves: null,
+        updatedAt: at,
+      })
+      .execute();
+    const base = {
+      tenantId: "t1",
+      service: "OTHER",
+      component: null,
+      agent: null,
+      phase: "RUNNING",
+      ready: 1,
+      restartCount: 2,
+      imageId: null,
+      waitingReason: null,
+      updatedAt: at,
+    };
+    await db
+      .insertInto("environment_pods")
+      .values([
+        { ...base, id: "t1/app", name: "app", image: `${REPO}:1.5.0@${A}` },
+        {
+          ...base,
+          id: "t1/db-1",
+          name: "db-1",
+          image: "ghcr.io/cloudnative-pg/postgresql:16",
+        },
+        {
+          ...base,
+          id: "t2/app",
+          tenantId: "t2",
+          name: "app",
+          image: `${REPO}:1.5.0@${A}`,
+        },
+      ])
+      .execute();
+    const view = await readCluster(db, "t1", REPO);
+    expect(view!.argo).toEqual({
+      syncStatus: "SYNCED",
+      healthStatus: "HEALTHY",
+      drift: true,
+      message: null,
+    });
+    expect(view!.hostPods).toEqual([
+      {
+        phase: "RUNNING",
+        ready: true,
+        restartCount: 2,
+        image: `${REPO}:1.5.0@${A}`,
+        imageId: null,
+        waitingReason: null,
+      },
+    ]);
+    await db.destroy();
   });
 });
