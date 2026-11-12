@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   makeHarness,
+  owner,
   seedActiveApp,
   testConfig,
   type Harness,
@@ -14,6 +15,7 @@ import {
   settingsRevisionOf,
 } from "../instances/render.js";
 import { DEGRADED_AFTER_MS, HEALTH_STABLE_MS } from "../instances/status.js";
+import { setAppSetting } from "../settings/service.js";
 import {
   monitorInstancesOnce,
   pickDue,
@@ -609,6 +611,36 @@ describe("enforce: status follows health", () => {
     expect(await one()).toMatchObject({
       status: "ready",
       running_degraded: false,
+    });
+  });
+
+  it("is ready on a settings change only once a healthy pod runs the new revision", async () => {
+    const envId = await readyHealthy();
+    const old = (await one()).running_settings!;
+    await setAppSetting(h.deps, owner, {
+      appId,
+      name: "FOO",
+      value: "1",
+      secret: false,
+    });
+    await reconcileInstancesOnce(h.deps);
+    const want = (await one()).target_settings!;
+    expect(want).not.toBe(old);
+    expect((await one()).status).toBe("updating");
+    // The old pod still serves the old revision: healthy, but not the target.
+    await setCluster(envId, [{ digest: digest("a"), settings: old }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      running_settings: old,
+    });
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({
+      status: "ready",
+      running_settings: want,
     });
   });
 
