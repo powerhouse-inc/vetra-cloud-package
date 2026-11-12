@@ -97,7 +97,7 @@ export const RESERVED_SETTING_NAMES: ReadonlySet<string> = new Set([
   ...VETRA_SETTINGS.map((s) => s.name),
   ...ALSO_RESERVED,
 ]);
-export const RESERVED_PREFIXES: readonly string[] = ["VETRA_"];
+export const RESERVED_PREFIXES: readonly string[] = ["VETRA_", "NODE_", "PG"];
 
 export const MAX_SETTINGS_PER_APP = 100;
 const MAX_NAME_LENGTH = 128;

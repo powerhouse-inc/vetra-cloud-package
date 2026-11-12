@@ -8,6 +8,10 @@ import {
 } from "../settings/names.js";
 import { settingsForKind, settingsRevision } from "../settings/resolve.js";
 import type { AppSettingRow } from "../settings/repo.js";
+import {
+  createSettingsVault,
+  APP_SETTINGS_TRANSIT_TENANT,
+} from "../settings/vault.js";
 
 const row = (o: Partial<AppSettingRow>): AppSettingRow => ({
   app_id: "app-1",
@@ -34,16 +38,29 @@ describe("setting names", () => {
     "PGPASSWORD",
     "VETRA_SETTINGS_REVISION",
     "VETRA_ANYTHING",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_PATH",
+    "PGSSLMODE",
+    "PGOPTIONS",
+    "PGSERVICE",
+    "PGHOST",
   ])("refuses %s (Vetra sets it)", (name) => {
     expect(() => checkSettingName(name)).toThrow(SettingInputError);
   });
 
-  it.each(["lower", "1ABC", "A-B", "", "A".repeat(129)])(
-    "refuses the malformed name %j",
-    (name) => {
-      expect(() => checkSettingName(name)).toThrow(SettingInputError);
-    },
-  );
+  it.each([
+    "lower",
+    "ph_host",
+    "PH_HOST ",
+    "FOO\n",
+    "1ABC",
+    "A-B",
+    "",
+    "A".repeat(129),
+  ])("refuses the malformed name %j", (name) => {
+    expect(() => checkSettingName(name)).toThrow(SettingInputError);
+  });
 
   it("accepts a publisher name, including OPENROUTER_API_KEY on dev instances", () => {
     expect(() => checkSettingName("SEKTAR_OAUTH_RELAY_BASE")).not.toThrow();
@@ -144,5 +161,23 @@ describe("settingsForKind", () => {
     expect(settingsRevision([], [])).toBe(
       settingsForKind([], "preview").revision,
     );
+  });
+});
+
+describe("createSettingsVault", () => {
+  it("is null without OpenBao and uses the app-settings transit key otherwise", async () => {
+    expect(createSettingsVault(null)).toBeNull();
+    const calls: string[] = [];
+    const vault = createSettingsVault({
+      ensureTenantKey: async (t) => void calls.push(`key:${t}`),
+      encrypt: async (t, p) => (calls.push(`enc:${t}`), `ct(${p})`),
+      decrypt: async (t, c) => (calls.push(`dec:${t}`), c.slice(3, -1)),
+    })!;
+    expect(await vault.decrypt(await vault.encrypt("s3cret"))).toBe("s3cret");
+    expect(calls).toEqual([
+      `key:${APP_SETTINGS_TRANSIT_TENANT}`,
+      `enc:${APP_SETTINGS_TRANSIT_TENANT}`,
+      `dec:${APP_SETTINGS_TRANSIT_TENANT}`,
+    ]);
   });
 });
