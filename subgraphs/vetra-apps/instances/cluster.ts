@@ -78,3 +78,29 @@ export async function readCluster(
       })),
   };
 }
+
+/**
+ * Whether the tenant's namespace exists: Argo synced its application once
+ * (which creates the namespace and its `<tenant>-secrets`), or observability
+ * saw one of its pods. An environment created stopped has no pods until its
+ * first start, so pods alone never say yes for it.
+ */
+export async function namespaceExists(
+  db: Kysely<ObservabilityDB>,
+  tenantId: string,
+): Promise<boolean> {
+  const synced = await db
+    .selectFrom("environment_status")
+    .select("tenantId")
+    .where("tenantId", "=", tenantId)
+    .where("argoLastSyncedAt", "is not", null)
+    .executeTakeFirst();
+  if (synced) return true;
+  const pod = await db
+    .selectFrom("environment_pods")
+    .select("id")
+    .where("tenantId", "=", tenantId)
+    .limit(1)
+    .executeTakeFirst();
+  return !!pod;
+}

@@ -14,6 +14,7 @@ import {
   subdomainUsedIn,
   tenantOfIn,
 } from "./envs.js";
+import { namespaceExists } from "./instances/cluster.js";
 import { fetchProbe } from "./instances/probe.js";
 import { monitorInstancesOnce } from "./instances/monitor.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
@@ -218,14 +219,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       studioSecrets,
       instanceSecrets: tenantSecrets,
       settingsVault: createSettingsVault(transit),
-      // A namespace exists once observability has seen one of its pods (the database comes first).
-      tenantLive: async (tenantId) =>
-        !!(await orgHandoverDb
-          .selectFrom("environment_pods")
-          .select("id")
-          .where("tenantId", "=", tenantId)
-          .limit(1)
-          .executeTakeFirst()),
+      // A namespace exists once Argo synced it (an environment created stopped has no pods yet).
+      tenantLive: (tenantId) => namespaceExists(orgHandoverDb, tenantId),
       studioGithubConnections: (studioEnvironmentId) =>
         environmentConnections(githubAuthDb, studioEnvironmentId),
       // A product's <slug>.vetra.io must not collide with an env's hosts.
@@ -357,7 +352,11 @@ export class VetraAppsSubgraph extends BaseSubgraph {
                 { status: 401 },
               );
             try {
-              const environments = await listDirectory(directory, ctx.user.address, appId);
+              const environments = await listDirectory(
+                directory,
+                ctx.user.address,
+                appId,
+              );
               return Response.json(
                 { environments },
                 { headers: { "cache-control": "private, no-store" } },
@@ -373,7 +372,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         ),
       );
     } catch (err) {
-      console.warn(`[vetra-apps] directory route not registered: ${String(err)}`);
+      console.warn(
+        `[vetra-apps] directory route not registered: ${String(err)}`,
+      );
     }
 
     const every = (ms: number, name: string, run: () => Promise<unknown>) => {
