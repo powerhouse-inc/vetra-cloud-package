@@ -16,6 +16,7 @@ import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 import { releaseProblem } from "./check.js";
 import {
+  lastFinishedStep,
   lockRollout,
   movingStep,
   openRolloutOfPlan,
@@ -567,6 +568,21 @@ async function runPolicies(deps: AppsDeps, app: AppRow): Promise<void> {
 }
 
 /**
+ * Whether the instance of the step that ended last is still being updated
+ * (the reconciler reverting a failure, or applying a target that moved
+ * meanwhile): the next instance waits for it (one moving instance per App).
+ */
+async function lastStillUpdating(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<boolean> {
+  const last = await lastFinishedStep(deps.db, app.id);
+  if (!last) return false;
+  const inst = await getInstance(deps.db, last.instance_id);
+  return !!inst && !inst.removed_at && inst.status === "updating";
+}
+
+/**
  * One pass of the App's rollouts (spec section 7). Runs inside the
  * reconciler's per-App pass, under appInstancesLock (never taken here):
  * settles the moving step from the instance row, starts the next due step
@@ -581,6 +597,11 @@ export async function advanceRollouts(
   if (!rolloutsHeld(deps.cfg)) await runPolicies(deps, app);
   const moving = await movingStep(deps.db, app.id);
   const stillMoving = moving ? await settle(deps, app, moving) : false;
-  if (!stillMoving && !rolloutsHeld(deps.cfg)) await startNext(deps, app);
+  if (
+    !stillMoving &&
+    !rolloutsHeld(deps.cfg) &&
+    !(await lastStillUpdating(deps, app))
+  )
+    await startNext(deps, app);
   await finishDone(deps, app);
 }

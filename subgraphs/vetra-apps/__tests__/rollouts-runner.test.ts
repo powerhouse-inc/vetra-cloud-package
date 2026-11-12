@@ -326,4 +326,26 @@ describe("the rollout runner (spec 7 step 4)", () => {
       .map((a) => JSON.parse(a.detail).alert);
     expect(alerts).toEqual([true, false]);
   });
+
+  it("starts the next step only once the last finished step's instance is no longer updating", async () => {
+    const r = await start(["p-pro"]);
+    await advance();
+    // Its target moved elsewhere meanwhile and the reconciler is applying that.
+    await h.db
+      .updateTable("instances")
+      .set({ target_version: "1.4.0", status: "updating" })
+      .where("id", "=", "o1")
+      .execute();
+    await advance();
+    expect(await statuses(r.id)).toEqual(["o1:skipped", "o2:pending"]);
+    await advance();
+    expect(await statuses(r.id)).toEqual(["o1:skipped", "o2:pending"]);
+    await h.db
+      .updateTable("instances")
+      .set({ status: "ready" })
+      .where("id", "=", "o1")
+      .execute();
+    await advance();
+    expect(await statuses(r.id)).toEqual(["o1:skipped", "o2:applying"]);
+  });
 });

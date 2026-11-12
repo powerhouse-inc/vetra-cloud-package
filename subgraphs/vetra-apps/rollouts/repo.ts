@@ -200,6 +200,24 @@ export async function movingStep(
   );
 }
 
+/** The App's step that moved an instance and ended last, of any rollout. */
+export async function lastFinishedStep(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+): Promise<RolloutStepRow | null> {
+  return (
+    (await db
+      .selectFrom("rollout_steps")
+      .selectAll()
+      .where("app_id", "=", appId)
+      .where("started_at", "is not", null)
+      .where("finished_at", "is not", null)
+      .orderBy("finished_at", "desc")
+      .orderBy("id", "desc")
+      .executeTakeFirst()) ?? null
+  );
+}
+
 export async function updateStep(
   db: Kysely<VetraAppsDB>,
   id: string,
