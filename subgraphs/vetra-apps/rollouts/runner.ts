@@ -346,13 +346,79 @@ async function startStep(
   return !stopped;
 }
 
-/** Starts a rollback step (Task 11 fills this in). */
+/** Starts one rollback step; true when an instance now moves. Ignores notice and windows (decision R5). */
 async function startRevert(
-  _deps: AppsDeps,
-  _app: AppRow,
-  _s: RolloutStepRow,
+  deps: AppsDeps,
+  app: AppRow,
+  s: RolloutStepRow,
 ): Promise<boolean> {
-  return false;
+  const back = s.from_version;
+  const inst = await getInstance(deps.db, s.instance_id);
+  if (!inst || inst.removed_at || inst.status === "removed") {
+    await endStep(deps, s, "rolled_back", { note: REMOVED_NOTE });
+    return false;
+  }
+  if (!back) {
+    await endStep(deps, s, "skipped", { note: "no release to go back to" });
+    return false;
+  }
+  if (inst.pinned_version && inst.pinned_version !== back) {
+    await endStep(deps, s, "skipped", {
+      note: `pinned at ${inst.pinned_version}: left alone`,
+    });
+    return false;
+  }
+  if (
+    inst.target_version === back &&
+    inst.status === "ready" &&
+    inst.running_version === back
+  ) {
+    await endStep(deps, s, "rolled_back");
+    return false;
+  }
+  if (!(await releaseByVersion(deps.db, app.id, back))) {
+    await failStep(
+      deps,
+      app,
+      s,
+      "revert_failed",
+      `the App has no release ${back}`,
+      null,
+    );
+    return false;
+  }
+  const stopped = !!inst.stop_reason || inst.status === "stopped";
+  const nowIso = deps.now().toISOString();
+  await deps.db.transaction().execute(async (trx) => {
+    const moved = await transitionStep(
+      trx,
+      s.id,
+      ["revert_pending"],
+      stopped
+        ? {
+            status: "rolled_back",
+            note: `stopped: back on ${back} when it wakes`,
+            target_moved: false,
+            started_at: nowIso,
+            finished_at: nowIso,
+          }
+        : {
+            status: "reverting",
+            target_moved: false,
+            started_at: nowIso,
+            finished_at: null,
+            error: null,
+          },
+      nowIso,
+    );
+    if (!moved) return;
+    await pointInstanceAt(trx, app.id, inst.id, back, nowIso);
+    await recordAudit(
+      trx,
+      stepEntry(s, moved.status, nowIso, { note: moved.note }),
+    );
+  });
+  return !stopped;
 }
 
 async function windowsOf(

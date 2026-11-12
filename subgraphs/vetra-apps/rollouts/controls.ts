@@ -4,12 +4,17 @@ import type { Caller } from "../auth.js";
 import { recordAudit } from "../audit/repo.js";
 import type { RolloutStepStatus, VetraAppsDB } from "../db/schema.js";
 import { appsError } from "../errors.js";
+import { getInstance, listInstances } from "../instances/repo.js";
+import { lockPlan, updatePlan } from "../plans/repo.js";
+import { releaseByVersion } from "../releases/repo.js";
 import type { AppsDeps } from "../service.js";
 import {
   appInstancesLock,
   getStep,
+  insertSteps,
   lockRollout,
   OPEN_ROLLOUT,
+  rolloutPlans,
   stepsOf,
   transitionStep,
   updateRollout,
@@ -285,6 +290,13 @@ export async function skipRolloutStep(
         step.from_version!,
         nowIso,
       );
+    if (step.status === "revert_failed") {
+      // The way back failed (the reconciler went back to the image that ran): the
+      // instance stays on the release, not on a failed target that is never retried.
+      const inst = await getInstance(trx, step.instance_id);
+      if (inst && !inst.removed_at && inst.target_version !== step.to_version)
+        await pointInstanceAt(trx, app.id, inst.id, step.to_version, nowIso);
+    }
     await transitionStep(
       trx,
       step.id,
@@ -299,5 +311,159 @@ export async function skipRolloutStep(
     );
     await recordAudit(trx, stepEntry(step, "skipped", nowIso, { note }, who));
     await resumeIfClear(trx, cur, who, nowIso);
+  });
+}
+
+const REVERTIBLE: RolloutStepStatus[] = ["applying", "succeeded", "failed"];
+
+/**
+ * Rolls a rollout back by image (spec section 7; decision R5): the plans'
+ * targets go back now, instances one at a time through the runner.
+ */
+export async function rollBackRollout(
+  deps: AppsDeps,
+  caller: Caller,
+  rolloutId: string,
+): Promise<RolloutJson> {
+  const { r, app } = await loadRollout(deps, caller, rolloutId, "release");
+  const who = callerActor(caller);
+  const release = await releaseByVersion(deps.db, app.id, r.version);
+  if (release?.migrates)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `${r.version} migrates its database; rolling it back needs the backup restore (releases phase 3 slice 4)`,
+    );
+  return underLock(deps, app.id, r.id, async (trx, cur, nowIso) => {
+    if (cur.direction === "back")
+      throw appsError(
+        "BAD_USER_INPUT",
+        "The rollout is already rolled back (or rolling back)",
+      );
+    if (!["active", "paused", "complete", "cancelled"].includes(cur.status))
+      throw appsError("BAD_USER_INPUT", `The rollout is ${cur.status}`);
+    const plans = await rolloutPlans(trx, cur.id);
+    const fromOf = new Map<string, string>();
+    for (const rp of plans) {
+      const p = await lockPlan(trx, rp.plan_id);
+      if (p.target_version !== cur.version)
+        throw appsError(
+          "BAD_USER_INPUT",
+          `${p.slug} has moved on to ${p.target_version}; roll that rollout back first`,
+        );
+      if (!rp.from_version)
+        throw appsError(
+          "BAD_USER_INPUT",
+          `${p.slug} had no release before this rollout`,
+        );
+      fromOf.set(p.id, rp.from_version);
+      await updatePlan(trx, p.id, { target_version: rp.from_version }, nowIso);
+      await auditAs(trx, who, {
+        appId: app.id,
+        at: nowIso,
+        action: "plan.target_set",
+        subject: `plan:${p.id}`,
+        detail: {
+          slug: p.slug,
+          from: cur.version,
+          to: rp.from_version,
+          rolloutId: cur.id,
+          rollback: true,
+        },
+      });
+    }
+    const steps = await stepsOf(trx, cur.id);
+    let queued = 0;
+    for (const s of steps) {
+      // A retried step (pending again) already moved its instance: it goes back like a failed one.
+      if (s.status === "pending" && !s.target_moved) {
+        await transitionStep(
+          trx,
+          s.id,
+          ["pending"],
+          {
+            status: "skipped",
+            note: "rolled back before its turn",
+            finished_at: nowIso,
+          },
+          nowIso,
+        );
+      } else if (
+        REVERTIBLE.includes(s.status) ||
+        ((s.status === "skipped" || s.status === "pending") && s.target_moved)
+      ) {
+        await transitionStep(
+          trx,
+          s.id,
+          [s.status],
+          {
+            status: "revert_pending",
+            requested_at: null,
+            error: null,
+            finished_at: null,
+          },
+          nowIso,
+        );
+        queued++;
+      }
+    }
+    // Instances that joined on the new release (decision R3) go back too.
+    const stepped = new Set(steps.map((s) => s.instance_id));
+    const joined = (await listInstances(trx, app.id)).filter(
+      (i) =>
+        !!i.plan_id &&
+        fromOf.has(i.plan_id) &&
+        !i.removed_at &&
+        i.target_version === cur.version &&
+        !stepped.has(i.id),
+    );
+    const last = steps.reduce((m, s) => Math.max(m, s.position), -1);
+    await insertSteps(
+      trx,
+      joined.map((i, n) => ({
+        id: deps.newId(),
+        rollout_id: cur.id,
+        app_id: app.id,
+        plan_id: i.plan_id!,
+        instance_id: i.id,
+        instance_kind: i.kind as "shared" | "own",
+        instance_name: i.name,
+        position: last + 1 + n,
+        from_version: fromOf.get(i.plan_id!)!,
+        to_version: cur.version,
+        status: "revert_pending" as const,
+        due_at: nowIso,
+        requested_at: null,
+        started_at: null,
+        finished_at: null,
+        target_moved: true,
+        attempts: 0,
+        error: null,
+        note: "joined during the rollout",
+        created_at: nowIso,
+        updated_at: nowIso,
+      })),
+    );
+    queued += joined.length;
+    await updateRollout(
+      trx,
+      cur.id,
+      {
+        direction: "back",
+        status: queued > 0 ? "active" : "rolled_back",
+        paused_at: null,
+        paused_reason: null,
+        finished_at: queued > 0 ? null : nowIso,
+        rolled_back_by: who.actor,
+        rolled_back_at: nowIso,
+      },
+      nowIso,
+    );
+    await auditAs(trx, who, {
+      appId: app.id,
+      at: nowIso,
+      action: "rollout.rolling_back",
+      subject: `rollout:${cur.id}`,
+      detail: { version: cur.version, steps: queued },
+    });
   });
 }
