@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { InstanceKind } from "../db/schema.js";
+import type { AppSettingScope, InstanceKind } from "../db/schema.js";
 import type { AppSettingRow } from "./repo.js";
 
 export interface ResolvedSecret {
@@ -33,16 +33,20 @@ export function settingsRevision(
 
 /**
  * The settings of one instance kind: its own scope wins over "all" by name.
- * shared and own instances (phase 3) get "all" only until templates carry
- * their own (overview gap 7).
+ * - branch/preview: "all", then the kind's own scope.
+ * - shared/own (plan instances, H1): "all" plain settings only, then "plan".
+ *   Publisher secrets meant for customers' instances must be scoped PLAN.
  */
 export function settingsForKind(
   rows: AppSettingRow[],
   kind: InstanceKind,
 ): InstanceSettings {
+  const plan = kind === "shared" || kind === "own";
+  const own: AppSettingScope = plan ? "plan" : kind;
   const chosen = new Map<string, AppSettingRow>();
-  for (const r of rows) if (r.scope === "all") chosen.set(r.name, r);
-  for (const r of rows) if (r.scope === kind) chosen.set(r.name, r);
+  for (const r of rows)
+    if (r.scope === "all" && !(plan && r.secret)) chosen.set(r.name, r);
+  for (const r of rows) if (r.scope === own) chosen.set(r.name, r);
   const plain: InstanceSettings["plain"] = [];
   const secrets: ResolvedSecret[] = [];
   for (const r of chosen.values()) {

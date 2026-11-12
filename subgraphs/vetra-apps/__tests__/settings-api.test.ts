@@ -99,6 +99,32 @@ describe("publisher settings", () => {
     );
   });
 
+  it("scope PLAN is stored as plan, listed as PLAN, deleted on its own and audited", async () => {
+    await set({ value: "all" });
+    expect(await set({ scope: "PLAN", value: "p" })).toMatchObject({
+      scope: "PLAN",
+    });
+    expect(
+      (await listAppSettings(h.db, appId)).map((r) => [r.scope, r.value]),
+    ).toEqual([
+      ["all", "all"],
+      ["plan", "p"],
+    ]);
+    expect(
+      (await appSettingsFor(h.deps, owner, appId)).settings.map((s) => s.scope),
+    ).toEqual(["ALL", "PLAN"]);
+    expect(await deleteAppSetting(h.deps, owner, appId, "FOO", "PLAN")).toBe(
+      true,
+    );
+    expect((await listAppSettings(h.db, appId)).map((r) => r.scope)).toEqual([
+      "all",
+    ]);
+    const subjects = (
+      await h.db.selectFrom("app_audit").select("subject").execute()
+    ).map((r) => r.subject);
+    expect(subjects.filter((s) => s === "setting:PLAN/FOO")).toHaveLength(2);
+  });
+
   it("refuses names Vetra sets, malformed names and bad values (BAD_USER_INPUT)", async () => {
     for (const o of [
       { name: "ADMINS" },

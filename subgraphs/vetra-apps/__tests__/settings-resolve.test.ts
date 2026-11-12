@@ -138,11 +138,63 @@ describe("settingsForKind", () => {
     expect(s.plain).toEqual([{ name: "S", value: "plain" }]);
   });
 
-  it("shared and own kinds get ALL only (phase 3 adds per-template settings)", () => {
+  it("shared and own kinds ignore branch-scoped settings", () => {
     const rows = [row({ name: "A" }), row({ name: "B", scope: "branch" })];
     expect(settingsForKind(rows, "shared").plain.map((p) => p.name)).toEqual([
       "A",
     ]);
+  });
+
+  it("plan instances get ALL plain settings only, never ALL secrets (H1)", () => {
+    const rows = [
+      row({ name: "TOKEN", secret: true, value: null, ciphertext: "ct" }),
+      row({ name: "MODE", value: "a" }),
+    ];
+    for (const kind of ["own", "shared"] as const) {
+      const s = settingsForKind(rows, kind);
+      expect(s.plain).toEqual([{ name: "MODE", value: "a" }]);
+      expect(s.secrets).toEqual([]);
+    }
+  });
+
+  it("plan instances get PLAN settings, secrets included; PLAN wins over ALL", () => {
+    const rows = [
+      row({ name: "MODE", value: "a" }),
+      row({ name: "MODE", scope: "plan", value: "b" }),
+      row({
+        name: "TOKEN",
+        scope: "plan",
+        secret: true,
+        value: null,
+        ciphertext: "ct",
+        write_id: "w7",
+      }),
+    ];
+    for (const kind of ["own", "shared"] as const) {
+      const s = settingsForKind(rows, kind);
+      expect(s.plain).toEqual([{ name: "MODE", value: "b" }]);
+      expect(s.secrets).toEqual([
+        { name: "TOKEN", ciphertext: "ct", writeId: "w7" },
+      ]);
+    }
+  });
+
+  it("branch and preview keep ALL secrets and ignore PLAN rows", () => {
+    const base = [
+      row({ name: "TOKEN", secret: true, value: null, ciphertext: "ct" }),
+      row({ name: "MODE", value: "a" }),
+    ];
+    const withPlan = [
+      ...base,
+      row({ name: "MODE", scope: "plan", value: "b" }),
+      row({ name: "ONLY_PLAN", scope: "plan", value: "x" }),
+    ];
+    for (const kind of ["branch", "preview"] as const) {
+      const s = settingsForKind(withPlan, kind);
+      expect(s.plain).toEqual([{ name: "MODE", value: "a" }]);
+      expect(s.secrets.map((x) => x.name)).toEqual(["TOKEN"]);
+      expect(s.revision).toBe(settingsForKind(base, kind).revision);
+    }
   });
 
   it("has a stable 16-hex revision that follows values and secret writes", () => {

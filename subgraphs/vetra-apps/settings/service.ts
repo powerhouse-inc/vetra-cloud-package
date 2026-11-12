@@ -20,21 +20,24 @@ import {
   type AppSettingRow,
 } from "./repo.js";
 
-export type AppSettingScopeName = "ALL" | "BRANCH" | "PREVIEW";
+export type AppSettingScopeName = "ALL" | "BRANCH" | "PREVIEW" | "PLAN";
 const TO_SCOPE: Record<AppSettingScopeName, AppSettingScope> = {
   ALL: "all",
   BRANCH: "branch",
   PREVIEW: "preview",
+  PLAN: "plan",
 };
 const FROM_SCOPE: Record<AppSettingScope, AppSettingScopeName> = {
   all: "ALL",
   branch: "BRANCH",
   preview: "PREVIEW",
+  plan: "PLAN",
 };
 const SCOPE_ORDER: Record<AppSettingScope, number> = {
   all: 0,
   branch: 1,
   preview: 2,
+  plan: 3,
 };
 
 export interface AppSettingJson {
@@ -80,6 +83,18 @@ function scopeOf(s: AppSettingScopeName | null | undefined): AppSettingScope {
 }
 
 /**
+ * Names Vetra sets itself on the App's plan instances, so refused in scope
+ * PLAN: OPENROUTER_API_KEY while a plan has an AI budget (H7, Task 10 adds
+ * the budget). None yet.
+ */
+export async function planReservedNames(
+  _deps: AppsDeps,
+  _appId: string,
+): Promise<string[]> {
+  return [];
+}
+
+/**
  * The App's settings (spec 14.2) and the ones Vetra sets itself. Operators
  * and release managers only: plain values may be private. Secrets come back as
  * names and metadata.
@@ -122,6 +137,14 @@ export async function setAppSetting(
       throw appsError("BAD_USER_INPUT", err.message);
     throw err;
   }
+  if (
+    scope === "plan" &&
+    (await planReservedNames(deps, app.id)).includes(input.name)
+  )
+    throw appsError(
+      "BAD_USER_INPUT",
+      `"${input.name}" is set by Vetra on this App's plan instances`,
+    );
   let ciphertext: string | null = null;
   if (input.secret) {
     if (!deps.settingsVault)

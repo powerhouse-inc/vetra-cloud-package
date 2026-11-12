@@ -210,8 +210,12 @@ export type InstanceStatus =
   | "stopped"
   | "removed";
 
-/** Where a publisher setting applies (releases phase 2 slice 4): every instance, or one kind (wins over "all"). */
-export type AppSettingScope = "all" | "branch" | "preview";
+/**
+ * Where a publisher setting applies (releases phase 2 slice 4): every instance,
+ * or one kind (wins over "all"). "plan" (phase 3 plan 7, H1): shared and own
+ * instances; "all" secrets do not reach them.
+ */
+export type AppSettingScope = "all" | "branch" | "preview" | "plan";
 
 /** A publisher setting of an App (spec 14.2). Secrets: value null, ciphertext set. */
 export interface AppSettingsTable {

@@ -235,11 +235,13 @@ export const schema: DocumentNode = gql`
     releaseManager: Boolean!
   }
 
-  "Where a publisher setting applies: every instance of the App, or only its branch or preview instances (wins over ALL for the same name)."
+  "Where a publisher setting applies: every instance of the App, or only its branch, preview or plan instances (wins over ALL for the same name)."
   enum AppSettingScope {
     ALL
     BRANCH
     PREVIEW
+    "PLAN: shared and own instances (customers). ALL secrets do not reach them."
+    PLAN
   }
 
   "A publisher setting (spec 14.2). Secrets are write-only: value is null for them."
