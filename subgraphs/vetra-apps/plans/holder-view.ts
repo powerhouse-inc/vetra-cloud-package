@@ -38,7 +38,9 @@ export async function myInstancesFor(
         "instances.reason as reason",
         "instances.running_version as runningVersion",
       ])
-      .where("instances.status", "!=", "removed");
+      .where("instances.status", "!=", "removed")
+      // A soft-deleted App is gone for everyone but an admin.
+      .where("apps.status", "!=", "DELETED");
   const own = await base()
     .where("instances.kind", "=", "own")
     .where("instances.holder_address", "=", address)

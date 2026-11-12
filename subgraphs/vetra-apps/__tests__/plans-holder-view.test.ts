@@ -92,6 +92,14 @@ describe("myInstances", () => {
     ]);
     expect(mine[0].url).toMatch(/^https:\/\/.+\.vetra\.io$/);
   });
+  it("lists nothing of a deleted App", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ status: "DELETED" })
+      .where("id", "=", appId)
+      .execute();
+    expect(await myInstancesFor(h.deps, holder)).toEqual([]);
+  });
   it("lists nothing for someone without licences", async () => {
     expect(await myInstancesFor(h.deps, stranger)).toEqual([]);
   });
