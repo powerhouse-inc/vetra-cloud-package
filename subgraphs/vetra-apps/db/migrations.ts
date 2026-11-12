@@ -132,6 +132,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesHealthColumns(db);
   await ensureAppSettingsTable(db);
   await ensureInstancesSettingsColumns(db);
+  await ensurePlansTable(db);
+  await ensureInstancesPlanColumns(db);
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
@@ -178,6 +180,71 @@ export async function ensureInstancesSettingsColumns(
       if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
         throw err;
     }
+  }
+}
+
+/** Plans (releases phase 3 slice 1). Schema builder only (namespaced). */
+export async function ensurePlansTable(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("plans")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("slug", "varchar(63)", (c) => c.notNull())
+      .addColumn("name", "varchar(255)", (c) => c.notNull())
+      .addColumn("kind", "varchar(255)", (c) => c.notNull())
+      .addColumn("access", "varchar(16)", (c) => c.notNull())
+      .addColumn("size", "varchar(32)", (c) => c.notNull())
+      .addColumn("target_version", "varchar(255)")
+      .addColumn("policy", "varchar(255)", (c) => c.notNull())
+      .addColumn("notice_hours", "integer", (c) => c.notNull())
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("created_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addUniqueConstraint("plans_app_slug_uq", ["app_id", "slug"])
+      .addUniqueConstraint("plans_app_kind_uq", ["app_id", "kind"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** Plan columns on instances (slice 1). Nullable. */
+export async function ensureInstancesPlanColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [name, type] of [
+    ["plan_id", "varchar(64)"],
+    ["holder_address", "varchar(255)"],
+    ["licence_root_id", "varchar(255)"],
+    ["licence_ended_at", "varchar(64)"],
+    ["stop_reason", "text"],
+    ["stopped_by_vetra", "boolean"],
+    ["target_size", "varchar(32)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+        throw err;
+    }
+  }
+  try {
+    await db.schema
+      .createIndex("instances_licence_root_uq")
+      .ifNotExists()
+      .unique()
+      .on("instances")
+      .columns(["app_id", "licence_root_id"])
+      .where(sql.ref("licence_root_id"), "is not", null)
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
   }
 }
 

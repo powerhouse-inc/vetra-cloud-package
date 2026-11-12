@@ -19,6 +19,7 @@ import {
   listAppSettings,
   upsertAppSetting,
 } from "../settings/repo.js";
+import { getPlan, insertPlan, listPlans, updatePlan } from "../plans/repo.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -532,6 +533,59 @@ describe("app_settings and instance settings columns", () => {
       "settings_delivered_at",
       "health_settings",
       "observed_settings",
+    ])
+      expect(names).toContain(c);
+    await db.destroy();
+  });
+});
+
+describe("plans and the instances' plan columns", () => {
+  it("are created idempotently; a plan is unique per app by slug and by kind", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db);
+    await up(db); // second run: no error
+    const row = {
+      id: "plan-1",
+      app_id: "app-1",
+      slug: "pro",
+      name: "Pro",
+      kind: "pro",
+      access: "own" as const,
+      size: "VETRA_AGENT_M",
+      target_version: null,
+      policy: "manual",
+      notice_hours: 72,
+      status: "active" as const,
+      created_by: "0xaa",
+      created_at: "2026-11-12T00:00:00.000Z",
+      updated_at: "2026-11-12T00:00:00.000Z",
+    };
+    await insertPlan(db, row);
+    await expect(insertPlan(db, { ...row, id: "plan-2", kind: "other" })).rejects.toThrow();
+    await expect(insertPlan(db, { ...row, id: "plan-3", slug: "other" })).rejects.toThrow();
+    const moved = await updatePlan(
+      db,
+      "plan-1",
+      { target_version: "1.4.0" },
+      "2026-11-12T01:00:00.000Z",
+    );
+    expect(moved).toMatchObject({
+      target_version: "1.4.0",
+      updated_at: "2026-11-12T01:00:00.000Z",
+    });
+    expect((await listPlans(db, "app-1")).map((p) => p.id)).toEqual(["plan-1"]);
+    expect(await getPlan(db, "missing")).toBeNull();
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns WHERE table_name = 'instances'`.execute(db);
+    const names = cols.rows.map((c) => c.column_name);
+    for (const c of [
+      "plan_id",
+      "holder_address",
+      "licence_root_id",
+      "licence_ended_at",
+      "stop_reason",
+      "stopped_by_vetra",
+      "target_size",
     ])
       expect(names).toContain(c);
     await db.destroy();

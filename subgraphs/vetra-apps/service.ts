@@ -1,6 +1,7 @@
 import { GraphQLError } from "graphql";
 import { keyedMutex } from "../vetra-licensing/keyed-mutex.js";
 import { sql, type Kysely } from "kysely";
+import type { VetraLicensingDB } from "../vetra-licensing/db/schema.js";
 import type { Action } from "document-model";
 import {
   addPackage,
@@ -189,6 +190,8 @@ export interface AppsDeps {
   studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
   /** Publisher secrets at rest (settings/vault.ts). Null/absent: secret settings are refused (SERVICE_NOT_CONFIGURED). */
   settingsVault?: SettingsVault | null;
+  /** Licensing's tables (licences of plans' kinds, licensed environments). Null/absent: plans have no holders and cannot be created. */
+  licensingDb?: Kysely<VetraLicensingDB> | null;
   /**
    * Vetra's own writer of tenant secrets, for instances (generated keys and
    * publisher secrets). Null/absent: instances cannot be created or given
