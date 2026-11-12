@@ -214,3 +214,29 @@ export async function advanceBackups(
       );
   }
 }
+
+/**
+ * TODO(releases phase 3 slice 4, decision B9): the final backup before Vetra
+ * stops a plan instance (licence ended, plan retired). A hook only: nothing
+ * calls it yet. The stop path (instances/reconciler.ts stopPlanInstance) is
+ * being reworked on fix/environment-hold ("stopped environments keep their
+ * database"); wire it there once that lands, deciding how long the stop
+ * waits for the backup (the plan's preStopGate: a pre_stop backup within the
+ * last day decides, pending waits, ready or failed goes).
+ *
+ * Behind VETRA_APPS_BACKUPS: off (or not configured) is a no-op returning
+ * null. On: starts a pre_stop backup and returns its id; throws
+ * BackupBusyError (try again later) or BackupUnavailableError (no
+ * environment, namespace or /data volume) as startInstanceBackup does.
+ */
+export async function beforePlanInstanceStop(
+  deps: AppsDeps,
+  instance: InstanceRow,
+): Promise<string | null> {
+  if (!backupsConfigOf(deps.cfg).enabled || !deps.backups) return null;
+  const b = await startInstanceBackup(deps, instance, {
+    reason: "pre_stop",
+    requestedBy: AUDIT_SYSTEM_ACTOR,
+  });
+  return b.id;
+}

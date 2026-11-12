@@ -27,6 +27,8 @@ import {
   type AppsDeps,
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { advanceRestores } from "../backups/restore.js";
+import { advanceBackups } from "../backups/service.js";
 import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
   declaredSecretNames,
@@ -210,6 +212,15 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
       );
     }
+    try {
+      // Before the rows (and slice 3's rollouts, which go after this): a
+      // backup that became ready, or a restore that hands an instance back,
+      // is seen in this pass.
+      await advanceBackups(deps, app.id);
+      await advanceRestores(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] backups of ${app.slug}: ${message(err)}`);
+    }
   }
   // Read once per pass: every instance of a kind gets the same revision.
   const settingRows = await listAppSettings(deps.db, app.id);
@@ -312,6 +323,10 @@ async function stopPlanInstance(
       return;
     }
     if (state.status === "READY" || state.status === "DEPLOYMENt_FAILED") {
+      // TODO(releases phase 3 slice 4, decision B9): take a final backup
+      // here before Vetra sleeps a READY plan instance, through
+      // beforePlanInstanceStop (backups/service.ts), once fix/environment-hold
+      // settled how a stopped plan instance keeps its database. Not wired yet.
       // Recorded before sleeping: a crash in between must not leave an
       // environment Vetra slept that a renewal never wakes.
       if (!row.stopped_by_vetra)
@@ -684,6 +699,8 @@ export async function reconcileInstance(
     return row.environment_id
       ? withEnvLock(row.environment_id, () => removeInstance(deps, row))
       : removeInstance(deps, row);
+  // A restore owns it (backups/restore.ts): it hands the instance back itself.
+  if (row.maintenance) return;
   if (row.stop_reason) return stopPlanInstance(deps, row);
   if (!row.target_digest) return;
   if (row.target_settings !== settings.revision) {
