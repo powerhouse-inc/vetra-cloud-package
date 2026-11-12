@@ -2,6 +2,7 @@ import type { Action } from "document-model";
 import { approveChanges } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { withEnvLock, withKeyLock } from "../../../shared/key-lock.js";
+import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
 import { expectOrgHandover } from "../../vetra-cloud-observability/env-protection.js";
 import { instanceHealth } from "../config.js";
 import { notConfigured } from "../errors.js";
@@ -19,15 +20,20 @@ import {
 } from "../service.js";
 import { instanceLabel } from "./host.js";
 import {
+  declaredSecretNames,
+  declaresVetraSecrets,
   envSettings,
   imageTag,
   instanceCreateActions,
   instanceUpdateActions,
   type InstanceImage,
 } from "./render.js";
-import { settingsForKind } from "../settings/resolve.js";
+import { deliverSettings } from "../settings/deliver.js";
+import { listAppSettings } from "../settings/repo.js";
+import { settingsForKind, type InstanceSettings } from "../settings/resolve.js";
 import {
   deleteInstance,
+  getInstance,
   insertInstance,
   isHostUsed,
   listInstances,
@@ -44,9 +50,6 @@ import {
   targetOf,
   type InstanceTarget,
 } from "./targets.js";
-
-/** Temporary (removed in Task 9): instances get no publisher settings yet. */
-const EMPTY_SETTINGS_ENV = envSettings(settingsForKind([], "branch"));
 
 export const INSTANCE_BASE_DOMAIN = "vetra.io";
 /** removed_reason that keeps a tombstone (the branch may come back with newer builds). */
@@ -68,6 +71,15 @@ export const PR_CLOSED = "pull request closed";
 export const PR_FORK = "pull request from a fork";
 /** removed_reason after a closed PR was reopened: revived like any other tombstone. */
 export const PR_REOPENED = "pull request reopened";
+/** After the secrets were delivered to a fresh tenant, how long its first start waits (controller: ~1 s on notify). */
+export const SECRETS_SETTLE_MS = 30_000;
+export const RECREATING_FOR_SETTINGS =
+  "recreating the environment with Vetra's settings (it predates the secrets master key)";
+export const WAITING_FOR_NAMESPACE =
+  "waiting for the environment's namespace to give it its secrets";
+export const WAITING_FOR_SECRETS =
+  "waiting for the environment's secrets to arrive";
+export const AFTER_SETTINGS_CHANGE = "after a settings change";
 /** Tombstones syncPreviewInstances never revives and the cap does not count. */
 const FINAL = new Set<string>([PR_CLOSED, PR_FORK]);
 const DAY_MS = 86_400_000;
@@ -155,13 +167,20 @@ async function sweepClosedPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
   await syncPreviewInstances(deps, app);
+  // Read once per pass: every instance of a kind gets the same revision.
+  const settingRows = await listAppSettings(deps.db, app.id);
   const rows = await listInstances(deps.db, app.id);
   // Removals first: an evicted preview frees its place before a new one is
   // created (spec 14.13). Array.prototype.sort is stable.
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
   for (const row of rows) {
     try {
-      await reconcileInstance(deps, app, row);
+      await reconcileInstance(
+        deps,
+        app,
+        row,
+        settingsForKind(settingRows, row.kind),
+      );
     } catch (err) {
       // One bad instance never stops the others.
       deps.logger.warn(
@@ -220,7 +239,43 @@ const CLEAN: InstancePatch = {
   health_restarts: null,
   observed_digest: null,
   observed_digest_source: null,
+  running_settings: null,
+  failed_settings: null,
+  settings_delivered: null,
+  settings_delivered_at: null,
+  health_settings: null,
+  observed_settings: null,
 };
+
+/** A failed target is not retried until its digest or its settings revision changes. */
+const failedOn = (row: InstanceRow, settings: InstanceSettings) =>
+  row.failed_digest === row.target_digest &&
+  (row.failed_settings ?? null) === settings.revision;
+
+const failure = (
+  row: InstanceRow,
+  settings: InstanceSettings,
+): InstancePatch => ({
+  failed_digest: row.target_digest,
+  failed_settings: settings.revision,
+});
+
+async function waitFor(
+  deps: AppsDeps,
+  row: InstanceRow,
+  reason: string,
+): Promise<void> {
+  if (row.status !== "updating" || row.reason !== reason)
+    await patch(deps, row, { status: "updating", reason });
+}
+
+/** The environment is gone or going for good: its tenant's secrets go too (the master key is kept by the purge). */
+async function forgetTenant(deps: AppsDeps, row: InstanceRow): Promise<void> {
+  if (!row.host || !row.environment_id || !deps.instanceSecrets) return;
+  await deps.instanceSecrets.purgeTenant(
+    getTenantId(row.host, row.environment_id),
+  );
+}
 
 /** Rows for the wanted branch instances; targets moved; unwanted ones marked for removal. */
 export async function syncBranchInstances(
@@ -511,20 +566,26 @@ export async function reconcileInstance(
   deps: AppsDeps,
   app: AppRow,
   row: InstanceRow,
+  settings: InstanceSettings,
 ): Promise<void> {
   if (row.removed_at)
     return row.environment_id
       ? withEnvLock(row.environment_id, () => removeInstance(deps, row))
       : removeInstance(deps, row);
   if (!row.target_digest) return;
+  if (row.target_settings !== settings.revision) {
+    await patch(deps, row, { target_settings: settings.revision });
+    row = { ...row, target_settings: settings.revision };
+  }
   if (!row.environment_id) {
-    // A create that failed is not retried until a newer target arrives.
-    if (row.status === "failed" && row.failed_digest === row.target_digest)
-      return;
-    return createEnvironment(deps, app, row);
+    // A create that failed is not retried until a newer target (or settings) arrives.
+    if (row.status === "failed" && failedOn(row, settings)) return;
+    return createEnvironment(deps, app, row, settings);
   }
   const envId = row.environment_id;
-  return withEnvLock(envId, () => reconcileEnvironment(deps, app, row, envId));
+  return withEnvLock(envId, () =>
+    reconcileEnvironment(deps, app, row, envId, settings),
+  );
 }
 
 /**
@@ -566,6 +627,7 @@ async function reconcileEnvironment(
   app: AppRow,
   row: InstanceRow,
   envId: string,
+  settings: InstanceSettings,
 ): Promise<void> {
   const state = await deps.envs.getState(envId);
   if (state && GOING.has(state.status)) {
@@ -578,7 +640,11 @@ async function reconcileEnvironment(
   if (!state || state.status === "DRAFT" || state.status === "DESTROYED") {
     // Deleted, destroyed, or a create that never got past its first batch:
     // start over.
-    if (state && ownDraft(state, row)) await deps.envs.delete(envId);
+    const own = !!state && ownDraft(state, row);
+    if (own) await deps.envs.delete(envId);
+    // Its tenant's secrets go with it (never those of a document that is not ours).
+    if (!state || own || state.status === "DESTROYED")
+      await forgetTenant(deps, row);
     await patch(deps, row, {
       ...CLEAN,
       environment_id: null,
@@ -605,8 +671,43 @@ async function reconcileEnvironment(
     return;
   }
 
+  if (!declaresVetraSecrets(state)) {
+    // Made before slice 4: its host generated its own master key on an
+    // ephemeral /data and its database keeps that key's fingerprint, so
+    // Vetra's key would be refused. Branch and preview data are disposable:
+    // start over (production has no instances yet).
+    await deps.envs.delete(envId);
+    await patch(deps, row, {
+      status: "pending",
+      reason: RECREATING_FOR_SETTINGS,
+    });
+    return;
+  }
+
+  // The tenant gets the revision's secrets before the document asks for it.
+  const tenantId = getTenantId(state.genericSubdomain ?? row.host!, envId);
+  let deliveredAt = row.settings_delivered_at;
+  if (row.settings_delivered !== settings.revision) {
+    if (deps.tenantLive && !(await deps.tenantLive(tenantId)))
+      return waitFor(deps, row, WAITING_FOR_NAMESPACE);
+    await deliverSettings(deps, tenantId, settings, declaredSecretNames(state));
+    deliveredAt = deps.now().toISOString();
+    await patch(deps, row, {
+      settings_delivered: settings.revision,
+      settings_delivered_at: deliveredAt,
+    });
+  }
+  // A first start waits until the controller had time to write <tenant>-secrets.
+  const started = fusionVersion(state) !== null;
+  const start =
+    started ||
+    !deps.tenantLive ||
+    deps.now().getTime() - Date.parse(deliveredAt ?? "") >= SECRETS_SETTLE_MS;
+  if (!start) return waitFor(deps, row, WAITING_FOR_SECRETS);
+  const want = envSettings(settings);
+
   const image = targetImage(row);
-  if (row.failed_digest === row.target_digest) {
+  if (failedOn(row, settings)) {
     // Not retried; but a revert that did not land is.
     const back = revertImage(row);
     if (back && fusionVersion(state) === image.tag) {
@@ -614,7 +715,7 @@ async function reconcileEnvironment(
         state,
         back,
         app.owner_address,
-        EMPTY_SETTINGS_ENV,
+        want,
       );
       if (revert.length > 0) await apply(deps, envId, revert);
     }
@@ -626,7 +727,8 @@ async function reconcileEnvironment(
     state,
     image,
     app.owner_address,
-    EMPTY_SETTINGS_ENV,
+    want,
+    start,
   );
   if (updates.length > 0) {
     await apply(deps, envId, updates);
@@ -644,7 +746,11 @@ async function reconcileEnvironment(
     health.mode === "enforce"
       ? observeHealth(
           state,
-          { tag: image.tag, digest: row.target_digest! },
+          {
+            tag: image.tag,
+            digest: row.target_digest!,
+            settings: settings.revision,
+          },
           row,
           healthView(row),
           deps.now(),
@@ -655,13 +761,16 @@ async function reconcileEnvironment(
           image.tag,
           row.update_started_at,
           deps.now(),
-          !!row.running_digest && row.running_digest === row.target_digest,
+          !!row.running_digest &&
+            row.running_digest === row.target_digest &&
+            row.running_settings === settings.revision,
         );
   if (seen.kind === "unchanged") return;
   if (seen.kind === "ready") {
     if (
       row.status !== "ready" ||
       row.running_digest !== row.target_digest ||
+      row.running_settings !== settings.revision ||
       row.running_degraded
     )
       await patch(deps, row, {
@@ -670,6 +779,7 @@ async function reconcileEnvironment(
         running_version: row.target_version,
         running_digest: row.target_digest,
         running_repository: row.target_repository,
+        running_settings: settings.revision,
         running_degraded: false,
       });
     return;
@@ -695,19 +805,18 @@ async function reconcileEnvironment(
     return;
   }
   // Failed: keep the target from being retried, and go back to what ran (spec section 6).
+  const settingsOnly = row.running_digest === row.target_digest;
   await patch(deps, row, {
     status: "failed",
-    reason: seen.reason,
-    failed_digest: row.target_digest,
+    reason: settingsOnly
+      ? `${AFTER_SETTINGS_CHANGE}: ${seen.reason}`
+      : seen.reason,
+    ...failure(row, settings),
   });
+  // Null when only the settings changed: old secret values are not kept, nothing to go back to.
   const back = revertImage(row);
   if (back) {
-    const revert = instanceUpdateActions(
-      state,
-      back,
-      app.owner_address,
-      EMPTY_SETTINGS_ENV,
-    );
+    const revert = instanceUpdateActions(state, back, app.owner_address, want);
     if (revert.length > 0) await apply(deps, envId, revert);
   }
 }
@@ -732,6 +841,7 @@ async function claimHost(
   deps: AppsDeps,
   app: AppRow,
   row: InstanceRow,
+  settings: InstanceSettings,
 ): Promise<string | null> {
   if (row.host) return row.host;
   const host = instanceLabel(
@@ -741,11 +851,7 @@ async function claimHost(
     deps.cfg.instances.labelSuffix,
   );
   const fail = (reason: string) =>
-    patch(deps, row, {
-      status: "failed",
-      reason,
-      failed_digest: row.target_digest,
-    });
+    patch(deps, row, { status: "failed", reason, ...failure(row, settings) });
   if ((await isHostUsed(deps.db, host)) || (await deps.subdomainUsed?.(host))) {
     await fail(`the host ${host} is taken`);
     return null;
@@ -767,12 +873,15 @@ async function createEnvironment(
   deps: AppsDeps,
   app: AppRow,
   row: InstanceRow,
+  settings: InstanceSettings,
 ): Promise<void> {
+  if (!deps.instanceSecrets)
+    throw notConfigured("The tenant secrets store (OPENBAO_ADDR)");
   if (app.owner_org_id && !deps.orgHandoverDb)
     throw notConfigured("The organisation hand-over store");
   if (!app.registry_namespace)
     throw new Error("the App has no registry namespace yet");
-  const host = await claimHost(deps, app, row);
+  const host = await claimHost(deps, app, row, settings);
   if (!host) return;
   const image = targetImage(row);
   const envId = await deps.envs.create();
@@ -780,9 +889,16 @@ async function createEnvironment(
   deps.logger.info(
     `[vetra-apps] instance ${app.slug}/${row.name}: created environment ${envId}`,
   );
-  await withEnvLock(envId, () =>
-    initEnvironment(deps, app, row, host, image, envId),
-  );
+  await withEnvLock(envId, async () => {
+    if (!(await initEnvironment(deps, app, row, host, image, envId, settings)))
+      return;
+    // Without namespace knowledge (no tenantLive) nothing to wait for: deliver and start in this pass.
+    if (!deps.tenantLive) {
+      const fresh = await getInstance(deps.db, row.id);
+      if (fresh?.environment_id === envId)
+        await reconcileEnvironment(deps, app, fresh, envId, settings);
+    }
+  });
 }
 
 async function initEnvironment(
@@ -792,7 +908,8 @@ async function initEnvironment(
   host: string,
   image: InstanceImage,
   envId: string,
-): Promise<void> {
+  settings: InstanceSettings,
+): Promise<boolean> {
   // Recorded before any action: a crash leaves a DRAFT document the next pass deletes.
   await patch(deps, row, {
     host,
@@ -828,10 +945,12 @@ async function initEnvironment(
         imageProject: app.registry_namespace!,
         image,
         admins: app.owner_address,
-        settings: EMPTY_SETTINGS_ENV,
-        start: true,
+        settings: envSettings(settings),
+        // Started by reconcileEnvironment once its tenant has the secrets.
+        start: false,
       }),
     );
+    return true;
   } catch (err) {
     // A rejected create would be rejected again: drop the half-made
     // environment and wait for a newer target.
@@ -843,8 +962,9 @@ async function initEnvironment(
       environment_id: null,
       status: "failed",
       reason: `creating the environment failed: ${message(err)}`,
-      failed_digest: row.target_digest,
+      ...failure(row, settings),
     });
+    return false;
   }
 }
 
@@ -871,6 +991,8 @@ async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
         await patch(deps, row, { status: "pending", reason: WAITING_FOR_ENV });
       return;
     }
+    // Gone: its tenant's secrets go too (never those of a document that is not ours).
+    if (!state || state.status === "DESTROYED") await forgetTenant(deps, row);
   }
   // Tombstones: a deleted branch (may come back with a newer build) and every
   // preview (a closed PR stays closed; a returning one keeps its host).

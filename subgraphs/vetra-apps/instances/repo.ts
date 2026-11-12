@@ -35,6 +35,18 @@ export async function listInstances(
   return rows.map(normalize);
 }
 
+export async function getInstance(
+  db: Kysely<VetraAppsDB>,
+  id: string,
+): Promise<InstanceRow | null> {
+  const r = await db
+    .selectFrom("instances")
+    .selectAll()
+    .where("id", "=", id)
+    .executeTakeFirst();
+  return r ? normalize(r) : null;
+}
+
 export async function insertInstance(
   db: Kysely<VetraAppsDB>,
   row: NewInstance,
