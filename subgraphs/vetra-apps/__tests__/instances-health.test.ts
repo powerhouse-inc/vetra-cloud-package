@@ -532,6 +532,20 @@ describe("enforce: status follows health", () => {
     expect(await fusionVersion(envId)).toBe(`1.5.0-main.2@${digest("b")}`);
   });
 
+  it("does not stay stopped after a start when health has no data", async () => {
+    const envId = await readyHealthy();
+    h.envs.setStatus(envId, "STOPPED");
+    await pass();
+    expect((await one()).status).toBe("stopped");
+    h.tenants.delete(envId);
+    h.envs.setStatus(envId, "READY");
+    await pass();
+    expect(await one()).toMatchObject({
+      status: "ready",
+      health_check: "data",
+    });
+  });
+
   it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {
     const envId = await readyHealthy();
     h.envs.setStatus(envId, "STOPPED");

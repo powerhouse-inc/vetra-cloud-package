@@ -103,7 +103,11 @@ const msOf = (iso: string | null) => (iso ? Date.parse(iso) : Number.NaN);
 export function observeHealth(
   state: VetraCloudEnvironmentState,
   target: { tag: string; digest: string },
-  row: { update_started_at: string | null; running_digest: string | null },
+  row: {
+    update_started_at: string | null;
+    running_digest: string | null;
+    status?: string;
+  },
   h: HealthView,
   now: Date,
   unhealthyWindowMs: number,
@@ -156,6 +160,19 @@ export function observeHealth(
       forMs >= DEGRADED_AFTER_MS
     )
       return { kind: "degraded", reason: label };
+  }
+  if (!inFlight && row.status === "stopped") {
+    // Started again (the document is no longer STOPPED): never left "stopped".
+    // Without health to go by, the document's rule; with undecided health, starting.
+    if (!fresh || h.check === "data")
+      return observeEnvironment(
+        state,
+        target.tag,
+        row.update_started_at,
+        now,
+        true,
+      );
+    return { kind: "updating" };
   }
   if (!inFlight) return { kind: "unchanged" };
   // The reconciler always records a start time; without one an update never times out (as observeEnvironment).

@@ -427,6 +427,37 @@ describe("observeHealth", () => {
       ),
     ).toEqual(waiting);
   });
+  it("moves a stopped instance on once started, without fresh health", () => {
+    const wasStopped = { ...steady, status: "stopped" };
+    const stale = view({
+      checkedAt: started(600_000),
+      since: started(900_000),
+    });
+    expect(
+      observeHealth(state("READY"), target, wasStopped, stale, now, W),
+    ).toEqual({ kind: "ready" });
+    expect(
+      observeHealth(state("DEPLOYING"), target, wasStopped, stale, now, W),
+    ).toEqual({ kind: "updating" });
+    const noData = view({ health: "unknown", check: "data", reason: "x" });
+    expect(
+      observeHealth(state("READY"), target, wasStopped, noData, now, W),
+    ).toEqual({ kind: "ready" });
+    // Fresh health that has not decided yet: starting.
+    const starting = view({
+      health: "unknown",
+      check: "pod",
+      reason: "the pod is starting",
+      since: started(1000),
+    });
+    expect(
+      observeHealth(state("READY"), target, wasStopped, starting, now, W),
+    ).toEqual({ kind: "updating" });
+    // Still stopped: stopped.
+    expect(
+      observeHealth(state("STOPPED"), target, wasStopped, stale, now, W),
+    ).toEqual({ kind: "stopped" });
+  });
   it("keeps stopped and gone environments as before", () => {
     expect(
       observeHealth(state("STOPPED"), target, steady, view({}), now, W),
