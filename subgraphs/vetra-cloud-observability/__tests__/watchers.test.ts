@@ -611,3 +611,41 @@ describe("podToRow — image and waiting reason", () => {
     });
   });
 });
+
+describe("podToRow — settings revision format", () => {
+  const withRevision = (value: string): PodLike => ({
+    metadata: {
+      name: "app-0",
+      namespace: "t1",
+      labels: { "app.kubernetes.io/component": "app" },
+    },
+    spec: {
+      containers: [
+        {
+          name: "app",
+          image: "cr.vetra.io/acme/shop:1.5.0@sha256:aa",
+          env: [{ name: "VETRA_SETTINGS_REVISION", value }],
+        },
+      ],
+    },
+    status: {
+      phase: "Running",
+      containerStatuses: [{ name: "app", ready: true, restartCount: 0 }],
+    },
+  });
+
+  it("drops a revision that is not 16 hex characters", () => {
+    for (const bad of ["x".repeat(100), "0123456789ABCDEF", "0123", ""])
+      expect(podToRow(withRevision(bad))!.settingsRevision).toBeNull();
+  });
+
+  it("a bad revision never breaks reconcilePods", async () => {
+    await reconcilePods(db, async () => [withRevision("f".repeat(64))]);
+    const row = await db
+      .selectFrom("environment_pods")
+      .selectAll()
+      .where("id", "=", "t1/app-0")
+      .executeTakeFirstOrThrow();
+    expect(row.settingsRevision).toBeNull();
+  });
+});

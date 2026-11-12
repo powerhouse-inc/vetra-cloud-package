@@ -5,6 +5,9 @@
 import type { Kysely } from "kysely";
 import type { EnvironmentPods, ObservabilityDB } from "./db/schema.ts";
 
+/** 16 lowercase hex characters: a sha256 prefix. */
+const SETTINGS_REVISION = /^[0-9a-f]{16}$/;
+
 /**
  * Map the chart's `app.kubernetes.io/component` label to the
  * TenantService enum used by the GraphQL schema. Unrecognised
@@ -127,8 +130,12 @@ export function podToRow(
   const waitingReason =
     reasons.find((r) => !TRANSIENT_WAITING.has(r)) ?? reasons[0] ?? null;
   // The instance settings revision (vetra-apps settings/names.ts SETTINGS_REVISION_ENV; a literal here to keep observability standalone).
+  // Only its exact format (settings/resolve.ts settingsRevision): anything else is not Vetra's and must not break the upsert.
+  const revision = main?.env?.find(
+    (e) => e.name === "VETRA_SETTINGS_REVISION",
+  )?.value;
   const settingsRevision =
-    main?.env?.find((e) => e.name === "VETRA_SETTINGS_REVISION")?.value ?? null;
+    revision && SETTINGS_REVISION.test(revision) ? revision : null;
 
   return {
     id: `${tenantId}/${name}`,
