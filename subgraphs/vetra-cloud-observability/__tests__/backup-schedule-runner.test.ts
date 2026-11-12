@@ -161,3 +161,18 @@ describe("toBackupEnvSnapshot", () => {
     expect(toBackupEnvSnapshot({ ...row, backupSchedule: "{" })?.backupSchedule).toBeNull();
   });
 });
+
+describe("toBackupEnvSnapshot and plan instances", () => {
+  it("leaves PLAN environments to vetra-apps' instance backups", () => {
+    const row = {
+      id: "env-1",
+      tenantId: "t-1",
+      status: "READY",
+      appRole: "PLAN",
+      services: JSON.stringify([{ type: "SWITCHBOARD", enabled: true }]),
+      backupSchedule: null,
+    };
+    expect(toBackupEnvSnapshot(row)).toBeNull();
+    expect(toBackupEnvSnapshot({ ...row, appRole: null })).not.toBeNull();
+  });
+});

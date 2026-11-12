@@ -1,8 +1,8 @@
-import type { DumpSource } from "../db/schema.js";
+import type { DumpSource, ObservabilityDumpSource } from "../db/schema.js";
 import type { DumpsRepo } from "./repo.js";
 
 /** Newest dumps kept per environment and source. SCHEDULED is overridden by the env's schedule. */
-export const RETENTION: Record<DumpSource, number> = {
+export const RETENTION: Record<ObservabilityDumpSource, number> = {
   MANUAL: 5,
   SCHEDULED: 7,
   PRE_RESTORE: 3,

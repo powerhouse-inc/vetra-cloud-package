@@ -19,6 +19,8 @@ export type CreateDumpInput = {
   tenantId: string;
   requestedBy: string;
   source: DumpSource;
+  /** Defaults to the wall clock; vetra-apps passes its own (tests use a fake clock). */
+  now?: Date;
 };
 
 /**
@@ -30,7 +32,10 @@ export async function createDumpAndJob(
   deps: DumpJobDeps,
   input: CreateDumpInput,
 ): Promise<DatabaseDumps> {
-  const dump = await deps.repo.create({ ...input, now: new Date() });
+  const dump = await deps.repo.create({
+    ...input,
+    now: input.now ?? new Date(),
+  });
   const job = buildDumpJob({
     dumpId: dump.id,
     tenantNs: input.tenantId,

@@ -114,8 +114,23 @@ export interface ClintRuntimeEndpoint {
   lastSeen: string;
 }
 
-/** Why a dump exists: owner click, the backup scheduler, or a restore's safety copy. */
-export type DumpSource = "MANUAL" | "SCHEDULED" | "PRE_RESTORE";
+/**
+ * Why a dump exists: owner click, the backup scheduler, a restore's safety
+ * copy, or a vetra-apps instance backup (PRE_UPDATE before a rollout step;
+ * INSTANCE for daily, manual, pre-restore and pre-stop backups, whose reason
+ * vetra-apps keeps in instance_backups). Observability's retention only ever
+ * runs on its own three sources; vetra-apps sweeps the other two.
+ */
+export type DumpSource =
+  | "MANUAL"
+  | "SCHEDULED"
+  | "PRE_RESTORE"
+  | "PRE_UPDATE"
+  | "INSTANCE";
+export type ObservabilityDumpSource = Exclude<
+  DumpSource,
+  "PRE_UPDATE" | "INSTANCE"
+>;
 
 /**
  * pg_dump exports of a tenant env's Postgres. Kept per source by count

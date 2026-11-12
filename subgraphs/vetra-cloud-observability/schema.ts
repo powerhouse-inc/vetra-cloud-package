@@ -299,7 +299,7 @@ export const schema: DocumentNode = gql`
   enum DatabaseDumpStatus { PENDING, RUNNING, READY, FAILED }
 
   """Why a dump exists: owner request, backup schedule, or a restore's safety copy."""
-  enum DumpSource { MANUAL, SCHEDULED, PRE_RESTORE }
+  enum DumpSource { MANUAL, SCHEDULED, PRE_RESTORE, PRE_UPDATE, INSTANCE }
 
   type DatabaseDump {
     id: ID!
