@@ -7,7 +7,8 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
-import { loadAppsConfig, missingConfig } from "./config.js";
+import { backupsConfigOf, loadAppsConfig, missingConfig } from "./config.js";
+import { instanceBackupDepsFromEnv } from "./backups/k8s.js";
 import {
   createReactorEnvGateway,
   subdomainTakenIn,
@@ -256,6 +257,18 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         token: (repository, installationId) =>
           github.installationToken(installationId, repository),
       });
+    }
+    if (backupsConfigOf(cfg).enabled) {
+      deps.backups = await instanceBackupDepsFromEnv().catch((err: unknown) => {
+        console.warn(
+          `[vetra-apps] instance backups: kubernetes client failed: ${String(err)}`,
+        );
+        return null;
+      });
+      if (!deps.backups)
+        console.warn(
+          "[vetra-apps] VETRA_APPS_BACKUPS is on but dumps are not configured (VETRA_DUMPS_S3_*): rollout steps fail with 'backups are not configured'",
+        );
     }
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     // A Studio launch/rollback is applied right after it was recorded (the

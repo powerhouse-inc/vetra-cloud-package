@@ -24,6 +24,7 @@ import {
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { AttestationVerifier } from "./releases/attestation.js";
 import type { VetraAppsConfig } from "./config.js";
+import type { InstanceBackupDeps } from "./backups/k8s.js";
 import type {
   AppDeploymentKind,
   DeploymentTrigger,
@@ -205,6 +206,11 @@ export interface AppsDeps {
     | "notifyTenant"
     | "purgeTenant"
   > | null;
+  /**
+   * Instance backups (releases phase 3 slice 4): the cluster, dump/archive
+   * Job settings and S3 deletes. Null/absent: backups are not configured.
+   */
+  backups?: InstanceBackupDeps | null;
   /**
    * Whether a tenant's namespace exists (observability has a pod of it). Absent:
    * an instance's first start does not wait for it (tests).
