@@ -46,6 +46,30 @@ export async function lookupWarm(
 }
 
 /**
+ * Whether an environment is held (vetra-apps `environment_holds`): kept with
+ * its database, backups and data volumes while its app does not run.
+ */
+export type HoldLookup = (documentId: string) => Promise<boolean>;
+
+/**
+ * One hold lookup for a render. The holds table missing (42P01: vetra-apps
+ * has not created it yet) means nothing is held; any other failure
+ * propagates, so a held environment never starts by accident.
+ */
+export async function lookupHeld(
+  isHeld: HoldLookup,
+  documentId: string,
+): Promise<boolean> {
+  try {
+    return await isHeld(documentId);
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)
+      return false;
+    throw err;
+  }
+}
+
+/**
  * The App named by `state.app.appId` must exist, and this document must be
  * its production env or one of its preview envs. Missing tables (vetra-apps
  * not migrated yet) or any query failure → null (no App project).

@@ -17,7 +17,9 @@ import { isStudioAgentPackage } from "../../shared/studio-package.js";
 import { isApexCapable } from "../../shared/apex.js";
 import {
   lookupWarm,
+  lookupHeld,
   type AppImageProjectResolver,
+  type HoldLookup,
   type WarmPoolLookup,
 } from "./app-image-project.js";
 import {
@@ -1197,6 +1199,13 @@ export function generateFusionBlock(
     appImageProject?: string | null;
     /** A warm (unclaimed) environment: the chart renders its ingress closed (`ingress.closed: true`) until claimed. */
     warm?: boolean;
+    /**
+     * A held environment: no pod (`replicaCount: 0`) and no ingress, while
+     * `enabled` stays true so the chart keeps the tenant database (Cluster,
+     * Pooler, ScheduledBackup need app.enabled + app.database.enabled) and
+     * the /data PVC (needs app.enabled).
+     */
+    held?: boolean;
   },
 ): string {
   const service = (state.services ?? []).find(
@@ -1294,7 +1303,7 @@ export function generateFusionBlock(
   return `app:
   enabled: true
   name: fusion
-  replicaCount: 1
+  replicaCount: ${opts.held ? 0 : 1}
   image:
     repository: ${yamlQuote(image)}
     tag: ${yamlQuote(tag)}
@@ -1304,8 +1313,8 @@ export function generateFusionBlock(
     port: 80
     targetPort: ${port}
   ingress:
-    enabled: true
-    className: traefik${opts.warm ? "\n    closed: true" : ""}
+    enabled: ${!opts.held}
+    className: traefik${opts.warm && !opts.held ? "\n    closed: true" : ""}
     host: ${yamlQuote(host)}
     additionalHosts: []
     tls:
@@ -1372,6 +1381,7 @@ export async function generateValuesYaml(
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
   isWarm: WarmPoolLookup | null = null,
+  isHeld: HoldLookup | null = null,
 ): Promise<string> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -1518,6 +1528,11 @@ export async function generateValuesYaml(
 
   // One warm-pool lookup per render, shared with the image resolver.
   const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
+  // A held environment keeps every data-bearing object (CNPG Cluster, its
+  // PVC, Pooler, ScheduledBackup, the /data and attachments PVCs) and runs no
+  // app pod and no ingress. Unlike STOPPED (global.disabled), which removes
+  // the Cluster and with it the database.
+  const held = isHeld ? await lookupHeld(isHeld, documentId) : false;
   const fusionBlock = generateFusionBlock(state, {
     tenantId,
     subdomain,
@@ -1537,6 +1552,7 @@ export async function generateValuesYaml(
           : resolveAppImageProject(state, documentId, warm))
       : null,
     warm: warm != null,
+    held,
   });
 
   const tenantName = yamlQuote(state.label ?? name);
@@ -1685,7 +1701,7 @@ switchboard:
   gitops:
     enabled: false
   name: switchboard
-  replicaCount: 1${switchboardPersistenceBlock}
+  replicaCount: ${held ? 0 : 1}${switchboardPersistenceBlock}
   image:
     repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
     tag: ${switchboardTag}
@@ -1695,13 +1711,13 @@ switchboard:
     port: 80
     targetPort: 3000
   ingress:
-    enabled: true
+    enabled: ${!held}
     className: traefik${switchboardHostLine}
     tls:
       enabled: true
       secretName: ${switchboardTlsSecret}
     annotations:
-      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${switchboardCustomIngress}
+      cert-manager.io/cluster-issuer: ${tenantClusterIssuer()}${held ? "" : switchboardCustomIngress}
   env:
     PORT: "3000"
     NODE_ENV: production
@@ -1757,7 +1773,7 @@ switchboard:
   autoscaling:
     enabled: false
 connect:
-  enabled: ${connectEnabled}
+  enabled: ${connectEnabled && !held}
   name: connect
   replicaCount: 1
   image:
@@ -1870,6 +1886,7 @@ export async function syncEnvironment(
   secretsService: SecretsService | null = null,
   resolveAppImageProject: AppImageProjectResolver | null = null,
   isWarm: WarmPoolLookup | null = null,
+  isHeld: HoldLookup | null = null,
 ): Promise<void> {
   if (!state.label) {
     logger.warn("Environment has no label, skipping gitops sync");
@@ -1891,6 +1908,7 @@ export async function syncEnvironment(
       secretsService,
       resolveAppImageProject,
       isWarm,
+      isHeld,
     );
   } finally {
     gitMutex.release();
@@ -2027,6 +2045,7 @@ async function syncEnvironmentEphemeral(
   secretsService: SecretsService | null,
   resolveAppImageProject: AppImageProjectResolver | null,
   isWarm: WarmPoolLookup | null,
+  isHeld: HoldLookup | null,
 ): Promise<void> {
   const subdomain = state.genericSubdomain!;
   const tenantId = getTenantId(subdomain, documentId);
@@ -2056,6 +2075,7 @@ async function syncEnvironmentEphemeral(
       secretsService,
       resolveAppImageProject,
       isWarm,
+      isHeld,
     );
     writeFileSync(valuesPath, yaml, "utf-8");
     logger.info(`Wrote values file to ${valuesPath}`);
