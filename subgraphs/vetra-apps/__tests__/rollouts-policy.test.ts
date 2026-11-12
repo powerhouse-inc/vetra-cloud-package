@@ -103,4 +103,15 @@ describe("policies (spec section 7)", () => {
       policyCandidate(parsePolicy("patches"), "0.4.0", releases)?.version,
     ).toBe("0.4.2");
   });
+
+  it("0.0.x: every release may break (semver), so patches and minor take nothing; follow still does", () => {
+    const releases = [r("0.0.3", 1), r("0.0.4", 2), r("0.1.0", 3)];
+    expect(
+      policyCandidate(parsePolicy("patches"), "0.0.3", releases),
+    ).toBeNull();
+    expect(policyCandidate(parsePolicy("minor"), "0.0.3", releases)).toBeNull();
+    expect(
+      policyCandidate(parsePolicy("follow:main"), "0.0.3", releases)?.version,
+    ).toBe("0.1.0");
+  });
 });

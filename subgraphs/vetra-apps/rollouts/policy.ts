@@ -38,7 +38,9 @@ const stable = (v: string) => parseVersion(v)?.prerelease.length === 0;
  * The release a plan's policy rolls out by itself from `current`, or null
  * (decision R13). patches: the highest stable x.y.* above current; minor: the
  * highest stable x.*.* above it (a major never; in 0.x a minor is a major, as
- * semver says, so minor takes 0.y.* only); follow: the newest release
+ * semver says, so minor takes 0.y.* only; in 0.0.x every release may break,
+ * so patches and minor take nothing: such a plan is manual until 0.1.0);
+ * follow: the newest release
  * (highest run) of the branch when its version is above current. Never a
  * build or a withdrawn release, and nothing when current is not a release.
  */
@@ -64,6 +66,7 @@ export function policyCandidate(
     return newest;
   }
   const c = parseVersion(current)!;
+  if (c.major === 0 && c.minor === 0) return null;
   const sameMinor = p.kind === "patches" || c.major === 0;
   const fits = usable.filter((r) => {
     const v = parseVersion(r.version)!;

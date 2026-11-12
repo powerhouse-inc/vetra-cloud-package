@@ -154,7 +154,7 @@ export const schema: DocumentNode = gql`
     "VETRA_AGENT_S … VETRA_AGENT_XXL"
     size: String!
     targetVersion: String
-    "manual | patches | minor | follow:<branch>: whether new releases roll out by themselves"
+    "manual | patches | minor | follow:<branch>: whether new releases roll out by themselves (stable only; in 0.x minor takes patches only; in 0.0.x patches and minor take nothing)"
     policy: String!
     noticeHours: Int!
     "When the plan's instances may be updated; null: any time after the notice"
