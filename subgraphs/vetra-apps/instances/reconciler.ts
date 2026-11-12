@@ -99,6 +99,9 @@ export const SECRETS_SETTLE_MS = 30_000;
 export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
 /** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
+/** A plan instance someone other than Vetra put to sleep (H10): Vetra does not wake it. */
+export const STOPPED_OUTSIDE_VETRA =
+  "stopped outside Vetra; start it from the console";
 export const PLAN_NEEDS_NEW_SECRETS =
   "the environment predates Vetra's secrets master key; a plan instance keeps its data, so it is not recreated (needs an operator)";
 export const NOT_A_PLAN_ENVIRONMENT =
@@ -343,13 +346,10 @@ async function stopPlanInstance(
       return;
     }
     if (state.status === "STOPPED") {
+      // Someone else slept it (H10): shown stopped, never marked as Vetra's,
+      // so a renewal does not wake it. (Vetra marks before it sleeps.)
       if (row.status !== "stopped" || row.reason !== reason)
-        await patch(deps, row, {
-          status: "stopped",
-          reason,
-          // Not yet recorded as stopped: Vetra stopped it (or wanted it stopped).
-          ...(row.status !== "stopped" ? { stopped_by_vetra: true } : {}),
-        });
+        await patch(deps, row, { status: "stopped", reason });
       return;
     }
     const waiting = `${reason}: stopped once the environment settles (${state.status})`;
@@ -922,6 +922,21 @@ async function reconcileEnvironment(
     start,
     size,
   );
+  if (
+    updates.length === 0 &&
+    state.status === "STOPPED" &&
+    state.app?.role === "PLAN" &&
+    !row.stopped_by_vetra
+  ) {
+    // Slept outside Vetra and nothing to roll out: left asleep (H10). A
+    // rollout or settings change still wakes it (Vetra's decision).
+    if (row.status !== "stopped" || row.reason !== STOPPED_OUTSIDE_VETRA)
+      await patch(deps, row, {
+        status: "stopped",
+        reason: STOPPED_OUTSIDE_VETRA,
+      });
+    return;
+  }
   if (updates.length > 0) {
     await apply(deps, envId, updates);
     await patch(deps, row, {
