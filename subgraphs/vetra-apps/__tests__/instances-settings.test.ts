@@ -146,6 +146,34 @@ describe("instance settings", () => {
     });
   });
 
+  it("delivers a settings change to a stopped instance (no pods, no live namespace) and wakes it", async () => {
+    let live = true;
+    h.deps.tenantLive = async () => live;
+    await reconcileInstancesOnce(h.deps); // created
+    await reconcileInstancesOnce(h.deps); // delivered
+    h.advance(SECRETS_SETTLE_MS);
+    await reconcileInstancesOnce(h.deps); // started
+    const envId = (await one()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).status).toBe("ready");
+
+    h.envs.setStatus(envId, "STOPPED");
+    live = false; // a stopped environment has no pods
+    await set("API_TOKEN", "v2", true);
+    const ops = h.envs.executed.length;
+    await reconcileInstancesOnce(h.deps);
+    const row = await one();
+    expect(row.reason).not.toBe(WAITING_FOR_NAMESPACE);
+    expect(row.settings_delivered).toBe(row.target_settings);
+    expect(h.secrets.store.get(await tenant())!.get("API_TOKEN")).toBe("v2");
+    const sent = h.envs.executed.slice(ops).flatMap((e) => e.types);
+    expect(sent[0]).toBe("WAKE_ENVIRONMENT");
+    expect((await envValue("VETRA_SETTINGS_REVISION"))!.value).toBe(
+      row.target_settings,
+    );
+  });
+
   it("removes a deleted secret from the tenant and the environment", async () => {
     await set("API_TOKEN", "x", true);
     await reconcileInstancesOnce(h.deps);

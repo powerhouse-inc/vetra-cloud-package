@@ -687,8 +687,10 @@ async function reconcileEnvironment(
   // The tenant gets the revision's secrets before the document asks for it.
   const tenantId = getTenantId(state.genericSubdomain ?? row.host!, envId);
   let deliveredAt = row.settings_delivered_at;
+  // Started once: its namespace exists (a STOPPED environment has no pods, so tenantLive says no).
+  const started = fusionVersion(state) !== null;
   if (row.settings_delivered !== settings.revision) {
-    if (deps.tenantLive && !(await deps.tenantLive(tenantId)))
+    if (deps.tenantLive && !started && !(await deps.tenantLive(tenantId)))
       return waitFor(deps, row, WAITING_FOR_NAMESPACE);
     await deliverSettings(deps, tenantId, settings, declaredSecretNames(state));
     deliveredAt = deps.now().toISOString();
@@ -698,7 +700,6 @@ async function reconcileEnvironment(
     });
   }
   // A first start waits until the controller had time to write <tenant>-secrets.
-  const started = fusionVersion(state) !== null;
   const start =
     started ||
     !deps.tenantLive ||
