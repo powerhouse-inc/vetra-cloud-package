@@ -94,6 +94,9 @@ export const PR_REOPENED = "pull request reopened";
 export const SECRETS_SETTLE_MS = 30_000;
 export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
+/** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
+export const PLAN_NEEDS_NEW_SECRETS =
+  "the environment predates Vetra's secrets master key; a plan instance keeps its data, so it is not recreated (needs an operator)";
 export const WAITING_FOR_NAMESPACE =
   "waiting for the environment's namespace to give it its secrets";
 /** Failed, but retried each pass: it heals once the namespace appears. */
@@ -777,6 +780,15 @@ async function reconcileEnvironment(
   const admins = adminsOf(app, row);
   const size = sizeOf(row);
 
+  if (!declaresVetraSecrets(state) && isPlanKind(row.kind)) {
+    // Never deleted: a plan instance's data is the holder's.
+    if (row.status !== "failed" || row.reason !== PLAN_NEEDS_NEW_SECRETS)
+      await patch(deps, row, {
+        status: "failed",
+        reason: PLAN_NEEDS_NEW_SECRETS,
+      });
+    return;
+  }
   if (!declaresVetraSecrets(state)) {
     // Made before slice 4: its host generated its own master key on an
     // ephemeral /data and its database keeps that key's fingerprint, so

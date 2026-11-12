@@ -22,7 +22,11 @@ import {
   syncPlanInstances,
 } from "../plans/sync.js";
 import { getApp } from "../repo.js";
-import { reconcileInstancesOnce } from "../instances/reconciler.js";
+import {
+  PLAN_NEEDS_NEW_SECRETS,
+  reconcileInstancesOnce,
+} from "../instances/reconciler.js";
+import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 
 const HOLDER = "0x1111111111111111111111111111111111111111";
 const DAY = 86_400_000;
@@ -595,5 +599,71 @@ describe("reconcileInstancesOnce — plan instances", () => {
     );
     expect(roles).not.toContain("PLAN");
     expect(h.envs.deleted).toEqual([]);
+  });
+
+  const setGlobal = (id: string, over: Partial<VetraCloudEnvironmentState>) => {
+    const doc = h.envs.docs.get(id)!;
+    h.envs.docs.set(id, {
+      ...doc,
+      state: { ...doc.state, global: { ...doc.state.global, ...over } },
+    });
+  };
+  /** A READY own instance of l1, its licence ended past the window. */
+  const readyThenDue = async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await planRows())[0].environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "EXPIRED" })
+      .where("license_id", "=", "l1")
+      .execute();
+    await syncPlanInstances(h.deps, (await getApp(h.db, appId))!); // notices the end
+    h.advance(15 * DAY);
+    return envId;
+  };
+  const renew = () =>
+    seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1b",
+      root: "l1",
+    });
+
+  it("never recreates a plan instance's environment for settings: it fails with a reason", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await planRows())[0].environment_id!;
+    h.envs.setStatus(envId, "READY");
+    const state = (await h.envs.getState(envId))!;
+    setGlobal(envId, {
+      fusion: {
+        ...state.fusion!,
+        env: state.fusion!.env.filter((e) => !e.isSecret),
+      },
+    });
+    await reconcileInstancesOnce(h.deps);
+    expect(h.envs.deleted).toEqual([]);
+    expect(h.envs.docs.has(envId)).toBe(true);
+    expect((await planRows())[0]).toMatchObject({
+      environment_id: envId,
+      status: "failed",
+      reason: PLAN_NEEDS_NEW_SECRETS,
+    });
   });
 });
