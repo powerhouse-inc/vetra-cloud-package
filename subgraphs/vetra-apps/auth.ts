@@ -36,11 +36,20 @@ export interface VetraClaim {
   releaseBranch?: boolean;
 }
 
+/**
+ * Where a person's request came from, for the audit log (spec section 10):
+ * the Vetra console (by its Origin) or any other client. Informational only:
+ * never an input to an authorisation decision.
+ */
+export type CallerSource = "console" | "api";
+
 export interface Caller {
   address: string;
   chainId: number;
   appKey: string | null;
   isAdmin: boolean;
+  /** Set by the GraphQL resolvers of audited mutations; absent = "api". */
+  source?: CallerSource;
 }
 
 export function requireCaller(ctx: AppsContext): Caller {
