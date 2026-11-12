@@ -114,8 +114,9 @@ export async function createPlan(
     );
   const access = parseAccess(input.access);
   const size = parseSize(input.size);
-  const slug = (input.slug ?? slugFromKind(kind)).trim();
-  checkPlanSlug(slug, app);
+  const given = input.slug?.trim();
+  const slug = given || slugFromKind(kind);
+  checkPlanSlug(slug, app, given ? {} : { derivedFrom: kind });
   if (await hasLicensedEnvironments(deps.licensingDb, app.id))
     throw appsError(
       "BAD_USER_INPUT",
