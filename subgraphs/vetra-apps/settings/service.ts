@@ -1,6 +1,7 @@
 import { auditCaller } from "../audit/service.js";
 import type { Caller } from "../auth.js";
 import type { AppSettingScope } from "../db/schema.js";
+import { gateConfigOf } from "../config.js";
 import { appsError, notConfigured } from "../errors.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import {
@@ -11,6 +12,7 @@ import {
   RESERVED_SETTING_NAMES,
   SettingInputError,
   VETRA_SETTINGS,
+  VETRA_SHARED_SETTINGS,
   type VetraSetting,
 } from "./names.js";
 import {
@@ -50,6 +52,8 @@ export interface AppSettingJson {
 export interface AppSettingsJson {
   settings: AppSettingJson[];
   vetra: VetraSetting[];
+  /** What Vetra also sets on shared instances (licence gate); empty while the gate is off. */
+  vetraShared: VetraSetting[];
   reservedNames: string[];
   reservedPrefixes: string[];
 }
@@ -99,6 +103,7 @@ export async function appSettingsFor(
   return {
     settings: rows.map(json),
     vetra: VETRA_SETTINGS,
+    vetraShared: gateConfigOf(deps.cfg).enabled ? VETRA_SHARED_SETTINGS : [],
     reservedNames: [...RESERVED_SETTING_NAMES].sort(),
     reservedPrefixes: [...RESERVED_PREFIXES],
   };

@@ -73,7 +73,35 @@ export const VETRA_SETTINGS: VetraSetting[] = [
   },
 ];
 
-/** Set by the processor or the chart, or planned (ACCESS, phase 3): refused, not listed as set. */
+/**
+ * What Vetra also sets on shared instances while the licence gate is on
+ * (releases phase 3 slice 5; gate/service.ts GATE_*). Shown read-only.
+ */
+export const VETRA_SHARED_SETTINGS: VetraSetting[] = [
+  {
+    name: "ACCESS",
+    secret: false,
+    value: "licensed (shared instances only)",
+  },
+  {
+    name: "VETRA_APP_ID",
+    secret: false,
+    value: "the App's id (shared instances only)",
+  },
+  {
+    name: "VETRA_GATE_URL",
+    secret: false,
+    value: "Vetra's licence check URL (shared instances only)",
+  },
+  {
+    name: "VETRA_GATE_TOKEN",
+    secret: true,
+    value:
+      "the instance's licence gate token, kept in OpenBao (shared instances only)",
+  },
+];
+
+/** Set by the processor or the chart, or by the licence gate on shared instances (ACCESS): refused, not listed as set. */
 const ALSO_RESERVED = [
   "PH_HOST_PORT",
   "PH_USER_DATA_DIR",
