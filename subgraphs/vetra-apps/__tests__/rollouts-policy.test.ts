@@ -55,4 +55,52 @@ describe("policies (spec section 7)", () => {
     for (const bad of ["", "auto", "follow:", "majors"])
       expect(() => parsePolicy(bad)).toThrow();
   });
+
+  it("moves nothing from a current version that is not a release, nor backwards", () => {
+    expect(pick("patches", "1.4.0-main.3")).toBeNull();
+    expect(pick("minor", "nonsense")).toBeNull();
+    expect(pick("follow:main", "1.4.0-main.3")).toBeNull();
+    // follow takes only a version above the current one, whatever the runs say.
+    expect(
+      policyCandidate(parsePolicy("follow:hotfix"), "1.5.0", [
+        r("1.5.0", 120),
+        r("1.4.9", 150, "hotfix"),
+      ]),
+    ).toBeNull();
+  });
+
+  it("from a prerelease: patches and minor take the stable releases above it", () => {
+    expect(pick("patches", "1.4.2-rc.1")).toBeNull(); // 1.4.3 is withdrawn
+    expect(pick("minor", "1.4.2-rc.1")).toBe("1.5.0");
+    expect(
+      policyCandidate(parsePolicy("patches"), "1.4.2-rc.1", [
+        ...RELEASES,
+        r("1.4.2", 117),
+      ])?.version,
+    ).toBe("1.4.2");
+  });
+
+  it("follow skips a withdrawn newest release for the newest unwithdrawn one", () => {
+    const releases = [
+      r("1.4.0", 100),
+      r("1.5.0", 120),
+      r("1.6.0", 130, "main", "2026-11-12T00:00:00.000Z"),
+    ];
+    expect(
+      policyCandidate(parsePolicy("follow:main"), "1.4.0", releases)?.version,
+    ).toBe("1.5.0");
+    expect(
+      policyCandidate(parsePolicy("follow:main"), "1.5.0", releases),
+    ).toBeNull();
+  });
+
+  it("0.x: a minor is a major (semver), so minor takes patches only", () => {
+    const releases = [r("0.4.0", 1), r("0.4.2", 2), r("0.5.0", 3)];
+    expect(
+      policyCandidate(parsePolicy("minor"), "0.4.0", releases)?.version,
+    ).toBe("0.4.2");
+    expect(
+      policyCandidate(parsePolicy("patches"), "0.4.0", releases)?.version,
+    ).toBe("0.4.2");
+  });
 });
