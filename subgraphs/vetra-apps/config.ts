@@ -64,6 +64,12 @@ export interface VetraAppsConfig {
    * an own instance keeps running after its licence ended.
    */
   plans?: PlansConfig;
+  /**
+   * Releases phase 3 slice 4: instance backups. Absent = off.
+   * VETRA_APPS_BACKUPS=on backs up before every rollout step, runs daily
+   * backups and lets a rollback of a release that migrates restore.
+   */
+  backups?: BackupsConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -96,6 +102,17 @@ export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
+
+export interface BackupsConfig {
+  enabled: boolean;
+  /** VETRA_APPS_BACKUP_DAILY_KEEP_DAYS (1-30, default 14): the dumps bucket deletes everything after 30. */
+  dailyKeepDays: number;
+  /** VETRA_APPS_BACKUP_MAX_IN_FLIGHT (1-10, default 3): instance backups running at once, cluster-wide. */
+  maxInFlight: number;
+}
+export const DEFAULT_BACKUPS: BackupsConfig = { enabled: false, dailyKeepDays: 14, maxInFlight: 3 };
+export const backupsConfigOf = (cfg: VetraAppsConfig): BackupsConfig =>
+  cfg.backups ?? DEFAULT_BACKUPS;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -144,6 +161,21 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+  };
+}
+
+function backupsConfig(env: Env): BackupsConfig {
+  const raw = (trimmed(env.VETRA_APPS_BACKUPS) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_BACKUPS "${env.VETRA_APPS_BACKUPS}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  return {
+    // Unset means off, as for plans.
+    enabled: raw !== "" && INSTANCES_ON.has(raw),
+    dailyKeepDays: intIn(env, "VETRA_APPS_BACKUP_DAILY_KEEP_DAYS", 14, 1, 30),
+    maxInFlight: intIn(env, "VETRA_APPS_BACKUP_MAX_IN_FLIGHT", 3, 1, 10),
   };
 }
 
@@ -263,6 +295,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
     instances: instancesConfig(env),
     plans: plansConfig(env),
+    backups: backupsConfig(env),
   };
 }
 
