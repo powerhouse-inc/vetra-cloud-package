@@ -17,6 +17,10 @@ export const AUDIT_ACTIONS = [
   "instance.status",
   "release.recorded",
   "build.recorded",
+  "backup.requested",
+  "backup.failed",
+  "restore.started",
+  "restore.finished",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

@@ -136,6 +136,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesPlanColumns(db);
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
+  await ensureInstanceBackupTables(db);
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
@@ -769,5 +770,100 @@ export async function ensureInstancesHealthColumns(
       if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
         throw err;
     }
+  }
+}
+
+/** Instance backups and restores, instances.maintenance (releases phase 3 slice 4). Schema builder only (namespaced). */
+export async function ensureInstanceBackupTables(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("instance_backups")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("tenant_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("reason", "varchar(16)", (c) => c.notNull())
+      .addColumn("version", "varchar(255)")
+      .addColumn("digest", "varchar(255)")
+      .addColumn("dump_id", "varchar(64)")
+      .addColumn("archive_id", "varchar(64)")
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("error", "text")
+      .addColumn("size_bytes", "bigint")
+      .addColumn("requested_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("rollout_step_id", "varchar(64)")
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("finished_at", "varchar(64)")
+      .addColumn("expires_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createTable("instance_restores")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("tenant_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("backup_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("safety_backup_id", "varchar(64)")
+      .addColumn("purpose", "varchar(16)", (c) => c.notNull())
+      .addColumn("then_version", "varchar(255)")
+      .addColumn("data", "boolean", (c) => c.notNull())
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("phase_started_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("db_job", "varchar(255)")
+      .addColumn("data_job", "varchar(255)")
+      .addColumn("replicas", "text")
+      .addColumn("target_set", "boolean", (c) => c.notNull())
+      .addColumn("was_held", "boolean", (c) => c.notNull())
+      .addColumn("error", "text")
+      .addColumn("held", "boolean", (c) => c.notNull())
+      .addColumn("requested_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("rollout_step_id", "varchar(64)")
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("finished_at", "varchar(64)")
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  for (const [name, table, columns] of [
+    ["instance_backups_instance_idx", "instance_backups", ["instance_id", "created_at"]],
+    ["instance_backups_status_idx", "instance_backups", ["status", "expires_at"]],
+    ["instance_restores_instance_idx", "instance_restores", ["instance_id", "created_at"]],
+  ] as const) {
+    try {
+      await db.schema.createIndex(name).ifNotExists().on(table).columns([...columns]).execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err)) throw err;
+    }
+  }
+  try {
+    // One active restore per instance.
+    await db.schema
+      .createIndex("instance_restores_active_uq")
+      .ifNotExists()
+      .unique()
+      .on("instance_restores")
+      .column("instance_id")
+      .where(sql.ref("status"), "not in", ["succeeded", "failed"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .alterTable("instances")
+      .addColumn("maintenance", "varchar(255)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
   }
 }

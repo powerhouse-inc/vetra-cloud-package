@@ -199,7 +199,7 @@ export const schema: DocumentNode = gql`
     actor: String!
     "console | api | policy | system | ci"
     source: String!
-    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded"
+    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded | backup.requested | backup.failed | restore.started | restore.finished"
     action: String!
     "plan:<id> | setting:<SCOPE>/<NAME> | role:<address> | instance:<id> | release:<version>"
     subject: String!

@@ -155,6 +155,8 @@ export interface VetraAppsDB {
   releases: ReleasesTable;
   namespace_push_robots: NamespacePushRobotsTable;
   registry_namespaces: RegistryNamespacesTable;
+  instance_backups: InstanceBackupsTable;
+  instance_restores: InstanceRestoresTable;
 }
 
 export interface ReleasesTable {
@@ -366,6 +368,94 @@ export interface InstancesTable {
   stopped_by_vetra?: boolean | null;
   /** shared/own: the FUSION size (VetraCloudRessourceSize) of the plan. */
   target_size?: string | null;
+  /** `restore:<id>` while a restore owns the instance; `held:<id>` after a failed one (stays stopped). The reconciler leaves it alone. */
+  maintenance?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Why an instance backup was taken (releases phase 3 slice 4). */
+export type BackupReason =
+  | "pre_update"
+  | "daily"
+  | "manual"
+  | "pre_restore"
+  | "pre_stop";
+export type InstanceBackupStatus = "pending" | "ready" | "failed";
+
+/**
+ * One backup of a shared or own instance: a database dump and a /data
+ * archive (observability's database_dumps and data_archives), taken
+ * together, restored only into the instance it was taken from.
+ */
+export interface InstanceBackupsTable {
+  id: string;
+  app_id: string;
+  instance_id: string;
+  environment_id: string;
+  tenant_id: string;
+  reason: BackupReason;
+  /** What the instance ran when the backup started (running_version, running_digest). */
+  version: string | null;
+  digest: string | null;
+  dump_id: string | null;
+  archive_id: string | null;
+  status: InstanceBackupStatus;
+  error: string | null;
+  /** Dump + archive bytes (bigint). */
+  size_bytes: number | null;
+  /** An address, or "vetra". */
+  requested_by: string;
+  /** pre_update: the rollout step it was taken for. */
+  rollout_step_id: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  expires_at: string;
+}
+
+export type RestorePurpose = "rollback" | "failed_update" | "manual";
+export type InstanceRestoreStatus =
+  | "safety_backup"
+  | "stopping"
+  | "restoring_db"
+  | "restoring_data"
+  | "starting"
+  | "succeeded"
+  | "failed";
+
+/** A restore of an instance backup, advanced one phase per reconciler pass (backups/restore.ts). */
+export interface InstanceRestoresTable {
+  id: string;
+  app_id: string;
+  instance_id: string;
+  environment_id: string;
+  tenant_id: string;
+  backup_id: string;
+  /** The pre_restore backup of what is replaced; null until it could start. */
+  safety_backup_id: string | null;
+  purpose: RestorePurpose;
+  /** The release the instance targets and runs afterwards; null: unchanged. */
+  then_version: string | null;
+  /** Restore /data too. */
+  data: boolean;
+  status: InstanceRestoreStatus;
+  /** When the current phase began (its timeout clock). */
+  phase_started_at: string;
+  db_job: string | null;
+  data_job: string | null;
+  /** JSON { [deployment]: replicas } recorded before scaling to 0 (at least 1 each). */
+  replicas: string | null;
+  /** The instance was handed back with then_version. */
+  target_set: boolean;
+  /** The instance was held (a failed restore) when this one began: an early failure keeps it held. */
+  was_held: boolean;
+  error: string | null;
+  /** Failed with /data possibly half restored: the instance stays stopped. */
+  held: boolean;
+  requested_by: string;
+  rollout_step_id: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
 }

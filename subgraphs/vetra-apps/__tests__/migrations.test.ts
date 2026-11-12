@@ -10,6 +10,7 @@ import {
   ensureDeploymentTriggerColumns,
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
+  ensureInstanceBackupTables,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
@@ -746,6 +747,56 @@ describe("app_audit and app_roles", () => {
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(false);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance backup tables", () => {
+  it("are created idempotently and concurrently, with instances.maintenance and one active restore per instance", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceBackupTables(any)));
+      const cols = (
+        await sql<{ column_name: string }>`select column_name from information_schema.columns where table_schema = 'vetra-apps' and table_name = 'instances'`.execute(root)
+      ).rows.map((r) => r.column_name);
+      expect(cols).toContain("maintenance");
+      const at = "2026-11-12T00:00:00.000Z";
+      const restore = (id: string, status: string) => ({
+        id,
+        app_id: "app-1",
+        instance_id: "i-1",
+        environment_id: "env-1",
+        tenant_id: "t-1",
+        backup_id: "b-1",
+        safety_backup_id: null,
+        purpose: "manual",
+        then_version: null,
+        data: true,
+        status,
+        phase_started_at: at,
+        db_job: null,
+        data_job: null,
+        replicas: null,
+        target_set: false,
+        was_held: false,
+        error: null,
+        held: false,
+        requested_by: "vetra",
+        rollout_step_id: null,
+        created_at: at,
+        updated_at: at,
+        finished_at: null,
+      });
+      await any.insertInto("instance_restores").values(restore("r0", "failed")).execute();
+      await any.insertInto("instance_restores").values(restore("r1", "stopping")).execute();
+      await expect(
+        any.insertInto("instance_restores").values(restore("r2", "safety_backup")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
     } finally {
       await root.destroy();
     }
