@@ -207,4 +207,37 @@ describe("starting a rollout (spec 7 steps 1 and 3)", () => {
       ),
     ).toHaveLength(1);
   });
+
+  it("never moves an instance that is ahead of the version back (pinned at 2.0.0, then unpinned)", async () => {
+    await h.db
+      .updateTable("instances")
+      .set({ target_version: "2.0.0", pinned_version: "2.0.0" })
+      .where("id", "=", "o1")
+      .execute();
+    await h.db
+      .updateTable("instances")
+      .set({ pinned_version: null })
+      .where("id", "=", "o1")
+      .execute();
+    const check = await checkRolloutFor(h.deps, owner, appId, "1.5.0", [
+      "p-pro",
+    ]);
+    expect(check.steps.map((s) => [s.instanceId, s.status, s.note])).toEqual([
+      ["o1", "skipped", "ahead at 2.0.0"],
+      ["o2", "pending", null],
+      ["o3", "skipped", "pinned at 1.4.0"],
+    ]);
+    const r = await startRollout(h.deps, owner, {
+      appId,
+      version: "1.5.0",
+      planIds: ["p-pro"],
+    });
+    expect(
+      (await stepsOf(h.db, r.id)).map((s) => [s.instance_id, s.status]),
+    ).toEqual([
+      ["o1", "skipped"],
+      ["o2", "pending"],
+      ["o3", "skipped"],
+    ]);
+  });
 });

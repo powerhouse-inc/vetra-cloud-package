@@ -9,7 +9,7 @@ import { listInstances, type InstanceRow } from "../instances/repo.js";
 import { getPlan, lockPlan, updatePlan, type PlanRow } from "../plans/repo.js";
 import { checkNoticeHours } from "../plans/rules.js";
 import { releaseByVersion } from "../releases/repo.js";
-import { compareReleases } from "../releases/version.js";
+import { compareReleases, versionKind } from "../releases/version.js";
 import type { AppRow } from "../repo.js";
 import type { AppNeed } from "../roles/access.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
@@ -143,10 +143,20 @@ export interface PlannedStep {
   note: string | null;
 }
 
+/** Whether release `a` is newer than release `b`; false when either is not a release. */
+export const newerRelease = (a: string | null, b: string | null): boolean =>
+  !!a &&
+  !!b &&
+  versionKind(a) === "release" &&
+  versionKind(b) === "release" &&
+  compareReleases(a, b) > 0;
+
 /**
  * The plans' live instances not already targeting `version`, in the order
  * they move: shared first, then own, each by plan order then age (spec 7
- * step 4). A pinned one is planned as skipped (spec section 7, pinning).
+ * step 4). A pinned one is planned as skipped (spec section 7, pinning), and
+ * so is one ahead of `version` (a newer release, e.g. pinned there and
+ * unpinned): rollouts move forward only (decision R8).
  */
 export async function plannedSteps(
   deps: AppsDeps,
@@ -164,12 +174,19 @@ export async function plannedSteps(
       r.status !== "removed" &&
       r.target_version !== version,
   );
-  const out: PlannedStep[] = rows.map((r) => ({
-    plan: byId.get(r.plan_id!)!,
-    instance: r,
-    status: r.pinned_version ? "skipped" : "pending",
-    note: r.pinned_version ? `pinned at ${r.pinned_version}` : null,
-  }));
+  const out: PlannedStep[] = rows.map((r) => {
+    const note = r.pinned_version
+      ? `pinned at ${r.pinned_version}`
+      : newerRelease(r.target_version, version)
+        ? `ahead at ${r.target_version}`
+        : null;
+    return {
+      plan: byId.get(r.plan_id!)!,
+      instance: r,
+      status: note ? "skipped" : "pending",
+      note,
+    };
+  });
   const rank = (s: PlannedStep) => (s.instance.kind === "shared" ? 0 : 1);
   return out.sort(
     (a, b) =>
@@ -196,11 +213,8 @@ export async function rolloutProblems(
     if (p.status === "retired") out.push(`${p.slug} is retired`);
     const fit = planFitProblem(release!, p);
     if (fit) out.push(fit);
-    if (
-      p.target_version &&
-      p.target_version !== version &&
-      compareReleases(version, p.target_version) < 0
-    )
+    // Guarded: a target that is not a release (legacy data) is never compared.
+    if (newerRelease(p.target_version, version))
       out.push(
         `${version} is older than ${p.slug}'s target ${p.target_version}; roll back that rollout instead`,
       );
