@@ -21,6 +21,7 @@ import type { VetraAppsDB } from "./db/schema.js";
 import { isDocumentNotFound } from "./envs.js";
 import { getApp, listPreviews, normalizeApp, type AppRow } from "./repo.js";
 import type { AppsDeps } from "./service.js";
+import { deleteAppRolesOfOtherOwners, ownerScopeOf } from "./roles/repo.js";
 
 export const callerAccess = (c: Caller): AccessCaller => ({
   address: c.address,
@@ -318,20 +319,32 @@ async function reconcileAppOrg(
       }
     }
 
-    let update = deps.db
-      .updateTable("apps")
-      .set({
-        owner_org_id: target.org,
-        owner_address: target.owner,
-        org_disputed: false,
-        updated_at: deps.now().toISOString(),
-      })
-      .where("id", "=", row.id)
-      .where("owner_address", "=", row.owner_address);
-    update = currentOrg
-      ? update.where("owner_org_id", "=", currentOrg)
-      : update.where("owner_org_id", "is", null);
-    await update.execute();
+    // The new owner starts without the previous owner's release managers.
+    await deps.db.transaction().execute(async (trx) => {
+      let update = trx
+        .updateTable("apps")
+        .set({
+          owner_org_id: target.org,
+          owner_address: target.owner,
+          org_disputed: false,
+          updated_at: deps.now().toISOString(),
+        })
+        .where("id", "=", row.id)
+        .where("owner_address", "=", row.owner_address);
+      update = currentOrg
+        ? update.where("owner_org_id", "=", currentOrg)
+        : update.where("owner_org_id", "is", null);
+      const moved = await update.executeTakeFirst();
+      if (Number(moved.numUpdatedRows) > 0)
+        await deleteAppRolesOfOtherOwners(
+          trx,
+          row.id,
+          ownerScopeOf({
+            owner_org_id: target.org,
+            owner_address: target.owner,
+          }),
+        );
+    });
     const updated = await getApp(deps.db, row.id);
     if (!updated) return row;
     deps.logger.info(

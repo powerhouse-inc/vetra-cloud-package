@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { canCreateOrgApp, canOperate, canView, hasPublisherCapability, isOrgMember } from "./org-access.js";
+import { canAdminister, canCreateOrgApp, canOperate, canView, hasPublisherCapability, isOrgMember } from "./org-access.js";
 import { RenownOrgsUnavailableError, type OrgMembership } from "./renown-orgs.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -101,5 +101,26 @@ describe("canCreateOrgApp", () => {
     expect(await canCreateOrgApp(orgsWith(m("PUBLISHER", false, [APP])), user(BOB), "o1")).toBe(false);
     expect(await canCreateOrgApp(orgsWith(m("MEMBER")), user(BOB), "o1")).toBe(false);
     expect(await canCreateOrgApp(orgsWith(null), admin, "o1")).toBe(false);
+  });
+});
+
+describe("canAdminister", () => {
+  it("personal: the owner and platform admins; org: OWNER and ADMIN only; never a disputed org; Renown down refuses", async () => {
+    const personal = { owner: OWNER, ownerOrgId: null, appDid: APP };
+    expect(await canAdminister(orgsWith(null), user(OWNER), personal)).toBe(true);
+    expect(await canAdminister(orgsWith(null), user(BOB), personal)).toBe(false);
+    expect(await canAdminister(orgsWith(null), admin, personal)).toBe(true);
+    const org = { owner: OWNER, ownerOrgId: "org-1", appDid: APP };
+    expect(await canAdminister(orgsWith(m("OWNER")), user(BOB), org)).toBe(true);
+    expect(await canAdminister(orgsWith(m("ADMIN")), user(BOB), org)).toBe(true);
+    expect(await canAdminister(orgsWith(m("PUBLISHER")), user(BOB), org)).toBe(false);
+    expect(await canAdminister(orgsWith(m("MEMBER")), user(BOB), org)).toBe(false);
+    expect(await canAdminister(orgsWith(null), user(OWNER), org)).toBe(false);
+    expect(
+      await canAdminister(orgsWith(m("OWNER")), user(BOB), { ...org, orgDisputed: true }),
+    ).toBe(false);
+    expect(
+      await canAdminister(orgsWith(new RenownOrgsUnavailableError("down")), user(BOB), org),
+    ).toBe(false);
   });
 });

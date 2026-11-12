@@ -144,6 +144,8 @@ export interface StudioLaunchSecretsTable {
 export interface VetraAppsDB {
   instances: InstancesTable;
   plans: PlansTable;
+  app_audit: AppAuditTable;
+  app_roles: AppRolesTable;
   app_settings: AppSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
@@ -252,6 +254,39 @@ export interface PlansTable {
   created_by: string;
   created_at: string;
   updated_at: string;
+}
+
+/** Where an audited action came from (spec section 10). */
+export type AuditSource = "console" | "api" | "policy" | "system" | "ci";
+
+/** One audited action on an App (spec section 10): who, what, when, from where. Kept 365 days. */
+export interface AppAuditTable {
+  id: string;
+  app_id: string;
+  at: string;
+  /** Lowercased address, or "vetra" for Vetra itself (system, policy). */
+  actor: string;
+  source: AuditSource;
+  /** audit/repo.ts AUDIT_ACTIONS. */
+  action: string;
+  /** plan:<id> | setting:<SCOPE>/<NAME> | role:<address> | instance:<id> | release:<version> */
+  subject: string;
+  /** JSON object; never a setting value or secret. */
+  detail: string;
+}
+
+/** Per-App roles Vetra keeps itself (releases phase 3 D7; Renown has no such role). */
+export type AppRoleName = "release_manager";
+
+export interface AppRolesTable {
+  app_id: string;
+  /** Lowercased address. */
+  address: string;
+  role: AppRoleName;
+  /** The App's owner when granted: org:<orgId> | user:<address>. A grant under another owner has no effect. */
+  owner_scope: string;
+  granted_by: string;
+  granted_at: string;
 }
 
 /** One running environment of an App (spec section 5). */

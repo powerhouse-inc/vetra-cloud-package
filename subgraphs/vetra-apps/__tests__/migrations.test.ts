@@ -3,6 +3,8 @@ import { PGlite } from "@electric-sql/pglite";
 import { Kysely, sql } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
 import {
+  ensureAppAuditTable,
+  ensureAppRolesTable,
   ensureAppsOrgColumn,
   ensureAppsStudioColumn,
   ensureDeploymentTriggerColumns,
@@ -22,6 +24,15 @@ import {
   upsertAppSetting,
 } from "../settings/repo.js";
 import { getPlan, insertPlan, listPlans, updatePlan } from "../plans/repo.js";
+import { listAudit, recordAudit, sweepAudit } from "../audit/repo.js";
+import {
+  deleteAppRole,
+  getAppRole,
+  hasAppRole,
+  listAppRoles,
+  upsertAppRole,
+} from "../roles/repo.js";
+import type { VetraAppsDB } from "../db/schema.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -673,6 +684,70 @@ describe("ensurePlansTable and ensureInstancesPlanColumns", () => {
       ).rejects.toMatchObject({ code: "23505" });
     } finally {
       await db.destroy();
+    }
+  });
+});
+
+describe("app_audit and app_roles", () => {
+  it("are created idempotently and concurrently in the namespace schema; audit pages newest first; the sweep deletes old rows only; roles keep their owner scope", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all(
+        [1, 2, 3].flatMap(() => [ensureAppAuditTable(any), ensureAppRolesTable(any)]),
+      );
+      const db = any as unknown as Kysely<VetraAppsDB>;
+
+      const entry = (at: string, appId = "app-1") => ({
+        appId,
+        at,
+        actor: "0xaa",
+        source: "api" as const,
+        action: "plan.created" as const,
+        subject: "plan:p1",
+        detail: { note: "x".repeat(600) },
+      });
+      const old = await recordAudit(db, entry("2025-01-01T00:00:00.000Z"));
+      expect((JSON.parse(old.detail) as { note: string }).note).toHaveLength(501);
+      await recordAudit(db, entry("2026-11-12T00:00:00.000Z"));
+      await recordAudit(db, entry("2026-11-12T00:00:01.000Z", "app-2"));
+      const page = await listAudit(db, "app-1", { limit: 10 });
+      expect(page.map((r) => r.at)).toEqual([
+        "2026-11-12T00:00:00.000Z",
+        "2025-01-01T00:00:00.000Z",
+      ]);
+      expect(
+        (await listAudit(db, "app-1", { limit: 10, before: { at: page[0].at, id: page[0].id } })).map(
+          (r) => r.id,
+        ),
+      ).toEqual([old.id]);
+      expect(await sweepAudit(db, "2026-01-01T00:00:00.000Z", 100)).toBe(1);
+      expect(await listAudit(db, "app-1", { limit: 10 })).toHaveLength(1);
+
+      const role = {
+        app_id: "app-1",
+        address: "0xbb",
+        role: "release_manager" as const,
+        owner_scope: "user:0xaa",
+        granted_by: "0xaa",
+        granted_at: "2026-11-12T00:00:00.000Z",
+      };
+      await upsertAppRole(db, role);
+      await upsertAppRole(db, { ...role, owner_scope: "org:o1", granted_at: "2026-11-12T01:00:00.000Z" });
+      expect(await listAppRoles(db, "app-1", "user:0xaa")).toEqual([]);
+      expect((await listAppRoles(db, "app-1", "org:o1")).map((r) => r.address)).toEqual(["0xbb"]);
+      expect(await hasAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
+      expect(await hasAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
+      expect(await getAppRole(db, "app-1", "0xbb", "release_manager")).toMatchObject({
+        owner_scope: "org:o1",
+      });
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(false);
+    } finally {
+      await root.destroy();
     }
   });
 });

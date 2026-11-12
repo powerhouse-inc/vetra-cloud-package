@@ -11,6 +11,13 @@ import {
   type UpdatePlanInput,
 } from "./plans/service.js";
 import { myInstancesFor } from "./plans/holder-view.js";
+import { appAuditFor, callerSource } from "./audit/service.js";
+import {
+  appAccessFor,
+  appRolesFor,
+  removeAppRole,
+  setAppRole,
+} from "./roles/service.js";
 import {
   appSettingsFor,
   deleteAppSetting,
@@ -236,6 +243,14 @@ function mapApp(deps: AppsDeps, app: AppRow) {
 }
 
 export function createResolvers(deps: AppsDeps) {
+  /**
+   * A person for an audited mutation: their source (console by Origin, else
+   * api) goes into the log. Informational only: no access check reads it.
+   */
+  const person = (ctx: AppsContext): Caller => ({
+    ...requireCaller(ctx),
+    source: callerSource(ctx, deps.cfg.vetraAppUrl),
+  });
   return {
     Query: {
       myApps: (
@@ -318,6 +333,26 @@ export function createResolvers(deps: AppsDeps) {
       appPlans: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
         guard(deps, "appPlans", () =>
           appPlansFor(deps, requireCaller(ctx), appId),
+        ),
+      appAudit: (
+        _: unknown,
+        {
+          appId,
+          limit,
+          before,
+        }: { appId: string; limit?: number | null; before?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "appAudit", () =>
+          appAuditFor(deps, requireCaller(ctx), appId, limit, before),
+        ),
+      appRoles: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
+        guard(deps, "appRoles", () =>
+          appRolesFor(deps, requireCaller(ctx), appId),
+        ),
+      appAccess: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
+        guard(deps, "appAccess", () =>
+          appAccessFor(deps, requireCaller(ctx), appId),
         ),
       myInstances: (_: unknown, __: unknown, ctx: AppsContext) =>
         guard(deps, "myInstances", () =>
@@ -455,7 +490,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "setAppSetting", () =>
-          setAppSetting(deps, requireCaller(ctx), input),
+          setAppSetting(deps, person(ctx), input),
         ),
       deleteAppSetting: (
         _: unknown,
@@ -467,7 +502,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "deleteAppSetting", () =>
-          deleteAppSetting(deps, requireCaller(ctx), appId, name, scope),
+          deleteAppSetting(deps, person(ctx), appId, name, scope),
         ),
       createPlan: (
         _: unknown,
@@ -475,7 +510,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "createPlan", () =>
-          createPlan(deps, requireCaller(ctx), input),
+          createPlan(deps, person(ctx), input),
         ),
       updatePlan: (
         _: unknown,
@@ -483,7 +518,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "updatePlan", () =>
-          updatePlanFor(deps, requireCaller(ctx), input),
+          updatePlanFor(deps, person(ctx), input),
         ),
       setPlanTarget: (
         _: unknown,
@@ -491,7 +526,7 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "setPlanTarget", () =>
-          setPlanTarget(deps, requireCaller(ctx), planId, version),
+          setPlanTarget(deps, person(ctx), planId, version),
         ),
       retirePlan: (
         _: unknown,
@@ -499,7 +534,31 @@ export function createResolvers(deps: AppsDeps) {
         ctx: AppsContext,
       ) =>
         guard(deps, "retirePlan", () =>
-          retirePlan(deps, requireCaller(ctx), planId),
+          retirePlan(deps, person(ctx), planId),
+        ),
+      setAppRole: (
+        _: unknown,
+        {
+          appId,
+          address,
+          role,
+        }: { appId: string; address: string; role?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setAppRole", () =>
+          setAppRole(deps, person(ctx), appId, address, role),
+        ),
+      removeAppRole: (
+        _: unknown,
+        {
+          appId,
+          address,
+          role,
+        }: { appId: string; address: string; role?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "removeAppRole", () =>
+          removeAppRole(deps, person(ctx), appId, address, role),
         ),
       deleteApp: (
         _: unknown,

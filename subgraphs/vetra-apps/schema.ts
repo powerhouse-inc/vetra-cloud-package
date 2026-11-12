@@ -190,6 +190,51 @@ export const schema: DocumentNode = gql`
     size: String
   }
 
+  "Who did what to an App, when and from where (spec: releases and instances, section 10). Kept one year."
+  type AppAuditEntry {
+    id: ID!
+    appId: ID!
+    at: String!
+    "A lowercased address (a person, or the address CI acts for), or vetra for Vetra itself"
+    actor: String!
+    "console | api | policy | system | ci"
+    source: String!
+    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded"
+    action: String!
+    "plan:<id> | setting:<SCOPE>/<NAME> | role:<address> | instance:<id> | release:<version>"
+    subject: String!
+    "A JSON object; never a setting value or secret"
+    detail: String!
+  }
+
+  type AppAuditPage {
+    "Newest first"
+    entries: [AppAuditEntry!]!
+    "Pass as before for the next (older) page; null on the last page"
+    nextBefore: String
+  }
+
+  "A per-App role kept by Vetra (release managers: plans, settings and rollouts without being an org admin)"
+  type AppRole {
+    appId: ID!
+    address: String!
+    "release_manager"
+    role: String!
+    grantedBy: String!
+    grantedAt: String!
+  }
+
+  "What the signed-in caller may do with an App"
+  type AppAccess {
+    "Edit, deploy, roll back, delete (owner, org OWNER/ADMIN, publishers in scope)"
+    operate: Boolean!
+    "Plans, settings, rollouts (operators and release managers)"
+    release: Boolean!
+    "Name release managers (owner, org OWNER/ADMIN)"
+    administer: Boolean!
+    releaseManager: Boolean!
+  }
+
   "Where a publisher setting applies: every instance of the App, or only its branch or preview instances (wins over ALL for the same name)."
   enum AppSettingScope {
     ALL
@@ -408,6 +453,12 @@ export const schema: DocumentNode = gql`
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
     appPlans(appId: ID!): [AppPlan!]!
+    "The App's audit log, newest first (default 50, at most 200 per page)"
+    appAudit(appId: ID!, limit: Int, before: String): AppAuditPage!
+    "The App's release managers"
+    appRoles(appId: ID!): [AppRole!]!
+    "What the caller may do with the App; FORBIDDEN when the caller may not view it"
+    appAccess(appId: ID!): AppAccess!
     "Instances of the plans the caller holds licences of"
     myInstances: [HolderInstance!]!
     appDeployment(id: ID!): AppDeployment
@@ -440,6 +491,9 @@ export const schema: DocumentNode = gql`
     "Move the plan's instances to a release at once (no notice; replaced by rollouts)"
     setPlanTarget(planId: ID!, version: String!): AppPlan!
     retirePlan(planId: ID!): AppPlan!
+    "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
+    setAppRole(appId: ID!, address: String!, role: String): AppRole!
+    removeAppRole(appId: ID!, address: String!, role: String): Boolean!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
     openAppSetupPullRequest(appId: ID!): String!
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!

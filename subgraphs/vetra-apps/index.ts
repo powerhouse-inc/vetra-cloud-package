@@ -58,6 +58,7 @@ import {
   WATCH_INTERVAL_MS,
 } from "./watcher.js";
 import { sweepPushRobots } from "./releases/service.js";
+import { sweepAuditOnce } from "./audit/service.js";
 import {
   reconcileInstancesOnce,
   sweepInstancesOnce,
@@ -410,6 +411,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     });
 
     every(5 * 60 * 1000, "push robot sweep", () => sweepPushRobots(deps));
+
+    // The audit log keeps one year (spec section 10); bounded batches per pass.
+    every(SWEEP_INTERVAL_MS, "audit retention", () => sweepAuditOnce(deps));
 
     if (cfg.instances.enabled) {
       every(WATCH_INTERVAL_MS, "instance reconciler", () =>

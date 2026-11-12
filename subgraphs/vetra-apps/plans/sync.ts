@@ -28,8 +28,7 @@ export const LICENSED_ENVIRONMENT =
   "the licence chain has a licensed environment";
 const DAY_MS = 86_400_000;
 
-export const isPlanKind = (kind: string) =>
-  kind === "shared" || kind === "own";
+export const isPlanKind = (kind: string) => kind === "shared" || kind === "own";
 
 /** Stable per licence chain, holder-neutral (it appears in labels and logs). */
 export const ownInstanceName = (root: string) =>

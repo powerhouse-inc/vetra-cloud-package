@@ -9,6 +9,7 @@ import {
 import { GraphQLError } from "graphql";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
+import { recordAudit } from "../audit/repo.js";
 import { AttestationTokenError } from "./attestation.js";
 import {
   assertClaimForApp,
@@ -272,26 +273,60 @@ export async function ciReportRelease(
     throw notConfigured("GitHub attestation verification");
   }
 
-  const { row, created } = await insertRelease(deps.db, {
-    app_id: app.id,
-    version: input.version,
-    kind: input.kind,
-    branch: input.branch,
-    pr: input.pr,
-    run,
-    commit: input.commit,
-    notes: input.notes,
-    customer_notes: input.notes,
-    image_ref: input.image.ref,
-    image_digest: input.image.digest,
-    host: input.image.host,
-    packages: JSON.stringify(input.packages),
-    requires: JSON.stringify(input.requires),
-    migrates: input.migrates,
-    powerhouse_version: input.built.powerhouse,
-    base_image: input.built.baseImage,
-    created_at: deps.now().toISOString(),
-  });
+  const nowIso = deps.now().toISOString();
+  // The row and its audit entry together: a retry of the same report (created
+  // false) adds neither.
+  // A failure rolls both back, so the report can be retried: answer
+  // SERVICE_UNAVAILABLE, the only code vetra-publish retries.
+  const { row, created } = await upstream(
+    deps,
+    `${input.version} could not be recorded`,
+    () =>
+      deps.db.transaction().execute(async (trx) => {
+        const stored = await insertRelease(trx, {
+          app_id: app.id,
+          version: input.version,
+          kind: input.kind,
+          branch: input.branch,
+          pr: input.pr,
+          run,
+          commit: input.commit,
+          notes: input.notes,
+          customer_notes: input.notes,
+          image_ref: input.image.ref,
+          image_digest: input.image.digest,
+          host: input.image.host,
+          packages: JSON.stringify(input.packages),
+          requires: JSON.stringify(input.requires),
+          migrates: input.migrates,
+          powerhouse_version: input.built.powerhouse,
+          base_image: input.built.baseImage,
+          created_at: nowIso,
+        });
+        if (stored.created)
+          await recordAudit(trx, {
+            appId: app.id,
+            at: nowIso,
+            actor: ci.address.toLowerCase(),
+            source: "ci",
+            action:
+              input.kind === "release" ? "release.recorded" : "build.recorded",
+            subject: `release:${input.version}`,
+            detail: {
+              version: input.version,
+              kind: input.kind,
+              branch: input.branch,
+              pr: input.pr,
+              commit: input.commit,
+              run,
+              digest: input.image.digest,
+              githubActor: ci.claim?.actor ?? null,
+              githubRun: ci.claim?.runId ?? null,
+            },
+          });
+        return stored;
+      }),
+  );
   if (!created && row.image_digest !== input.image.digest) {
     throw appsError(
       "VERSION_CONFLICT",

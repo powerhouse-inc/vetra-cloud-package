@@ -56,7 +56,6 @@ import type { RenownOrgs } from "../../shared/renown-orgs.js";
 import {
   canCreateOrgApp,
   canOperate,
-  canView,
   isOrgMember,
 } from "../../shared/org-access.js";
 import {
@@ -92,6 +91,7 @@ import {
   syncApps,
 } from "./org-ownership.js";
 import type { Caller, VetraClaim } from "./auth.js";
+import { allows, type AppNeed } from "./roles/access.js";
 import {
   appsError,
   githubErrors,
@@ -300,8 +300,12 @@ function assertBranch(branch: string): void {
 
 export interface AppAccessOptions {
   includeDeleted?: boolean;
-  /** "view": any member of the owning org; "operate" (default): publishers. */
-  need?: "view" | "operate";
+  /**
+   * "view": any member of the owning org, or a release manager; "operate"
+   * (default): publishers; "release": publishers or release managers;
+   * "administer": the personal owner or the org's OWNER/ADMIN.
+   */
+  need?: AppNeed;
 }
 
 /**
@@ -326,10 +330,7 @@ export async function loadAppForOwner(
     throw appsError("NOT_FOUND", "App not found");
   }
   const synced = await syncAppOrg(deps, app);
-  const check = opts.need === "view" ? canView : canOperate;
-  if (
-    !(await check(deps.orgs ?? null, callerAccess(caller), appResource(synced)))
-  ) {
+  if (!(await allows(deps, caller, synced, opts.need ?? "operate"))) {
     throw appsError("FORBIDDEN", "Not allowed to manage this App");
   }
   return synced;
@@ -1931,7 +1932,7 @@ export interface StudioGithubConnection {
 }
 
 /** The address a did:pkh names, lowercased ("" for any other DID). */
-const didAddress = (did: string) =>
+export const didAddress = (did: string): string =>
   did.startsWith("did:pkh:") ? (did.split(":").pop() ?? "").toLowerCase() : "";
 
 /**

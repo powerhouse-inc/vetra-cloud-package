@@ -12,6 +12,7 @@ import {
 } from "./harness.js";
 import { ciReportRelease } from "../releases/service.js";
 import { listReleases } from "../releases/repo.js";
+import { listAudit } from "../audit/repo.js";
 import { updateApp } from "../service.js";
 
 type Doc = ReturnType<typeof utils.createDocument>;
@@ -262,6 +263,29 @@ describe("a release feeds licensed environments' host image", () => {
       run: 500,
     });
     expect(await pointer("LATEST")).toBe("1.5.0");
+  });
+
+  it("audits the release once across a failed document write and its retry", async () => {
+    docs.failing = true;
+    await expect(report("1.5.0")).rejects.toMatchObject({
+      extensions: { code: "SERVICE_UNAVAILABLE" },
+    });
+    // The release row is stored, so its audit row is too (same transaction).
+    expect(
+      (await listAudit(h.db, app.id, { limit: 10 })).map((r) => [
+        r.action,
+        r.subject,
+      ]),
+    ).toEqual([["release.recorded", "release:1.5.0"]]);
+    docs.failing = false;
+    await report("1.5.0", {}, "refs/heads/main", "501");
+    expect(await pointer("LATEST")).toBe("1.5.0");
+    const rows = await listAudit(h.db, app.id, { limit: 10 });
+    expect(rows.map((r) => r.action)).toEqual(["release.recorded"]);
+    expect(JSON.parse(rows[0].detail)).toMatchObject({
+      run: 500,
+      githubRun: "500",
+    });
   });
 
   it("asks CI to retry when the release policy cannot be read", async () => {
