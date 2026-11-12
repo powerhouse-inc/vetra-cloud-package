@@ -103,6 +103,10 @@ export const schema: DocumentNode = gql`
     id: ID!
     "branch | preview | shared | own"
     kind: String!
+    "shared/own: the plan it serves"
+    planId: String
+    "own: the holder's address"
+    holder: String
     name: String!
     branch: String
     pr: Int
@@ -151,6 +155,20 @@ export const schema: DocumentNode = gql`
     status: String!
     createdAt: String!
     updatedAt: String!
+  }
+
+  "An instance the caller holds a licence for"
+  type HolderInstance {
+    instanceId: ID!
+    appId: ID!
+    appName: String!
+    planName: String!
+    "shared | own"
+    access: String!
+    url: String
+    status: String!
+    reason: String
+    runningVersion: String
   }
 
   input CreatePlanInput {
@@ -390,6 +408,8 @@ export const schema: DocumentNode = gql`
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
     appPlans(appId: ID!): [AppPlan!]!
+    "Instances of the plans the caller holds licences of"
+    myInstances: [HolderInstance!]!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment

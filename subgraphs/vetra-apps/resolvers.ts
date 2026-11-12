@@ -10,6 +10,7 @@ import {
   type CreatePlanInput,
   type UpdatePlanInput,
 } from "./plans/service.js";
+import { myInstancesFor } from "./plans/holder-view.js";
 import {
   appSettingsFor,
   deleteAppSetting,
@@ -317,6 +318,10 @@ export function createResolvers(deps: AppsDeps) {
       appPlans: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
         guard(deps, "appPlans", () =>
           appPlansFor(deps, requireCaller(ctx), appId),
+        ),
+      myInstances: (_: unknown, __: unknown, ctx: AppsContext) =>
+        guard(deps, "myInstances", () =>
+          myInstancesFor(deps, requireCaller(ctx)),
         ),
       appReleases: (
         _: unknown,
