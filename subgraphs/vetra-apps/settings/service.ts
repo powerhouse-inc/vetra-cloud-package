@@ -131,7 +131,15 @@ export async function setAppSetting(
   if (input.secret) {
     if (!deps.settingsVault)
       throw notConfigured("Secret settings (OPENBAO_ADDR)");
-    ciphertext = await deps.settingsVault.encrypt(input.value);
+    try {
+      ciphertext = await deps.settingsVault.encrypt(input.value);
+    } catch (err) {
+      // The detail (addresses, OpenBao's own message) stays in the log.
+      deps.logger.warn(
+        `[vetra-apps] encrypting setting ${input.name} of ${app.slug}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw appsError("SERVICE_UNAVAILABLE", "Secret storage unavailable");
+    }
   }
   const row: AppSettingRow = {
     app_id: app.id,

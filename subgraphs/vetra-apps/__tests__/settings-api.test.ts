@@ -145,6 +145,21 @@ describe("publisher settings", () => {
     });
   });
 
+  it("reports an OpenBao outage as SERVICE_UNAVAILABLE without its detail", async () => {
+    h.deps.settingsVault = {
+      ...h.deps.settingsVault!,
+      encrypt: async () => {
+        throw new Error("connect ECONNREFUSED 10.0.0.7:8200");
+      },
+    };
+    const err = await set({ secret: true }).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      message: "Secret storage unavailable",
+      extensions: { code: "SERVICE_UNAVAILABLE" },
+    });
+    expect(await listAppSettings(h.db, appId)).toEqual([]);
+  });
+
   it("goes with the App", async () => {
     await set();
     await deleteApp(h.deps, owner, appId, false);
