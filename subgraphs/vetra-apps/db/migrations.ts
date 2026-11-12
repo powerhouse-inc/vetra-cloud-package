@@ -136,6 +136,41 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesPlanColumns(db);
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
+  await ensureInstanceSettingsTable(db);
+}
+
+/** Holder settings per own instance (phase 3 plan 7, spec 14.2). Schema builder only (namespaced). */
+export async function ensureInstanceSettingsTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("instance_settings")
+      .ifNotExists()
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("name", "varchar(128)", (c) => c.notNull())
+      .addColumn("kind", "varchar(16)", (c) => c.notNull())
+      .addColumn("mount_path", "varchar(512)")
+      .addColumn("value", "text")
+      .addColumn("ciphertext", "text")
+      .addColumn("write_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_by", "varchar(255)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("instance_settings_pk", ["instance_id", "name"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createIndex("instance_settings_instance_idx")
+      .ifNotExists()
+      .on("instance_settings")
+      .column("instance_id")
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */

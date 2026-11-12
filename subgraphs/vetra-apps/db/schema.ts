@@ -147,6 +147,7 @@ export interface VetraAppsDB {
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
   app_settings: AppSettingsTable;
+  instance_settings: InstanceSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
@@ -228,6 +229,29 @@ export interface AppSettingsTable {
   /** Secrets only: OpenBao transit ciphertext under the `app-settings` pseudo-tenant (settings/vault.ts). */
   ciphertext: string | null;
   /** Random per write: re-setting a secret (same value or not) makes a new revision. */
+  write_id: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type InstanceSettingKind = "plain" | "secret" | "file";
+
+/**
+ * A holder setting of an own instance (spec 14.2, plan 7 H2/H3). Holder-only:
+ * never shown to the publisher by name. Secrets and files: value null,
+ * ciphertext set (transit pseudo-tenant `instance-settings`).
+ */
+export interface InstanceSettingsTable {
+  instance_id: string;
+  /** Env name, or for files `FILE_<16 hex of sha256(mountPath)>`. */
+  name: string;
+  kind: InstanceSettingKind;
+  /** Files only. */
+  mount_path: string | null;
+  /** Plain settings only. */
+  value: string | null;
+  ciphertext: string | null;
+  /** Random per write: the revision uses it for secrets and files. */
   write_id: string;
   updated_at: string;
   updated_by: string;

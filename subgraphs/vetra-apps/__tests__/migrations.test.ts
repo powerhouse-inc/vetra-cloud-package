@@ -10,6 +10,7 @@ import {
   ensureDeploymentTriggerColumns,
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
+  ensureInstanceSettingsTable,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
@@ -23,6 +24,13 @@ import {
   listAppSettings,
   upsertAppSetting,
 } from "../settings/repo.js";
+import {
+  countInstanceSettings,
+  deleteInstanceSetting,
+  deleteInstanceSettings,
+  listInstanceSettings,
+  upsertInstanceSetting,
+} from "../settings/holder-repo.js";
 import { getPlan, insertPlan, listPlans, updatePlan } from "../plans/repo.js";
 import { listAudit, recordAudit, sweepAudit } from "../audit/repo.js";
 import {
@@ -746,6 +754,61 @@ describe("app_audit and app_roles", () => {
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(false);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance_settings (holder settings, plan 7)", () => {
+  it("are created idempotently and concurrently in the namespace schema with their index; one row per instance and name", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceSettingsTable(any)));
+      const idx = await sql<{ indexname: string }>`
+        SELECT indexname FROM pg_indexes WHERE schemaname = 'vetra-apps' AND tablename = 'instance_settings'`.execute(
+        root,
+      );
+      expect(idx.rows.map((r) => r.indexname)).toContain("instance_settings_instance_idx");
+      const db = any as unknown as Kysely<VetraAppsDB>;
+      const row = {
+        instance_id: "i1",
+        name: "MODE",
+        kind: "plain" as const,
+        mount_path: null,
+        value: "a",
+        ciphertext: null,
+        write_id: "w1",
+        updated_at: "2026-11-12T00:00:00.000Z",
+        updated_by: "0xaa",
+      };
+      await upsertInstanceSetting(db, row);
+      await upsertInstanceSetting(db, { ...row, value: "b", write_id: "w2" });
+      await upsertInstanceSetting(db, {
+        ...row,
+        name: "TOKEN",
+        kind: "secret",
+        value: null,
+        ciphertext: "ct",
+      });
+      await upsertInstanceSetting(db, { ...row, instance_id: "i2" });
+      expect(await countInstanceSettings(db, "i1")).toBe(2);
+      const all = await listInstanceSettings(db, ["i1", "i2", "i3"]);
+      expect(all.get("i1")!.map((r) => [r.name, r.value])).toEqual([
+        ["MODE", "b"],
+        ["TOKEN", null],
+      ]);
+      expect(all.get("i2")).toHaveLength(1);
+      expect(all.get("i3")).toBeUndefined();
+      expect((await listInstanceSettings(db, [])).size).toBe(0);
+      expect(await deleteInstanceSetting(db, "i1", "MODE")).toBe(true);
+      expect(await deleteInstanceSetting(db, "i1", "MODE")).toBe(false);
+      expect(await deleteInstanceSettings(db, "i1")).toBe(1);
+      expect(await countInstanceSettings(db, "i1")).toBe(0);
     } finally {
       await root.destroy();
     }
