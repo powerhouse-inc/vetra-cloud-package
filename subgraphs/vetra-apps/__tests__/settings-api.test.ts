@@ -120,6 +120,17 @@ describe("publisher settings", () => {
     await expect(set({ name: "S0", value: "w" })).resolves.toBeTruthy();
   });
 
+  it("holds the cap under concurrent writes", async () => {
+    for (let i = 0; i < 99; i++) await set({ name: `S${i}`, value: "v" });
+    const results = await Promise.allSettled([
+      set({ name: "RACE_A" }),
+      set({ name: "RACE_B" }),
+      set({ name: "RACE_C", secret: true }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await listAppSettings(h.db, appId)).toHaveLength(100);
+  });
+
   it("refuses secrets without OpenBao, and strangers entirely", async () => {
     h.deps.settingsVault = null;
     await expect(set({ secret: true })).rejects.toMatchObject({

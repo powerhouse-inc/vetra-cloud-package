@@ -118,15 +118,6 @@ export async function setAppSetting(
       throw appsError("BAD_USER_INPUT", err.message);
     throw err;
   }
-  const existing = await listAppSettings(deps.db, app.id);
-  const replaces = existing.some(
-    (r) => r.scope === scope && r.name === input.name,
-  );
-  if (!replaces && existing.length >= MAX_SETTINGS_PER_APP)
-    throw appsError(
-      "BAD_USER_INPUT",
-      `An App has at most ${MAX_SETTINGS_PER_APP} settings; delete one first`,
-    );
   let ciphertext: string | null = null;
   if (input.secret) {
     if (!deps.settingsVault)
@@ -152,7 +143,25 @@ export async function setAppSetting(
     updated_at: deps.now().toISOString(),
     updated_by: caller.address,
   };
-  await upsertAppSetting(deps.db, row);
+  // Count and write under the App row's lock: concurrent writes never pass the cap together.
+  await deps.db.transaction().execute(async (trx) => {
+    await trx
+      .selectFrom("apps")
+      .select("id")
+      .where("id", "=", app.id)
+      .forUpdate()
+      .execute();
+    const existing = await listAppSettings(trx, app.id);
+    const replaces = existing.some(
+      (r) => r.scope === scope && r.name === input.name,
+    );
+    if (!replaces && existing.length >= MAX_SETTINGS_PER_APP)
+      throw appsError(
+        "BAD_USER_INPUT",
+        `An App has at most ${MAX_SETTINGS_PER_APP} settings; delete one first`,
+      );
+    await upsertAppSetting(trx, row);
+  });
   // Names only: values never reach a log.
   deps.logger.info(
     `[vetra-apps] setting ${row.name} (${scope}${row.secret ? ", secret" : ""}) of ${app.slug} set by ${caller.address}`,
