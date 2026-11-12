@@ -74,6 +74,23 @@ export async function canView(
   return (await membershipOf(orgs, r.ownerOrgId, caller.address)) !== null;
 }
 
+/**
+ * Who may name an App's release managers (releases phase 3 D7): platform
+ * admins, the personal owner, and the owning org's OWNER/ADMIN. Publishers
+ * operate an App but do not hand out rights to it.
+ */
+export async function canAdminister(
+  orgs: MembershipReader | null,
+  caller: AccessCaller,
+  r: OwnedResource,
+): Promise<boolean> {
+  if (caller.isAdmin) return true;
+  if (!r.ownerOrgId) return !!r.owner && r.owner.toLowerCase() === caller.address.toLowerCase();
+  if (r.orgDisputed) return false;
+  const m = await membershipOf(orgs, r.ownerOrgId, caller.address);
+  return m?.role === "OWNER" || m?.role === "ADMIN";
+}
+
 export async function isOrgMember(
   orgs: MembershipReader | null,
   caller: AccessCaller,
