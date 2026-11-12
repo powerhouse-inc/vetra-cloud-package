@@ -12,7 +12,12 @@ import {
   type InstanceRow,
 } from "../instances/repo.js";
 import { targetOf, type InstanceTarget } from "../instances/targets.js";
-import { licensedRoots, liveChains, type ChainHead } from "./holders.js";
+import {
+  chainKinds,
+  licensedRoots,
+  liveChains,
+  type ChainHead,
+} from "./holders.js";
 import { listPlans, type PlanRow } from "./repo.js";
 
 export const LICENCE_ENDED = "the licence ended";
@@ -86,10 +91,45 @@ function newRow(
 }
 
 /**
+ * The own plan serving each live chain: the plan of the head's kind; for a
+ * head of no plan's kind (an upgrade or renewal to a term no plan adopted, or
+ * an untyped one), the plan of the chain's most recent plan-kind licence.
+ * Undefined when that plan is shared, or the chain never held a plan kind.
+ */
+async function ownPlanResolver(
+  deps: AppsDeps,
+  app: AppRow,
+  plans: PlanRow[],
+  live: Map<string, ChainHead>,
+): Promise<(head: ChainHead) => PlanRow | undefined> {
+  const byKind = new Map(plans.map((p) => [p.kind, p]));
+  const own = (p: PlanRow | undefined) => (p?.access === "own" ? p : undefined);
+  const needsHistory =
+    plans.some((p) => p.access === "own") &&
+    [...live.values()].some((h) => !h.kind || !byKind.has(h.kind));
+  const history =
+    needsHistory && deps.licensingDb
+      ? await chainKinds(deps.licensingDb, app.id)
+      : new Map<string, Array<string | null>>();
+  return (head) => {
+    if (head.kind && byKind.has(head.kind)) return own(byKind.get(head.kind));
+    const kinds = history.get(head.root) ?? [];
+    for (let i = kinds.length - 1; i >= 0; i--) {
+      const k = kinds[i];
+      if (k && byKind.has(k)) return own(byKind.get(k));
+    }
+    return undefined;
+  };
+}
+
+/**
  * Rows for the App's plan instances (spec section 5): one shared row per shared
  * plan while it is active or has live licences; one own row per live licence
  * chain of an own plan, unless the old model runs a licensed environment for
- * that chain (overview rule 1). Ended chains and retired, unheld shared plans
+ * that chain (overview rule 1). A chain whose live head is of no plan's kind
+ * stays under the plan of its most recent plan-kind licence when that plan is
+ * own (cross-kind upgrades: the plan model owns a chain once it held a plan
+ * kind; licensing leaves it alone too). Ended chains and retired, unheld shared plans
  * get a stop_reason; nothing is ever deleted here.
  */
 export async function syncPlanInstances(
@@ -132,12 +172,10 @@ export async function syncPlanInstances(
     });
   }
 
-  const ownPlans = new Map(
-    plans.filter((p) => p.access === "own").map((p) => [p.kind, p]),
-  );
+  const ownPlanOf = await ownPlanResolver(deps, app, plans, live);
   const served = new Set<string>();
   for (const head of live.values()) {
-    const plan = head.kind ? ownPlans.get(head.kind) : undefined;
+    const plan = ownPlanOf(head);
     if (!plan || licensed.has(head.root)) continue;
     const target = targets.get(plan.id) ?? null;
     const row = own.find((r) => r.licence_root_id === head.root);

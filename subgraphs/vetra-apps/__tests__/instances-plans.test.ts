@@ -225,4 +225,108 @@ describe("syncPlanInstances", () => {
       target_digest: digest("c"),
     });
   });
+  // Ruling (cross-kind upgrades): once a chain held a plan kind, the plan model owns it.
+  it("keeps serving a chain upgraded from an own plan's kind to a kind no plan adopted", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await sync();
+    const before = (await rows())[0];
+    await seedLicence(h, {
+      appId,
+      kind: "enterprise",
+      holder: HOLDER,
+      licenseId: "l2",
+      root: "l1",
+    });
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "EXPIRED" })
+      .where("license_id", "=", "l1")
+      .execute();
+    await sync();
+    h.advance(15 * DAY);
+    await sync();
+    expect(await rows()).toEqual([
+      expect.objectContaining({
+        id: before.id,
+        kind: "own",
+        name: ownInstanceName("l1"),
+        plan_id: "plan-own",
+        holder_address: HOLDER,
+        licence_root_id: "l1",
+        target_size: "VETRA_AGENT_M",
+        licence_ended_at: null,
+        stop_reason: null,
+      }),
+    ]);
+  });
+
+  it("serves a non-plan head under its chain's most recent plan kind, and only an own plan's", async () => {
+    await plan();
+    await plan({
+      id: "plan-shared",
+      slug: "starter",
+      kind: "starter",
+      access: "shared",
+    });
+    // Own kind, then shared kind, then no plan's kind: the shared plan was the last; no own row.
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "a1",
+    });
+    await seedLicence(h, {
+      appId,
+      kind: "starter",
+      holder: HOLDER,
+      licenseId: "a2",
+      root: "a1",
+      status: "EXPIRED",
+    });
+    await seedLicence(h, {
+      appId,
+      kind: "enterprise",
+      holder: HOLDER,
+      licenseId: "a3",
+      root: "a1",
+    });
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "EXPIRED" })
+      .where("license_id", "=", "a1")
+      .execute();
+    // Never held a plan kind: no row.
+    await seedLicence(h, {
+      appId,
+      kind: "enterprise",
+      holder: HOLDER,
+      licenseId: "b1",
+    });
+    // Untyped head after an own plan's kind: served.
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "c1",
+      status: "EXPIRED",
+    });
+    await seedLicence(h, {
+      appId,
+      kind: null,
+      holder: HOLDER,
+      licenseId: "c2",
+      root: "c1",
+    });
+    await sync();
+    expect((await rows()).map((r) => [r.kind, r.licence_root_id])).toEqual([
+      ["shared", null],
+      ["own", "c1"],
+    ]);
+  });
 });

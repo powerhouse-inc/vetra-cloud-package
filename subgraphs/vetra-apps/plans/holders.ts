@@ -55,6 +55,36 @@ export async function liveChains(
   return out;
 }
 
+/**
+ * The kinds of every licence of each chain of the App (live or not), oldest
+ * first (the order liveChains picks heads by), keyed by root. Unknown kinds are null.
+ */
+export async function chainKinds(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+): Promise<Map<string, Array<string | null>>> {
+  const rows = await db
+    .selectFrom("app_license_grants as g")
+    .leftJoin("license_chain as c", "c.license_id", "g.license_id")
+    .select([
+      "g.license_id as licenseId",
+      "g.kind as kind",
+      "c.root_license_id as root",
+    ])
+    .where("g.app_id", "=", appId)
+    .orderBy("g.created_at", "asc")
+    .orderBy("g.license_id", "asc")
+    .execute();
+  const out = new Map<string, Array<string | null>>();
+  for (const r of rows) {
+    const root = r.root ?? r.licenseId;
+    const kinds = out.get(root) ?? [];
+    kinds.push(r.kind);
+    out.set(root, kinds);
+  }
+  return out;
+}
+
 /** Chains the old model runs a licensed environment for (overview rule 1). */
 export async function licensedRoots(
   db: Kysely<VetraLicensingDB>,
