@@ -424,8 +424,11 @@ export async function checkRolloutFor(
   appId: string,
   version: string,
   planIds: string[],
+  /** As startRollout's: hours before the steps are due; default each plan's notice. */
+  noticeHours?: number | null,
 ): Promise<RolloutCheckJson> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
+  const notice = noticeHours == null ? null : checkNoticeHours(noticeHours);
   const plans = await plansOf(deps, app, planIds);
   const v = version.trim();
   const steps = await plannedSteps(deps, app.id, plans, v);
@@ -443,7 +446,9 @@ export async function checkRolloutFor(
       fromVersion: s.instance.target_version,
       status: s.status,
       note: s.note,
-      dueAt: new Date(now + s.plan.notice_hours * HOUR_MS).toISOString(),
+      dueAt: new Date(
+        now + (notice ?? s.plan.notice_hours) * HOUR_MS,
+      ).toISOString(),
     })),
   };
 }
