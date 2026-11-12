@@ -4,18 +4,32 @@ import { makeHarness, OWNER, type Harness } from "./harness.js";
 import {
   createEnvironmentStopper,
   databaseBacked,
-  stopKeepsDatabase,
+  housekeepingKeepsDatabase,
+  offboardingKeepsDatabase,
+  runsClint,
 } from "../holds/stop.js";
 import { getHold, insertHold } from "../holds/repo.js";
 
-describe("VETRA_STOP_KEEPS_DATABASE", () => {
-  it("is off unless switched on", () => {
-    expect(stopKeepsDatabase({})).toBe(false);
-    expect(stopKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: "" })).toBe(false);
-    expect(stopKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: "maybe" })).toBe(false);
-    expect(stopKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: "off" })).toBe(false);
-    for (const v of ["on", "true", "1", "yes", " On "])
-      expect(stopKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: v })).toBe(true);
+describe("VETRA_OFFBOARDING_KEEPS_DATABASE / VETRA_HOUSEKEEPING_KEEPS_DATABASE", () => {
+  const cases = [
+    ["VETRA_OFFBOARDING_KEEPS_DATABASE", offboardingKeepsDatabase],
+    ["VETRA_HOUSEKEEPING_KEEPS_DATABASE", housekeepingKeepsDatabase],
+  ] as const;
+  for (const [name, read] of cases)
+    it(`${name} is off unless switched on`, () => {
+      expect(read({})).toBe(false);
+      expect(read({ [name]: "" })).toBe(false);
+      expect(read({ [name]: "maybe" })).toBe(false);
+      expect(read({ [name]: "off" })).toBe(false);
+      for (const v of ["on", "true", "1", "yes", " On "])
+        expect(read({ [name]: v })).toBe(true);
+    });
+
+  it("are separate switches, and the old VETRA_STOP_KEEPS_DATABASE switches neither", () => {
+    expect(offboardingKeepsDatabase({ VETRA_HOUSEKEEPING_KEEPS_DATABASE: "on" })).toBe(false);
+    expect(housekeepingKeepsDatabase({ VETRA_OFFBOARDING_KEEPS_DATABASE: "on" })).toBe(false);
+    expect(offboardingKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: "on" })).toBe(false);
+    expect(housekeepingKeepsDatabase({ VETRA_STOP_KEEPS_DATABASE: "on" })).toBe(false);
   });
 });
 
@@ -100,6 +114,49 @@ describe("environment stopper", () => {
     expect(await s.isStopped(id)).toBe(false);
     expect(await s.resume(id)).toBe("none");
     expect(await getHold(h.db, id)).not.toBeNull();
+  });
+
+  /** A READY database-backed environment that also runs a CLINT agent. */
+  const clintSwitchboardEnv = async () => {
+    const id = await h.envs.seedStandalone();
+    const { approveChanges } = await import(
+      "../../../document-models/vetra-cloud-environment/v1/index.js"
+    );
+    await h.envs.execute(id, [
+      enableService({
+        type: "CLINT",
+        prefix: "agent",
+        clintConfig: { package: { registry: "https://r", name: "p" }, env: [] },
+      }),
+      approveChanges({}),
+    ]);
+    h.envs.setStatus(id, "READY");
+    h.envs.executed.length = 0;
+    return id;
+  };
+
+  it("sleeps a CLINT environment, database or not, when it may not hold CLINT (the chart cannot scale clint)", async () => {
+    const id = await clintSwitchboardEnv();
+    expect(runsClint((await h.envs.getState(id))!)).toBe(true);
+    const s = createEnvironmentStopper(h.deps, {
+      keepsDatabase: true,
+      reason: "idle",
+      sleepsClint: true,
+    });
+    expect(await s.stop(id)).toBe("slept");
+    expect(types()).toEqual(["SLEEP_ENVIRONMENT"]);
+    expect(await getHold(h.db, id)).toBeNull();
+  });
+
+  it("still holds a database-backed environment without CLINT when it sleeps CLINT ones", async () => {
+    const id = await switchboardEnv();
+    expect(runsClint((await h.envs.getState(id))!)).toBe(false);
+    const s = createEnvironmentStopper(h.deps, {
+      keepsDatabase: true,
+      reason: "idle",
+      sleepsClint: true,
+    });
+    expect(await s.stop(id)).toBe("held");
   });
 
   it("knows which environments carry a database", async () => {

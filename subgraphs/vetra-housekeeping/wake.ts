@@ -27,7 +27,7 @@ export function createWake(deps: {
   /** An environment stopped by licence offboarding stays stopped until re-licensed. */
   isLicenceStopped(envId: string): Promise<boolean>;
   /**
-   * Held by housekeeping (VETRA_STOP_KEEPS_DATABASE): asleep although its
+   * Held by housekeeping (VETRA_HOUSEKEEPING_KEEPS_DATABASE): asleep although its
    * status reads READY; `dispatchWake` releases the hold.
    */
   isHeld?(envId: string): Promise<boolean>;

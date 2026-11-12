@@ -10,16 +10,40 @@ import { holdEnvironment, releaseHold, type HoldDeps } from "./service.js";
 
 const ON = new Set(["on", "true", "1", "yes"]);
 
+function switchedOn(
+  name: string,
+  env: Record<string, string | undefined>,
+): boolean {
+  return ON.has((env[name] ?? "").trim().toLowerCase());
+}
+
 /**
- * VETRA_STOP_KEEPS_DATABASE (default off): licensing offboarding and
- * housekeeping stop a database-backed environment by a hold instead of a
- * sleep. A sleep (STOPPED, global.disabled) removes the CNPG cluster, and CNPG
- * deletes the database with it.
+ * VETRA_OFFBOARDING_KEEPS_DATABASE (default off): licensing offboarding stops
+ * a database-backed environment by a hold instead of a sleep. A sleep
+ * (STOPPED, global.disabled) removes the CNPG cluster, and CNPG deletes the
+ * database with it.
  */
-export function stopKeepsDatabase(
+export function offboardingKeepsDatabase(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
-  return ON.has((env.VETRA_STOP_KEEPS_DATABASE ?? "").trim().toLowerCase());
+  return switchedOn("VETRA_OFFBOARDING_KEEPS_DATABASE", env);
+}
+
+/**
+ * VETRA_HOUSEKEEPING_KEEPS_DATABASE (default off): housekeeping stops an idle
+ * database-backed environment by a hold instead of a sleep. CLINT studios
+ * still sleep (the chart cannot scale clint down), so today this only reaches
+ * a database-backed environment without CLINT.
+ */
+export function housekeepingKeepsDatabase(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return switchedOn("VETRA_HOUSEKEEPING_KEEPS_DATABASE", env);
+}
+
+/** Whether the environment runs an enabled CLINT agent. */
+export function runsClint(state: VetraCloudEnvironmentState): boolean {
+  return (state.services ?? []).some((s) => s.type === "CLINT" && s.enabled);
 }
 
 /**
@@ -49,12 +73,21 @@ export interface EnvironmentStopper {
  * One caller's way of stopping environments. With `keepsDatabase` off it
  * sleeps, exactly as before. On, a database-backed environment is held (its
  * database, backups and volumes kept) and any other one still sleeps (nothing
- * to lose). A stopper only ever releases holds with its own reason, never a
+ * to lose), as does a CLINT one when `sleepsClint` is set. A stopper only ever releases holds with its own reason, never a
  * switch-over's or a plan instance's.
  */
 export function createEnvironmentStopper(
   deps: HoldDeps,
-  opts: { keepsDatabase: boolean; reason: string },
+  opts: {
+    keepsDatabase: boolean;
+    reason: string;
+    /**
+     * Sleeps a CLINT environment even when it has a database: the chart's
+     * clint Deployment has a fixed replica count, so a hold would leave the
+     * agent (and its apex ingress) running.
+     */
+    sleepsClint?: boolean;
+  },
 ): EnvironmentStopper {
   const ownHold = async (id: string) => {
     let hold;
@@ -74,7 +107,10 @@ export function createEnvironmentStopper(
       if (opts.keepsDatabase) {
         const state = await deps.envs.getState(id);
         if (!state) return "skipped";
-        if (databaseBacked(state)) {
+        if (
+          databaseBacked(state) &&
+          !(opts.sleepsClint && runsClint(state))
+        ) {
           await holdEnvironment(deps, {
             environmentId: id,
             reason: opts.reason,

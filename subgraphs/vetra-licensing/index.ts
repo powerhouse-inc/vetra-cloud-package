@@ -9,7 +9,7 @@ import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
 import {
   createEnvironmentStopper,
-  stopKeepsDatabase,
+  offboardingKeepsDatabase,
 } from "../vetra-apps/holds/stop.js";
 import { getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
@@ -415,12 +415,12 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     };
     const offboardingStopper = createEnvironmentStopper(
       { db: appsDb, envs, now: () => new Date() },
-      { keepsDatabase: stopKeepsDatabase(), reason: OFFBOARDING_HOLD_REASON },
+      { keepsDatabase: offboardingKeepsDatabase(), reason: OFFBOARDING_HOLD_REASON },
     );
     const offboarding: OffboardingDeps = {
       rows: chainRows,
       envStatus: async (id) => (await envs.getState(id))?.status ?? null,
-      // VETRA_STOP_KEEPS_DATABASE (default off): a database-backed
+      // VETRA_OFFBOARDING_KEEPS_DATABASE (default off): a database-backed
       // environment is held instead of slept, since a sleep deletes its
       // database. Off, these sleep and wake exactly as before.
       sleep: async (id) => {

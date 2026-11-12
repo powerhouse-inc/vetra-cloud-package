@@ -32,7 +32,7 @@ describe("housekeeping wake (other states)", () => {
   });
 });
 
-describe("housekeeping wake of a held studio (VETRA_STOP_KEEPS_DATABASE)", () => {
+describe("housekeeping wake of a held studio (VETRA_HOUSEKEEPING_KEEPS_DATABASE)", () => {
   const held = { ...row, status: "READY", poolState: "CLAIMED" };
   it("resumes a studio housekeeping held, though its status reads READY", async () => {
     const dispatchWake = vi.fn(async () => {});

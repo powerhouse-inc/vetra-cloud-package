@@ -21,7 +21,7 @@ import type { DB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
 import {
   createEnvironmentStopper,
-  stopKeepsDatabase,
+  housekeepingKeepsDatabase,
 } from "../vetra-apps/holds/stop.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import {
@@ -30,7 +30,7 @@ import {
 } from "../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
 
-/** The reason of a housekeeping hold (VETRA_STOP_KEEPS_DATABASE). */
+/** The reason of a housekeeping hold (VETRA_HOUSEKEEPING_KEEPS_DATABASE). */
 const HOUSEKEEPING_HOLD_REASON = "idle (housekeeping)";
 
 /**
@@ -65,10 +65,12 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
 
     const result = studioPowerResult;
 
-    // VETRA_STOP_KEEPS_DATABASE (default off): a database-backed studio is
-    // held instead of slept (a sleep deletes its database). Off, studios
-    // sleep and wake by dispatch exactly as before.
-    const stopper = stopKeepsDatabase()
+    // VETRA_HOUSEKEEPING_KEEPS_DATABASE (default off): a database-backed
+    // environment is held instead of slept (a sleep deletes its database),
+    // except a CLINT one, which still sleeps: the chart cannot scale clint
+    // down, so a hold would leave the agent running. Off, studios sleep and
+    // wake by dispatch exactly as before.
+    const stopper = housekeepingKeepsDatabase()
       ? createEnvironmentStopper(
           {
             db: (await this.relationalDb.createNamespace(
@@ -77,7 +79,11 @@ export class VetraHousekeepingSubgraph extends BaseSubgraph {
             envs: createReactorEnvGateway(this.reactorClient as never),
             now: () => new Date(),
           },
-          { keepsDatabase: true, reason: HOUSEKEEPING_HOLD_REASON },
+          {
+            keepsDatabase: true,
+            reason: HOUSEKEEPING_HOLD_REASON,
+            sleepsClint: true,
+          },
         )
       : null;
     const stopEnv = async (envId: string) => {

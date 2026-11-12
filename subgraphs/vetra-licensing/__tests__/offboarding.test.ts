@@ -192,7 +192,7 @@ describe("offboarding against rows", () => {
     expect(deps.wake).not.toHaveBeenCalled();
   });
 
-  it("re-licensing resumes an environment offboarding held (VETRA_STOP_KEEPS_DATABASE), which never reads STOPPED", async () => {
+  it("re-licensing resumes an environment offboarding held (VETRA_OFFBOARDING_KEEPS_DATABASE), which never reads STOPPED", async () => {
     const held = new Set<string>();
     deps.sleep = vi.fn(async (id: string) => { held.add(id); }); // a hold: the status stays READY
     deps.wake = vi.fn(async (id: string) => { held.delete(id); });

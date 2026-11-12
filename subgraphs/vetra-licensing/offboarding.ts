@@ -5,7 +5,7 @@ import type { ChainEnvRows } from "./environments.js";
 
 export const EXPIRY_WARNING_DAYS = 7;
 export const STOP_AFTER_DAYS = 14;
-/** The reason of an offboarding hold (VETRA_STOP_KEEPS_DATABASE). */
+/** The reason of an offboarding hold (VETRA_OFFBOARDING_KEEPS_DATABASE). */
 export const OFFBOARDING_HOLD_REASON = "licence ended (offboarding)";
 export const FINAL_WARNING_AFTER_DAYS = 83;
 export const DESTROY_AFTER_DAYS = 90;
@@ -111,7 +111,7 @@ export interface OffboardingDeps {
   sleep(environmentId: string): Promise<void>;
   wake(environmentId: string): Promise<void>;
   /**
-   * Held by offboarding (VETRA_STOP_KEEPS_DATABASE: `sleep` holds a
+   * Held by offboarding (VETRA_OFFBOARDING_KEEPS_DATABASE: `sleep` holds a
    * database-backed environment instead, and `wake` releases it). A held
    * environment is not STOPPED, so resuming asks this too.
    */
