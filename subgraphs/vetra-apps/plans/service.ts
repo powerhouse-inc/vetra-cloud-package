@@ -361,7 +361,9 @@ export async function setPlanTarget(
       throw appsError("BAD_USER_INPUT", "The plan is retired");
     if (
       cur.target_version === target &&
-      (await plannedSteps(deps, app.id, [cur], target)).length === 0
+      (await plannedSteps(deps, app.id, [cur], target)).every(
+        (s) => s.status !== "pending",
+      )
     )
       return;
     await beginRollout(deps, app, target, [cur], callerActor(caller), null);

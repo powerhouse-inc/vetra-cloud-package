@@ -233,7 +233,11 @@ export async function rolloutProblems(
     out.push(
       "rollouts need instance health in enforce mode (VETRA_APPS_INSTANCE_HEALTH=enforce)",
     );
-  if (steps.length === 0 && plans.every((p) => p.target_version === version))
+  // Nothing would move (no step, or only pinned / ahead ones): already done.
+  if (
+    steps.every((s) => s.status !== "pending") &&
+    plans.every((p) => p.target_version === version)
+  )
     out.push(`${plans.map((p) => p.slug).join(", ")} already run ${version}`);
   return out;
 }

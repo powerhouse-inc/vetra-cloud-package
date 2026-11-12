@@ -240,4 +240,27 @@ describe("starting a rollout (spec 7 steps 1 and 3)", () => {
       ["o3", "skipped"],
     ]);
   });
+
+  it("a plan whose only instances left behind are pinned is not rolled out again", async () => {
+    await setPlanTarget(h.deps, owner, "p-pro", "1.4.1");
+    await h.db
+      .updateTable("instances")
+      .set({ target_version: "1.4.1" })
+      .where("id", "in", ["o1", "o2"])
+      .execute();
+    await h.db.updateTable("rollouts").set({ status: "complete" }).execute();
+    await setPlanTarget(h.deps, owner, "p-pro", "1.4.1");
+    expect(
+      (await listAudit(h.db, appId, { limit: 20 })).filter(
+        (a) => a.action === "rollout.started",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      startRollout(h.deps, owner, {
+        appId,
+        version: "1.4.1",
+        planIds: ["p-pro"],
+      }),
+    ).rejects.toThrow(/already run 1\.4\.1/);
+  });
 });
