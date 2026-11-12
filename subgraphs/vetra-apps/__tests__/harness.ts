@@ -18,6 +18,8 @@ import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-
 import { up } from "../db/migrations.js";
 import { up as upObservability } from "../../vetra-cloud-observability/db/migrations.js";
 import type { ObservabilityDB } from "../../vetra-cloud-observability/db/schema.js";
+import { up as upLicensing } from "../../vetra-licensing/db/migrations.js";
+import type { VetraLicensingDB } from "../../vetra-licensing/db/schema.js";
 import {
   RenownOrgsUnavailableError,
   type AppPublisher,
@@ -733,6 +735,8 @@ export async function makeHarness(
   // Observability's tables live in their own namespace in production; one
   // database is enough here (no table names overlap).
   await upObservability(db as Kysely<any>);
+  // Licensing's tables, read by plans; no table name overlaps.
+  await upLicensing(db as Kysely<any>);
   const obsDb = db as unknown as Kysely<ObservabilityDB>;
   const orgs = fakeOrgs();
   const envs = new FakeEnvs();
@@ -778,6 +782,7 @@ export async function makeHarness(
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     instanceSecrets: secrets,
     settingsVault: fakeVault(),
+    licensingDb: db as unknown as Kysely<VetraLicensingDB>,
   };
   return {
     deps,

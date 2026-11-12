@@ -2,6 +2,16 @@ import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
 import { appInstancesFor } from "./instances/service.js";
 import {
+  appPlansFor,
+  createPlan,
+  retirePlan,
+  setPlanTarget,
+  updatePlanFor,
+  type CreatePlanInput,
+  type UpdatePlanInput,
+} from "./plans/service.js";
+import { myInstancesFor } from "./plans/holder-view.js";
+import {
   appSettingsFor,
   deleteAppSetting,
   setAppSetting,
@@ -305,6 +315,14 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "appSettings", () =>
           appSettingsFor(deps, requireCaller(ctx), appId),
         ),
+      appPlans: (_: unknown, { appId }: { appId: string }, ctx: AppsContext) =>
+        guard(deps, "appPlans", () =>
+          appPlansFor(deps, requireCaller(ctx), appId),
+        ),
+      myInstances: (_: unknown, __: unknown, ctx: AppsContext) =>
+        guard(deps, "myInstances", () =>
+          myInstancesFor(deps, requireCaller(ctx)),
+        ),
       appReleases: (
         _: unknown,
         {
@@ -450,6 +468,38 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "deleteAppSetting", () =>
           deleteAppSetting(deps, requireCaller(ctx), appId, name, scope),
+        ),
+      createPlan: (
+        _: unknown,
+        { input }: { input: CreatePlanInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "createPlan", () =>
+          createPlan(deps, requireCaller(ctx), input),
+        ),
+      updatePlan: (
+        _: unknown,
+        { input }: { input: UpdatePlanInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "updatePlan", () =>
+          updatePlanFor(deps, requireCaller(ctx), input),
+        ),
+      setPlanTarget: (
+        _: unknown,
+        { planId, version }: { planId: string; version: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setPlanTarget", () =>
+          setPlanTarget(deps, requireCaller(ctx), planId, version),
+        ),
+      retirePlan: (
+        _: unknown,
+        { planId }: { planId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "retirePlan", () =>
+          retirePlan(deps, requireCaller(ctx), planId),
         ),
       deleteApp: (
         _: unknown,

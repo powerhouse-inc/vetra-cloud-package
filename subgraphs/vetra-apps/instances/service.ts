@@ -6,6 +6,10 @@ import { listInstances, type InstanceRow } from "./repo.js";
 export interface InstanceJson {
   id: string;
   kind: string;
+  /** shared/own: the plan it serves. */
+  planId: string | null;
+  /** own: the holder's address. */
+  holder: string | null;
   name: string;
   branch: string | null;
   pr: number | null;
@@ -34,6 +38,8 @@ export function instanceJson(r: InstanceRow): InstanceJson {
   return {
     id: r.id,
     kind: r.kind,
+    planId: r.plan_id ?? null,
+    holder: r.holder_address ?? null,
     name: r.name,
     branch: r.branch,
     pr: r.pr,

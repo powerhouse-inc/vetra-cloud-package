@@ -58,6 +58,12 @@ export interface VetraAppsConfig {
     /** VETRA_APPS_INSTANCE_HEALTH=off|report|enforce (default report), VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S (60-3600, default 300), VETRA_APPS_INSTANCE_PROBES_PER_PASS, VETRA_APPS_INSTANCE_PROBES_PER_APP. */
     health?: InstanceHealthConfig;
   };
+  /**
+   * Releases phase 3 plans (shared and own instances). Absent = off.
+   * VETRA_APPS_PLANS=on runs them; VETRA_APPS_PLAN_STOP_AFTER_DAYS is how long
+   * an own instance keeps running after its licence ended.
+   */
+  plans?: PlansConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -80,6 +86,16 @@ export const DEFAULT_INSTANCE_HEALTH: InstanceHealthConfig = {
 /** Configs built by hand (tests) may leave health out. */
 export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
   cfg.instances.health ?? DEFAULT_INSTANCE_HEALTH;
+
+export interface PlansConfig {
+  enabled: boolean;
+  stopAfterDays: number;
+}
+
+export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
+
+export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
+  cfg.plans ?? DEFAULT_PLANS;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -117,6 +133,20 @@ function instancesConfig(env: Env): VetraAppsConfig["instances"] {
   };
 }
 
+function plansConfig(env: Env): PlansConfig {
+  const raw = (trimmed(env.VETRA_APPS_PLANS) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_PLANS "${env.VETRA_APPS_PLANS}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  return {
+    // Unset means off: plans are opted into per environment.
+    enabled: raw !== "" && INSTANCES_ON.has(raw),
+    stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+  };
+}
+
 function intIn(
   env: Env,
   name: string,
@@ -147,6 +177,20 @@ function healthConfig(env: Env): InstanceHealthConfig {
     probesPerPass: intIn(env, "VETRA_APPS_INSTANCE_PROBES_PER_PASS", 10, 1, 100),
     probesPerApp: intIn(env, "VETRA_APPS_INSTANCE_PROBES_PER_APP", 3, 1, 20),
   };
+}
+
+/**
+ * Whether plan instances run on this Vetra: VETRA_APPS_PLANS on and
+ * VETRA_APPS_INSTANCES not off (the reconciler that serves them). Licensing
+ * hands plan kinds over only then. An invalid switch counts as off here
+ * (vetra-apps refuses to boot on it anyway).
+ */
+export function planInstancesEnabled(env: Env = process.env): boolean {
+  try {
+    return plansConfig(env).enabled && instancesConfig(env).enabled;
+  } catch {
+    return false;
+  }
 }
 
 export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
@@ -218,6 +262,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
     instances: instancesConfig(env),
+    plans: plansConfig(env),
   };
 }
 

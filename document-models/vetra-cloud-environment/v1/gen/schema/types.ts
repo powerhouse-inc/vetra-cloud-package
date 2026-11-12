@@ -68,7 +68,7 @@ export type AddPackageInput = {
   version?: InputMaybe<Scalars["String"]["input"]>;
 };
 
-export type AppEnvironmentRole = "PREVIEW" | "PRODUCTION";
+export type AppEnvironmentRole = "PLAN" | "PREVIEW" | "PRODUCTION";
 
 export type ApproveChangesInput = {
   _placeholder?: InputMaybe<Scalars["String"]["input"]>;

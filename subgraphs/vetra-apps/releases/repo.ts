@@ -75,3 +75,17 @@ export async function forgetPushRobot(
     .where("robot_id", "=", robotId)
     .execute();
 }
+
+export async function releaseByVersion(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+  version: string,
+): Promise<ReleaseRow | null> {
+  const r = await db
+    .selectFrom("releases")
+    .selectAll()
+    .where("app_id", "=", appId)
+    .where("version", "=", version)
+    .executeTakeFirst();
+  return r ? normalize(r) : null;
+}

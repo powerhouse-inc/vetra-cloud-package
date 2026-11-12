@@ -143,6 +143,7 @@ export interface StudioLaunchSecretsTable {
 
 export interface VetraAppsDB {
   instances: InstancesTable;
+  plans: PlansTable;
   app_settings: AppSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
@@ -226,6 +227,33 @@ export interface AppSettingsTable {
   updated_by: string;
 }
 
+/** shared: one instance for all holders; own: one instance per licence chain (spec section 5). */
+export type PlanAccess = "shared" | "own";
+export type PlanStatus = "active" | "retired";
+
+/** What holders of one licensing term get (spec section 7; overview gap 1: a plan adopts a term by kind). */
+export interface PlansTable {
+  id: string;
+  app_id: string;
+  /** Names the shared instance; unique per App (plans/rules.ts). */
+  slug: string;
+  name: string;
+  /** The licensing term kind adopted: its live licences are this plan's holders. Unique per App. */
+  kind: string;
+  access: PlanAccess;
+  /** VETRA_AGENT_S … VETRA_AGENT_XXL: the FUSION size of every instance of the plan. */
+  size: string;
+  /** A recorded release of the App (never a build); null: no instances yet. */
+  target_version: string | null;
+  /** manual | patches | minor | follow:<branch>. Stored; rollouts (slice 3) act on it. */
+  policy: string;
+  notice_hours: number;
+  status: PlanStatus;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One running environment of an App (spec section 5). */
 export interface InstancesTable {
   id: string;
@@ -289,6 +317,20 @@ export interface InstancesTable {
   health_settings: string | null;
   /** The revision a ready host pod runs (its VETRA_SETTINGS_REVISION env). Monitor only. */
   observed_settings: string | null;
+  /** shared/own: the plan the instance serves. */
+  plan_id?: string | null;
+  /** own: the holder's lowercased address (ADMINS). */
+  holder_address?: string | null;
+  /** own: the licence chain's root (license_chain.root_license_id, or the licence itself). */
+  licence_root_id?: string | null;
+  /** own: when a pass first saw the chain without a live licence. */
+  licence_ended_at?: string | null;
+  /** Set: the instance is to be stopped (the reconciler sleeps its environment). */
+  stop_reason?: string | null;
+  /** The environment was put to sleep by Vetra (woken by Vetra when stop_reason clears). */
+  stopped_by_vetra?: boolean | null;
+  /** shared/own: the FUSION size (VetraCloudRessourceSize) of the plan. */
+  target_size?: string | null;
   created_at: string;
   updated_at: string;
 }

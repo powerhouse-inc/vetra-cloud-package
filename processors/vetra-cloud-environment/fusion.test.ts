@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Kysely } from "kysely";
-import { generateValuesYaml } from "./gitops.js";
+import { generateValuesYaml, gitopsTenantDir } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 import type { DB } from "./schema.js";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
@@ -309,6 +309,27 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
       ),
     );
     expect(app).toContain("  persistence:\n    enabled: false");
+  });
+
+  it("gives a plan instance the full profile: kept /data, backed-up database, tenants/ and the platform registry", async () => {
+    const state = hostState([], {
+      // A dev registry stored on the document resolves to the platform one (a preview would keep it).
+      defaultPackageRegistry: "https://registry.dev.vetra.io",
+      app: {
+        appId: "app-1",
+        role: "PLAN",
+        prNumber: null,
+        gitRef: null,
+        imageProject: null,
+      },
+    });
+    const yaml = await render(state);
+    expect(appBlock(yaml)).toContain("  persistence:\n    enabled: true");
+    expect(yaml).toContain("    storageSize: 50Gi");
+    expect(yaml).toMatch(/    backup:\n      enabled: true/);
+    expect(yaml).toContain(`PH_REGISTRY_URL: "https://registry.vetra.io"`);
+    expect(yaml).not.toContain("registry.dev.vetra.io");
+    expect(gitopsTenantDir(state, "plan-t")).toBe("tenants/plan-t");
   });
 
   it("takes the port from PH_HOST_PORT", async () => {

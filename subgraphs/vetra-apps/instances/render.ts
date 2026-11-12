@@ -8,10 +8,14 @@ import {
   setLabel,
   setOwner,
   setOwnerOrg,
+  setServiceSize,
   setServiceVersion,
   wakeEnvironment,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
-import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
+import type {
+  VetraCloudEnvironmentState,
+  VetraCloudRessourceSize,
+} from "../../../document-models/vetra-cloud-environment/index.js";
 import { WORKFLOWS_MASTER_KEY } from "../../vetra-cloud-secrets/services/secrets-service.js";
 import {
   SETTINGS_REVISION_ENV,
@@ -120,7 +124,7 @@ export interface CreateInstanceInput {
   owner: string;
   ownerOrgId: string | null;
   appId: string;
-  gitRef: string;
+  gitRef: string | null;
   /** The PR of a preview instance; null (or absent) for a branch instance. */
   prNumber?: number | null;
   imageProject: string;
@@ -129,12 +133,17 @@ export interface CreateInstanceInput {
   settings: InstanceSettingsEnv;
   /** Set the FUSION version (the host starts). False: the reconciler starts it once the tenant's secrets are in place. */
   start: boolean;
+  /** PREVIEW: branch/preview instances (slim profile). PLAN: shared/own instances (full profile: kept /data, backups). */
+  role?: "PREVIEW" | "PLAN";
+  /** The plan's FUSION size; null/absent: the processor's default (previews always run S). */
+  size?: VetraCloudRessourceSize | null;
 }
 
 /**
- * A new instance environment. Linked as the App's PREVIEW: the processor
- * renders it as a cheap dev environment (size S, one Postgres without S3
- * backups, no kept /data; overview gaps 5 and 6). APPROVE is sent separately.
+ * A new instance environment. Linked as the App's PREVIEW (branch, preview) or
+ * PLAN (shared, own). A PREVIEW renders as a cheap dev environment (size S, one
+ * Postgres without S3 backups, no kept /data; overview gaps 5 and 6); a PLAN
+ * gets the full profile at the plan's size. APPROVE is sent separately.
  */
 export function instanceCreateActions(i: CreateInstanceInput): Action[] {
   assertVersioned(i.image);
@@ -151,12 +160,13 @@ export function instanceCreateActions(i: CreateInstanceInput): Action[] {
       : []),
     setAppLink({
       appId: i.appId,
-      role: "PREVIEW",
+      role: i.role ?? "PREVIEW",
       prNumber: i.prNumber ?? null,
       gitRef: i.gitRef,
       imageProject: i.imageProject,
     }),
     enableService({ type: "FUSION", prefix: "fusion" }),
+    ...(i.size ? [setServiceSize({ prefix: "fusion", size: i.size })] : []),
     setApexService({ type: "FUSION" }),
     setFusionConfig({
       image: i.image.repository,
@@ -179,10 +189,14 @@ const sameEnv = (state: VetraCloudEnvironmentState, want: FusionEnvEntry[]) =>
     })),
   ) === JSON.stringify(want);
 
+/** A document the reconciler made: a branch/preview instance (PREVIEW) or a plan's instance (PLAN). */
+export const isInstanceRole = (state: VetraCloudEnvironmentState) =>
+  state.app?.role === "PREVIEW" || state.app?.role === "PLAN";
+
 /**
- * The actions that bring an existing instance environment to `image`; [] when it already
+ * The actions that bring an existing instance environment to `image` (and `size`, when given); [] when it already
  * runs it or is going away. Throws on anything that is not an instance (a licensed
- * environment, or one that is not an app PREVIEW): these actions are system-signed, so
+ * environment, or one that is not an app PREVIEW or PLAN): these actions are system-signed, so
  * the reducer's template lock does not stop them, and this is the guard.
  */
 export function instanceUpdateActions(
@@ -191,14 +205,15 @@ export function instanceUpdateActions(
   admins: string,
   settings: InstanceSettingsEnv,
   start = true,
+  size: VetraCloudRessourceSize | null = null,
 ): Action[] {
   if (state.managedBy)
     throw new Error(
       `Environment ${envName(state)} is licensed (managedBy set): not an instance`,
     );
-  if (state.app?.role !== "PREVIEW")
+  if (!isInstanceRole(state))
     throw new Error(
-      `Environment ${envName(state)} is not an instance (not an app PREVIEW)`,
+      `Environment ${envName(state)} is not an instance (not an app PREVIEW or PLAN)`,
     );
   if (GONE.has(state.status)) return [];
   assertVersioned(image);
@@ -221,6 +236,8 @@ export function instanceUpdateActions(
       }),
     );
   }
+  if (size && fusion?.selectedRessource !== size)
+    changes.push(setServiceSize({ prefix: "fusion", size }));
   // Not started yet (no version) and not allowed to start: env and image only.
   if (fusion?.version !== image.tag && (start || !!fusion?.version))
     changes.push(setServiceVersion({ type: "FUSION", version: image.tag }));

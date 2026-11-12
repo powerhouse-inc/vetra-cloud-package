@@ -103,6 +103,10 @@ export const schema: DocumentNode = gql`
     id: ID!
     "branch | preview | shared | own"
     kind: String!
+    "shared/own: the plan it serves"
+    planId: String
+    "own: the holder's address"
+    holder: String
     name: String!
     branch: String
     pr: Int
@@ -130,6 +134,60 @@ export const schema: DocumentNode = gql`
     observedDigestSource: String
     environmentId: String
     updatedAt: String!
+  }
+
+  "What holders of one licensing term get (spec: releases and instances, section 7). The plan adopted the term by its kind."
+  type AppPlan {
+    id: ID!
+    appId: ID!
+    slug: String!
+    name: String!
+    kind: String!
+    "shared | own"
+    access: String!
+    "VETRA_AGENT_S … VETRA_AGENT_XXL"
+    size: String!
+    targetVersion: String
+    "manual (rollouts arrive later)"
+    policy: String!
+    noticeHours: Int!
+    "active | retired"
+    status: String!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  "An instance the caller holds a licence for"
+  type HolderInstance {
+    instanceId: ID!
+    appId: ID!
+    appName: String!
+    planName: String!
+    "shared | own"
+    access: String!
+    url: String
+    status: String!
+    reason: String
+    runningVersion: String
+  }
+
+  input CreatePlanInput {
+    appId: ID!
+    "The licensing term's kind; it must have no holders yet"
+    kind: String!
+    "shared | own"
+    access: String!
+    slug: String
+    name: String
+    size: String
+    "A recorded release of the App"
+    targetVersion: String
+  }
+
+  input UpdatePlanInput {
+    planId: ID!
+    name: String
+    size: String
   }
 
   "Where a publisher setting applies: every instance of the App, or only its branch or preview instances (wins over ALL for the same name)."
@@ -349,6 +407,9 @@ export const schema: DocumentNode = gql`
     appInstances(appId: ID!): [AppInstance!]!
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
+    appPlans(appId: ID!): [AppPlan!]!
+    "Instances of the plans the caller holds licences of"
+    myInstances: [HolderInstance!]!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment
@@ -373,6 +434,12 @@ export const schema: DocumentNode = gql`
       name: String!
       scope: AppSettingScope
     ): Boolean!
+    "Turn a licensing term into a plan (shared or own instances)"
+    createPlan(input: CreatePlanInput!): AppPlan!
+    updatePlan(input: UpdatePlanInput!): AppPlan!
+    "Move the plan's instances to a release at once (no notice; replaced by rollouts)"
+    setPlanTarget(planId: ID!, version: String!): AppPlan!
+    retirePlan(planId: ID!): AppPlan!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
     openAppSetupPullRequest(appId: ID!): String!
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!

@@ -19,6 +19,7 @@ import type { GrantProvenance } from "./grants.js";
 import type { LifecycleRecord } from "./lifecycle.js";
 import { UNAPPLIED_TEMPLATE_HASH } from "./environments.js";
 import type { LicenceRecord } from "./reads.js";
+import { leaveToInstances } from "./plan-kinds.js";
 
 export interface HandlerDeps {
   licences(): Promise<LicenceRecord[]>;
@@ -41,6 +42,8 @@ export interface HandlerDeps {
   app(appId: string): Promise<AppDocView | null>;
   environments(appId: string): Promise<LicenseEnvironments[]>;
   environmentAppIds(): Promise<string[]>;
+  /** Kinds adopted by vetra-apps plans (releases phase 3); their chains without a licensed environment are left to instances. Absent: none. */
+  planKinds?(appId: string): Promise<ReadonlySet<string>>;
   provision(input: ProvisionChainInput): Promise<ProvisionResult>;
   setStage(licenseId: string, stage: string): Promise<void>;
   /** Task 10 wires the offboarding clock here; until then they only log. */
@@ -422,6 +425,14 @@ export class AppLicenseHandler {
       );
     }
     const environments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+    const planKinds = this.d.planKinds
+      ? await this.timed(this.d.planKinds(appId), `plan kinds of app ${appId}`)
+      : new Set<string>();
+    const visible = leaveToInstances(
+      licences,
+      planKinds,
+      new Set(environments.map((e) => e.root_license_id)),
+    );
     // A canary chain resolves every artifact on its own channel (spec 4.2).
     const channelOf = new Map(
       environments.map((e) => [e.root_license_id, e.channel_override ?? null]),
@@ -442,7 +453,7 @@ export class AppLicenseHandler {
         : r;
     };
     const planned = planChains({
-      licences,
+      licences: visible,
       environments: environments.map((e) => ({
         environmentId: e.environment_id,
         rootLicenseId: e.root_license_id,
@@ -456,7 +467,7 @@ export class AppLicenseHandler {
       // not one the system wrote, and is held.
       holdUnverified: true,
     });
-    const steps = this.holdChains(planned, licences, heldRoots);
+    const steps = this.holdChains(planned, visible, heldRoots);
     const held = app.tampered || app.unverified;
     this.noteHoldsAndAnomalies(appId, steps);
 

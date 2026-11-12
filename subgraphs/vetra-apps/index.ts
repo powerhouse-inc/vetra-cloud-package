@@ -201,6 +201,11 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     const envReadModel = (await this.relationalDb.createNamespace(
       "vetra-cloud-environments",
     )) as unknown as Kysely<EnvironmentsDB>;
+    // Licensing's tables (plans' holders, licensed environments). Its tables
+    // may not exist yet at boot (order is not fixed): plan sync logs and skips.
+    const licensingDb = (await this.relationalDb.createNamespace(
+      "vetra-licensing",
+    )) as unknown as Kysely<VetraLicensingDB>;
     const deps: AppsDeps = {
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
@@ -238,6 +243,7 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         console,
       ),
       releasePolicy,
+      licensingDb,
     };
     if (cfg.allowUnattestedReleases)
       console.warn(

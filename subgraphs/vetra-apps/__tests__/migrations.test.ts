@@ -8,6 +8,8 @@ import {
   ensureDeploymentTriggerColumns,
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
+  ensureInstancesPlanColumns,
+  ensurePlansTable,
   ensureStudioLaunchSecretsTable,
   ensureStudioProductColumns,
   isConcurrentIndexError,
@@ -19,6 +21,7 @@ import {
   listAppSettings,
   upsertAppSetting,
 } from "../settings/repo.js";
+import { getPlan, insertPlan, listPlans, updatePlan } from "../plans/repo.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -535,5 +538,141 @@ describe("app_settings and instance settings columns", () => {
     ])
       expect(names).toContain(c);
     await db.destroy();
+  });
+});
+
+describe("plans and the instances' plan columns", () => {
+  it("are created idempotently; a plan is unique per app by slug and by kind", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db);
+    await up(db); // second run: no error
+    const row = {
+      id: "plan-1",
+      app_id: "app-1",
+      slug: "pro",
+      name: "Pro",
+      kind: "pro",
+      access: "own" as const,
+      size: "VETRA_AGENT_M",
+      target_version: null,
+      policy: "manual",
+      notice_hours: 72,
+      status: "active" as const,
+      created_by: "0xaa",
+      created_at: "2026-11-12T00:00:00.000Z",
+      updated_at: "2026-11-12T00:00:00.000Z",
+    };
+    await insertPlan(db, row);
+    await expect(insertPlan(db, { ...row, id: "plan-2", kind: "other" })).rejects.toThrow();
+    await expect(insertPlan(db, { ...row, id: "plan-3", slug: "other" })).rejects.toThrow();
+    const moved = await updatePlan(
+      db,
+      "plan-1",
+      { target_version: "1.4.0" },
+      "2026-11-12T01:00:00.000Z",
+    );
+    expect(moved).toMatchObject({
+      target_version: "1.4.0",
+      updated_at: "2026-11-12T01:00:00.000Z",
+    });
+    expect((await listPlans(db, "app-1")).map((p) => p.id)).toEqual(["plan-1"]);
+    expect(await getPlan(db, "missing")).toBeNull();
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns WHERE table_name = 'instances'`.execute(db);
+    const names = cols.rows.map((c) => c.column_name);
+    for (const c of [
+      "plan_id",
+      "holder_address",
+      "licence_root_id",
+      "licence_ended_at",
+      "stop_reason",
+      "stopped_by_vetra",
+      "target_size",
+    ])
+      expect(names).toContain(c);
+    await db.destroy();
+  });
+});
+
+describe("ensurePlansTable and ensureInstancesPlanColumns", () => {
+  const PLAN_COLUMNS = [
+    "plan_id",
+    "holder_address",
+    "licence_root_id",
+    "licence_ended_at",
+    "stop_reason",
+    "stopped_by_vetra",
+    "target_size",
+  ];
+  const instance = (id: string, root: string | null = null) => ({
+    id,
+    app_id: "a1",
+    kind: root ? "own" : "branch",
+    name: id,
+    status: "pending",
+    created_at: "2026-11-12T00:00:00.000Z",
+    updated_at: "2026-11-12T00:00:00.000Z",
+    ...(root ? { licence_root_id: root } : {}),
+  });
+
+  it("work in the namespace schema, concurrently; an existing instance survives with null plan columns", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      // The instances table as it was before this change.
+      await sql`DROP TABLE "vetra-apps".plans`.execute(root);
+      await sql`DROP INDEX "vetra-apps".instances_licence_root_uq`.execute(root);
+      for (const c of PLAN_COLUMNS)
+        await sql`ALTER TABLE "vetra-apps".instances DROP COLUMN ${sql.ref(c)}`.execute(root);
+      await db.insertInto("instances").values(instance("old")).execute();
+
+      await Promise.all(
+        [1, 2, 3].flatMap(() => [ensurePlansTable(db), ensureInstancesPlanColumns(db)]),
+      );
+      await ensurePlansTable(db);
+      await ensureInstancesPlanColumns(db);
+
+      const old = await db
+        .selectFrom("instances")
+        .select(PLAN_COLUMNS)
+        .where("id", "=", "old")
+        .executeTakeFirstOrThrow();
+      expect(old).toStrictEqual(Object.fromEntries(PLAN_COLUMNS.map((c) => [c, null])));
+      for (const [table, column] of [
+        ["plans", "kind"],
+        ["instances", "licence_root_id"],
+      ]) {
+        const where = await sql<{ table_schema: string }>`
+          SELECT table_schema FROM information_schema.columns
+          WHERE table_name = ${table} AND column_name = ${column}`.execute(root);
+        expect(where.rows).toStrictEqual([{ table_schema: "vetra-apps" }]);
+      }
+      const index = await sql<{ schemaname: string }>`
+        SELECT schemaname FROM pg_indexes WHERE indexname = 'instances_licence_root_uq'`.execute(root);
+      expect(index.rows).toStrictEqual([{ schemaname: "vetra-apps" }]);
+    } finally {
+      await root.destroy();
+    }
+  });
+
+  it("instances_licence_root_uq: one instance per (App, licence root); rows without a root are not in it", async () => {
+    const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await up(db);
+      await db.insertInto("instances").values(instance("n1")).execute();
+      await db.insertInto("instances").values(instance("n2")).execute();
+      await db.insertInto("instances").values(instance("o1", "root-1")).execute();
+      await db
+        .insertInto("instances")
+        .values({ ...instance("o2", "root-1"), app_id: "a2" })
+        .execute();
+      await expect(
+        db.insertInto("instances").values(instance("o3", "root-1")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await db.destroy();
+    }
   });
 });
