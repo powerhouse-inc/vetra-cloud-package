@@ -144,6 +144,7 @@ export interface StudioLaunchSecretsTable {
 export interface VetraAppsDB {
   instances: InstancesTable;
   plans: PlansTable;
+  environment_holds: EnvironmentHoldsTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
   app_settings: AppSettingsTable;
@@ -257,6 +258,21 @@ export interface PlansTable {
 }
 
 /** Where an audited action came from (spec section 10). */
+/**
+ * An environment kept with its data while its app does not run (releases
+ * phase 3 plan 9). The processor renders a held environment with no app pod
+ * and no ingress, keeping its CNPG database, backups and data volumes;
+ * sleeping (STOPPED) instead deletes the database.
+ */
+export interface EnvironmentHoldsTable {
+  environment_id: string;
+  reason: string;
+  switchover_id: string | null;
+  /** Lowercased address, or "vetra". */
+  created_by: string;
+  created_at: string;
+}
+
 export type AuditSource = "console" | "api" | "policy" | "system" | "ci";
 
 /** One audited action on an App (spec section 10): who, what, when, from where. Kept 365 days. */
