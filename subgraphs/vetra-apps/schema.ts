@@ -107,13 +107,23 @@ export const schema: DocumentNode = gql`
     branch: String
     pr: Int
     url: String
-    "pending | updating | ready | failed | stopped"
+    "pending | updating | ready | degraded | failed | stopped"
     status: String!
     reason: String
     targetVersion: String
     targetDigest: String
     runningVersion: String
     runningDigest: String
+    "healthy | unhealthy | unknown; null until first checked (spec 14.7)"
+    health: String
+    "The check behind it: gitops | image | crash | restarts | pod | switchboard | connect | stopped | data"
+    healthCheck: String
+    healthReason: String
+    healthCheckedAt: String
+    "The digest the cluster runs (the pod's imageID; see observedDigestSource)"
+    observedDigest: String
+    "pod | document (the environment's tag, while the pod reports no imageID)"
+    observedDigestSource: String
     environmentId: String
     updatedAt: String!
   }

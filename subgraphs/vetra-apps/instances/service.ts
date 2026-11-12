@@ -16,6 +16,12 @@ export interface InstanceJson {
   targetDigest: string | null;
   runningVersion: string | null;
   runningDigest: string | null;
+  health: string | null;
+  healthCheck: string | null;
+  healthReason: string | null;
+  healthCheckedAt: string | null;
+  observedDigest: string | null;
+  observedDigestSource: string | null;
   environmentId: string | null;
   updatedAt: string;
 }
@@ -34,6 +40,12 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     targetDigest: r.target_digest,
     runningVersion: r.running_version,
     runningDigest: r.running_digest,
+    health: r.health,
+    healthCheck: r.health_check,
+    healthReason: r.health_reason,
+    healthCheckedAt: r.health_checked_at,
+    observedDigest: r.observed_digest,
+    observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
     updatedAt: r.updated_at,
   };
