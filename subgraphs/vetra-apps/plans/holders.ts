@@ -100,6 +100,50 @@ export async function chainKinds(
   return out;
 }
 
+/**
+ * When each of `roots` ended, as the licences recorded it: the latest end_at
+ * already past of a licence that was live (ACTIVE, EXPIRED or REPLACED).
+ * Chains that ended without a recorded end (revoked, open-ended) are absent.
+ */
+export async function chainEnds(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+  roots: Iterable<string>,
+  nowIso: string,
+): Promise<Map<string, string>> {
+  const wanted = [...new Set(roots)];
+  const out = new Map<string, string>();
+  if (wanted.length === 0) return out;
+  const rows = await db
+    .selectFrom("app_license_grants as g")
+    .leftJoin("license_chain as c", "c.license_id", "g.license_id")
+    .innerJoin("license_lifecycle as l", "l.license_id", "g.license_id")
+    .select([
+      "g.license_id as licenseId",
+      "c.root_license_id as root",
+      "l.end_at as endAt",
+    ])
+    .where("g.app_id", "=", appId)
+    .where(
+      sql<string>`coalesce(${sql.ref("c.root_license_id")}, ${sql.ref("g.license_id")})`,
+      "in",
+      wanted,
+    )
+    .where("l.status", "in", ["ACTIVE", "EXPIRED", "REPLACED"])
+    .where("l.end_at", "is not", null)
+    .execute();
+  const now = Date.parse(nowIso);
+  for (const r of rows) {
+    const end = Date.parse(r.endAt ?? "");
+    if (Number.isNaN(end) || end > now) continue;
+    const root = r.root ?? r.licenseId;
+    const prev = out.get(root);
+    if (!prev || Date.parse(prev) < end)
+      out.set(root, new Date(end).toISOString());
+  }
+  return out;
+}
+
 /** Chains the old model runs a licensed environment for (overview rule 1). */
 export async function licensedRoots(
   db: Kysely<VetraLicensingDB>,

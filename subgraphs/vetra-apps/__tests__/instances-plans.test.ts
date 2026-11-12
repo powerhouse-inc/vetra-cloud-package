@@ -16,6 +16,7 @@ import { listInstances } from "../instances/repo.js";
 import { insertPlan, updatePlan } from "../plans/repo.js";
 import {
   LICENCE_ENDED,
+  LICENSED_ENVIRONMENT,
   ownInstanceName,
   PLAN_RETIRED,
   syncPlanInstances,
@@ -158,6 +159,109 @@ describe("syncPlanInstances", () => {
       stop_reason: null,
       licence_ended_at: null,
     });
+  });
+
+  it("measures the stop window from the licence's recorded end, not from when sync noticed", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+      endAt: "2026-10-03T00:00:00.000Z",
+    });
+    await sync();
+    h.advance(15 * DAY); // first noticed now, 14.5 days after the end
+    await sync();
+    expect((await rows())[0]).toMatchObject({
+      licence_ended_at: "2026-10-03T00:00:00.000Z",
+      stop_reason: LICENCE_ENDED,
+    });
+  });
+
+  it("falls back to when sync noticed for a licence that ended without a recorded end (revoked)", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await sync();
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "REVOKED" })
+      .where("license_id", "=", "l1")
+      .execute();
+    h.advance(DAY);
+    await sync();
+    expect((await rows())[0]).toMatchObject({
+      licence_ended_at: expect.stringMatching(/^2026-10-03T12:00:00/),
+      stop_reason: null,
+    });
+  });
+
+  it("stops an own row at once when its chain gets a licensed environment", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await sync();
+    await seedLicensedEnvironment(h, { appId, root: "l1" });
+    await sync();
+    expect((await rows())[0]).toMatchObject({
+      licence_root_id: "l1",
+      licence_ended_at: null,
+      stop_reason: LICENSED_ENVIRONMENT,
+    });
+  });
+
+  it("leaves removed own rows alone", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await sync();
+    const before = (await rows())[0];
+    await h.db
+      .updateTable("instances")
+      .set({ removed_at: "2026-10-02T12:00:00.000Z", removed_reason: "gone" })
+      .where("id", "=", before.id)
+      .execute();
+    await h.deps
+      .licensingDb!.updateTable("license_lifecycle")
+      .set({ status: "EXPIRED" })
+      .where("license_id", "=", "l1")
+      .execute();
+    h.advance(15 * DAY);
+    await sync();
+    expect((await rows())[0]).toMatchObject({
+      licence_ended_at: null,
+      stop_reason: null,
+      updated_at: before.updated_at,
+    });
+  });
+
+  it("does nothing while plans are off, even when called directly", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    h.deps.cfg = {
+      ...h.deps.cfg,
+      plans: { enabled: false, stopAfterDays: 14 },
+    };
+    await sync();
+    expect(await rows()).toEqual([]);
   });
 
   it("gives a shared plan one row while active or with live licences, else marks it to stop", async () => {

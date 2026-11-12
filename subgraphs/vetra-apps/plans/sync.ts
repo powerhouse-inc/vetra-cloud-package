@@ -13,6 +13,7 @@ import {
 } from "../instances/repo.js";
 import { targetOf, type InstanceTarget } from "../instances/targets.js";
 import {
+  chainEnds,
   chainKinds,
   licensedRoots,
   liveChains,
@@ -23,6 +24,9 @@ import { listPlans, type PlanRow } from "./repo.js";
 
 export const LICENCE_ENDED = "the licence ended";
 export const PLAN_RETIRED = "the plan is retired and has no live licences";
+/** The old model took the chain over (overview rule 1): its environment serves the holder. */
+export const LICENSED_ENVIRONMENT =
+  "the licence chain has a licensed environment";
 const DAY_MS = 86_400_000;
 
 export const isPlanKind = (kind: InstanceKind | string) =>
@@ -135,15 +139,18 @@ async function ownPlanResolver(
  * that chain (overview rule 1). A chain whose live head is of no plan's kind
  * stays under the plan of its most recent plan-kind licence when that plan is
  * own (cross-kind upgrades: the plan model owns a chain once it held a plan
- * kind; licensing leaves it alone too). Ended chains and retired, unheld shared plans
- * get a stop_reason; nothing is ever deleted here.
+ * kind; licensing leaves it alone too). Ended chains (stopAfterDays after the
+ * licence's recorded end), chains the old model took over (at once) and
+ * retired, unheld shared plans get a stop_reason; removed rows are left
+ * alone; nothing is ever deleted here. Off while plans are off.
  */
 export async function syncPlanInstances(
   deps: AppsDeps,
   app: AppRow,
 ): Promise<void> {
-  if (!deps.licensingDb) return;
   const cfg = plansConfigOf(deps.cfg);
+  // The kill switch holds for every caller, not only the reconciler.
+  if (!cfg.enabled || !deps.licensingDb) return;
   const plans = await listPlans(deps.db, app.id);
   const shared = await listInstances(deps.db, app.id, "shared");
   const own = await listInstances(deps.db, app.id, "own");
@@ -185,6 +192,10 @@ export async function syncPlanInstances(
     if (!plan || licensed.has(head.root)) continue;
     const target = targets.get(plan.id) ?? null;
     const row = own.find((r) => r.licence_root_id === head.root);
+    if (row?.removed_at) {
+      served.add(head.root);
+      continue;
+    }
     if (!row) {
       if (target) {
         await insertInstance(
@@ -206,9 +217,27 @@ export async function syncPlanInstances(
     });
   }
   const stopAfterMs = cfg.stopAfterDays * DAY_MS;
-  for (const row of own) {
-    if (served.has(row.licence_root_id ?? "")) continue;
-    const ended = row.licence_ended_at ?? nowIso;
+  const unserved = own.filter(
+    (r) => !r.removed_at && !served.has(r.licence_root_id ?? ""),
+  );
+  const ends = await chainEnds(
+    deps.licensingDb,
+    app.id,
+    unserved.flatMap((r) => (r.licence_root_id ? [r.licence_root_id] : [])),
+    nowIso,
+  );
+  for (const row of unserved) {
+    const root = row.licence_root_id ?? "";
+    if (licensed.has(root)) {
+      // Not an ended licence: the holder is served by the old model's environment now.
+      await patch(row, {
+        licence_ended_at: null,
+        stop_reason: LICENSED_ENVIRONMENT,
+      });
+      continue;
+    }
+    // The recorded end when there is one, else when this was first noticed.
+    const ended = ends.get(root) ?? row.licence_ended_at ?? nowIso;
     const due = deps.now().getTime() - Date.parse(ended) >= stopAfterMs;
     await patch(row, {
       licence_ended_at: ended,
