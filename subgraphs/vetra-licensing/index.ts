@@ -32,7 +32,7 @@ import {
   listLicenceDocumentIds,
 } from "./license-gateway.js";
 import { createLifecycleStore } from "./lifecycle.js";
-import { createPlanKindsReader } from "./plan-kinds.js";
+import { planKindsReaderFor } from "./plan-kinds.js";
 import { LicenseKeeper } from "./keeper.js";
 import { AppWarmPoolKeeper } from "./warm-pool-keeper.js";
 import { createWarmPoolStore } from "./warm-pool-db.js";
@@ -622,7 +622,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       app: (id) => appReads.app(id),
       environments: (appId) => chainRows.forApp(appId),
       environmentAppIds: () => chainRows.appIds(),
-      planKinds: createPlanKindsReader(appsDb),
+      planKinds: planKindsReaderFor(process.env, appsDb),
       provision: (input) => provision(input),
       setStage: (licenseId, stage) =>
         gateway.execute(licenseId, [licenseActions.setStage({ stage })]),

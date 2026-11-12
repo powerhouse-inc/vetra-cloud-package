@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { leaveToInstances } from "../plan-kinds.js";
+import { PGlite } from "@electric-sql/pglite";
+import { Kysely } from "kysely";
+import { PGliteDialect } from "kysely-pglite-dialect";
+import type { VetraAppsDB } from "../../vetra-apps/db/schema.js";
+import {
+  createPlanKindsReader,
+  leaveToInstances,
+  planKindsReaderFor,
+} from "../plan-kinds.js";
 import type { PlanLicence } from "../chain-plan.js";
 import { AppLicenseHandler, type HandlerDeps } from "../handler.js";
 import { loadLicensingConfig } from "../config.js";
@@ -252,5 +260,63 @@ describe("AppLicenseHandler with plan kinds", () => {
     expect(withPlans.filter((c) => JSON.stringify(c).includes('"p1"'))).toEqual(
       [],
     );
+  });
+});
+
+describe("planKindsReaderFor (the plans kill switch reaches licensing)", () => {
+  const db = {} as Kysely<VetraAppsDB>;
+  it.each([
+    [{}, false],
+    [{ VETRA_APPS_PLANS: "off" }, false],
+    [{ VETRA_APPS_PLANS: "on" }, true],
+    [{ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "on" }, true],
+    [{ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "off" }, false],
+    [{ VETRA_APPS_PLANS: "maybe" }, false],
+    [{ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "maybe" }, false],
+  ])("%j: reader given = %s", (env, given) => {
+    expect(typeof planKindsReaderFor(env, db) === "function").toBe(given);
+  });
+});
+
+describe("createPlanKindsReader", () => {
+  it("reads no plans while vetra-apps has not created its table (42P01)", async () => {
+    const db = new Kysely<VetraAppsDB>({
+      dialect: new PGliteDialect(new PGlite()),
+    });
+    try {
+      expect(await createPlanKindsReader(db)("app-1")).toEqual(new Set());
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  it("rethrows any other error, and the handler then holds the App for that tick", async () => {
+    const boom = Object.assign(new Error("connection lost"), {
+      code: "08006",
+    });
+    const failing = {
+      selectFrom: () => ({
+        select: () => ({
+          where: () => ({ execute: () => Promise.reject(boom) }),
+        }),
+      }),
+    } as unknown as Kysely<VetraAppsDB>;
+    await expect(createPlanKindsReader(failing)("app-1")).rejects.toBe(boom);
+    const calls = await outputOf([...LICENCES, record("p1", { kind: "pro" })], {
+      planKinds: createPlanKindsReader(failing),
+    });
+    const acted = calls.filter((c) =>
+      ["provision", "setStage", "onEnded", "onResumed"].includes(
+        (c as unknown[])[0] as string,
+      ),
+    );
+    expect(acted).toEqual([]);
+    expect(
+      calls.some(
+        (c) =>
+          ((c as unknown[])[0] === "warn" || (c as unknown[])[0] === "error") &&
+          String((c as unknown[])[1]).includes("app-1"),
+      ),
+    ).toBe(true);
   });
 });

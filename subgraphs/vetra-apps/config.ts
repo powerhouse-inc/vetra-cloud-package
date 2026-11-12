@@ -179,6 +179,20 @@ function healthConfig(env: Env): InstanceHealthConfig {
   };
 }
 
+/**
+ * Whether plan instances run on this Vetra: VETRA_APPS_PLANS on and
+ * VETRA_APPS_INSTANCES not off (the reconciler that serves them). Licensing
+ * hands plan kinds over only then. An invalid switch counts as off here
+ * (vetra-apps refuses to boot on it anyway).
+ */
+export function planInstancesEnabled(env: Env = process.env): boolean {
+  try {
+    return plansConfig(env).enabled && instancesConfig(env).enabled;
+  } catch {
+    return false;
+  }
+}
+
 export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
   const appId = trimmed(env.GITHUB_DEPLOY_APP_ID);
   const slug = trimmed(env.GITHUB_DEPLOY_APP_SLUG);

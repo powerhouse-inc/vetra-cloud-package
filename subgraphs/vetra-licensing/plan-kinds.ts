@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
+import { planInstancesEnabled } from "../vetra-apps/config.js";
 import type { PlanLicence } from "./chain-plan.js";
 
 /**
@@ -49,4 +50,17 @@ export function createPlanKindsReader(appsDb: Kysely<VetraAppsDB>) {
       throw err;
     }
   };
+}
+
+/**
+ * The plan kinds reader licensing runs with, or none while plan instances are
+ * off (VETRA_APPS_PLANS off, or VETRA_APPS_INSTANCES off): then licensing
+ * keeps every chain, exactly as before plans, so turning plans off never
+ * leaves a holder unserved by both.
+ */
+export function planKindsReaderFor(
+  env: Record<string, string | undefined>,
+  appsDb: Kysely<VetraAppsDB>,
+): ((appId: string) => Promise<ReadonlySet<string>>) | undefined {
+  return planInstancesEnabled(env) ? createPlanKindsReader(appsDb) : undefined;
 }
