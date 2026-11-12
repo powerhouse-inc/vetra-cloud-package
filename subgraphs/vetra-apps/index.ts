@@ -9,6 +9,7 @@ import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
 import { backupsConfigOf, loadAppsConfig, missingConfig } from "./config.js";
 import { instanceBackupDepsFromEnv } from "./backups/k8s.js";
+import { runDailyBackupsOnce } from "./backups/schedule.js";
 import {
   createReactorEnvGateway,
   subdomainTakenIn,
@@ -438,6 +439,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       every(WATCH_INTERVAL_MS, "instance health", () =>
         monitorInstancesOnce(deps),
       );
+      if (backupsConfigOf(cfg).enabled)
+        every(5 * 60_000, "instance backups", () => runDailyBackupsOnce(deps));
     } else {
       console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");
     }
