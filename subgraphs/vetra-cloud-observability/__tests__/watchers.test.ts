@@ -596,4 +596,18 @@ describe("podToRow — image and waiting reason", () => {
       image: row.image,
     });
   });
+
+  it("records the settings revision the first container is started with", () => {
+    const p = pod();
+    p.spec!.containers![0].env = [
+      { name: "PH_HOST", value: "cli" },
+      { name: "VETRA_SETTINGS_REVISION", value: "0123456789abcdef" },
+    ];
+    expect(podToRow(p, "2026-11-12T00:00:00.000Z")).toMatchObject({
+      settingsRevision: "0123456789abcdef",
+    });
+    expect(podToRow(pod(), "2026-11-12T00:00:00.000Z")).toMatchObject({
+      settingsRevision: null,
+    });
+  });
 });

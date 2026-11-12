@@ -43,6 +43,7 @@ export async function upsertPod(
         image: row.image ?? null,
         imageId: row.imageId ?? null,
         waitingReason: row.waitingReason ?? null,
+        settingsRevision: row.settingsRevision ?? null,
         service: row.service,
         component: row.component,
         agent: row.agent,
@@ -70,7 +71,13 @@ export interface PodLike {
     namespace?: string;
     labels?: Record<string, string>;
   };
-  spec?: { containers?: Array<{ name?: string; image?: string }> };
+  spec?: {
+    containers?: Array<{
+      name?: string;
+      image?: string;
+      env?: Array<{ name?: string; value?: string }>;
+    }>;
+  };
   status?: {
     phase?: string;
     containerStatuses?: Array<{
@@ -119,6 +126,9 @@ export function podToRow(
     .filter((r): r is string => !!r);
   const waitingReason =
     reasons.find((r) => !TRANSIENT_WAITING.has(r)) ?? reasons[0] ?? null;
+  // The instance settings revision (vetra-apps settings/names.ts SETTINGS_REVISION_ENV; a literal here to keep observability standalone).
+  const settingsRevision =
+    main?.env?.find((e) => e.name === "VETRA_SETTINGS_REVISION")?.value ?? null;
 
   return {
     id: `${tenantId}/${name}`,
@@ -133,6 +143,7 @@ export function podToRow(
     image: main?.image ?? null,
     imageId: mainStatus?.imageID || null,
     waitingReason,
+    settingsRevision,
     updatedAt: now,
   };
 }

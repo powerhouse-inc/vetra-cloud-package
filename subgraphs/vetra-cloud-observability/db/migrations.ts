@@ -102,6 +102,7 @@ export async function up(db: Kysely<any>): Promise<void> {
     ["image", "varchar(512)"],
     ["imageId", "varchar(512)"],
     ["waitingReason", "varchar(64)"],
+    ["settingsRevision", "varchar(32)"],
   ] as const) {
     try {
       await db.schema
