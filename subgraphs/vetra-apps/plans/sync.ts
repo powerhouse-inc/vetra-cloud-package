@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { plansConfigOf } from "../config.js";
-import type { InstanceKind } from "../db/schema.js";
 import type { AppRow } from "../repo.js";
 import { releaseByVersion } from "../releases/repo.js";
 import type { AppsDeps } from "../service.js";
@@ -29,7 +28,7 @@ export const LICENSED_ENVIRONMENT =
   "the licence chain has a licensed environment";
 const DAY_MS = 86_400_000;
 
-export const isPlanKind = (kind: InstanceKind | string) =>
+export const isPlanKind = (kind: string) =>
   kind === "shared" || kind === "own";
 
 /** Stable per licence chain, holder-neutral (it appears in labels and logs). */
