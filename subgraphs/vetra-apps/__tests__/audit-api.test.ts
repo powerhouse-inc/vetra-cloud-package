@@ -6,7 +6,12 @@ import {
   stranger,
   type Harness,
 } from "./harness.js";
-import { recordAudit } from "../audit/repo.js";
+import {
+  AUDIT_DETAIL_MAX_BYTES,
+  AUDIT_DETAIL_STRING_MAX,
+  boundDetail,
+  recordAudit,
+} from "../audit/repo.js";
 import {
   appAuditFor,
   auditCaller,
@@ -149,5 +154,25 @@ describe("audit log", () => {
     expect(
       (await appAuditFor(h.deps, owner, appId, 10, null)).entries,
     ).toHaveLength(1);
+  });
+
+  it("cuts long strings at every depth", () => {
+    const long = "x".repeat(AUDIT_DETAIL_STRING_MAX + 10);
+    const cut = `${"x".repeat(AUDIT_DETAIL_STRING_MAX)}…`;
+    expect(
+      JSON.parse(
+        boundDetail({ a: long, b: { c: long, d: [long, 1] }, e: null }),
+      ),
+    ).toEqual({ a: cut, b: { c: cut, d: [cut, 1] }, e: null });
+  });
+
+  it("caps the serialised detail", () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 50 }, (_, i) => [`k${i}`, "y".repeat(400)]),
+    );
+    expect(boundDetail(many)).toBe('{"truncated":true}');
+    expect(
+      Buffer.byteLength(boundDetail({ a: "é".repeat(400) })),
+    ).toBeLessThanOrEqual(AUDIT_DETAIL_MAX_BYTES);
   });
 });

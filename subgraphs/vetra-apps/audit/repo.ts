@@ -37,14 +37,28 @@ export interface AuditEntry {
   detail?: Record<string, unknown>;
 }
 
+/** A serialised detail longer than this is replaced by {"truncated":true}. */
+export const AUDIT_DETAIL_MAX_BYTES = 4096;
+
+const cutStrings = (v: unknown): unknown => {
+  if (typeof v === "string")
+    return v.length > AUDIT_DETAIL_STRING_MAX
+      ? `${v.slice(0, AUDIT_DETAIL_STRING_MAX)}…`
+      : v;
+  if (Array.isArray(v)) return v.map(cutStrings);
+  if (v && typeof v === "object")
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => [k, cutStrings(x)]),
+    );
+  return v;
+};
+
+/** Cuts long strings at every depth and caps the whole at AUDIT_DETAIL_MAX_BYTES. */
 export function boundDetail(d: Record<string, unknown> = {}): string {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(d))
-    out[k] =
-      typeof v === "string" && v.length > AUDIT_DETAIL_STRING_MAX
-        ? `${v.slice(0, AUDIT_DETAIL_STRING_MAX)}…`
-        : v;
-  return JSON.stringify(out);
+  const json = JSON.stringify(cutStrings(d));
+  return Buffer.byteLength(json) > AUDIT_DETAIL_MAX_BYTES
+    ? JSON.stringify({ truncated: true })
+    : json;
 }
 
 /** Appends one row. Pass the transaction of the change it describes. */
