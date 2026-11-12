@@ -18,6 +18,7 @@ import { getApp } from "../repo.js";
 import { getRollout, stepsOf } from "../rollouts/repo.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { startRollout } from "../rollouts/service.js";
+import { pauseRollout } from "../rollouts/controls.js";
 
 let h: Harness;
 let appId: string;
@@ -308,5 +309,21 @@ describe("the rollout runner (spec 7 step 4)", () => {
       target_digest: digest("b"),
       failed_digest: null,
     });
+  });
+
+  it("a failure while the publisher paused the rollout still raises the alert", async () => {
+    const r = await start(["p-pro"]);
+    await advance();
+    await pauseRollout(h.deps, owner, r.id, "lunch");
+    await failUpdate(h, "o1");
+    await advance();
+    expect(await getRollout(h.db, r.id)).toMatchObject({
+      status: "paused",
+      paused_reason: expect.stringMatching(/own-o1: unhealthy/),
+    });
+    const alerts = (await listAudit(h.db, appId, { limit: 50 }))
+      .filter((a) => a.action === "rollout.paused")
+      .map((a) => JSON.parse(a.detail).alert);
+    expect(alerts).toEqual([true, false]);
   });
 });

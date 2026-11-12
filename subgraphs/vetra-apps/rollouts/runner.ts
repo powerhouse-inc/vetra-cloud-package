@@ -167,13 +167,15 @@ async function failStep(
     if (back)
       await pointInstanceAt(trx, app.id, step.instance_id, back, nowIso);
     await recordAudit(trx, stepEntry(step, status, nowIso, { error, note }));
-    if (r.status !== "active") return;
+    if (closed) return;
+    // Paused by the publisher already: the failure still raises the alert and
+    // becomes the reason (it is what blocks the rollout now).
     await updateRollout(
       trx,
       r.id,
       {
         status: "paused",
-        paused_at: nowIso,
+        paused_at: r.status === "paused" ? r.paused_at : nowIso,
         paused_reason: `${step.instance_name}: ${error}`.slice(0, 500),
       },
       nowIso,
