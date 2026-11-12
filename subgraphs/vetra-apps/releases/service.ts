@@ -71,6 +71,19 @@ export async function ciRegistryToken(
   // another owner holds and reserved infrastructure names), and Vetra is the
   // only writer of these project names: an existing one is ours.
   await upstream(deps, HARBOR_DOWN, () => harbor.createProject(namespace));
+  // Stable release tags never move (licensed environments pull them by tag).
+  // On every token, so a project made before the rule gets it on its next
+  // run; idempotent. Best effort: a push must not wait on it.
+  try {
+    if (await harbor.ensureImmutableReleaseTags(namespace))
+      deps.logger.info(
+        `[vetra-apps] ${namespace}: stable release tags are now immutable`,
+      );
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] could not make ${namespace}'s release tags immutable: ${String(err)}`,
+    );
+  }
   const robot = await upstream(deps, HARBOR_DOWN, () =>
     harbor.createNamespacePushRobot(namespace, 1),
   );
