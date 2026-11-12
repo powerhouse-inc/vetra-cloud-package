@@ -8,6 +8,7 @@ import { grantKinds, hasLicensedEnvironments } from "./holders.js";
 import {
   getPlan,
   insertPlan,
+  lockPlan,
   listPlans,
   updatePlan,
   type PlanRow,
@@ -243,14 +244,16 @@ export async function updatePlanFor(
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
   };
-  const changes: Record<string, { from: string; to: string }> = {};
-  if (patch.name !== undefined && patch.name !== plan.name)
-    changes.name = { from: plan.name, to: patch.name };
-  if (patch.size !== undefined && patch.size !== plan.size)
-    changes.size = { from: plan.size, to: patch.size };
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
+      // Re-read under lock: a concurrent change is audited once, from what is stored.
+      const cur = await lockPlan(trx, plan.id);
+      const changes: Record<string, { from: string; to: string }> = {};
+      if (patch.name !== undefined && patch.name !== cur.name)
+        changes.name = { from: cur.name, to: patch.name };
+      if (patch.size !== undefined && patch.size !== cur.size)
+        changes.size = { from: cur.size, to: patch.size };
       const p = await updatePlan(trx, plan.id, patch, nowIso);
       if (Object.keys(changes).length > 0)
         await auditCaller(trx, caller, {
@@ -282,20 +285,23 @@ export async function setPlanTarget(
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
+      const cur = await lockPlan(trx, plan.id);
+      if (cur.status === "retired")
+        throw appsError("BAD_USER_INPUT", "The plan is retired");
+      if (cur.target_version === target) return cur;
       const p = await updatePlan(
         trx,
         plan.id,
         { target_version: target },
         nowIso,
       );
-      if (plan.target_version !== target)
-        await auditCaller(trx, caller, {
-          appId: plan.app_id,
-          at: nowIso,
-          action: "plan.target_set",
-          subject: `plan:${plan.id}`,
-          detail: { slug: plan.slug, from: plan.target_version, to: target },
-        });
+      await auditCaller(trx, caller, {
+        appId: plan.app_id,
+        at: nowIso,
+        action: "plan.target_set",
+        subject: `plan:${plan.id}`,
+        detail: { slug: plan.slug, from: cur.target_version, to: target },
+      });
       return p;
     }),
   );
@@ -312,6 +318,8 @@ export async function retirePlan(
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
+      const cur = await lockPlan(trx, plan.id);
+      if (cur.status === "retired") return cur;
       const p = await updatePlan(trx, plan.id, { status: "retired" }, nowIso);
       await auditCaller(trx, caller, {
         appId: plan.app_id,

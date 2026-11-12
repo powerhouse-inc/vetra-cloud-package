@@ -32,6 +32,19 @@ export async function getPlan(
   );
 }
 
+/** The plan, locked until the transaction `trx` ends. */
+export async function lockPlan(
+  trx: Kysely<VetraAppsDB>,
+  id: string,
+): Promise<PlanRow> {
+  return trx
+    .selectFrom("plans")
+    .selectAll()
+    .where("id", "=", id)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
+}
+
 export async function insertPlan(
   db: Kysely<VetraAppsDB>,
   row: PlanRow,

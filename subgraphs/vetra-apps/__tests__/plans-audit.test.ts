@@ -138,4 +138,37 @@ describe("plans: release managers and the audit log", () => {
         .kind,
     ).toBe("pro");
   });
+
+  it("concurrent retargets and retires are audited once, from the stored value", async () => {
+    const p = await createPlan(h.deps, owner, {
+      appId,
+      kind: "pro",
+      access: "own",
+      targetVersion: "1.4.0",
+    });
+    await Promise.all([
+      setPlanTarget(h.deps, owner, p.id, "1.5.0"),
+      setPlanTarget(h.deps, owner, p.id, "1.5.0"),
+    ]);
+    await Promise.all([
+      updatePlanFor(h.deps, owner, { planId: p.id, name: "Pro plus" }),
+      updatePlanFor(h.deps, owner, { planId: p.id, name: "Pro plus" }),
+    ]);
+    await Promise.all([
+      retirePlan(h.deps, owner, p.id),
+      retirePlan(h.deps, owner, p.id),
+    ]);
+    const rows = (await planRows(p.id)).filter(
+      (r) => r.action !== "plan.created",
+    );
+    expect(rows.map((r) => r.action)).toEqual([
+      "plan.target_set",
+      "plan.updated",
+      "plan.retired",
+    ]);
+    expect(JSON.parse(rows[0].detail)).toMatchObject({
+      from: "1.4.0",
+      to: "1.5.0",
+    });
+  });
 });
