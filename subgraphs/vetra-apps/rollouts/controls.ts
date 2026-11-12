@@ -387,6 +387,37 @@ export async function rollBackRollout(
           },
           nowIso,
         );
+      } else if (s.status === "applying" && s.from_version) {
+        // It moves now: it turns round at once and stays the App's one
+        // moving step (never revert_pending while its update runs).
+        const turned = await transitionStep(
+          trx,
+          s.id,
+          ["applying"],
+          {
+            status: "reverting",
+            started_at: nowIso,
+            finished_at: null,
+            requested_at: null,
+            error: null,
+            target_moved: false,
+          },
+          nowIso,
+        );
+        if (turned) {
+          await pointInstanceAt(
+            trx,
+            app.id,
+            s.instance_id,
+            s.from_version,
+            nowIso,
+          );
+          await recordAudit(
+            trx,
+            stepEntry(s, "reverting", nowIso, { note: "rolled back" }, who),
+          );
+          queued++;
+        }
       } else if (
         REVERTIBLE.includes(s.status) ||
         ((s.status === "skipped" || s.status === "pending") && s.target_moved)

@@ -12,7 +12,7 @@ import {
 import { instanceHealth } from "../config.js";
 import { getPlan } from "../plans/repo.js";
 import { getApp } from "../repo.js";
-import { getRollout, stepsOf } from "../rollouts/repo.js";
+import { getRollout, movingStep, stepsOf } from "../rollouts/repo.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { startRollout } from "../rollouts/service.js";
 import {
@@ -234,5 +234,54 @@ describe("rolling back (spec section 7, image swap)", () => {
       ["o1", "rolled_back", "stopped: back on 1.4.0 when it wakes"],
     ]);
     expect((await instance(h, "o1")).target_version).toBe("1.4.0");
+  });
+
+  it("an applying step goes straight to reverting: one moving instance, even with one that joined", async () => {
+    const r = await startRollout(h.deps, owner, {
+      appId,
+      version: "1.4.1",
+      planIds: ["p-starter", "p-pro"],
+      noticeHours: 0,
+    });
+    await advance();
+    expect(await statuses(r.id)).toEqual(["s1:applying", "o1:pending"]);
+    // The reconciler is mid-update on s1.
+    await h.db
+      .updateTable("instances")
+      .set({ status: "updating" })
+      .where("id", "=", "s1")
+      .execute();
+    await readyInstance(h, appId, {
+      id: "o9",
+      planId: "p-pro",
+      kind: "own",
+      version: "1.4.1",
+      createdAt: "2026-10-03T00:00:00.000Z",
+    });
+    await rollBackRollout(h.deps, owner, r.id);
+    expect(await statuses(r.id)).toEqual([
+      "s1:reverting",
+      "o1:skipped",
+      "o9:revert_pending",
+    ]);
+    expect((await instance(h, "s1")).target_version).toBe("1.4.0");
+    for (let i = 0; i < 3; i++) {
+      await advance();
+      const moving = await h.db
+        .selectFrom("rollout_steps")
+        .select("id")
+        .where("app_id", "=", appId)
+        .where("status", "in", ["applying", "reverting"])
+        .execute();
+      expect(moving.length).toBeLessThanOrEqual(1);
+    }
+    expect((await movingStep(h.db, appId))?.instance_id).toBe("s1");
+    await becomeReady(h, "s1");
+    await advance();
+    expect(await statuses(r.id)).toEqual([
+      "s1:rolled_back",
+      "o1:skipped",
+      "o9:reverting",
+    ]);
   });
 });
