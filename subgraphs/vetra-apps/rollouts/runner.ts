@@ -295,7 +295,9 @@ async function startStep(
   if (
     inst.target_version === s.to_version &&
     inst.status === "ready" &&
-    inst.running_version === s.to_version
+    inst.running_version === s.to_version &&
+    !!inst.running_digest &&
+    inst.running_digest === inst.target_digest
   ) {
     await endStep(deps, s, "succeeded", { note: `already on ${s.to_version}` });
     return false;
@@ -372,7 +374,9 @@ async function startRevert(
   if (
     inst.target_version === back &&
     inst.status === "ready" &&
-    inst.running_version === back
+    inst.running_version === back &&
+    !!inst.running_digest &&
+    inst.running_digest === inst.target_digest
   ) {
     await endStep(deps, s, "rolled_back");
     return false;

@@ -370,4 +370,20 @@ describe("the rollout runner (spec 7 step 4)", () => {
     await advance();
     expect(await statuses(r.id)).toEqual(["o1:failed", "o2:pending"]);
   });
+
+  it('a step is "already on" the release only when the instance runs its digest', async () => {
+    const r = await start(["p-pro"]);
+    await h.db
+      .updateTable("instances")
+      .set({
+        target_version: "1.4.1",
+        target_digest: digest("c"),
+        running_version: "1.4.1",
+        running_digest: digest("z"),
+      })
+      .where("id", "=", "o1")
+      .execute();
+    await advance();
+    expect(await statuses(r.id)).toEqual(["o1:applying", "o2:pending"]);
+  });
 });
