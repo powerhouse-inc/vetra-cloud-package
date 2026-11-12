@@ -18,8 +18,12 @@ import {
   GATE_TOKEN_ENV,
 } from "../gate/service.js";
 import { GATE_ON, gateHarness, plan, PLANS_ON } from "./gate-fixtures.js";
-import { owner, testConfig, type Harness } from "./harness.js";
-import { seedLicence } from "./instances-fixtures.js";
+import { OWNER, owner, stranger, testConfig, type Harness } from "./harness.js";
+import { appInstancesFor } from "../instances/service.js";
+import { createResolvers } from "../resolvers.js";
+import { buildASTSchema, graphql } from "graphql";
+import { schema } from "../schema.js";
+import { digest, seedLicence, seedRelease } from "./instances-fixtures.js";
 
 let h: Harness;
 let appId: string;
@@ -245,5 +249,151 @@ describe("Vetra-set settings of shared instances", () => {
     expect((await appSettingsFor(h.deps, owner, appId)).vetraShared).toEqual(
       [],
     );
+  });
+});
+
+describe("instance gate status and rotation (GraphQL)", () => {
+  const ctx = (address: string) => ({
+    user: { address, chainId: 1, networkId: "eip155", appKey: "did:key:z" },
+    headers: {},
+  });
+  const run = async (
+    source: string,
+    variables: Record<string, unknown>,
+    who = OWNER,
+  ) => {
+    const resolvers = createResolvers(h.deps);
+    const built = buildASTSchema(schema);
+    const rootValue = { ...resolvers.Query, ...resolvers.Mutation };
+    return graphql({
+      schema: built,
+      source,
+      variableValues: variables,
+      contextValue: ctx(who),
+      rootValue: Object.fromEntries(
+        Object.entries(rootValue).map(([k, f]) => [
+          k,
+          (args: unknown, c: unknown) =>
+            (f as (...a: unknown[]) => unknown)(null, args, c),
+        ]),
+      ),
+    });
+  };
+  const INSTANCES = `query($appId: ID!) { appInstances(appId: $appId) {
+    id kind gate { enabled active reason tokenRotatedAt tokenDelivered } } }`;
+
+  it("shows a shared instance's gate; own and branch instances have none", async () => {
+    await seedRelease(h, appId, {
+      version: "1.5.0",
+      run: 101,
+      kind: "release",
+      digest: digest("c"),
+      powerhouse: "6.2.3-dev.102",
+    });
+    await plan(h, appId, { target_version: "1.5.0" });
+    await plan(h, appId, {
+      id: "plan-own",
+      slug: "pro",
+      kind: "pro",
+      access: "own",
+    });
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: "0x1111111111111111111111111111111111111111",
+      licenseId: "l1",
+    });
+    await ready();
+    const res = await run(INSTANCES, { appId });
+    expect(res.errors).toBeUndefined();
+    const list = (
+      res.data as { appInstances: Array<{ kind: string; gate: unknown }> }
+    ).appInstances;
+    const shared = list.find((i) => i.kind === "shared")!;
+    expect(shared.gate).toMatchObject({
+      enabled: true,
+      active: true,
+      reason: null,
+      tokenDelivered: true,
+    });
+    expect(
+      (shared.gate as { tokenRotatedAt: string }).tokenRotatedAt,
+    ).toBeTruthy();
+    for (const i of list.filter((i) => i.kind !== "shared"))
+      expect(i.gate).toBeNull();
+    // Nothing secret in the answer.
+    const row = (await getGateToken(h.db, (await byKind("shared")).id))!;
+    const text = JSON.stringify(res);
+    expect(text).not.toContain(row.token_hash);
+    expect(text).not.toContain(row.token_ciphertext);
+    expect(text).not.toContain(row.token_id);
+  });
+
+  it("says why the gate is not active on a release built below the floor", async () => {
+    // 1.4.0 was built on 6.2.3 (fixture default) — above; seed one below.
+    await seedRelease(h, appId, {
+      version: "1.3.0",
+      run: 99,
+      kind: "release",
+      powerhouse: "6.2.3-dev.101",
+    });
+    await plan(h, appId, { target_version: "1.3.0" });
+    await reconcileInstancesOnce(h.deps);
+    const [i] = (await appInstancesFor(h.deps, owner, appId)).filter(
+      (x) => x.kind === "shared",
+    );
+    expect(i.gate).toMatchObject({ enabled: true, active: false });
+    expect(i.gate!.reason).toMatch(/6\.2\.3-dev\.101.*6\.2\.3-dev\.102/);
+  });
+
+  it("shows the gate off as not active", async () => {
+    await plan(h, appId);
+    await reconcileInstancesOnce(h.deps);
+    h.deps.cfg = testConfig({ plans: PLANS_ON });
+    const [i] = (await appInstancesFor(h.deps, owner, appId)).filter(
+      (x) => x.kind === "shared",
+    );
+    expect(i.gate).toMatchObject({ enabled: false, active: false });
+    expect(i.gate!.reason).toMatch(/VETRA_APPS_GATE/);
+  });
+
+  it("rotates for the owner (undelivered until the next pass), never for strangers", async () => {
+    await plan(h, appId);
+    await ready();
+    const id = (await byKind("shared")).id;
+    const ROTATE = `mutation($id: ID!) { rotateInstanceGateToken(instanceId: $id) {
+      id gate { tokenDelivered } } }`;
+    const refused = await run(ROTATE, { id }, stranger.address);
+    expect(refused.errors?.[0].extensions?.code).toBe("FORBIDDEN");
+    const res = await run(ROTATE, { id });
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({
+      rotateInstanceGateToken: { id, gate: { tokenDelivered: false } },
+    });
+    await reconcileInstancesOnce(h.deps);
+    const again = await run(INSTANCES, { appId });
+    const shared = (
+      again.data as {
+        appInstances: Array<{ id: string; gate: { tokenDelivered: boolean } }>;
+      }
+    ).appInstances.find((i) => i.id === id)!;
+    expect(shared.gate.tokenDelivered).toBe(true);
+  });
+
+  it("lists the Vetra-set shared settings through appSettings only with the gate on", async () => {
+    const Q = `query($appId: ID!) { appSettings(appId: $appId) { vetraShared { name secret } } }`;
+    const on = await run(Q, { appId });
+    expect(on.errors).toBeUndefined();
+    expect(
+      (
+        on.data as { appSettings: { vetraShared: Array<{ name: string }> } }
+      ).appSettings.vetraShared.map((s) => s.name),
+    ).toEqual(["ACCESS", "VETRA_APP_ID", "VETRA_GATE_URL", "VETRA_GATE_TOKEN"]);
+    h.deps.cfg = testConfig({ plans: PLANS_ON });
+    const off = await run(Q, { appId });
+    expect(
+      (off.data as { appSettings: { vetraShared: unknown[] } }).appSettings
+        .vetraShared,
+    ).toEqual([]);
   });
 });

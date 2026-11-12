@@ -1,7 +1,11 @@
 import type { Caller } from "../auth.js";
+import { appsError } from "../errors.js";
+import { getGateToken } from "../gate/repo.js";
+import { instanceGateJson, type InstanceGateJson } from "../gate/service.js";
+import { releaseByVersion, type ReleaseRow } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { INSTANCE_BASE_DOMAIN } from "./reconciler.js";
-import { listInstances, type InstanceRow } from "./repo.js";
+import { getInstance, listInstances, type InstanceRow } from "./repo.js";
 
 export interface InstanceJson {
   id: string;
@@ -32,8 +36,11 @@ export interface InstanceJson {
   observedDigestSource: string | null;
   environmentId: string | null;
   updatedAt: string;
+  /** shared only: the licence gate (releases phase 3 slice 5). */
+  gate: InstanceGateJson | null;
 }
 
+/** Without the gate (null); appInstances adds it for shared instances. */
 export function instanceJson(r: InstanceRow): InstanceJson {
   return {
     id: r.id,
@@ -60,7 +67,35 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
     updatedAt: r.updated_at,
+    gate: null,
   };
+}
+
+/** Releases by version, each read once per call (instances of a plan share one). */
+function releaseReader(deps: AppsDeps, appId: string) {
+  const seen = new Map<string, Promise<ReleaseRow | null>>();
+  return (version: string | null) => {
+    if (!version) return Promise.resolve(null);
+    let r = seen.get(version);
+    if (!r) {
+      r = releaseByVersion(deps.db, appId, version).then((x) => x ?? null);
+      seen.set(version, r);
+    }
+    return r;
+  };
+}
+
+async function withGateJson(
+  deps: AppsDeps,
+  r: InstanceRow,
+  release: ReturnType<typeof releaseReader>,
+): Promise<InstanceJson> {
+  if (r.kind !== "shared") return instanceJson(r);
+  const [token, rel] = await Promise.all([
+    getGateToken(deps.db, r.id),
+    release(r.running_version ?? r.target_version),
+  ]);
+  return { ...instanceJson(r), gate: instanceGateJson(deps, token, rel) };
 }
 
 /** The App's instances (spec section 11, App page → Instances); tombstones are not shown. */
@@ -70,7 +105,22 @@ export async function appInstancesFor(
   appId: string,
 ): Promise<InstanceJson[]> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
-  return (await listInstances(deps.db, app.id))
-    .filter((r) => r.status !== "removed")
-    .map(instanceJson);
+  const release = releaseReader(deps, app.id);
+  return Promise.all(
+    (await listInstances(deps.db, app.id))
+      .filter((r) => r.status !== "removed")
+      .map((r) => withGateJson(deps, r, release)),
+  );
+}
+
+/** One instance as appInstances shows it. */
+export async function instanceJsonFor(
+  deps: AppsDeps,
+  caller: Caller,
+  instanceId: string,
+): Promise<InstanceJson> {
+  const r = await getInstance(deps.db, instanceId);
+  if (!r) throw appsError("NOT_FOUND", "Instance not found");
+  await loadAppForOwner(deps, caller, r.app_id, { need: "view" });
+  return withGateJson(deps, r, releaseReader(deps, r.app_id));
 }

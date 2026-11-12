@@ -134,6 +134,21 @@ export const schema: DocumentNode = gql`
     observedDigestSource: String
     environmentId: String
     updatedAt: String!
+    "shared only: the licence gate"
+    gate: AppInstanceGate
+  }
+
+  "The licence gate of a shared instance (spec 5, releases phase 3 slice 5)."
+  type AppInstanceGate {
+    "VETRA_APPS_GATE is on: the instance is given ACCESS=licensed"
+    enabled: Boolean!
+    "Its running (else target) release was built on a Powerhouse that enforces ACCESS=licensed"
+    active: Boolean!
+    "Why not active, in words (gate off, or built on Powerhouse < X)"
+    reason: String
+    tokenRotatedAt: String
+    "False until the current token reached the instance's secrets"
+    tokenDelivered: Boolean!
   }
 
   "What holders of one licensing term get (spec: releases and instances, section 7). The plan adopted the term by its kind."
@@ -199,7 +214,7 @@ export const schema: DocumentNode = gql`
     actor: String!
     "console | api | policy | system | ci"
     source: String!
-    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded"
+    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded | gate.token_issued | gate.token_rotated"
     action: String!
     "plan:<id> | setting:<SCOPE>/<NAME> | role:<address> | instance:<id> | release:<version>"
     subject: String!
@@ -263,6 +278,8 @@ export const schema: DocumentNode = gql`
   type AppSettings {
     settings: [AppSetting!]!
     vetra: [VetraInstanceSetting!]!
+    "What Vetra sets on shared instances only (licence gate); empty while the gate is off"
+    vetraShared: [VetraInstanceSetting!]!
     "Names no setting may have"
     reservedNames: [String!]!
     "Prefixes no setting name may start with"
@@ -494,6 +511,8 @@ export const schema: DocumentNode = gql`
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!
     removeAppRole(appId: ID!, address: String!, role: String): Boolean!
+    "A new licence gate token for a shared instance, delivered on the next pass; the old one works until 15 minutes after that"
+    rotateInstanceGateToken(instanceId: ID!): AppInstance!
     deleteApp(appId: ID!, deleteEnvironments: Boolean!): Boolean!
     openAppSetupPullRequest(appId: ID!): String!
     appRegistryCredentials(appId: ID!): AppRegistryCredentials!

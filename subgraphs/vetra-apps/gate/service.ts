@@ -189,3 +189,36 @@ export function gateFloorError(
     return null;
   return `${r.version} was built on Powerhouse ${r.powerhouse_version || "(unknown)"}; shared plans need ${gate.minPowerhouse} or newer for the licence gate. Rebuild the App on it and release again.`;
 }
+
+/** A shared instance's licence gate as the console shows it (never a token, hash or token id). */
+export interface InstanceGateJson {
+  /** VETRA_APPS_GATE is on: the instance is given ACCESS=licensed. */
+  enabled: boolean;
+  /** Its running (else target) release was built on a Powerhouse that enforces ACCESS=licensed. */
+  active: boolean;
+  /** Why not active, in words. */
+  reason: string | null;
+  tokenRotatedAt: string | null;
+  /** False until the current token reached the instance's secrets. */
+  tokenDelivered: boolean;
+}
+
+export function instanceGateJson(
+  deps: Pick<AppsDeps, "cfg">,
+  token: Pick<GateTokenRow, "rotated_at" | "delivered_at"> | null,
+  release: { version: string; powerhouse_version: string | null } | null,
+): InstanceGateJson {
+  const enabled = gateConfigOf(deps.cfg).enabled;
+  const reason = !enabled
+    ? "The licence gate is off on this Vetra (VETRA_APPS_GATE)"
+    : !release
+      ? "The instance has no release yet"
+      : gateFloorError(deps.cfg, release);
+  return {
+    enabled,
+    active: enabled && reason === null,
+    reason,
+    tokenRotatedAt: token?.rotated_at ?? null,
+    tokenDelivered: !!token?.delivered_at,
+  };
+}
