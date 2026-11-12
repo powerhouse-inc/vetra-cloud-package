@@ -307,7 +307,7 @@ describe("syncPlanInstances", () => {
     expect((await rows())[0].stop_reason).toBe(PLAN_RETIRED);
   });
 
-  it("follows a new plan target", async () => {
+  it("keeps an existing row's target when the plan's moves; a new chain starts on the new target (slice 3: rollouts move rows)", async () => {
     await plan();
     await seedLicence(h, {
       appId,
@@ -330,8 +330,49 @@ describe("syncPlanInstances", () => {
     );
     await sync();
     expect((await rows())[0]).toMatchObject({
+      licence_root_id: "l1",
+      target_version: "1.4.0",
+      target_digest: digest("b"),
+    });
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: "0x3333333333333333333333333333333333333333",
+      licenseId: "l3",
+    });
+    await sync();
+    expect(
+      (await rows()).find((r) => r.licence_root_id === "l3"),
+    ).toMatchObject({
       target_version: "1.4.1",
       target_digest: digest("c"),
+    });
+  });
+
+  it("keeps a shared row's target when the plan's moves", async () => {
+    await plan({
+      id: "plan-shared",
+      slug: "starter",
+      kind: "starter",
+      access: "shared",
+    });
+    await sync();
+    await seedRelease(h, appId, {
+      version: "1.4.1",
+      run: 110,
+      kind: "release",
+      digest: digest("c"),
+    });
+    await updatePlan(
+      h.db,
+      "plan-shared",
+      { target_version: "1.4.1" },
+      "2026-10-04T00:00:00.000Z",
+    );
+    await sync();
+    expect((await rows())[0]).toMatchObject({
+      kind: "shared",
+      target_version: "1.4.0",
     });
   });
   // Ruling (cross-kind upgrades): once a chain held a plan kind, the plan model owns it.

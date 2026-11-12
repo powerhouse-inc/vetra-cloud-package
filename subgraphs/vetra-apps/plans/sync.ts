@@ -133,8 +133,10 @@ async function ownPlanResolver(
 /**
  * Rows for the App's plan instances (spec section 5): one shared row per shared
  * plan while it is active or has live licences; one own row per live licence
- * chain of an own plan, unless the old model runs a licensed environment for
- * that chain (overview rule 1). A chain whose live head is of no plan's kind
+ * chain of an own plan. A new row starts on its plan's target; an existing
+ * row's target moves only through rollouts (rollouts/runner.ts) and pins
+ * (releases phase 3 slice 3). Own rows exist unless the old model runs a
+ * licensed environment for that chain (overview rule 1). A chain whose live head is of no plan's kind
  * stays under the plan of its most recent plan-kind licence when that plan is
  * own (cross-kind upgrades: the plan model owns a chain once it held a plan
  * kind; licensing leaves it alone too). Ended chains (stopAfterDays after the
@@ -177,7 +179,6 @@ export async function syncPlanInstances(
       continue;
     }
     await patch(row, {
-      ...(target ?? {}),
       target_size: plan.size,
       stop_reason: wanted ? null : PLAN_RETIRED,
     });
@@ -206,7 +207,6 @@ export async function syncPlanInstances(
     }
     served.add(head.root);
     await patch(row, {
-      ...(target ?? {}),
       plan_id: plan.id,
       holder_address: head.address,
       target_size: plan.size,
