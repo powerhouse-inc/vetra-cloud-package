@@ -721,6 +721,33 @@ describe("monitorInstancesOnce — settings revision", () => {
     });
   });
 
+  it("a new revision between two checks restarts health_since and does not carry the restarts", async () => {
+    const envId = await created();
+    await wantSettings(envId, "r1");
+    await setCluster(envId, [{ digest: digest("a"), restarts: 2 }]);
+    await monitor();
+    const first = await one();
+    expect(first).toMatchObject({
+      health: "healthy",
+      health_settings: "r1",
+      health_restarts: 2,
+    });
+
+    h.advance(60_000);
+    await wantSettings(envId, "r2");
+    await setCluster(envId, [{ digest: digest("a"), restarts: 5 }]);
+    await monitor();
+    const second = await one();
+    expect(second).toMatchObject({
+      health: "healthy",
+      health_settings: "r2",
+      health_restarts: 5,
+    });
+    expect(second.health_check).not.toBe("restarts");
+    expect(second.health_since).not.toBe(first.health_since);
+    expect(second.health_since).toBe(second.health_checked_at);
+  });
+
   it("with only the old revision running, no pod runs the target yet", async () => {
     const envId = await created();
     await wantSettings(envId, "r2");
