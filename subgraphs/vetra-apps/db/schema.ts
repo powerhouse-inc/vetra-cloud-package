@@ -143,6 +143,7 @@ export interface StudioLaunchSecretsTable {
 
 export interface VetraAppsDB {
   instances: InstancesTable;
+  app_settings: AppSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
@@ -206,6 +207,25 @@ export type InstanceStatus =
   | "stopped"
   | "removed";
 
+/** Where a publisher setting applies (releases phase 2 slice 4): every instance, or one kind (wins over "all"). */
+export type AppSettingScope = "all" | "branch" | "preview";
+
+/** A publisher setting of an App (spec 14.2). Secrets: value null, ciphertext set. */
+export interface AppSettingsTable {
+  app_id: string;
+  scope: AppSettingScope;
+  name: string;
+  secret: boolean;
+  /** Plain settings only. */
+  value: string | null;
+  /** Secrets only: OpenBao transit ciphertext under the `app-settings` pseudo-tenant (settings/vault.ts). */
+  ciphertext: string | null;
+  /** Random per write: re-setting a secret (same value or not) makes a new revision. */
+  write_id: string;
+  updated_at: string;
+  updated_by: string;
+}
+
 /** One running environment of an App (spec section 5). */
 export interface InstancesTable {
   id: string;
@@ -256,6 +276,19 @@ export interface InstancesTable {
   /** What the cluster runs: the pod's imageID digest, else the environment document's. */
   observed_digest: string | null;
   observed_digest_source: "pod" | "document" | null;
+  /** The App's settings revision for this kind (settings/resolve.ts): what the instance should run. */
+  target_settings: string | null;
+  /** The revision last seen ready together with running_digest. */
+  running_settings: string | null;
+  /** The revision of a failed update (with failed_digest): not retried until either changes. */
+  failed_settings: string | null;
+  /** The revision whose secrets were written to the instance's tenant, and when. */
+  settings_delivered: string | null;
+  settings_delivered_at: string | null;
+  /** The revision the last health check judged (the environment's VETRA_SETTINGS_REVISION). Monitor only. */
+  health_settings: string | null;
+  /** The revision a ready host pod runs (its VETRA_SETTINGS_REVISION env). Monitor only. */
+  observed_settings: string | null;
   created_at: string;
   updated_at: string;
 }

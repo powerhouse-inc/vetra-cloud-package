@@ -130,6 +130,55 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesTable(db);
   await ensureAppsInstancesEnabledColumn(db);
   await ensureInstancesHealthColumns(db);
+  await ensureAppSettingsTable(db);
+  await ensureInstancesSettingsColumns(db);
+}
+
+/** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
+export async function ensureAppSettingsTable(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("app_settings")
+      .ifNotExists()
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("scope", "varchar(16)", (c) => c.notNull())
+      .addColumn("name", "varchar(128)", (c) => c.notNull())
+      .addColumn("secret", "boolean", (c) => c.notNull())
+      .addColumn("value", "text")
+      .addColumn("ciphertext", "text")
+      .addColumn("write_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_by", "varchar(255)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("app_settings_pk", ["app_id", "scope", "name"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** Settings revisions on instances (slice 4). Nullable. */
+export async function ensureInstancesSettingsColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [name, type] of [
+    ["target_settings", "varchar(32)"],
+    ["running_settings", "varchar(32)"],
+    ["failed_settings", "varchar(32)"],
+    ["settings_delivered", "varchar(32)"],
+    ["settings_delivered_at", "varchar(64)"],
+    ["health_settings", "varchar(32)"],
+    ["observed_settings", "varchar(32)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+        throw err;
+    }
+  }
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
