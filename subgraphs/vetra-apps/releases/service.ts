@@ -1,6 +1,7 @@
 import {
   authorizeCi,
   HARBOR_HOST,
+  ReleasePolicyUnavailableError,
   loadAppForOwner,
   type AppsDeps,
   type CiIdentity,
@@ -14,6 +15,7 @@ import {
   assertReleaseBranchPush,
   assertReportAllowed,
 } from "./claim.js";
+import { recordLicensedHost } from "./licensed-host.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
   forgetPushRobot,
@@ -69,6 +71,19 @@ export async function ciRegistryToken(
   // another owner holds and reserved infrastructure names), and Vetra is the
   // only writer of these project names: an existing one is ours.
   await upstream(deps, HARBOR_DOWN, () => harbor.createProject(namespace));
+  // Stable release tags never move (licensed environments pull them by tag).
+  // On every token, so a project made before the rule gets it on its next
+  // run; idempotent. Best effort: a push must not wait on it.
+  try {
+    if (await harbor.ensureImmutableReleaseTags(namespace))
+      deps.logger.info(
+        `[vetra-apps] ${namespace}: stable release tags are now immutable`,
+      );
+  } catch (err) {
+    deps.logger.warn(
+      `[vetra-apps] could not make ${namespace}'s release tags immutable: ${String(err)}`,
+    );
+  }
   const robot = await upstream(deps, HARBOR_DOWN, () =>
     harbor.createNamespacePushRobot(namespace, 1),
   );
@@ -287,6 +302,28 @@ export async function ciReportRelease(
     deps.logger.info(
       `[vetra-apps] ${app.slug} ${input.kind} ${input.version} (${input.image.digest.slice(0, 19)})`,
     );
+  }
+  // BRIDGE (licensed-host.ts): the release's image becomes the host image
+  // licensed environments run. On every report, not only the first: a
+  // retry after a failed write records it then (the write is idempotent).
+  // The release row is already stored; a failure asks CI to retry.
+  if (deps.docs) {
+    try {
+      await recordLicensedHost(deps, app, row);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] ${app.slug} ${row.version}: host image not recorded for licensed environments: ${String(err)}`,
+      );
+      // Which dependency failed, so whoever reads the CI log knows where to look.
+      const why =
+        err instanceof ReleasePolicyUnavailableError
+          ? "the App's release policy could not be read from vetra-licensing"
+          : "the App document could not be written";
+      throw appsError(
+        "SERVICE_UNAVAILABLE",
+        `${row.version} is recorded, but its host image is not offered to licensed environments yet (${why}); retry`,
+      );
+    }
   }
   return releaseJson(row);
 }

@@ -40,6 +40,27 @@ describe("ciRegistryToken", () => {
     expect(Date.parse(a.expiresAt) - issuedAt).toBe(60 * 60 * 1000);
   });
 
+  it("makes the namespace's stable release tags immutable on every token, for existing projects too", async () => {
+    const app = await seedActiveApp(h);
+    h.harbor.existing.add("acme"); // created before the rule existed
+    const ci = ciIdentity(claim("refs/heads/main", { runId: "1" }));
+    await ciRegistryToken(h.deps, ci, app.id);
+    await ciRegistryToken(h.deps, ci, app.id);
+    expect(h.harbor.immutable).toStrictEqual(["acme", "acme"]);
+  });
+
+  it("still issues the token when Harbor cannot set the rule, and logs it", async () => {
+    const app = await seedActiveApp(h);
+    h.harbor.immutableFails = true;
+    const warned: string[] = [];
+    h.deps.logger = { ...h.deps.logger, warn: (m: string) => warned.push(m) };
+    const ci = ciIdentity(claim("refs/heads/main", { runId: "1" }));
+    await expect(ciRegistryToken(h.deps, ci, app.id)).resolves.toMatchObject({
+      repository: `acme/${app.slug}`,
+    });
+    expect(warned.join("\n")).toMatch(/acme.*immutable.*harbor down/);
+  });
+
   it("refuses another app's identity", async () => {
     const app = await seedActiveApp(h);
     const ci = {

@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
 
 /**
@@ -39,7 +39,8 @@ export async function lookupWarm(
   try {
     return await isWarm(documentId);
   } catch (err) {
-    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE) return null;
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)
+      return null;
     throw err;
   }
 }
@@ -57,7 +58,14 @@ export function createAppImageProjectResolver(
   return async (state, documentId, warm) => {
     const appId = state.app?.appId;
     if (!appId)
-      return licensedImageProject(appsDb, licensingDb, documentId, isWarm, warm);
+      return licensedImageProject(
+        appsDb,
+        licensingDb,
+        documentId,
+        isWarm,
+        warm,
+        state.fusion?.image ?? null,
+      );
     try {
       const app = (await appsDb
         .selectFrom("apps")
@@ -100,11 +108,32 @@ export function createAppImageProjectResolver(
   };
 }
 
+/** Whether the App recorded a release or build whose image is in `repository` (no tag). */
+async function releasedFrom(
+  appsDb: Kysely<any>,
+  appId: string,
+  repository: string,
+): Promise<boolean> {
+  try {
+    const row = await appsDb
+      .selectFrom("releases")
+      .select("version")
+      .where("app_id", "=", appId)
+      .where(sql<boolean>`starts_with(image_ref, ${`${repository}:`})`)
+      .executeTakeFirst();
+    return row !== undefined;
+  } catch {
+    return false; // no releases table yet: the App's Harbor project only
+  }
+}
+
 /**
  * An environment Vetra provisioned for a licence (a holder's dedicated env,
  * e.g. a Sektar cloud host) runs its licence's App's image: the
  * `license_environments` row (vetra-licensing tables, written by provisioning,
- * never by the document) names the App. Missing tables or any failure → null.
+ * never by the document) names the App, whose Harbor project or own released
+ * repository it may pull from (the document's image only picks which of the
+ * two is answered). Missing tables or any failure → null.
  */
 async function licensedImageProject(
   appsDb: Kysely<any>,
@@ -112,6 +141,8 @@ async function licensedImageProject(
   documentId: string,
   isWarm: WarmPoolLookup | null,
   given: WarmPoolEntry | null | undefined,
+  /** The document's FUSION image: which of the App's two projects to vouch for. */
+  image: string | null,
 ): Promise<string | null> {
   try {
     // A warm environment has no license_environments row yet (the claim writes
@@ -134,7 +165,18 @@ async function licensedImageProject(
       .select("harbor_project")
       .where("id", "=", appId)
       .executeTakeFirst()) as { harbor_project: string | null } | undefined;
-    return app?.harbor_project ?? null;
+    if (!app) return null;
+    // The App's releases (vetra-publish) live in its registry namespace: the
+    // ci/releases bridge points licensed environments there. Only this App's
+    // own repository is vouched for, proven by a release it recorded
+    // (ci/releases checked image.ref is cr.vetra.io/<namespace>/<slug>), never
+    // the rest of the owner's namespace. A release keeps its repository when
+    // the App is renamed or changes hands. Older images stay in the App's
+    // own Harbor project.
+    if (image && (await releasedFrom(appsDb, appId, image))) {
+      return image.split("/")[1] ?? null;
+    }
+    return app.harbor_project ?? null;
   } catch {
     return null;
   }

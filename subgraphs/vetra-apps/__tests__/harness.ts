@@ -472,6 +472,9 @@ export function fakeHarbor(): HarborApi & {
   deletedRobots: number[];
   deletedProjects: string[];
   namespaceRobots: { project: string; durationDays: number; id: number }[];
+  /** Projects given the immutable release tag rule, per call. */
+  immutable: string[];
+  immutableFails: boolean;
 } {
   const projects: string[] = [];
   const existing = new Set<string>();
@@ -483,7 +486,16 @@ export function fakeHarbor(): HarborApi & {
     id: number;
   }[] = [];
   let robotSeq = 0;
+  const immutable: string[] = [];
   return {
+    immutable,
+    immutableFails: false,
+    async ensureImmutableReleaseTags(p) {
+      if (this.immutableFails) throw new Error("harbor down");
+      const added = !immutable.includes(p);
+      immutable.push(p);
+      return added;
+    },
     namespaceRobots,
     projects,
     existing,

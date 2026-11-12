@@ -976,3 +976,85 @@ describe("one release decision of an app at a time", () => {
     ).toBe("1.2.0");
   });
 });
+
+describe("ci/releases bridge -> promote (old-path LATEST to a release)", () => {
+  // The vetra-apps bridge (releases/licensed-host.ts) writes the same app
+  // document licensing reads: this store applies its actions to `app`.
+  const appDocs = {
+    create: async () => {},
+    exists: async () => true,
+    getState: async () =>
+      ({ artifacts: app.artifacts }) as Record<string, unknown>,
+    execute: async (_id: string, actions: Action[]) => {
+      for (const a of actions) {
+        const i = a.input as {
+          name: string;
+          version: string;
+          reference?: string;
+          channel?: string;
+        };
+        if (a.type === "RECORD_ARTIFACT_VERSION") {
+          app.artifacts
+            .find((x) => x.name === i.name)!
+            .versions.push({
+              version: i.version,
+              reference: i.reference!,
+            });
+        } else if (a.type === "SET_ARTIFACT_CHANNEL") {
+          point(i.channel!, i.version, i.name);
+        }
+      }
+    },
+  };
+
+  it("records 1.0.10 on STAGING for a gated app, then promote moves LATEST off the commit tag", async () => {
+    const { recordLicensedHost } =
+      await import("../../vetra-apps/releases/licensed-host.js");
+    app.artifacts[0] = {
+      kind: "FUSION_IMAGE",
+      name: "host",
+      versions: [
+        {
+          version: "sha-cac9276bc10b",
+          reference: "cr.vetra.io/app-sektar/host:sha-cac9276bc10b",
+        },
+      ],
+      channels: [{ channel: "LATEST", version: "sha-cac9276bc10b" }],
+    };
+    await gate();
+    const appsDeps = {
+      docs: appDocs,
+      releasePolicy: async (id: string) =>
+        (await deps.store.settings(id)).policy,
+      now: () => new Date(NOW),
+      logger: { info: () => {}, warn: () => {} },
+    } as never;
+    await recordLicensedHost(
+      appsDeps,
+      { id: "a", slug: "sektar" } as never,
+      {
+        kind: "release",
+        version: "1.0.10",
+        image_ref: "cr.vetra.io/powerhouse/sektar:1.0.10",
+        image_digest: `sha256:${"a".repeat(64)}`,
+        commit: "d5a6f74",
+        run: 900,
+      } as never,
+    );
+    const host = app.artifacts[0];
+    expect(host.channels).toEqual(
+      expect.arrayContaining([
+        { channel: "LATEST", version: "sha-cac9276bc10b" },
+        { channel: "STAGING", version: "1.0.10" },
+      ]),
+    );
+    states.set("mine", { status: "READY", version: "1.0.10" });
+    expect(await promoteIt({ version: "1.0.10" })).toMatchObject({
+      version: "1.0.10",
+      status: "ACTIVE",
+    });
+    expect(host.channels.find((c) => c.channel === "LATEST")?.version).toBe(
+      "1.0.10",
+    );
+  });
+});

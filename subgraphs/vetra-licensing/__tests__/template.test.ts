@@ -351,6 +351,32 @@ describe("renderFloorUpdateActions (re-templating a live environment)", () => {
     expect(renderFloorUpdateActions({ template: fusionTemplate, current })).toEqual([]);
   });
 
+  // A release moves the app's image to another repository (the old Harbor
+  // project's commit tags vs the registry namespace's releases): the old
+  // version's tag does not exist in the new repository, so the image may
+  // only move together with the version.
+  it("moves the FUSION image only with its version: a held or newer version keeps its repository", () => {
+    const moved = (version: string, fusionVersion?: "floor" | "hold" | "force") => {
+      const current = deployedState();
+      current.services.push({ ...enabled("FUSION", "fusion"), version });
+      current.fusion = { image: "registry/old-app", env: [], autoUpdate: false, autoUpdateTagPattern: null };
+      return renderFloorUpdateActions({ template: fusionTemplate, current, fusionVersion });
+    };
+    expect(moved("1.0.0", "hold")).toEqual([]);
+    expect(moved("2.1.0")).toEqual([]);
+    expect(types(moved("1.0.0"))).toEqual(["SET_FUSION_CONFIG", "SET_SERVICE_VERSION", "APPROVE_CHANGES"]);
+    expect(types(moved("2.0.0", "hold"))).toEqual(["SET_FUSION_CONFIG", "APPROVE_CHANGES"]);
+  });
+
+  it("still sends a held version's env change, on its current image", () => {
+    const current = deployedState();
+    current.services.push({ ...enabled("FUSION", "fusion"), version: "1.0.0" });
+    current.fusion = { image: "registry/old-app", env: [], autoUpdate: false, autoUpdateTagPattern: null };
+    const actions = renderFloorUpdateActions({ template: fusionTemplate, current, includedKey: true, fusionVersion: "hold" });
+    expect(types(actions)).toEqual(["SET_FUSION_CONFIG", "APPROVE_CHANGES"]);
+    expect((actions[0].input as { image: string }).image).toBe("registry/old-app");
+  });
+
   it("declares the included AI key once, replacing a plain entry of that name (spec 3.11)", () => {
     const KEY = { name: "OPENROUTER_API_KEY", value: null, isSecret: true };
     const current = deployedState();

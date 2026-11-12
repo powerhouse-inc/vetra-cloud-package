@@ -579,29 +579,33 @@ function floorFusionActions(
   // A host env missing its settings (or naming another admin) gets them back.
   const hosted = s.host && owner ? withHostEnv(env, s.host, owner) : env;
   const wantedEnv = includedKey ? withIncludedKey(hosted) : hosted;
-  if (fusion?.image !== repository || JSON.stringify(wantedEnv) !== JSON.stringify(env)) {
+  const currentVersion = have?.version ?? null;
+  const setsVersion =
+    currentVersion === null ||
+    (mode !== "hold" &&
+      isFusionUpgrade(currentVersion, version, fusionVersions)) ||
+    (mode === "force" &&
+      currentVersion !== version &&
+      !isFusionUpgrade(version, currentVersion, fusionVersions));
+  // The image goes with its version: a version that stays (held, newer,
+  // unordered) keeps its repository, whose tag it is. A release may move
+  // the app to another repository (the ci/releases bridge: the old Harbor
+  // project's commit tags, the registry namespace's releases).
+  const image =
+    setsVersion || currentVersion === version
+      ? repository
+      : (fusion?.image ?? repository);
+  if (fusion?.image !== image || JSON.stringify(wantedEnv) !== JSON.stringify(env)) {
     actions.push(
       setFusionConfig({
-        image: repository,
+        image,
         env: wantedEnv,
         autoUpdate: fusion?.autoUpdate ?? false,
         autoUpdateTagPattern: fusion?.autoUpdateTagPattern ?? null,
       }),
     );
   }
-  const currentVersion = have?.version ?? null;
-  if (currentVersion === null) {
-    actions.push(setServiceVersion({ type: "FUSION", version }));
-  } else if (
-    mode !== "hold" &&
-    isFusionUpgrade(currentVersion, version, fusionVersions)
-  ) {
-    actions.push(setServiceVersion({ type: "FUSION", version }));
-  } else if (
-    mode === "force" &&
-    currentVersion !== version &&
-    !isFusionUpgrade(version, currentVersion, fusionVersions)
-  ) {
+  if (setsVersion) {
     actions.push(setServiceVersion({ type: "FUSION", version }));
   } else if (
     mode === "floor" &&

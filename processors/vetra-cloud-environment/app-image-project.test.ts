@@ -135,10 +135,90 @@ describe("licensed environments (provisioned for a licence, not App-linked)", ()
     expect(await resolve(unlinked, "someone-elses-env")).toBeNull();
   });
 
+  // Releases (vetra-publish) push to the App's registry namespace; the
+  // ci/releases bridge points licensed environments at those images. Only
+  // the App's own repository, proven by its recorded releases: never the
+  // rest of the owner's namespace.
+  const running = (image: string) =>
+    ({ fusion: { image } }) as unknown as VetraCloudEnvironmentState;
+  async function seedRelease(appId: string, imageRef: string, version: string) {
+    await db
+      .insertInto("releases")
+      .values({
+        app_id: appId,
+        version,
+        kind: "release",
+        branch: "main",
+        pr: null,
+        run: 1,
+        commit: "abc",
+        notes: null,
+        customer_notes: null,
+        image_ref: imageRef,
+        image_digest: `sha256:${"a".repeat(64)}`,
+        host: "cli",
+        packages: "[]",
+        requires: "{}",
+        migrates: false,
+        powerhouse_version: "6.2.3",
+        base_image: "node:24",
+        created_at: "t",
+      })
+      .execute();
+  }
+
+  it("may pull its licence's App's release images from the App's own released repository", async () => {
+    await seedLicence();
+    await seedRelease("app-1", "cr.vetra.io/acme/app-1:1.0.10", "1.0.10");
+    const resolve = createAppImageProjectResolver(db, db);
+    expect(
+      await resolve(running("cr.vetra.io/acme/app-1"), "licensed-env"),
+    ).toBe("acme");
+    expect(
+      await resolve(running("cr.vetra.io/app-shop/host"), "licensed-env"),
+    ).toBe("app-shop");
+    const warm = createAppImageProjectResolver(db, db, async () => ({
+      appId: "app-1",
+    }));
+    expect(await warm(running("cr.vetra.io/acme/app-1"), "warm-env")).toBe(
+      "acme",
+    );
+  });
+
+  it("never vouches for the rest of the namespace, another registry, or another App's releases", async () => {
+    await seedLicence();
+    await seedRelease("app-1", "cr.vetra.io/acme/app-1:1.0.10", "1.0.10");
+    await seedRelease("app-2", "cr.vetra.io/acme/other-app:2.0.0", "2.0.0");
+    const resolve = createAppImageProjectResolver(db, db);
+    for (const image of [
+      "cr.vetra.io/acme/other-app",
+      "evil.io/acme/app-1",
+      "cr.vetra.io/acme/app-1x",
+      "cr.vetra.io/acme/app",
+      "cr.vetra.io/other/app-1",
+    ]) {
+      expect(await resolve(running(image), "licensed-env")).toBe("app-shop");
+    }
+  });
+
+  it("does not vouch for a repository the App has not released from", async () => {
+    await seedLicence();
+    expect(
+      await createAppImageProjectResolver(db, db)(
+        running("cr.vetra.io/acme/app-1"),
+        "licensed-env",
+      ),
+    ).toBe("app-shop");
+  });
+
   it("gets nothing without the licensing tables", async () => {
     await seed();
-    expect(await createAppImageProjectResolver(db, db)(unlinked, "licensed-env")).toBeNull();
-    expect(await createAppImageProjectResolver(db)(unlinked, "licensed-env")).toBeNull();
+    expect(
+      await createAppImageProjectResolver(db, db)(unlinked, "licensed-env"),
+    ).toBeNull();
+    expect(
+      await createAppImageProjectResolver(db)(unlinked, "licensed-env"),
+    ).toBeNull();
   });
 });
 
@@ -161,7 +241,9 @@ describe("createAppImageProjectResolver — warm environment", () => {
       lookups++;
       return null;
     });
-    expect(await resolve(unlinked, "warm-env", { appId: "app-1" })).toBe("app-shop");
+    expect(await resolve(unlinked, "warm-env", { appId: "app-1" })).toBe(
+      "app-shop",
+    );
     expect(await resolve(unlinked, "warm-env", null)).toBeNull();
     expect(lookups).toBe(0);
   });
