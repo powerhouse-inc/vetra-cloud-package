@@ -83,6 +83,9 @@ export interface PodLike {
   };
 }
 
+/** Waiting reasons of a container that is starting normally, not failing. */
+const TRANSIENT_WAITING = new Set(["PodInitializing", "ContainerCreating"]);
+
 /** Map a k8s Pod to its environment_pods row (null when name/namespace is missing). */
 export function podToRow(
   pod: PodLike,
@@ -106,9 +109,16 @@ export function podToRow(
   const mainStatus =
     containerStatuses.find((cs) => main?.name && cs.name === main.name) ??
     containerStatuses[0];
+  // Why the pod waits: the app container's own reason first; any container's
+  // real failure (crash, pull) over one that is merely being created.
+  const reasons = [
+    mainStatus,
+    ...containerStatuses.filter((cs) => cs !== mainStatus),
+  ]
+    .map((cs) => cs?.state?.waiting?.reason)
+    .filter((r): r is string => !!r);
   const waitingReason =
-    containerStatuses.map((cs) => cs.state?.waiting?.reason).find((r) => !!r) ??
-    null;
+    reasons.find((r) => !TRANSIENT_WAITING.has(r)) ?? reasons[0] ?? null;
 
   return {
     id: `${tenantId}/${name}`,

@@ -531,6 +531,34 @@ describe("podToRow — image and waiting reason", () => {
     });
   });
 
+  it("prefers the app container's reason, and a crash or pull over a container still being created", () => {
+    const sidecar = (reason: string) => ({
+      name: "proxy",
+      state: { waiting: { reason } },
+    });
+    const app = (reason?: string) => ({
+      name: "app",
+      state: reason ? { waiting: { reason } } : {},
+    });
+    const reason = (cs: NonNullable<PodLike["status"]>["containerStatuses"]) =>
+      podToRow(pod({ containerStatuses: cs }))!.waitingReason;
+    expect(reason([sidecar("PodInitializing"), app("CrashLoopBackOff")])).toBe(
+      "CrashLoopBackOff",
+    );
+    expect(reason([sidecar("ErrImagePull"), app("CreateContainerError")])).toBe(
+      "CreateContainerError",
+    );
+    expect(
+      reason([sidecar("ImagePullBackOff"), app("ContainerCreating")]),
+    ).toBe("ImagePullBackOff");
+    expect(reason([sidecar("ContainerCreating"), app()])).toBe(
+      "ContainerCreating",
+    );
+    expect(reason([sidecar("ContainerCreating"), app("PodInitializing")])).toBe(
+      "PodInitializing",
+    );
+  });
+
   it("leaves imageId null while the image is pulled (empty imageID)", () => {
     const row = podToRow(
       pod({
