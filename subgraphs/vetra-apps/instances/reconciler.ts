@@ -19,11 +19,13 @@ import {
 } from "../service.js";
 import { instanceLabel } from "./host.js";
 import {
+  envSettings,
   imageTag,
   instanceCreateActions,
   instanceUpdateActions,
   type InstanceImage,
 } from "./render.js";
+import { settingsForKind } from "../settings/resolve.js";
 import {
   deleteInstance,
   insertInstance,
@@ -42,6 +44,9 @@ import {
   targetOf,
   type InstanceTarget,
 } from "./targets.js";
+
+/** Temporary (removed in Task 9): instances get no publisher settings yet. */
+const EMPTY_SETTINGS_ENV = envSettings(settingsForKind([], "branch"));
 
 export const INSTANCE_BASE_DOMAIN = "vetra.io";
 /** removed_reason that keeps a tombstone (the branch may come back with newer builds). */
@@ -605,14 +610,24 @@ async function reconcileEnvironment(
     // Not retried; but a revert that did not land is.
     const back = revertImage(row);
     if (back && fusionVersion(state) === image.tag) {
-      const revert = instanceUpdateActions(state, back, app.owner_address);
+      const revert = instanceUpdateActions(
+        state,
+        back,
+        app.owner_address,
+        EMPTY_SETTINGS_ENV,
+      );
       if (revert.length > 0) await apply(deps, envId, revert);
     }
     return;
   }
 
   // Throws for anything that is not an instance (licensed, not a PREVIEW).
-  const updates = instanceUpdateActions(state, image, app.owner_address);
+  const updates = instanceUpdateActions(
+    state,
+    image,
+    app.owner_address,
+    EMPTY_SETTINGS_ENV,
+  );
   if (updates.length > 0) {
     await apply(deps, envId, updates);
     await patch(deps, row, {
@@ -687,7 +702,12 @@ async function reconcileEnvironment(
   });
   const back = revertImage(row);
   if (back) {
-    const revert = instanceUpdateActions(state, back, app.owner_address);
+    const revert = instanceUpdateActions(
+      state,
+      back,
+      app.owner_address,
+      EMPTY_SETTINGS_ENV,
+    );
     if (revert.length > 0) await apply(deps, envId, revert);
   }
 }
@@ -808,6 +828,8 @@ async function initEnvironment(
         imageProject: app.registry_namespace!,
         image,
         admins: app.owner_address,
+        settings: EMPTY_SETTINGS_ENV,
+        start: true,
       }),
     );
   } catch (err) {
