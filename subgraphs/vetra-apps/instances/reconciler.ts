@@ -77,7 +77,11 @@ export const PR_CLOSED = "pull request closed";
 export const PR_FORK = "pull request from a fork";
 /** removed_reason after a closed PR was reopened: revived like any other tombstone. */
 export const PR_REOPENED = "pull request reopened";
-/** After the secrets were delivered to a fresh tenant, how long its first start waits (controller: ~1 s on notify). */
+/**
+ * After the secrets were delivered to a fresh tenant, how long its first start waits (controller: ~1 s on notify).
+ * Time-based, not confirmed: the chart's envFrom refs to <tenant>-env and <tenant>-secrets are optional,
+ * so a pod started before the controller wrote them runs without them rather than waiting.
+ */
 export const SECRETS_SETTLE_MS = 30_000;
 export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
