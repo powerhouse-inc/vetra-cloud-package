@@ -1,3 +1,4 @@
+import { plansConfigOf } from "../config.js";
 import type { Caller } from "../auth.js";
 import type { HolderDirectoryEntry } from "../directory.js";
 import { publicUrlOf } from "../instances/public-host.js";
@@ -84,7 +85,8 @@ export async function holderInstancesFor(
   appId: string,
   address: string,
 ): Promise<HolderDirectoryEntry[]> {
-  if (!deps.licensingDb) return [];
+  // Plans off (production today): no plan instances to list, no licensing reads.
+  if (!deps.licensingDb || !plansConfigOf(deps.cfg).enabled) return [];
   const holder = address.toLowerCase();
   const base = () =>
     deps.db

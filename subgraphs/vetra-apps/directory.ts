@@ -73,7 +73,19 @@ export interface DirectoryDeps {
    * through this only, never through their owner. Absent: none.
    */
   holderInstances?(appId: string, address: string): Promise<HolderDirectoryEntry[]>;
+  /** Where a failed holder lookup is reported (the directory still answers). */
+  logger?: { warn(message: string): void };
 }
+
+/** An instance status as an environment status, for a plan instance whose document is not readable. */
+const ENV_STATUS_OF_INSTANCE: Record<string, string> = {
+  pending: "DEPLOYING",
+  updating: "DEPLOYING",
+  ready: "READY",
+  degraded: "READY",
+  failed: "DEPLOYMENt_FAILED",
+  stopped: "STOPPED",
+};
 
 /** Statuses of environments that are gone or going: never listed. */
 const RELEASED = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
@@ -147,23 +159,41 @@ export async function listDirectory(
       status: state?.status ?? row.status ?? "UNKNOWN",
     });
   }
+  if (deps.holderInstances) {
+    // Holder entries must never break the owner's directory (plans may be
+    // off, or licensing's tables not there yet): log and answer without them.
+    try {
+      await appendHolderInstances(deps, caller, appId, out);
+    } catch (err) {
+      deps.logger?.warn(`[vetra-apps] directory: holder instances skipped: ${String(err)}`);
+    }
+  }
   out.sort((a, b) => a.name.localeCompare(b.name));
-  if (!deps.holderInstances) return out;
+  return out;
+}
+
+async function appendHolderInstances(
+  deps: DirectoryDeps,
+  caller: string,
+  appId: string,
+  out: DirectoryEnvironment[],
+): Promise<void> {
   const seen = new Set(out.map((e) => e.environmentId));
-  for (const h of await deps.holderInstances(appId, caller)) {
+  const added: DirectoryEnvironment[] = [];
+  for (const h of await deps.holderInstances!(appId, caller)) {
     if (!h.url || seen.has(h.environmentId)) continue;
     seen.add(h.environmentId);
     const state = await deps.getState(h.environmentId);
     if (state && RELEASED.has(state.status)) continue;
-    out.push({
+    added.push({
       environmentId: h.environmentId,
       name: h.name,
       connectUrl: h.url,
       kind: "vetra",
-      status: state?.status ?? h.status.toUpperCase(),
+      status: state?.status ?? ENV_STATUS_OF_INSTANCE[h.status] ?? "UNKNOWN",
     });
   }
-  return out;
+  out.push(...added);
 }
 
 /** appMarks over the apps tables: every package name an App deployed, and its image prefix. */

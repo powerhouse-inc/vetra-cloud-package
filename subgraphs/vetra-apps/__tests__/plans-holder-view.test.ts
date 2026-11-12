@@ -163,6 +163,14 @@ describe("holderInstancesFor (the App directory)", () => {
     expect(out[0].url).toMatch(/^https:\/\/.+\.vetra\.io$/);
   });
 
+  it("lists nothing while plans are off (production)", async () => {
+    h.deps.cfg = {
+      ...h.deps.cfg,
+      plans: { enabled: false, stopAfterDays: 14 },
+    };
+    expect(await holderInstancesFor(h.deps, appId, HOLDER)).toEqual([]);
+  });
+
   it("lists nothing for a stranger, another App, or a lapsed holder's shared plan", async () => {
     expect(await holderInstancesFor(h.deps, appId, stranger.address)).toEqual(
       [],

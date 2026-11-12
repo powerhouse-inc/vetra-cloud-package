@@ -7,7 +7,7 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
-import { loadAppsConfig, missingConfig } from "./config.js";
+import { loadAppsConfig, missingConfig, plansConfigOf } from "./config.js";
 import {
   createReactorEnvGateway,
   subdomainTakenIn,
@@ -353,11 +353,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         candidates: candidatesIn(envReadModel),
         getState: (id: string) => deps.envs.getState(id),
         orgs: deps.orgs ?? null,
+        logger: console,
         // Holders find their plan instances ("Open your Sektar").
-        holderInstances: deps.licensingDb
-          ? (appId: string, address: string) =>
-              holderInstancesFor(deps, appId, address)
-          : undefined,
+        holderInstances:
+          deps.licensingDb && plansConfigOf(cfg).enabled
+            ? (appId: string, address: string) =>
+                holderInstancesFor(deps, appId, address)
+            : undefined,
       };
       this.routeHandles.push(
         this.http.get(

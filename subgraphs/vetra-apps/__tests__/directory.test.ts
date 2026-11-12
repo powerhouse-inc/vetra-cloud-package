@@ -180,6 +180,38 @@ describe("app directory", () => {
     ]);
   });
 
+  it("a failing holder lookup never fails the directory: the owner list is returned as is, and the failure logged", async () => {
+    const d = deps([row({ id: "mine", appId: APP, appRole: "PRODUCTION" })], { mine: state("calm-bat") });
+    const warned: string[] = [];
+    d.logger = { warn: (m: string) => warned.push(m) };
+    d.holderInstances = async () => {
+      throw new Error("relation \"license_chain\" does not exist");
+    };
+    const out = await listDirectory(d, ME, APP);
+    expect(out.map((e) => e.environmentId)).toStrictEqual(["mine"]);
+    expect(warned).toHaveLength(1);
+  });
+
+  it("sorts the merged list by name, and maps an instance status to an environment status when the document is missing", async () => {
+    const d = deps([row({ id: "mine", appId: APP, appRole: "PRODUCTION" })], { mine: state("zebra") });
+    d.holderInstances = async () => [
+      { environmentId: "e1", name: "Alpha (Pro)", url: "https://a", status: "ready" },
+      { environmentId: "e2", name: "Beta (Pro)", url: "https://b", status: "updating" },
+      { environmentId: "e3", name: "Gamma (Pro)", url: "https://c", status: "stopped" },
+      { environmentId: "e4", name: "Delta (Pro)", url: "https://d", status: "failed" },
+      { environmentId: "e5", name: "Eps (Pro)", url: "https://e", status: "degraded" },
+    ];
+    const out = await listDirectory(d, ME, APP);
+    expect(out.map((e) => [e.name, e.status])).toStrictEqual([
+      ["Alpha (Pro)", "READY"],
+      ["Beta (Pro)", "DEPLOYING"],
+      ["Delta (Pro)", "DEPLOYMENt_FAILED"],
+      ["Eps (Pro)", "READY"],
+      ["Gamma (Pro)", "STOPPED"],
+      ["zebra", "READY"],
+    ]);
+  });
+
   it("lists nothing for an organisation env when Renown is unreachable", async () => {
     const d = deps([row({ id: "org", owner: OTHER, ownerOrgId: "org-mine", appId: APP })], { org: state("o") });
     d.orgs = { membership: async () => { throw new Error("down"); } } as DirectoryDeps["orgs"];
