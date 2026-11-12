@@ -293,6 +293,29 @@ describe("settingsForInstance", () => {
     }
   });
 
+  it("golden: branch and preview revisions are the literal v1 hashes they were before plan 7 (no mass roll)", () => {
+    const rows = [
+      row({ name: "FOO", value: "1" }),
+      row({ scope: "branch", name: "MODE", value: "x" }),
+      row({
+        name: "TOKEN",
+        secret: true,
+        value: null,
+        ciphertext: "ct",
+        write_id: "w7",
+      }),
+      row({ scope: "plan", name: "PLAN_ONLY", value: "p" }),
+    ];
+    expect(settingsForKind(rows, "branch").revision).toBe("4f4972ae967d1a9a");
+    expect(settingsForInstance(rows, [], "branch").revision).toBe(
+      "4f4972ae967d1a9a",
+    );
+    expect(settingsForKind([], "preview").revision).toBe("3f00030cb1de1d48");
+    expect(settingsForInstance([], [], "preview").revision).toBe(
+      "3f00030cb1de1d48",
+    );
+  });
+
   it("emits the v1 revision without holder rows, files or Vetra secrets (no mass roll)", () => {
     const app = [
       row({ name: "MODE", value: "a" }),

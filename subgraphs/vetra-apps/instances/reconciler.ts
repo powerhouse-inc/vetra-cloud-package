@@ -98,10 +98,16 @@ export const PR_REOPENED = "pull request reopened";
 export const SECRETS_SETTLE_MS = 30_000;
 export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
-/** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
-/** A plan instance someone other than Vetra put to sleep (H10): Vetra does not wake it. */
+/**
+ * A plan instance someone other than Vetra put to sleep (H10): Vetra does not
+ * wake it for nothing. A rollout (new target image or size), a settings change
+ * (publisher ALL/PLAN or holder) or a custom domain change still applies its
+ * update actions, and those wake it: that is Vetra acting on a change, not
+ * undoing someone's stop.
+ */
 export const STOPPED_OUTSIDE_VETRA =
   "stopped outside Vetra; start it from the console";
+/** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
 export const PLAN_NEEDS_NEW_SECRETS =
   "the environment predates Vetra's secrets master key; a plan instance keeps its data, so it is not recreated (needs an operator)";
 export const NOT_A_PLAN_ENVIRONMENT =
