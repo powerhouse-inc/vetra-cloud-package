@@ -225,6 +225,31 @@ export function subdomainUsedIn(
       .executeTakeFirst());
 }
 
+/**
+ * Whether a live environment (not TERMINATING, DESTROYED or ARCHIVED) other
+ * than `exceptEnvironmentId` holds this custom domain: the rule observability's
+ * setCustomDomain applies.
+ */
+export function customDomainUsedIn(
+  db: Kysely<EnvironmentsDB>,
+): (domain: string, exceptEnvironmentId: string | null) => Promise<boolean> {
+  return async (domain, exceptEnvironmentId) => {
+    const rows = await db
+      .selectFrom("environments")
+      .select(["id", "status"])
+      .where("customDomain", "=", domain.toLowerCase())
+      .execute();
+    return rows.some(
+      (r) =>
+        r.id !== exceptEnvironmentId &&
+        !(
+          r.status &&
+          ["TERMINATING", "DESTROYED", "ARCHIVED"].includes(r.status)
+        ),
+    );
+  };
+}
+
 /** The processor's tenant id for an environment (null: not rendered yet). */
 export function tenantOfIn(
   db: Kysely<EnvironmentsDB>,

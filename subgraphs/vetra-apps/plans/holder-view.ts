@@ -35,6 +35,8 @@ export async function myInstancesFor(
         "plans.name as planName",
         "plans.access as access",
         "instances.host as host",
+        "instances.custom_domain as custom_domain",
+        "instances.custom_domain_status as custom_domain_status",
         "instances.status as status",
         "instances.reason as reason",
         "instances.running_version as runningVersion",
@@ -62,10 +64,12 @@ export async function myInstancesFor(
         .where("plans.kind", "=", k.kind)
         .execute()),
     );
-  return [...own, ...shared].map(({ host, ...r }) => ({
-    ...r,
-    url: publicUrlOf({ host }),
-  }));
+  return [...own, ...shared].map(
+    ({ host, custom_domain, custom_domain_status, ...r }) => ({
+      ...r,
+      url: publicUrlOf({ host, custom_domain, custom_domain_status }),
+    }),
+  );
 }
 
 /**
@@ -92,6 +96,8 @@ export async function holderInstancesFor(
         "apps.name as appName",
         "plans.name as planName",
         "instances.host as host",
+        "instances.custom_domain as custom_domain",
+        "instances.custom_domain_status as custom_domain_status",
         "instances.status as status",
       ])
       .where("instances.app_id", "=", appId)

@@ -12,6 +12,7 @@ import {
   createReactorEnvGateway,
   subdomainTakenIn,
   subdomainUsedIn,
+  customDomainUsedIn,
   tenantOfIn,
 } from "./envs.js";
 import { namespaceExists } from "./instances/cluster.js";
@@ -242,6 +243,8 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       subdomainTaken: subdomainTakenIn(envReadModel),
       // An instance label is blocked only by an exact env subdomain.
       subdomainUsed: subdomainUsedIn(envReadModel),
+      // Custom domains: one holder per domain across environments and instances.
+      customDomainUsed: customDomainUsedIn(envReadModel),
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,

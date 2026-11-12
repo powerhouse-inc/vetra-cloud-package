@@ -137,6 +137,41 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
   await ensureInstanceSettingsTable(db);
+  await ensureInstanceDomainColumns(db);
+}
+
+/** A holder's custom domain on an own instance (plan 7 Task 7), unique where set. */
+export async function ensureInstanceDomainColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [name, type] of [
+    ["custom_domain", "varchar(253)"],
+    ["custom_domain_status", "varchar(16)"],
+    ["custom_domain_reason", "text"],
+    ["custom_domain_since", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+        throw err;
+    }
+  }
+  try {
+    await db.schema
+      .createIndex("instances_custom_domain_uq")
+      .ifNotExists()
+      .unique()
+      .on("instances")
+      .column("custom_domain")
+      .where(sql.ref("custom_domain"), "is not", null)
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
 
 /** Holder settings per own instance (phase 3 plan 7, spec 14.2). Schema builder only (namespaced). */

@@ -93,6 +93,22 @@ describe("myInstances", () => {
     ]);
     expect(mine[0].url).toMatch(/^https:\/\/.+\.vetra\.io$/);
   });
+  it("shows the custom domain once active, the generated host while dns or issuing", async () => {
+    const own = (await listInstances(h.db, appId, "own"))[0];
+    for (const [status, url] of [
+      ["dns", `https://${own.host}.vetra.io`],
+      ["issuing", `https://${own.host}.vetra.io`],
+      ["active", "https://app.acme.io"],
+    ] as const) {
+      await h.db
+        .updateTable("instances")
+        .set({ custom_domain: "app.acme.io", custom_domain_status: status })
+        .where("id", "=", own.id)
+        .execute();
+      const mine = await myInstancesFor(h.deps, holder);
+      expect(mine[0].url).toBe(url);
+    }
+  });
   it("lists nothing of a deleted App", async () => {
     await h.db
       .updateTable("apps")

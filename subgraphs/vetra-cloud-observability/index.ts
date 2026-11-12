@@ -177,6 +177,14 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         restartDeps,
         access,
         orgSync,
+        // Holders' own instances hold custom domains too (vetra-apps, plan 7).
+        instanceDomainUsed: async (domain) =>
+          !!(await appsDb
+            .selectFrom("instances")
+            .select("id")
+            .where("custom_domain", "=", domain)
+            .executeTakeFirst()
+            .catch(() => undefined)),
       }),
     );
 

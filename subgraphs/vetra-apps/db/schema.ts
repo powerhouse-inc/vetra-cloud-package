@@ -200,6 +200,8 @@ export interface RegistryNamespacesTable {
 /** Spec 14.7 as measured by the health monitor (instances/monitor.ts). */
 export type InstanceHealth = "healthy" | "unhealthy" | "unknown";
 
+export type CustomDomainStatus = "dns" | "issuing" | "active" | "failed";
+
 export type InstanceKind = "branch" | "preview" | "shared" | "own";
 /** `removed`: a tombstone for a deleted branch (never shown). `degraded`: ran the target healthy, is not healthy now (no update in flight). */
 export type InstanceStatus =
@@ -394,6 +396,14 @@ export interface InstancesTable {
   stopped_by_vetra?: boolean | null;
   /** shared/own: the FUSION size (VetraCloudRessourceSize) of the plan. */
   target_size?: string | null;
+  /** own: the holder's custom domain, lowercased; unique where set (plan 7 Task 7). */
+  custom_domain?: string | null;
+  /** dns: waiting for DNS; issuing: applied, certificate pending; active: served; failed: gave up (see reason). */
+  custom_domain_status?: CustomDomainStatus | null;
+  /** Why `failed`, or what `dns` waits for. */
+  custom_domain_reason?: string | null;
+  /** When custom_domain_status last changed. */
+  custom_domain_since?: string | null;
   created_at: string;
   updated_at: string;
 }

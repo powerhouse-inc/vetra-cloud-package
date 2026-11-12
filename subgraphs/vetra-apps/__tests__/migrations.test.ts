@@ -11,6 +11,7 @@ import {
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
   ensureInstanceSettingsTable,
+  ensureInstanceDomainColumns,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
@@ -809,6 +810,61 @@ describe("instance_settings (holder settings, plan 7)", () => {
       expect(await deleteInstanceSetting(db, "i1", "MODE")).toBe(false);
       expect(await deleteInstanceSettings(db, "i1")).toBe(1);
       expect(await countInstanceSettings(db, "i1")).toBe(0);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instances custom domain columns (plan 7 Task 7)", () => {
+  const COLUMNS = [
+    "custom_domain",
+    "custom_domain_status",
+    "custom_domain_reason",
+    "custom_domain_since",
+  ];
+  const instance = (id: string, domain: string | null = null) => ({
+    id,
+    app_id: "a1",
+    kind: "own",
+    name: id,
+    status: "pending",
+    created_at: "2026-11-12T00:00:00.000Z",
+    updated_at: "2026-11-12T00:00:00.000Z",
+    custom_domain: domain,
+  });
+
+  it("are added idempotently and concurrently; old rows keep null; a domain is held by one instance only", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await sql`DROP INDEX "vetra-apps".instances_custom_domain_uq`.execute(root);
+      for (const c of COLUMNS)
+        await sql`ALTER TABLE "vetra-apps".instances DROP COLUMN ${sql.ref(c)}`.execute(root);
+      await db
+        .insertInto("instances")
+        .values({ ...instance("old"), custom_domain: undefined })
+        .execute();
+      await Promise.all([1, 2, 3].map(() => ensureInstanceDomainColumns(db)));
+      await ensureInstanceDomainColumns(db);
+      const old = await db
+        .selectFrom("instances")
+        .select(COLUMNS)
+        .where("id", "=", "old")
+        .executeTakeFirstOrThrow();
+      expect(old).toStrictEqual(Object.fromEntries(COLUMNS.map((c) => [c, null])));
+      const index = await sql<{ schemaname: string }>`
+        SELECT schemaname FROM pg_indexes WHERE indexname = 'instances_custom_domain_uq'`.execute(root);
+      expect(index.rows).toStrictEqual([{ schemaname: "vetra-apps" }]);
+
+      await db.insertInto("instances").values(instance("n1")).execute();
+      await db.insertInto("instances").values(instance("n2")).execute();
+      await db.insertInto("instances").values(instance("d1", "app.acme.io")).execute();
+      await expect(
+        db.insertInto("instances").values(instance("d2", "app.acme.io")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
     } finally {
       await root.destroy();
     }

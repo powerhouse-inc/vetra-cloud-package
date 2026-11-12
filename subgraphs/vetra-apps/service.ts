@@ -225,6 +225,13 @@ export interface AppsDeps {
    */
   subdomainUsed?: ((subdomain: string) => Promise<boolean>) | null;
   /**
+   * Whether a live environment other than `exceptEnvironmentId` holds this
+   * custom domain (plan 7 Task 7). Absent: only instances' own domains are checked.
+   */
+  customDomainUsed?:
+    | ((domain: string, exceptEnvironmentId: string | null) => Promise<boolean>)
+    | null;
+  /**
    * Called (not awaited) right after a Studio deployment was recorded
    * PENDING, to apply it without waiting for the watcher's next pass.
    */
