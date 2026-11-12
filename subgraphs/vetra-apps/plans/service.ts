@@ -1,3 +1,4 @@
+import { withKeyLock } from "../../../shared/key-lock.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
@@ -6,6 +7,12 @@ import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf } from "../config.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
 import { releaseProblem } from "../rollouts/check.js";
+import { appInstancesLock } from "../rollouts/repo.js";
+import {
+  beginRollout,
+  callerActor,
+  plannedSteps,
+} from "../rollouts/service.js";
 import { parsePolicy, policyText } from "../rollouts/policy.js";
 import {
   checkWindow,
@@ -342,8 +349,9 @@ export async function updatePlanFor(
 }
 
 /**
- * Moves the plan's instances to `version` on the next reconciler pass, without
- * notice. The stand-in for rollouts (releases phase 3 slice 3), which replace it.
+ * Starts a rollout of this one plan to `version` (spec section 7), with the
+ * plan's notice. A no-op when the plan already targets it and no instance is
+ * behind. Its instances move one at a time through the rollout runner.
  */
 export async function setPlanTarget(
   deps: AppsDeps,
@@ -351,33 +359,22 @@ export async function setPlanTarget(
   planId: string,
   version: string,
 ): Promise<PlanJson> {
-  const { plan } = await loadPlan(deps, caller, planId);
+  const { plan, app } = await loadPlan(deps, caller, planId);
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
   const target = await checkTarget(deps, plan.app_id, version);
-  const nowIso = deps.now().toISOString();
-  return planJson(
-    await deps.db.transaction().execute(async (trx) => {
-      const cur = await lockPlan(trx, plan.id);
-      if (cur.status === "retired")
-        throw appsError("BAD_USER_INPUT", "The plan is retired");
-      if (cur.target_version === target) return cur;
-      const p = await updatePlan(
-        trx,
-        plan.id,
-        { target_version: target },
-        nowIso,
-      );
-      await auditCaller(trx, caller, {
-        appId: plan.app_id,
-        at: nowIso,
-        action: "plan.target_set",
-        subject: `plan:${plan.id}`,
-        detail: { slug: plan.slug, from: cur.target_version, to: target },
-      });
-      return p;
-    }),
-  );
+  await withKeyLock(appInstancesLock(app.id), async () => {
+    const cur = (await getPlan(deps.db, plan.id))!;
+    if (cur.status === "retired")
+      throw appsError("BAD_USER_INPUT", "The plan is retired");
+    if (
+      cur.target_version === target &&
+      (await plannedSteps(deps, app.id, [cur], target)).length === 0
+    )
+      return;
+    await beginRollout(deps, app, target, [cur], callerActor(caller), null);
+  });
+  return planJson((await getPlan(deps.db, plan.id))!);
 }
 
 /** No new licences should be issued for it (retire the term too); existing holders keep their instances. */
