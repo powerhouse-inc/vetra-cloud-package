@@ -144,6 +144,20 @@ export async function chainEnds(
   return out;
 }
 
+/** The kinds any licence of the App was issued with, whatever became of it; null = unknown kind. */
+export async function grantKinds(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+): Promise<Array<string | null>> {
+  const rows = await db
+    .selectFrom("app_license_grants")
+    .select("kind")
+    .distinct()
+    .where("app_id", "=", appId)
+    .execute();
+  return rows.map((r) => r.kind);
+}
+
 /** Chains the old model runs a licensed environment for (overview rule 1). */
 export async function licensedRoots(
   db: Kysely<VetraLicensingDB>,

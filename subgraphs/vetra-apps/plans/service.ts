@@ -2,7 +2,8 @@ import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { hasLicensedEnvironments, liveChains } from "./holders.js";
+import { plansConfigOf } from "../config.js";
+import { grantKinds, hasLicensedEnvironments } from "./holders.js";
 import {
   getPlan,
   insertPlan,
@@ -59,6 +60,21 @@ export interface CreatePlanInput {
   targetVersion?: string | null;
 }
 
+/** The longest kind and name a plan takes. */
+export const PLAN_TEXT_MAX = 64;
+
+function checkText(what: string, v: string): string {
+  if (v.length > PLAN_TEXT_MAX)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `A plan's ${what} is at most ${PLAN_TEXT_MAX} characters`,
+    );
+  return v;
+}
+
+const isUniqueViolation = (err: unknown) =>
+  (err as { code?: unknown } | null)?.code === "23505";
+
 export interface UpdatePlanInput {
   planId: string;
   name?: string | null;
@@ -104,14 +120,17 @@ export async function createPlan(
   caller: Caller,
   input: CreatePlanInput,
 ): Promise<PlanJson> {
+  if (!plansConfigOf(deps.cfg).enabled)
+    throw appsError("BAD_USER_INPUT", "Plans are not enabled on this Vetra");
   const app = await loadAppForOwner(deps, caller, input.appId);
   if (!deps.licensingDb) throw notConfigured("The licensing tables");
-  const kind = input.kind.trim();
+  const kind = checkText("kind", input.kind.trim());
   if (!kind)
     throw appsError(
       "BAD_USER_INPUT",
       "A plan adopts a licensing term: give its kind",
     );
+  const name = checkText("name", input.name?.trim() || kind);
   const access = parseAccess(input.access);
   const size = parseSize(input.size);
   const given = input.slug?.trim();
@@ -121,16 +140,6 @@ export async function createPlan(
     throw appsError(
       "BAD_USER_INPUT",
       "This App's licensed environments move to plans with the switch-over (releases phase 3, slice 9); it cannot have plans before that",
-    );
-  const nowIso = deps.now().toISOString();
-  // A kind with holders is a migration, not a new plan (slice 9). Licences of unknown kind count.
-  const holders = [
-    ...(await liveChains(deps.licensingDb, app.id, nowIso)).values(),
-  ];
-  if (holders.some((c) => c.kind === kind || c.kind === null))
-    throw appsError(
-      "BAD_USER_INPUT",
-      `The term ${kind} already has holders (or the App has licences of unknown kind); it becomes a plan with the switch-over`,
     );
   const existing = await listPlans(deps.db, app.id);
   const sameKind = existing.find((p) => p.kind === kind);
@@ -147,6 +156,23 @@ export async function createPlan(
       "BAD_USER_INPUT",
       `The App already has a plan called ${slug}`,
     );
+  // A plan's term must never have been issued: a kind with licences (live or
+  // not) is a migration, not a new plan (slice 9). Licences of unknown kind
+  // could be of any term.
+  const issued = await grantKinds(deps.licensingDb, app.id);
+  if (issued.includes(null) || issued.includes(kind))
+    throw appsError(
+      "BAD_USER_INPUT",
+      `The term ${kind} already has holders (or the App has licences of unknown kind); it becomes a plan with the switch-over`,
+    );
+  const lower = kind.toLowerCase();
+  const alike = issued.find((k) => k?.toLowerCase() === lower);
+  if (alike)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `The term ${kind} differs only in case from ${alike}, which the App's licences use; kinds are case-sensitive, so pick a distinct term`,
+    );
+  const nowIso = deps.now().toISOString();
   const target = input.targetVersion
     ? await checkTarget(deps, app.id, input.targetVersion)
     : null;
@@ -154,7 +180,7 @@ export async function createPlan(
     id: deps.newId(),
     app_id: app.id,
     slug,
-    name: input.name?.trim() || kind,
+    name,
     kind,
     access,
     size,
@@ -165,6 +191,14 @@ export async function createPlan(
     created_by: caller.address,
     created_at: nowIso,
     updated_at: nowIso,
+  }).catch((err: unknown) => {
+    // A concurrent createPlan took the slug or kind after the checks above.
+    if (isUniqueViolation(err))
+      throw appsError(
+        "BAD_USER_INPUT",
+        `The App already has a plan called ${slug} or for the term ${kind}`,
+      );
+    throw err;
   });
   return planJson(row);
 }
@@ -175,7 +209,10 @@ export async function updatePlanFor(
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
   const { plan } = await loadPlan(deps, caller, input.planId);
-  const name = input.name?.trim();
+  const name = input.name == null ? undefined : input.name.trim();
+  if (name === "")
+    throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
+  if (name !== undefined) checkText("name", name);
   return planJson(
     await updatePlan(
       deps.db,
