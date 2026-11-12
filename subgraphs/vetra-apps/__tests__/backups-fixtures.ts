@@ -16,6 +16,9 @@ import {
   type Harness,
 } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
+import { advanceBackups } from "../backups/service.js";
+import { advanceRestores } from "../backups/restore.js";
+import { activeRestoresOfApp } from "../backups/repo.js";
 
 export const ARCHIVE_SHA = "e".repeat(64);
 export const HOLDER = "0x1111111111111111111111111111111111111111";
@@ -272,4 +275,49 @@ export async function deployTarget(
   fake.images.set(`t-${instanceId}`, [
     `${i.target_repository}:${i.target_version}@${i.target_digest}`,
   ]);
+}
+
+/** What reconcileApp runs before the rollouts: backups, then restores. */
+export async function pass(ctx: BackupCtx): Promise<void> {
+  await advanceBackups(ctx.h.deps, ctx.appId);
+  await advanceRestores(ctx.h.deps, await ctx.app());
+}
+
+/**
+ * Plays the cluster until no restore of the App is active: Jobs finish (the
+ * one named by `fail` fails), and once a restore handed its instance back,
+ * Argo runs the target image (unless deploy is false). At most 20 passes.
+ */
+export async function driveRestores(
+  ctx: BackupCtx,
+  o: {
+    fail?: "pgdump-" | "pgrestore-" | "datarestore-";
+    deploy?: boolean;
+  } = {},
+): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await finishBackupJobs(
+      ctx.h,
+      ctx.fake,
+      o.fail === "pgdump-" ? "dump_failed" : "ok",
+    );
+    ctx.fake.finish(
+      "pgrestore-",
+      o.fail !== "pgrestore-",
+      o.fail === "pgrestore-" ? "psql: ERROR: boom" : "restore complete",
+    );
+    ctx.fake.finish(
+      "datarestore-",
+      o.fail !== "datarestore-",
+      o.fail === "datarestore-"
+        ? "archive checksum mismatch: 00"
+        : "data restore complete",
+    );
+    if (o.deploy !== false)
+      for (const r of await activeRestoresOfApp(ctx.h.db, ctx.appId))
+        if (r.target_set) await deployTarget(ctx.h, ctx.fake, r.instance_id);
+    await pass(ctx);
+    if ((await activeRestoresOfApp(ctx.h.db, ctx.appId)).length === 0) return;
+  }
+  throw new Error("restores did not finish in 20 passes");
 }
