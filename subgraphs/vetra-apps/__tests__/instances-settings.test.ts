@@ -292,6 +292,32 @@ describe("instance settings", () => {
     expect(h.secrets.purged).toContain(t);
   });
 
+  it("never purges the secrets of an environment that became licensed", async () => {
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    await h.envs.manage(envId);
+    await h.db
+      .updateTable("apps")
+      .set({ instances_enabled: false })
+      .where("id", "=", appId)
+      .execute();
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect(h.envs.deleted).not.toContain(envId);
+    expect(h.secrets.purged).toEqual([]);
+  });
+
+  it("never purges the secrets of a draft relinked to another App when starting over", async () => {
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await one()).environment_id!;
+    await h.envs.link(envId, "another-app", "PREVIEW");
+    h.envs.setStatus(envId, "DRAFT");
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).environment_id).toBeNull(); // started over
+    expect(h.envs.deleted).not.toContain(envId);
+    expect(h.secrets.purged).toEqual([]);
+  });
+
   it("fails the instance (not the pass) without a tenant secrets store", async () => {
     h.deps.instanceSecrets = null;
     await reconcileInstancesOnce(h.deps);
