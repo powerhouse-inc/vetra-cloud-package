@@ -126,7 +126,14 @@ export async function removeAppRole(
   const name = parseRole(role);
   const nowIso = deps.now().toISOString();
   return deps.db.transaction().execute(async (trx) => {
-    const removed = await deleteAppRole(trx, app.id, who, name);
+    // A grant of a previous owner has no effect; removing it is a no-op.
+    const removed = await deleteAppRole(
+      trx,
+      app.id,
+      who,
+      name,
+      ownerScopeOf(app),
+    );
     if (removed)
       await auditCaller(trx, caller, {
         appId: app.id,

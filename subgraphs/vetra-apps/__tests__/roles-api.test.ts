@@ -160,6 +160,24 @@ describe("release managers of a personal App", () => {
     expect(await appRolesFor(h.deps, orgAdmin, appId)).toEqual([]);
   });
 
+  it("removing a grant of a previous owner is a no-op, not audited", async () => {
+    await h.db
+      .insertInto("app_roles")
+      .values({
+        app_id: appId,
+        address: STRANGER,
+        role: "release_manager",
+        owner_scope: `org:${ORG}`,
+        granted_by: OWNER,
+        granted_at: "2026-01-01T00:00:00.000Z",
+      })
+      .execute();
+    expect(await removeAppRole(h.deps, owner, appId, STRANGER, null)).toBe(
+      false,
+    );
+    expect(await listAudit(h.db, appId, { limit: 10 })).toEqual([]);
+  });
+
   it("stays lapsed when the App comes back to its first owner (A to B to A)", async () => {
     await setAppRole(h.deps, owner, appId, STRANGER, null);
     await moveToOrg();

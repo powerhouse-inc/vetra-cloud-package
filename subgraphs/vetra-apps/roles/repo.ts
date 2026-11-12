@@ -98,17 +98,20 @@ export async function upsertAppRole(
     .executeTakeFirstOrThrow();
 }
 
+/** Removes a grant made under the App's current owner (ownerScope). */
 export async function deleteAppRole(
   db: Kysely<VetraAppsDB>,
   appId: string,
   address: string,
   role: AppRoleName,
+  ownerScope: string,
 ): Promise<boolean> {
   const r = await db
     .deleteFrom("app_roles")
     .where("app_id", "=", appId)
     .where("address", "=", address)
     .where("role", "=", role)
+    .where("owner_scope", "=", ownerScope)
     .executeTakeFirst();
   return Number(r.numDeletedRows) > 0;
 }

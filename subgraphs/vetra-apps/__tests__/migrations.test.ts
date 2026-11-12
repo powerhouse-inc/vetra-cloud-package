@@ -743,8 +743,9 @@ describe("app_audit and app_roles", () => {
       expect(await getAppRole(db, "app-1", "0xbb", "release_manager")).toMatchObject({
         owner_scope: "org:o1",
       });
-      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager")).toBe(true);
-      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager")).toBe(false);
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
+      expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(false);
     } finally {
       await root.destroy();
     }
