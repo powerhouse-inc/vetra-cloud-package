@@ -103,7 +103,7 @@ export const previewName = (pr: number) => `pr-${pr}`;
 
 const isNotConfigured = (err: unknown) =>
   err instanceof GraphQLError &&
-  err.extensions?.code === "SERVICE_NOT_CONFIGURED";
+  err.extensions.code === "SERVICE_NOT_CONFIGURED";
 
 const message = (err: unknown) =>
   (err instanceof Error ? err.message : String(err)).slice(0, 500);
