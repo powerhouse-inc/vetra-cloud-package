@@ -146,7 +146,11 @@ export interface AppAccessJson {
   releaseManager: boolean;
 }
 
-/** What the caller may do with the App, for the console to show the right controls. */
+/**
+ * What the caller may do with the App, for the console to show the right
+ * controls. A caller who may not view the App gets FORBIDDEN, not all-false;
+ * the console treats that as no access.
+ */
 export async function appAccessFor(
   deps: AppsDeps,
   caller: Caller,

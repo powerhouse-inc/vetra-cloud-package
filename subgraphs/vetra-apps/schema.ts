@@ -457,6 +457,7 @@ export const schema: DocumentNode = gql`
     appAudit(appId: ID!, limit: Int, before: String): AppAuditPage!
     "The App's release managers"
     appRoles(appId: ID!): [AppRole!]!
+    "What the caller may do with the App; FORBIDDEN when the caller may not view it"
     appAccess(appId: ID!): AppAccess!
     "Instances of the plans the caller holds licences of"
     myInstances: [HolderInstance!]!
