@@ -111,4 +111,13 @@ describe("rollouts repo", () => {
     expect((await movingStep(h.db, "app-1"))?.id).toBe("s1");
     expect((await getRollout(h.db, "r1"))?.direction).toBe("forward");
   });
+
+  it("transitions nothing from no statuses (no empty IN list)", async () => {
+    await insertRollout(h.db, rollout());
+    await insertSteps(h.db, [step({ id: "s1", position: 0 })]);
+    expect(
+      await transitionStep(h.db, "s1", [], { status: "skipped" }, T),
+    ).toBeNull();
+    expect((await stepsOf(h.db, "r1"))[0].status).toBe("pending");
+  });
 });

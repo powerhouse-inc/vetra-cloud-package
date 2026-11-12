@@ -222,6 +222,8 @@ export async function transitionStep(
   patch: StepPatch,
   nowIso: string,
 ): Promise<RolloutStepRow | null> {
+  // No status to move from: nothing moves (and no empty IN list).
+  if (from.length === 0) return null;
   return (
     (await db
       .updateTable("rollout_steps")
