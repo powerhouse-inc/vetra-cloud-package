@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeHarness, owner, seedActiveApp, type Harness } from "./harness.js";
 import { digest, seedRelease } from "./instances-fixtures.js";
 import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
@@ -7,6 +7,7 @@ import {
   reconcileInstancesOnce,
   RECREATING_FOR_SETTINGS,
   SECRETS_SETTLE_MS,
+  SECRETS_UNAVAILABLE,
   NAMESPACE_TIMED_OUT,
   WAITING_FOR_NAMESPACE,
   WAITING_FOR_SECRETS,
@@ -162,6 +163,7 @@ describe("instance settings", () => {
       reason: NAMESPACE_TIMED_OUT,
     });
     expect(failed.failed_digest).toBeNull(); // still retried
+    h.advance(60_000);
     await reconcileInstancesOnce(h.deps);
     expect((await one()).updated_at).toBe(failed.updated_at); // no churn
 
@@ -318,10 +320,51 @@ describe("instance settings", () => {
     expect(h.secrets.purged).toEqual([]);
   });
 
+  it("shows an OpenBao outage as 'secret storage unavailable' (detail logged only), without churn, and heals", async () => {
+    const ensure = h.secrets.ensureSecret;
+    h.secrets.ensureSecret = async () => {
+      throw new Error("connect ECONNREFUSED 10.0.0.7:8200");
+    };
+    await reconcileInstancesOnce(h.deps);
+    const failed = await one();
+    expect(failed).toMatchObject({
+      status: "failed",
+      reason: SECRETS_UNAVAILABLE,
+    });
+    expect(JSON.stringify(vi.mocked(h.deps.logger.warn).mock.calls)).toContain(
+      "ECONNREFUSED",
+    );
+    h.advance(60_000);
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).updated_at).toBe(failed.updated_at);
+
+    h.secrets.ensureSecret = ensure;
+    await reconcileInstancesOnce(h.deps);
+    const row = await one();
+    expect(row.settings_delivered).toBe(row.target_settings);
+    expect(await version()).toBe(`1.5.0-main.1@${digest("a")}`);
+  });
+
+  it("does not rewrite the row each pass while secret settings are not configured", async () => {
+    await set("API_TOKEN", "x", true);
+    h.deps.settingsVault = null;
+    await reconcileInstancesOnce(h.deps);
+    const failed = await one();
+    expect(failed.status).toBe("failed");
+    expect(failed.reason).toMatch(/not configured/);
+    h.advance(60_000);
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).updated_at).toBe(failed.updated_at);
+  });
+
   it("fails the instance (not the pass) without a tenant secrets store", async () => {
     h.deps.instanceSecrets = null;
     await reconcileInstancesOnce(h.deps);
     expect(await one()).toMatchObject({ status: "failed" });
     expect((await one()).reason).toMatch(/not configured/);
+    const failed = await one();
+    h.advance(60_000);
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).updated_at).toBe(failed.updated_at);
   });
 });

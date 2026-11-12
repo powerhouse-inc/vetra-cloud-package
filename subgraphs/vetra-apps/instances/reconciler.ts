@@ -1,4 +1,5 @@
 import type { Action } from "document-model";
+import { GraphQLError } from "graphql";
 import { approveChanges } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { withEnvLock, withKeyLock } from "../../../shared/key-lock.js";
@@ -87,12 +88,18 @@ export const NAMESPACE_TIMED_OUT =
   "the environment's namespace did not come up within 20 minutes";
 export const WAITING_FOR_SECRETS =
   "waiting for the environment's secrets to arrive";
+/** reason when OpenBao fails a delivery; its detail goes to the log only. */
+export const SECRETS_UNAVAILABLE = "secret storage unavailable";
 export const AFTER_SETTINGS_CHANGE = "after a settings change";
 /** Tombstones syncPreviewInstances never revives and the cap does not count. */
 const FINAL = new Set<string>([PR_CLOSED, PR_FORK]);
 const DAY_MS = 86_400_000;
 
 export const previewName = (pr: number) => `pr-${pr}`;
+
+const isNotConfigured = (err: unknown) =>
+  err instanceof GraphQLError &&
+  err.extensions?.code === "SERVICE_NOT_CONFIGURED";
 
 const message = (err: unknown) =>
   (err instanceof Error ? err.message : String(err)).slice(0, 500);
@@ -195,7 +202,12 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         `[vetra-apps] instance ${app.slug}/${row.name}: ${message(err)}`,
       );
       try {
-        await patch(deps, row, { status: "failed", reason: message(err) });
+        const reason = message(err);
+        // Only when it changed (re-read: the pass may have patched it before
+        // throwing): a lasting error does not rewrite the row each pass.
+        const now = await getInstance(deps.db, row.id);
+        if (now && (now.status !== "failed" || now.reason !== reason))
+          await patch(deps, row, { status: "failed", reason });
       } catch (e) {
         deps.logger.warn(
           `[vetra-apps] instance ${app.slug}/${row.name}: ${message(e)}`,
@@ -711,7 +723,23 @@ async function reconcileEnvironment(
       }
       return waitFor(deps, row, WAITING_FOR_NAMESPACE);
     }
-    await deliverSettings(deps, tenantId, settings, declaredSecretNames(state));
+    try {
+      await deliverSettings(
+        deps,
+        tenantId,
+        settings,
+        declaredSecretNames(state),
+      );
+    } catch (err) {
+      // Retried each pass (no failed target); the row changes only when the reason does.
+      const reason = isNotConfigured(err) ? message(err) : SECRETS_UNAVAILABLE;
+      deps.logger.warn(
+        `[vetra-apps] instance ${app.slug}/${row.name}: delivering settings failed: ${message(err)}`,
+      );
+      if (row.status !== "failed" || row.reason !== reason)
+        await patch(deps, row, { status: "failed", reason });
+      return;
+    }
     deliveredAt = deps.now().toISOString();
     await patch(deps, row, {
       settings_delivered: settings.revision,
