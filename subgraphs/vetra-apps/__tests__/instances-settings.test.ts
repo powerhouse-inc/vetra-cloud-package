@@ -7,6 +7,7 @@ import {
   reconcileInstancesOnce,
   RECREATING_FOR_SETTINGS,
   SECRETS_SETTLE_MS,
+  NAMESPACE_TIMED_OUT,
   WAITING_FOR_NAMESPACE,
   WAITING_FOR_SECRETS,
 } from "../instances/reconciler.js";
@@ -144,6 +145,35 @@ describe("instance settings", () => {
       status: "ready",
       running_settings: after.target_settings,
     });
+  });
+
+  it("fails an instance whose namespace never comes up, and heals once it does", async () => {
+    let live = false;
+    h.deps.tenantLive = async () => live;
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).reason).toBe(WAITING_FOR_NAMESPACE);
+
+    h.advance(21 * 60_000);
+    await reconcileInstancesOnce(h.deps);
+    const failed = await one();
+    expect(failed).toMatchObject({
+      status: "failed",
+      reason: NAMESPACE_TIMED_OUT,
+    });
+    expect(failed.failed_digest).toBeNull(); // still retried
+    await reconcileInstancesOnce(h.deps);
+    expect((await one()).updated_at).toBe(failed.updated_at); // no churn
+
+    live = true;
+    await reconcileInstancesOnce(h.deps);
+    expect(await one()).toMatchObject({
+      status: "updating",
+      reason: WAITING_FOR_SECRETS,
+    });
+    h.advance(SECRETS_SETTLE_MS);
+    await reconcileInstancesOnce(h.deps);
+    expect(await version()).toBe(`1.5.0-main.1@${digest("a")}`);
   });
 
   it("delivers a settings change to a stopped instance (no pods, no live namespace) and wakes it", async () => {

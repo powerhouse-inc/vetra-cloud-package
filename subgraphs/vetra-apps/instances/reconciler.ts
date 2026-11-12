@@ -41,7 +41,12 @@ import {
   type InstancePatch,
   type InstanceRow,
 } from "./repo.js";
-import { healthView, observeEnvironment, observeHealth } from "./status.js";
+import {
+  healthView,
+  observeEnvironment,
+  observeHealth,
+  UPDATE_TIMEOUT_MS,
+} from "./status.js";
 import { pullRequestGate } from "./pull-requests.js";
 import {
   branchTargets,
@@ -77,6 +82,9 @@ export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
 export const WAITING_FOR_NAMESPACE =
   "waiting for the environment's namespace to give it its secrets";
+/** Failed, but retried each pass: it heals once the namespace appears. */
+export const NAMESPACE_TIMED_OUT =
+  "the environment's namespace did not come up within 20 minutes";
 export const WAITING_FOR_SECRETS =
   "waiting for the environment's secrets to arrive";
 export const AFTER_SETTINGS_CHANGE = "after a settings change";
@@ -690,8 +698,19 @@ async function reconcileEnvironment(
   // Started once: its namespace exists (a STOPPED environment has no pods, so tenantLive says no).
   const started = fusionVersion(state) !== null;
   if (row.settings_delivered !== settings.revision) {
-    if (deps.tenantLive && !started && !(await deps.tenantLive(tenantId)))
+    if (deps.tenantLive && !started && !(await deps.tenantLive(tenantId))) {
+      const since = Date.parse(row.update_started_at ?? "");
+      if (deps.now().getTime() - since > UPDATE_TIMEOUT_MS) {
+        // Not failure(): no failed target, so the wait goes on and heals.
+        if (row.status !== "failed" || row.reason !== NAMESPACE_TIMED_OUT)
+          await patch(deps, row, {
+            status: "failed",
+            reason: NAMESPACE_TIMED_OUT,
+          });
+        return;
+      }
       return waitFor(deps, row, WAITING_FOR_NAMESPACE);
+    }
     await deliverSettings(deps, tenantId, settings, declaredSecretNames(state));
     deliveredAt = deps.now().toISOString();
     await patch(deps, row, {
