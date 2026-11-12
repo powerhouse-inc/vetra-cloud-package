@@ -190,6 +190,8 @@ export interface AppsDeps {
   studioSecrets?: Pick<SecretsService, "ensureSecret" | "setManagedSecret"> | null;
   /** Publisher secrets at rest (settings/vault.ts). Null/absent: secret settings are refused (SERVICE_NOT_CONFIGURED). */
   settingsVault?: SettingsVault | null;
+  /** Holder secrets at rest (transit pseudo-tenant `instance-settings`). Null/absent: holder secrets are refused (SERVICE_NOT_CONFIGURED). */
+  holderVault?: SettingsVault | null;
   /** Licensing's tables (licences of plans' kinds, licensed environments). Null/absent: plans have no holders and cannot be created. */
   licensingDb?: Kysely<VetraLicensingDB> | null;
   /**
@@ -336,7 +338,7 @@ export async function loadAppForOwner(
   return synced;
 }
 
-async function assertNotWorkload(
+export async function assertNotWorkload(
   deps: AppsDeps,
   caller: Caller,
 ): Promise<void> {

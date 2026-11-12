@@ -69,7 +69,10 @@ import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
-import { createSettingsVault } from "./settings/vault.js";
+import {
+  createSettingsVault,
+  INSTANCE_SETTINGS_TRANSIT_TENANT,
+} from "./settings/vault.js";
 import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
 import { environmentConnections } from "../vetra-github-auth/db/installations.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
@@ -226,6 +229,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       studioSecrets,
       instanceSecrets: tenantSecrets,
       settingsVault: createSettingsVault(transit),
+      holderVault: createSettingsVault(
+        transit,
+        INSTANCE_SETTINGS_TRANSIT_TENANT,
+      ),
       // A namespace exists once Argo synced it (an environment created stopped has no pods yet).
       tenantLive: (tenantId) => namespaceExists(orgHandoverDb, tenantId),
       studioGithubConnections: (studioEnvironmentId) =>

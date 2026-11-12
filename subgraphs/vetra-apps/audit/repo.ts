@@ -15,6 +15,7 @@ export const AUDIT_ACTIONS = [
   "role.granted",
   "role.removed",
   "instance.status",
+  "instance.setting.changed",
   "release.recorded",
   "build.recorded",
 ] as const;

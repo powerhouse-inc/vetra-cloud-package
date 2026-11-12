@@ -171,6 +171,43 @@ export const schema: DocumentNode = gql`
     runningVersion: String
   }
 
+  "A holder setting's kind: plain (value shown), secret or file (write-only)"
+  enum HolderSettingKind {
+    PLAIN
+    SECRET
+    FILE
+  }
+
+  "A setting the holder of an own instance set on it (spec 14.2). Only its holder sees it; secrets and files are write-only."
+  type HolderSetting {
+    name: String!
+    kind: HolderSettingKind!
+    "Plain settings only"
+    value: String
+    "Files only"
+    mountPath: String
+    updatedAt: String!
+  }
+
+  type HolderSettings {
+    settings: [HolderSetting!]!
+    vetra: [VetraInstanceSetting!]!
+    "Names the App's publisher sets on this instance; a holder setting of the same name replaces it."
+    publisherNames: [String!]!
+    reservedNames: [String!]!
+    reservedPrefixes: [String!]!
+  }
+
+  input SetHolderSettingInput {
+    instanceId: ID!
+    "Capitals, digits and _ (derived for files)"
+    name: String
+    kind: HolderSettingKind!
+    value: String!
+    "Files only: where the file is mounted"
+    mountPath: String
+  }
+
   input CreatePlanInput {
     appId: ID!
     "The licensing term's kind; it must have no holders yet"
@@ -463,6 +500,8 @@ export const schema: DocumentNode = gql`
     appAccess(appId: ID!): AppAccess!
     "Instances of the plans the caller holds licences of"
     myInstances: [HolderInstance!]!
+    "The settings the caller set on their own instance (holder only)"
+    myInstanceSettings(instanceId: ID!): HolderSettings!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment
@@ -487,6 +526,10 @@ export const schema: DocumentNode = gql`
       name: String!
       scope: AppSettingScope
     ): Boolean!
+    "Set or replace a setting on the caller's own instance (holder only); it rolls on the next pass"
+    setMyInstanceSetting(input: SetHolderSettingInput!): HolderSetting!
+    "Delete a setting from the caller's own instance (holder only)"
+    deleteMyInstanceSetting(instanceId: ID!, name: String!): Boolean!
     "Turn a licensing term into a plan (shared or own instances)"
     createPlan(input: CreatePlanInput!): AppPlan!
     updatePlan(input: UpdatePlanInput!): AppPlan!

@@ -25,6 +25,12 @@ import {
   type AppSettingScopeName,
   type SetAppSettingInput,
 } from "./settings/service.js";
+import {
+  deleteMyInstanceSetting,
+  myInstanceSettingsFor,
+  setMyInstanceSetting,
+  type SetHolderSettingInput,
+} from "./settings/holder-service.js";
 import { envUrls } from "./envs.js";
 import {
   bearerHasVetraClaim,
@@ -358,6 +364,14 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "myInstances", () =>
           myInstancesFor(deps, requireCaller(ctx)),
         ),
+      myInstanceSettings: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "myInstanceSettings", () =>
+          myInstanceSettingsFor(deps, requireCaller(ctx), instanceId),
+        ),
       appReleases: (
         _: unknown,
         {
@@ -503,6 +517,22 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "deleteAppSetting", () =>
           deleteAppSetting(deps, person(ctx), appId, name, scope),
+        ),
+      setMyInstanceSetting: (
+        _: unknown,
+        { input }: { input: SetHolderSettingInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setMyInstanceSetting", () =>
+          setMyInstanceSetting(deps, person(ctx), input),
+        ),
+      deleteMyInstanceSetting: (
+        _: unknown,
+        { instanceId, name }: { instanceId: string; name: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "deleteMyInstanceSetting", () =>
+          deleteMyInstanceSetting(deps, person(ctx), instanceId, name),
         ),
       createPlan: (
         _: unknown,
