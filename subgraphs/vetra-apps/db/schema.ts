@@ -141,8 +141,28 @@ export interface StudioLaunchSecretsTable {
   rotated_at: string;
 }
 
+/** One gate token per shared instance (releases phase 3 slice 5). Plaintext is never stored. */
+export interface InstanceGateTokensTable {
+  instance_id: string;
+  app_id: string;
+  /** sha256 hex of the current token: what apps/gate/check verifies. */
+  token_hash: string;
+  /** The current token under the app-settings transit key: what delivery decrypts (G1). */
+  token_ciphertext: string;
+  /** Changes with every token: the ResolvedSecret writeId, so the settings revision moves. */
+  token_id: string;
+  /** The token before the last rotation, accepted while previous_until is null (new one not observed running yet) or in the future. */
+  previous_hash: string | null;
+  previous_until: string | null;
+  /** When the current token reached the tenant; null until then. */
+  delivered_at: string | null;
+  created_at: string;
+  rotated_at: string;
+}
+
 export interface VetraAppsDB {
   instances: InstancesTable;
+  instance_gate_tokens: InstanceGateTokensTable;
   plans: PlansTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;

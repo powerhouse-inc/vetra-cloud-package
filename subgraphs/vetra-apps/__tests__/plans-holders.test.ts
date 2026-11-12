@@ -9,6 +9,7 @@ import {
   licensedRoots,
   liveChains,
   liveKindsOfHolder,
+  liveLicenceOf,
 } from "../plans/holders.js";
 
 const A = "0x1111111111111111111111111111111111111111";
@@ -230,5 +231,62 @@ describe("plan holders", () => {
       ]),
     );
     expect(await chainKinds(lic, "app", [])).toEqual(new Map());
+  });
+});
+
+describe("liveLicenceOf", () => {
+  const seed = (
+    licenseId: string,
+    o: Partial<Parameters<typeof seedLicence>[1]> = {},
+  ) =>
+    seedLicence(h, {
+      appId: "app",
+      kind: "starter",
+      holder: A,
+      licenseId,
+      ...o,
+    });
+
+  it("is open-ended for a live licence without an end", async () => {
+    await seed("l1");
+    expect(await liveLicenceOf(lic, "app", "starter", A, NOW)).toEqual({
+      until: null,
+    });
+  });
+
+  it("is the latest end among live licences, and open-ended wins", async () => {
+    await seed("l1", { endAt: "2026-12-01T00:00:00.000Z" });
+    await seed("l2", { endAt: "2027-01-01T00:00:00.000Z" });
+    await seed("l3", { endAt: "2026-11-11T00:00:00.000Z" }); // past
+    expect(await liveLicenceOf(lic, "app", "starter", A, NOW)).toEqual({
+      until: "2027-01-01T00:00:00.000Z",
+    });
+    await seed("l4");
+    expect(await liveLicenceOf(lic, "app", "starter", A, NOW)).toEqual({
+      until: null,
+    });
+  });
+
+  it("is null for ended licences, other kinds, Apps and holders", async () => {
+    await seed("l1", { status: "EXPIRED" });
+    await seed("l2", { endAt: "2026-11-11T00:00:00.000Z" });
+    await seed("l3", { kind: "pro" });
+    await seed("l4", { appId: "other" });
+    await seed("l5", { holder: B });
+    await seed("l6", { noLifecycle: true });
+    expect(await liveLicenceOf(lic, "app", "starter", A, NOW)).toBeNull();
+  });
+
+  it("matches the address in any case", async () => {
+    await seed("l1");
+    expect(
+      await liveLicenceOf(
+        lic,
+        "app",
+        "starter",
+        A.toUpperCase().replace("0X", "0x"),
+        NOW,
+      ),
+    ).toEqual({ until: null });
   });
 });

@@ -136,6 +136,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesPlanColumns(db);
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
+  await ensureInstanceGateTokensTable(db);
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
@@ -301,6 +302,46 @@ export async function ensureAppRolesTable(db: Kysely<any>): Promise<void> {
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** Gate tokens of shared instances (releases phase 3 slice 5). Schema builder only (namespaced). */
+export async function ensureInstanceGateTokensTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("instance_gate_tokens")
+      .ifNotExists()
+      .addColumn("instance_id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("token_hash", "varchar(64)", (c) => c.notNull())
+      .addColumn("token_ciphertext", "text", (c) => c.notNull())
+      .addColumn("token_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("previous_hash", "varchar(64)")
+      .addColumn("previous_until", "varchar(64)")
+      .addColumn("delivered_at", "varchar(64)")
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("rotated_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  for (const [name, column, unique] of [
+    ["instance_gate_tokens_hash_uq", "token_hash", true],
+    ["instance_gate_tokens_previous_idx", "previous_hash", false],
+  ] as const) {
+    try {
+      let q = db.schema
+        .createIndex(name)
+        .ifNotExists()
+        .on("instance_gate_tokens")
+        .column(column);
+      if (unique) q = q.unique();
+      await q.execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err)) throw err;
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
-import { appInstancesFor } from "./instances/service.js";
+import { appInstancesFor, instanceJsonFor } from "./instances/service.js";
+import { rotateInstanceGateToken } from "./gate/service.js";
 import {
   appPlansFor,
   createPlan,
@@ -560,6 +561,16 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "removeAppRole", () =>
           removeAppRole(deps, person(ctx), appId, address, role),
         ),
+      rotateInstanceGateToken: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rotateInstanceGateToken", async () => {
+          const caller = person(ctx);
+          await rotateInstanceGateToken(deps, caller, instanceId);
+          return instanceJsonFor(deps, caller, instanceId);
+        }),
       deleteApp: (
         _: unknown,
         {

@@ -80,6 +80,8 @@ export const PURGE_KEPT_KEYS = new Set<string>([WORKFLOWS_MASTER_KEY]);
  *     VETRA_OBSERVABILITY_CONSENT (+ CI, npm_config_node_linker,
  *     VETRA_CLOUD_RENOWN_URL): vetra-studio-pool/create-env.ts, as document
  *     env routed by the gitops processor
+ *   - VETRA_GATE_TOKEN: vetra-apps/settings/deliver.ts, the licence gate's
+ *     token of a shared instance (vetra-apps/gate/service.ts)
  */
 export const PLATFORM_MANAGED_KEYS: ReadonlySet<string> = new Set<string>([
   ...MANAGED_SECRET_KEYS,
@@ -88,6 +90,7 @@ export const PLATFORM_MANAGED_KEYS: ReadonlySet<string> = new Set<string>([
   "VETRA_MODEL",
   "VETRA_MODEL_FALLBACKS",
   "OPENROUTER_API_KEY",
+  "VETRA_GATE_TOKEN",
   "ADMINS",
   "CI",
   "npm_config_node_linker",
