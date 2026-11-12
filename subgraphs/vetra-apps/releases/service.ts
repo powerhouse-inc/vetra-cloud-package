@@ -1,6 +1,7 @@
 import {
   authorizeCi,
   HARBOR_HOST,
+  ReleasePolicyUnavailableError,
   loadAppForOwner,
   type AppsDeps,
   type CiIdentity,
@@ -300,9 +301,14 @@ export async function ciReportRelease(
       deps.logger.warn(
         `[vetra-apps] ${app.slug} ${row.version}: host image not recorded for licensed environments: ${String(err)}`,
       );
+      // Which dependency failed, so whoever reads the CI log knows where to look.
+      const why =
+        err instanceof ReleasePolicyUnavailableError
+          ? "the App's release policy could not be read from vetra-licensing"
+          : "the App document could not be written";
       throw appsError(
         "SERVICE_UNAVAILABLE",
-        `${row.version} is recorded, but its host image could not be offered to licensed environments yet; retry`,
+        `${row.version} is recorded, but its host image is not offered to licensed environments yet (${why}); retry`,
       );
     }
   }

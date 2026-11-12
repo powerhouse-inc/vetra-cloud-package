@@ -4762,11 +4762,26 @@ async function channelFor(
   // A gated App's build reaches customers only when its publisher promotes
   // it (spec 4.1): a FUSION image aimed at LATEST moves STAGING, which the
   // App's canary environments follow. Any other kind or channel is unchanged.
-  return rec.channel === "LATEST" &&
-    rec.kind === "FUSION_IMAGE" &&
-    (await deps.releasePolicy?.(app.id)) === "GATED"
-    ? "STAGING"
-    : rec.channel;
+  if (rec.channel !== "LATEST" || rec.kind !== "FUSION_IMAGE")
+    return rec.channel;
+  let policy: "AUTO" | "GATED" | undefined;
+  try {
+    policy = await deps.releasePolicy?.(app.id);
+  } catch (err) {
+    throw new ReleasePolicyUnavailableError(err);
+  }
+  return policy === "GATED" ? "STAGING" : rec.channel;
+}
+
+/** The App's release policy (vetra-licensing) could not be read. */
+export class ReleasePolicyUnavailableError extends Error {
+  override name = "ReleasePolicyUnavailableError";
+  constructor(cause: unknown) {
+    super(
+      `Could not read the App's release policy from vetra-licensing: ${String((cause as Error | null)?.message ?? cause)}`,
+      { cause },
+    );
+  }
 }
 
 const withAppArtifacts = keyedMutex();

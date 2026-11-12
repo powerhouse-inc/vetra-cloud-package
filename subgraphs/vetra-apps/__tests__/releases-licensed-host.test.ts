@@ -245,6 +245,9 @@ describe("a release feeds licensed environments' host image", () => {
     docs.failing = true;
     await expect(report("1.5.0")).rejects.toMatchObject({
       extensions: { code: "SERVICE_UNAVAILABLE" },
+      message: expect.stringMatching(
+        /^1\.5\.0 is recorded, but .*App document could not be written.*; retry/,
+      ),
     });
     expect(
       (await listReleases(h.deps.db, app.id, { limit: 5 })).map(
@@ -267,6 +270,9 @@ describe("a release feeds licensed environments' host image", () => {
     };
     await expect(report("1.5.0")).rejects.toMatchObject({
       extensions: { code: "SERVICE_UNAVAILABLE" },
+      message: expect.stringMatching(
+        /^1\.5\.0 is recorded, but .*release policy could not be read from vetra-licensing.*; retry/,
+      ),
     });
     expect(await hostArtifact()).toBeUndefined();
   });
