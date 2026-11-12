@@ -1,6 +1,13 @@
 import { GraphQLError } from "graphql";
 import { appReleasesFor } from "./releases/service.js";
 import { appInstancesFor } from "./instances/service.js";
+import {
+  appSettingsFor,
+  deleteAppSetting,
+  setAppSetting,
+  type AppSettingScopeName,
+  type SetAppSettingInput,
+} from "./settings/service.js";
 import { envUrls } from "./envs.js";
 import {
   bearerHasVetraClaim,
@@ -290,6 +297,14 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "appInstances", () =>
           appInstancesFor(deps, requireCaller(ctx), appId),
         ),
+      appSettings: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "appSettings", () =>
+          appSettingsFor(deps, requireCaller(ctx), appId),
+        ),
       appReleases: (
         _: unknown,
         {
@@ -415,6 +430,26 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "updateApp", async () =>
           mapApp(deps, await updateApp(deps, requireCaller(ctx), appId, input)),
+        ),
+      setAppSetting: (
+        _: unknown,
+        { input }: { input: SetAppSettingInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "setAppSetting", () =>
+          setAppSetting(deps, requireCaller(ctx), input),
+        ),
+      deleteAppSetting: (
+        _: unknown,
+        {
+          appId,
+          name,
+          scope,
+        }: { appId: string; name: string; scope?: AppSettingScopeName | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "deleteAppSetting", () =>
+          deleteAppSetting(deps, requireCaller(ctx), appId, name, scope),
         ),
       deleteApp: (
         _: unknown,

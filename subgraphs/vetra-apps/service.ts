@@ -80,6 +80,7 @@ import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js"
 import type { HttpProbe } from "./instances/probe.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SettingsVault } from "./settings/vault.js";
+import { deleteAppSettings } from "./settings/repo.js";
 import {
   adoptOrgApps,
   adoptPersonApps,
@@ -3048,6 +3049,7 @@ export async function deleteApp(
     .where("app_id", "=", app.id)
     .where("status", "in", ACTIVE_DEPLOYMENT_STATUSES)
     .execute();
+  await deleteAppSettings(deps.db, app.id);
   await deps.db
     .updateTable("apps")
     .set({ status: "DELETED", harbor_robot_secret_enc: "", updated_at: nowIso })
