@@ -128,8 +128,11 @@ export function observeHealth(
     : String(h.health);
 
   if (fresh) {
+    // Observed, not wall-clock: how long checks have agreed (the monitor
+    // restarts since whenever the health value changes), so one check
+    // followed by silence never satisfies a window.
     const since = Number.isFinite(msOf(h.since)) ? msOf(h.since) : checked;
-    const forMs = t - since;
+    const forMs = checked - since;
     if (
       h.health === "healthy" &&
       h.observedDigest === target.digest &&

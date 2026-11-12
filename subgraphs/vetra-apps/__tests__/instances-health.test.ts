@@ -399,6 +399,38 @@ describe("enforce: status follows health", () => {
     expect(h.envs.executed.length).toBe(writes);
   });
 
+  it("never fails an update on one unhealthy check after minutes of unknown", async () => {
+    const envId = await created();
+    for (let i = 0; i < 12; i++) await pass(); // 6 minutes, no cluster data
+    expect(await one()).toMatchObject({
+      status: "updating",
+      health: "unknown",
+    });
+    await setCluster(envId, [
+      { digest: digest("a"), ready: false, waiting: "CrashLoopBackOff" },
+    ]);
+    await pass();
+    const row = await one();
+    expect(row).toMatchObject({ status: "updating", health: "unhealthy" });
+    expect(row.health_since).toBe(row.health_checked_at);
+    await pass();
+    expect((await one()).status).toBe("failed");
+  });
+
+  it("restarts the health clock when the environment leaves STOPPED", async () => {
+    const envId = await readyHealthy();
+    h.envs.setStatus(envId, "STOPPED");
+    await setCluster(envId, [{ digest: digest("a"), ready: false }]);
+    await pass();
+    await pass(DEGRADED_AFTER_MS * 3);
+    h.envs.setStatus(envId, "DEPLOYING");
+    await pass();
+    const row = await one();
+    expect(row).toMatchObject({ health: "unknown", health_check: "pod" });
+    expect(row.health_since).toBe(row.health_checked_at);
+    expect(row.status).not.toBe("degraded");
+  });
+
   it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {
     const envId = await readyHealthy();
     h.envs.setStatus(envId, "STOPPED");

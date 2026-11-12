@@ -156,10 +156,13 @@ async function checkInstance(
   }
 
   const at = deps.now().toISOString();
+  // Any change of value (unknown ↔ unhealthy too) or of digest restarts the
+  // clock, and so does leaving the STOPPED check: windows count agreeing checks.
   const flipped =
     row.health === null ||
     row.health_digest !== wanted ||
-    (row.health === "healthy") !== (verdict.health === "healthy");
+    row.health !== verdict.health ||
+    (row.health_check === "stopped") !== (verdict.check === "stopped");
   await recordHealth(deps.db, row.id, {
     health: verdict.health,
     health_check: verdict.check,

@@ -145,8 +145,8 @@ describe("observeHealth", () => {
     health: "healthy",
     check: null,
     reason: null,
-    checkedAt: started(1000),
-    since: started(HEALTH_STABLE_MS + 1000),
+    checkedAt: started(0),
+    since: started(HEALTH_STABLE_MS),
     digest: D,
     observedDigest: D,
     ...over,
@@ -330,6 +330,49 @@ describe("observeHealth", () => {
     ).toEqual({
       kind: "unchanged",
     });
+  });
+  it("counts windows on observed checks: minutes of unknown then one unhealthy check never fails", () => {
+    // The monitor restarts since at the first unhealthy check.
+    const firstBad = view({
+      health: "unhealthy",
+      check: "connect",
+      reason: "Connect answered 500",
+      checkedAt: started(1000),
+      since: started(1000),
+    });
+    expect(
+      observeHealth(state("READY"), target, inFlight, firstBad, now, W),
+    ).toEqual({ kind: "updating" });
+    // Two checks CONFIRM_MS apart agree: failed.
+    expect(
+      observeHealth(
+        state("READY"),
+        target,
+        inFlight,
+        { ...firstBad, since: started(CONFIRM_MS + 1000) },
+        now,
+        W,
+      ).kind,
+    ).toBe("failed");
+  });
+  it("counts windows on observed checks: one healthy check then silence is not ready", () => {
+    const once = view({
+      checkedAt: started(HEALTH_STABLE_MS + 30_000),
+      since: started(HEALTH_STABLE_MS + 30_000),
+    });
+    expect(
+      observeHealth(state("READY"), target, inFlight, once, now, W),
+    ).toEqual({ kind: "updating" });
+    const down = view({
+      health: "unknown",
+      check: "pod",
+      reason: "the pod is starting",
+      checkedAt: started(DEGRADED_AFTER_MS + 30_000),
+      since: started(DEGRADED_AFTER_MS + 30_000),
+    });
+    expect(observeHealth(state("READY"), target, steady, down, now, W)).toEqual(
+      { kind: "unchanged" },
+    );
   });
   it("keeps stopped and gone environments as before", () => {
     expect(

@@ -245,7 +245,7 @@ export interface InstancesTable {
   health_check: string | null;
   health_reason: string | null;
   health_checked_at: string | null;
-  /** When health last flipped between healthy and not healthy, or the judged digest changed. */
+  /** When the health value last changed (or the judged digest, or the STOPPED check was left): checks agree since then. */
   health_since: string | null;
   /** The digest that check judged (the environment's FUSION digest then). */
   health_digest: string | null;
