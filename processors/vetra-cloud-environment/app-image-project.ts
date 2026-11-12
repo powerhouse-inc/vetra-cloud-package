@@ -39,7 +39,8 @@ export async function lookupWarm(
   try {
     return await isWarm(documentId);
   } catch (err) {
-    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE) return null;
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)
+      return null;
     throw err;
   }
 }
@@ -57,7 +58,14 @@ export function createAppImageProjectResolver(
   return async (state, documentId, warm) => {
     const appId = state.app?.appId;
     if (!appId)
-      return licensedImageProject(appsDb, licensingDb, documentId, isWarm, warm);
+      return licensedImageProject(
+        appsDb,
+        licensingDb,
+        documentId,
+        isWarm,
+        warm,
+        state.fusion?.image ?? null,
+      );
     try {
       const app = (await appsDb
         .selectFrom("apps")
@@ -104,7 +112,9 @@ export function createAppImageProjectResolver(
  * An environment Vetra provisioned for a licence (a holder's dedicated env,
  * e.g. a Sektar cloud host) runs its licence's App's image: the
  * `license_environments` row (vetra-licensing tables, written by provisioning,
- * never by the document) names the App. Missing tables or any failure → null.
+ * never by the document) names the App, whose Harbor project or registry
+ * namespace it may pull from (the document's image only picks which of the
+ * two is answered). Missing tables or any failure → null.
  */
 async function licensedImageProject(
   appsDb: Kysely<any>,
@@ -112,6 +122,8 @@ async function licensedImageProject(
   documentId: string,
   isWarm: WarmPoolLookup | null,
   given: WarmPoolEntry | null | undefined,
+  /** The document's FUSION image: which of the App's two projects to vouch for. */
+  image: string | null,
 ): Promise<string | null> {
   try {
     // A warm environment has no license_environments row yet (the claim writes
@@ -131,10 +143,20 @@ async function licensedImageProject(
     }
     const app = (await appsDb
       .selectFrom("apps")
-      .select("harbor_project")
+      .select(["harbor_project", "registry_namespace"])
       .where("id", "=", appId)
-      .executeTakeFirst()) as { harbor_project: string | null } | undefined;
-    return app?.harbor_project ?? null;
+      .executeTakeFirst()) as
+      | { harbor_project: string | null; registry_namespace: string | null }
+      | undefined;
+    if (!app) return null;
+    // The App's releases (vetra-publish) live in its registry namespace,
+    // claimed for the App's owner in registry_namespaces: the ci/releases
+    // bridge points licensed environments there. Older images stay in the
+    // App's own Harbor project.
+    const project = image?.split("/")[1] ?? null;
+    if (app.registry_namespace && project === app.registry_namespace)
+      return app.registry_namespace;
+    return app.harbor_project ?? null;
   } catch {
     return null;
   }

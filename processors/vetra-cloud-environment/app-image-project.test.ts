@@ -135,10 +135,53 @@ describe("licensed environments (provisioned for a licence, not App-linked)", ()
     expect(await resolve(unlinked, "someone-elses-env")).toBeNull();
   });
 
+  // Releases (vetra-publish) push to the App's registry namespace; the
+  // ci/releases bridge points licensed environments at those images.
+  it("may pull its licence's App's release images from the App's registry namespace", async () => {
+    await seedLicence();
+    await db
+      .updateTable("apps")
+      .set({ registry_namespace: "acme" })
+      .where("id", "=", "app-1")
+      .execute();
+    const running = (image: string) =>
+      ({ fusion: { image } }) as unknown as VetraCloudEnvironmentState;
+    const resolve = createAppImageProjectResolver(db, db);
+    expect(
+      await resolve(running("cr.vetra.io/acme/app-1"), "licensed-env"),
+    ).toBe("acme");
+    expect(
+      await resolve(running("cr.vetra.io/app-shop/host"), "licensed-env"),
+    ).toBe("app-shop");
+    expect(
+      await resolve(running("cr.vetra.io/other/app-1"), "licensed-env"),
+    ).toBe("app-shop");
+    const warm = createAppImageProjectResolver(db, db, async () => ({
+      appId: "app-1",
+    }));
+    expect(await warm(running("cr.vetra.io/acme/app-1"), "warm-env")).toBe(
+      "acme",
+    );
+  });
+
+  it("does not take a registry namespace the App has not claimed", async () => {
+    await seedLicence();
+    const running = {
+      fusion: { image: "cr.vetra.io/acme/app-1" },
+    } as unknown as VetraCloudEnvironmentState;
+    expect(
+      await createAppImageProjectResolver(db, db)(running, "licensed-env"),
+    ).toBe("app-shop");
+  });
+
   it("gets nothing without the licensing tables", async () => {
     await seed();
-    expect(await createAppImageProjectResolver(db, db)(unlinked, "licensed-env")).toBeNull();
-    expect(await createAppImageProjectResolver(db)(unlinked, "licensed-env")).toBeNull();
+    expect(
+      await createAppImageProjectResolver(db, db)(unlinked, "licensed-env"),
+    ).toBeNull();
+    expect(
+      await createAppImageProjectResolver(db)(unlinked, "licensed-env"),
+    ).toBeNull();
   });
 });
 
@@ -161,7 +204,9 @@ describe("createAppImageProjectResolver — warm environment", () => {
       lookups++;
       return null;
     });
-    expect(await resolve(unlinked, "warm-env", { appId: "app-1" })).toBe("app-shop");
+    expect(await resolve(unlinked, "warm-env", { appId: "app-1" })).toBe(
+      "app-shop",
+    );
     expect(await resolve(unlinked, "warm-env", null)).toBeNull();
     expect(lookups).toBe(0);
   });
