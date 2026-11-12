@@ -146,6 +146,9 @@ export interface VetraAppsDB {
   plans: PlansTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
+  rollouts: RolloutsTable;
+  rollout_plans: RolloutPlansTable;
+  rollout_steps: RolloutStepsTable;
   app_settings: AppSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
@@ -180,6 +183,10 @@ export interface ReleasesTable {
   powerhouse_version: string;
   base_image: string;
   created_at: string;
+  /** Withdrawn by the publisher (spec 14.3): no plan may target it. Never un-withdrawn. */
+  withdrawn_at?: string | null;
+  withdrawn_by?: string | null;
+  withdrawn_reason?: string | null;
 }
 
 export interface NamespacePushRobotsTable {
@@ -250,6 +257,10 @@ export interface PlansTable {
   /** manual | patches | minor | follow:<branch>. Stored; rollouts (slice 3) act on it. */
   policy: string;
   notice_hours: number;
+  /** JSON rollouts/window.ts UpdateWindow; null: any time (spec 14.8). */
+  update_window?: string | null;
+  /** "<version>: <reason>" of the last policy rollout the check refused; null when none. */
+  policy_note?: string | null;
   status: PlanStatus;
   created_by: string;
   created_at: string;
@@ -287,6 +298,88 @@ export interface AppRolesTable {
   owner_scope: string;
   granted_by: string;
   granted_at: string;
+}
+
+/** Releases phase 3 slice 3 (spec section 7). Lowercase like every vetra-apps status. */
+export type RolloutStatus =
+  | "active"
+  | "paused"
+  | "complete"
+  | "cancelled"
+  | "rolled_back";
+/** forward: towards the version; back: rollBackRollout returns instances to where they came from. */
+export type RolloutDirection = "forward" | "back";
+export type RolloutSource = "console" | "api" | "policy";
+
+/** One move of one or more plans to a release. */
+export interface RolloutsTable {
+  id: string;
+  app_id: string;
+  version: string;
+  status: RolloutStatus;
+  direction: RolloutDirection;
+  source: RolloutSource;
+  /** Lowercased address, or "vetra" (a policy). */
+  started_by: string;
+  started_at: string;
+  /** What holders see: the release's customer notes (else its notes) at the start. */
+  notes: string | null;
+  paused_at: string | null;
+  paused_reason: string | null;
+  finished_at: string | null;
+  rolled_back_by: string | null;
+  rolled_back_at: string | null;
+  updated_at: string;
+}
+
+export interface RolloutPlansTable {
+  rollout_id: string;
+  plan_id: string;
+  /** The plan's target before (null: none); rollBackRollout sets it back. */
+  from_version: string | null;
+  notice_hours: number;
+}
+
+export type RolloutStepStatus =
+  | "pending"
+  | "applying"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "revert_pending"
+  | "reverting"
+  | "revert_failed"
+  | "rolled_back";
+
+/** One instance's move within a rollout. */
+export interface RolloutStepsTable {
+  id: string;
+  rollout_id: string;
+  app_id: string;
+  plan_id: string;
+  instance_id: string;
+  instance_kind: "shared" | "own";
+  instance_name: string;
+  /** Shared instances first, then own by age (spec 7 step 4). */
+  position: number;
+  /** The instance's target when the rollout started: where a revert goes. */
+  from_version: string | null;
+  to_version: string;
+  status: RolloutStepStatus;
+  /** Start + notice; the plan's window applies after it. */
+  due_at: string;
+  /** The holder's "update now" or the publisher's retry: due at once, outside the window. */
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The runner set the instance's target for this step; a rollback sets it back. */
+  target_moved: boolean;
+  attempts: number;
+  error: string | null;
+  /** "pinned at 1.4.2", "stopped: updated when it wakes", … */
+  note: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** One running environment of an App (spec section 5). */
@@ -366,6 +459,8 @@ export interface InstancesTable {
   stopped_by_vetra?: boolean | null;
   /** shared/own: the FUSION size (VetraCloudRessourceSize) of the plan. */
   target_size?: string | null;
+  /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
+  pinned_version?: string | null;
   created_at: string;
   updated_at: string;
 }

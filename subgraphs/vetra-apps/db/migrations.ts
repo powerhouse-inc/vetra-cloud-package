@@ -136,6 +136,120 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesPlanColumns(db);
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
+  await ensureRolloutTables(db);
+  await ensureRolloutColumns(db);
+}
+
+/** Rollouts (releases phase 3 slice 3, spec section 7). Schema builder only (namespaced). */
+export async function ensureRolloutTables(db: Kysely<any>): Promise<void> {
+  const tolerant = async (run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (err) {
+      if (!isConcurrentIndexError(err)) throw err;
+    }
+  };
+  await tolerant(() =>
+    db.schema
+      .createTable("rollouts")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("version", "varchar(255)", (c) => c.notNull())
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("direction", "varchar(16)", (c) => c.notNull())
+      .addColumn("source", "varchar(16)", (c) => c.notNull())
+      .addColumn("started_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("started_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("notes", "text")
+      .addColumn("paused_at", "varchar(64)")
+      .addColumn("paused_reason", "text")
+      .addColumn("finished_at", "varchar(64)")
+      .addColumn("rolled_back_by", "varchar(255)")
+      .addColumn("rolled_back_at", "varchar(64)")
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .execute(),
+  );
+  await tolerant(() =>
+    db.schema
+      .createTable("rollout_plans")
+      .ifNotExists()
+      .addColumn("rollout_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("plan_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("from_version", "varchar(255)")
+      .addColumn("notice_hours", "integer", (c) => c.notNull())
+      .addPrimaryKeyConstraint("rollout_plans_pk", ["rollout_id", "plan_id"])
+      .execute(),
+  );
+  await tolerant(() =>
+    db.schema
+      .createTable("rollout_steps")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("rollout_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("plan_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("instance_kind", "varchar(16)", (c) => c.notNull())
+      .addColumn("instance_name", "varchar(255)", (c) => c.notNull())
+      .addColumn("position", "integer", (c) => c.notNull())
+      .addColumn("from_version", "varchar(255)")
+      .addColumn("to_version", "varchar(255)", (c) => c.notNull())
+      .addColumn("status", "varchar(16)", (c) => c.notNull())
+      .addColumn("due_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("requested_at", "varchar(64)")
+      .addColumn("started_at", "varchar(64)")
+      .addColumn("finished_at", "varchar(64)")
+      .addColumn("target_moved", "boolean", (c) => c.notNull())
+      .addColumn("attempts", "integer", (c) => c.notNull())
+      .addColumn("error", "text")
+      .addColumn("note", "text")
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addUniqueConstraint("rollout_steps_instance_uq", ["rollout_id", "instance_id"])
+      .execute(),
+  );
+  for (const [name, table, columns] of [
+    ["rollouts_app_status_idx", "rollouts", ["app_id", "status"]],
+    ["rollout_plans_plan_idx", "rollout_plans", ["plan_id"]],
+    ["rollout_steps_rollout_idx", "rollout_steps", ["rollout_id", "position"]],
+    ["rollout_steps_instance_idx", "rollout_steps", ["instance_id", "status"]],
+  ] as const)
+    await tolerant(() =>
+      db.schema.createIndex(name).ifNotExists().on(table).columns([...columns]).execute(),
+    );
+  // One moving instance per App (spec section 7: one instance at a time).
+  await tolerant(() =>
+    db.schema
+      .createIndex("rollout_steps_moving_uq")
+      .ifNotExists()
+      .unique()
+      .on("rollout_steps")
+      .column("app_id")
+      .where(sql<boolean>`status in ('applying', 'reverting')`)
+      .execute(),
+  );
+}
+
+/** Pinning, withdrawing, plan windows and policy notes (slice 3). Nullable. */
+export async function ensureRolloutColumns(db: Kysely<any>): Promise<void> {
+  for (const [table, name, type] of [
+    ["instances", "pinned_version", "varchar(255)"],
+    ["releases", "withdrawn_at", "varchar(64)"],
+    ["releases", "withdrawn_by", "varchar(255)"],
+    ["releases", "withdrawn_reason", "text"],
+    ["plans", "update_window", "text"],
+    ["plans", "policy_note", "text"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable(table)
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+    }
+  }
 }
 
 /** Publisher settings per App (releases phase 2 slice 4, spec 14.2). Schema builder only (namespaced). */
