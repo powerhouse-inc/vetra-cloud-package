@@ -156,6 +156,30 @@ describe("audit log", () => {
     ).toHaveLength(1);
   });
 
+  const seedOld = async (n: number) => {
+    for (let i = 0; i < n; i++)
+      await recordAudit(h.db, {
+        appId,
+        at: `2025-10-01T00:00:0${i}.000Z`,
+        actor: "vetra",
+        source: "system",
+        action: "instance.status",
+        subject: `instance:${i}`,
+      });
+  };
+
+  it("sweeps batch after batch while they are full", async () => {
+    await seedOld(3);
+    expect(await sweepAuditOnce(h.deps, { batch: 1, maxBatches: 10 })).toBe(3);
+  });
+
+  it("stops after maxBatches in one pass", async () => {
+    await seedOld(2);
+    expect(await sweepAuditOnce(h.deps, { batch: 1, maxBatches: 1 })).toBe(1);
+    expect(await sweepAuditOnce(h.deps, { batch: 1, maxBatches: 1 })).toBe(1);
+    expect(await sweepAuditOnce(h.deps, { batch: 1, maxBatches: 1 })).toBe(0);
+  });
+
   it("cuts long strings at every depth", () => {
     const long = "x".repeat(AUDIT_DETAIL_STRING_MAX + 10);
     const cut = `${"x".repeat(AUDIT_DETAIL_STRING_MAX)}…`;

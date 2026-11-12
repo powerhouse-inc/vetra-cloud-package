@@ -16,6 +16,7 @@ export const AUDIT_RETENTION_DAYS = 365;
 export const AUDIT_PAGE_DEFAULT = 50;
 export const AUDIT_PAGE_MAX = 200;
 export const AUDIT_SWEEP_BATCH = 5000;
+export const AUDIT_SWEEP_MAX_BATCHES = 20;
 
 /** console when the request's Origin is the console's (cfg.vetraAppUrl); else api. */
 export function callerSource(
@@ -109,10 +110,24 @@ export async function appAuditFor(
   };
 }
 
-/** Deletes rows older than AUDIT_RETENTION_DAYS, a batch per pass. */
-export async function sweepAuditOnce(deps: AppsDeps): Promise<number> {
+/**
+ * Deletes rows older than AUDIT_RETENTION_DAYS: batch after batch while they
+ * come back full, at most maxBatches per pass (the next pass goes on).
+ */
+export async function sweepAuditOnce(
+  deps: AppsDeps,
+  o: { batch?: number; maxBatches?: number } = {},
+): Promise<number> {
+  const batch = o.batch ?? AUDIT_SWEEP_BATCH;
+  const maxBatches = o.maxBatches ?? AUDIT_SWEEP_MAX_BATCHES;
   const cutoff = new Date(
     deps.now().getTime() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000,
   ).toISOString();
-  return sweepAudit(deps.db, cutoff, AUDIT_SWEEP_BATCH);
+  let total = 0;
+  for (let i = 0; i < maxBatches; i++) {
+    const n = await sweepAudit(deps.db, cutoff, batch);
+    total += n;
+    if (n < batch) break;
+  }
+  return total;
 }
