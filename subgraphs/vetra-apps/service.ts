@@ -4729,52 +4729,132 @@ export async function ciRecordArtifact(
   }
   if (input.channel != null && !ARTIFACT_CHANNELS.has(input.channel))
     throw appsError("BAD_USER_INPUT", "channel must be DEV, STAGING or LATEST");
-  if (!deps.docs) throw notConfigured("The App document store");
+  await recordAppArtifact(deps, app, {
+    kind: input.kind,
+    name: input.name.trim(),
+    version: input.version.trim(),
+    reference: input.reference.trim(),
+    commitSha: input.commitSha ?? null,
+    runId: input.runId ?? null,
+    channel: input.channel ?? null,
+  });
+  return { appId: app.id, recorded: true as const };
+}
 
+export interface AppArtifactRecord {
+  kind: "PACKAGE" | "FUSION_IMAGE";
+  name: string;
+  version: string;
+  reference: string;
+  commitSha: string | null;
+  runId: string | null;
+  /** The channel CI aims at this version, if any. */
+  channel: "DEV" | "STAGING" | "LATEST" | null;
+}
+
+/** A channel a gated App's FUSION image moves instead of the one CI asked for (spec 4.1). */
+async function channelFor(
+  deps: AppsDeps,
+  app: AppRow,
+  rec: AppArtifactRecord,
+): Promise<AppArtifactRecord["channel"]> {
   // A gated App's build reaches customers only when its publisher promotes
   // it (spec 4.1): a FUSION image aimed at LATEST moves STAGING, which the
   // App's canary environments follow. Any other kind or channel is unchanged.
-  const requested = input.channel ?? null;
-  const channel =
-    requested === "LATEST" &&
-    input.kind === "FUSION_IMAGE" &&
+  return rec.channel === "LATEST" &&
+    rec.kind === "FUSION_IMAGE" &&
     (await deps.releasePolicy?.(app.id)) === "GATED"
-      ? "STAGING"
-      : requested;
+    ? "STAGING"
+    : rec.channel;
+}
+
+/** The version a channel of an artifact points at in an App document's global state. */
+export function channelPointer(
+  state: Record<string, unknown> | null,
+  kind: string,
+  name: string,
+  channel: string,
+): string | null {
+  const artifacts = (state?.artifacts ?? []) as Array<{
+    kind: string;
+    name: string;
+    channels: Array<{ channel: string; version: string }>;
+  }>;
+  const artifact = artifacts.find((a) => a.kind === kind && a.name === name);
+  return artifact?.channels.find((c) => c.channel === channel)?.version ?? null;
+}
+
+/**
+ * Records one artifact version on the App's document and aims the channel at
+ * it (LATEST of a gated App's FUSION image moves STAGING), creating the
+ * document on demand. `moveFrom`, when given, decides from the channel's
+ * current version whether it moves at all. Throws when the document store is
+ * missing or the write fails: the document is the only record of an artifact.
+ * Returns the channel it moved, or null.
+ */
+export async function recordAppArtifact(
+  deps: AppsDeps,
+  app: AppRow,
+  rec: AppArtifactRecord,
+  moveFrom?: (current: string | null) => boolean,
+): Promise<AppArtifactRecord["channel"]> {
+  const docs = deps.docs;
+  if (!docs) throw notConfigured("The App document store");
+  const requested = rec.channel;
+  let channel = requested === null ? null : await channelFor(deps, app, rec);
+
+  // Create-on-demand: an App registered before the document backfill ran still
+  // has to be able to publish.
+  const created = !(await docs.exists(app.id));
+  if (
+    channel !== null &&
+    moveFrom &&
+    !moveFrom(
+      created
+        ? null
+        : channelPointer(
+            await docs.getState(app.id),
+            rec.kind,
+            rec.name,
+            channel,
+          ),
+    )
+  ) {
+    channel = null;
+  }
 
   const actions: Action[] = [
     recordArtifactVersion({
-      kind: input.kind,
-      name: input.name.trim(),
-      version: input.version.trim(),
-      reference: input.reference.trim(),
-      commitSha: input.commitSha ?? null,
-      runId: input.runId ?? null,
+      kind: rec.kind,
+      name: rec.name,
+      version: rec.version,
+      reference: rec.reference,
+      commitSha: rec.commitSha,
+      runId: rec.runId,
       publishedAt: deps.now().toISOString(),
     }),
   ];
   if (channel !== null) {
     actions.push(
       setArtifactChannel({
-        kind: input.kind,
-        name: input.name.trim(),
+        kind: rec.kind,
+        name: rec.name,
         channel,
-        version: input.version.trim(),
+        version: rec.version,
       }),
     );
   }
 
-  // Create-on-demand: an App registered before the document backfill ran still
-  // has to be able to publish.
-  const created = !(await deps.docs.exists(app.id));
-  if (created) await deps.docs.create(app.id);
-  await deps.docs.execute(app.id, actions);
-  if (created) await protectNewAppDocument(deps.docs, app.id, deps.logger);
+  if (created) await docs.create(app.id);
+  await docs.execute(app.id, actions);
+  if (created) await protectNewAppDocument(docs, app.id, deps.logger);
 
   deps.logger.info(
-    `[vetra-apps] App ${app.slug}: recorded ${input.kind} ${input.name}@${input.version}` +
+    `[vetra-apps] App ${app.slug}: recorded ${rec.kind} ${rec.name}@${rec.version}` +
       (channel ? ` and pointed ${channel} at it` : "") +
-      (channel !== requested ? ` (the App is gated; ${requested} moves on promotion)` : ""),
+      (channel === "STAGING" && requested === "LATEST"
+        ? ` (the App is gated; ${requested} moves on promotion)`
+        : ""),
   );
-  return { appId: app.id, recorded: true as const };
+  return channel;
 }
