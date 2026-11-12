@@ -586,6 +586,7 @@ export async function ensureInstancesHealthColumns(
     ["health_restarts", "integer"],
     ["observed_digest", "varchar(128)"],
     ["observed_digest_source", "varchar(16)"],
+    ["running_degraded", "boolean"],
   ] as const) {
     try {
       await db.schema

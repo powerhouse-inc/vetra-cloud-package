@@ -230,6 +230,8 @@ export interface InstancesTable {
   running_version: string | null;
   running_digest: string | null;
   running_repository: string | null;
+  /** The running digest went degraded after it ran healthy: not a revert target until healthy again. */
+  running_degraded: boolean | null;
   status: InstanceStatus;
   reason: string | null;
   /** A target that failed; not retried until a newer target arrives. */

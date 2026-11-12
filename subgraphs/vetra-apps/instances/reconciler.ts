@@ -204,6 +204,7 @@ const CLEAN: InstancePatch = {
   running_version: null,
   running_digest: null,
   running_repository: null,
+  running_degraded: null,
   failed_digest: null,
   health: null,
   health_check: null,
@@ -538,6 +539,8 @@ const ownDraft = (state: VetraCloudEnvironmentState, row: InstanceRow) =>
 
 function revertImage(row: InstanceRow): InstanceImage | null {
   if (
+    // It stopped serving after it ran healthy: going back would not help.
+    row.running_degraded ||
     !row.running_digest ||
     !row.running_version ||
     row.running_digest === row.target_digest
@@ -641,13 +644,18 @@ async function reconcileEnvironment(
         );
   if (seen.kind === "unchanged") return;
   if (seen.kind === "ready") {
-    if (row.status !== "ready" || row.running_digest !== row.target_digest)
+    if (
+      row.status !== "ready" ||
+      row.running_digest !== row.target_digest ||
+      row.running_degraded
+    )
       await patch(deps, row, {
         status: "ready",
         reason: null,
         running_version: row.target_version,
         running_digest: row.target_digest,
         running_repository: row.target_repository,
+        running_degraded: false,
       });
     return;
   }
@@ -659,8 +667,16 @@ async function reconcileEnvironment(
   }
   if (seen.kind === "degraded") {
     // Surfaced, never reverted: nothing was updated, the target already ran healthy.
-    if (row.status !== "degraded" || row.reason !== seen.reason)
-      await patch(deps, row, { status: "degraded", reason: seen.reason });
+    if (
+      row.status !== "degraded" ||
+      row.reason !== seen.reason ||
+      !row.running_degraded
+    )
+      await patch(deps, row, {
+        status: "degraded",
+        reason: seen.reason,
+        running_degraded: true,
+      });
     return;
   }
   // Failed: keep the target from being retried, and go back to what ran (spec section 6).

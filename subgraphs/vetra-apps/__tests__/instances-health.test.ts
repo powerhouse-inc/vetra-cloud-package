@@ -565,6 +565,44 @@ describe("enforce: status follows health", () => {
     });
   });
 
+  it("never goes back to a digest that was degraded, until it is healthy again", async () => {
+    const envId = await readyHealthy();
+    await setCluster(envId, [{ digest: digest("a"), ready: false }]);
+    await pass();
+    await pass(DEGRADED_AFTER_MS);
+    expect(await one()).toMatchObject({
+      status: "degraded",
+      running_degraded: true,
+    });
+    await updateToB();
+    await setCluster(envId, [
+      { digest: digest("a"), ready: false },
+      { digest: digest("b"), ready: false, waiting: "CrashLoopBackOff" },
+    ]);
+    await pass();
+    await pass(WINDOW);
+    expect(await one()).toMatchObject({
+      status: "failed",
+      failed_digest: digest("b"),
+    });
+    // Left on b: a was not serving either.
+    expect(await fusionVersion(envId)).toBe(`1.5.0-main.2@${digest("b")}`);
+  });
+
+  it("makes a recovered digest a revert target again", async () => {
+    const envId = await readyHealthy();
+    await setCluster(envId, [{ digest: digest("a"), ready: false }]);
+    await pass();
+    await pass(DEGRADED_AFTER_MS);
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await pass();
+    await pass(HEALTH_STABLE_MS);
+    expect(await one()).toMatchObject({
+      status: "ready",
+      running_degraded: false,
+    });
+  });
+
   it("shows an owner stop as stopped, and the start as degraded until healthy", async () => {
     const envId = await readyHealthy();
     h.envs.setStatus(envId, "STOPPED");

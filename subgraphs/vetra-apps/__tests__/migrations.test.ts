@@ -472,6 +472,7 @@ it("adds the instance health columns, idempotently", async () => {
       health_restarts: 4,
       observed_digest: "sha256:aa",
       observed_digest_source: "pod",
+      running_degraded: true,
       created_at: "2026-11-12T00:00:00.000Z",
       updated_at: "2026-11-12T00:00:00.000Z",
     })
@@ -481,6 +482,7 @@ it("adds the instance health columns, idempotently", async () => {
     health: "unhealthy",
     health_restarts: 4,
     observed_digest_source: "pod",
+    running_degraded: true,
   });
   await db.destroy();
 });
