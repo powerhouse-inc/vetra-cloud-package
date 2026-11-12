@@ -13,7 +13,11 @@ import {
   vetraServiceAddress,
 } from "../../vetra-cloud-observability/env-protection.js";
 import { gateConfigOf, instanceHealth, plansConfigOf } from "../config.js";
-import { deleteGateToken, markGateDelivered } from "../gate/repo.js";
+import {
+  deleteGateToken,
+  markGateDelivered,
+  startGatePreviousGrace,
+} from "../gate/repo.js";
 import {
   ensureGateToken,
   GATE_PREVIOUS_GRACE_MS,
@@ -881,17 +885,31 @@ async function reconcileEnvironment(
       settings_delivered_at: deliveredAt,
     });
   }
-  // The gate token reached the tenant: the previous one's grace starts. Also
-  // on later passes, so a crash right after delivery heals (a no-op once marked).
+  // The gate token reached the tenant. Also on later passes, so a crash
+  // right after delivery heals (a no-op once marked). The previous token's
+  // grace starts only once the environment runs these settings (below), so
+  // a stalled rollout never locks out pods still on the old token.
   const gateSecret = settings.secrets.find((s) => s.name === GATE_TOKEN_ENV);
-  if (gateSecret)
+  const startGrace = async () => {
+    if (gateSecret)
+      await startGatePreviousGrace(
+        deps.db,
+        row.id,
+        gateSecret.writeId,
+        deps.now().toISOString(),
+        GATE_PREVIOUS_GRACE_MS,
+      );
+  };
+  if (gateSecret) {
     await markGateDelivered(
       deps.db,
       row.id,
       gateSecret.writeId,
       deliveredAt ?? deps.now().toISOString(),
-      GATE_PREVIOUS_GRACE_MS,
     );
+    // Heals a crash between observing the rollout and starting the grace.
+    if (row.running_settings === settings.revision) await startGrace();
+  }
   // A first start waits until the controller had time to write <tenant>-secrets.
   const start =
     started ||
@@ -979,6 +997,7 @@ async function reconcileEnvironment(
         running_settings: settings.revision,
         running_degraded: false,
       });
+    await startGrace();
     return;
   }
   if (seen.kind === "stopped" || seen.kind === "updating") {

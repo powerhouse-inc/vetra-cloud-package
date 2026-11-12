@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkGate } from "../gate/check.js";
-import { replaceGateToken, markGateDelivered } from "../gate/repo.js";
+import {
+  replaceGateToken,
+  markGateDelivered,
+  startGatePreviousGrace,
+} from "../gate/repo.js";
 import { ensureGateToken, GATE_PREVIOUS_GRACE_MS } from "../gate/service.js";
 import { hashGateToken, newGateToken } from "../gate/token.js";
 import { updatePlan } from "../plans/repo.js";
@@ -143,22 +147,24 @@ describe("checkGate", () => {
       .set({ delivered_at: iso(nowMs()) })
       .execute();
     const next = newGateToken();
-    await h.db
-      .transaction()
-      .execute((trx) =>
-        replaceGateToken(
-          trx,
-          row.id,
-          {
-            token_hash: hashGateToken(next),
-            token_ciphertext: "vault:x",
-            token_id: "t2",
-          },
-          iso(nowMs()),
-        ),
-      );
+    await h.db.transaction().execute((trx) =>
+      replaceGateToken(
+        trx,
+        row.id,
+        {
+          token_hash: hashGateToken(next),
+          token_ciphertext: "vault:x",
+          token_id: "t2",
+        },
+        iso(nowMs()),
+      ),
+    );
     expect((await check(OWNER))?.instanceId).toBe(row.id);
-    await markGateDelivered(
+    await markGateDelivered(h.db, row.id, "t2", iso(nowMs()));
+    // Delivered, rollout not observed: still accepted.
+    h.advance(GATE_PREVIOUS_GRACE_MS + 1000);
+    expect((await check(OWNER))?.instanceId).toBe(row.id);
+    await startGatePreviousGrace(
       h.db,
       row.id,
       "t2",

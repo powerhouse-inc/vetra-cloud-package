@@ -87,7 +87,7 @@ export async function ensureGateToken(
  * A new gate token for a shared instance (operators and release managers,
  * audited gate.token_rotated). Delivered on the reconciler's next pass as a
  * settings change; the delivered token stays accepted until
- * GATE_PREVIOUS_GRACE_MS after that.
+ * GATE_PREVIOUS_GRACE_MS after the environment is observed running it.
  */
 export async function rotateInstanceGateToken(
   deps: AppsDeps,

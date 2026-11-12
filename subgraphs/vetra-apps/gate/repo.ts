@@ -53,9 +53,10 @@ export async function lockGateToken(
 
 /**
  * Puts a new token in place (rotation). The delivered token becomes the
- * previous one, accepted until GATE_PREVIOUS_GRACE_MS after the new one is
- * delivered; an undelivered token was never in pods and is simply replaced
- * (G3). Call inside a transaction.
+ * previous one, accepted until GATE_PREVIOUS_GRACE_MS after the environment
+ * is observed running the new one (startGatePreviousGrace); an undelivered
+ * token was never in pods and is simply replaced (G3). Call inside a
+ * transaction.
  */
 export async function replaceGateToken(
   trx: Kysely<VetraAppsDB>,
@@ -81,11 +82,35 @@ export async function replaceGateToken(
 }
 
 /**
- * Records that token `tokenId` reached the tenant; the previous token's grace
- * starts now. False when that token is not the current one any more, or was
- * already marked.
+ * Records that token `tokenId` reached the tenant. The previous token stays
+ * accepted (previous_until null) until startGatePreviousGrace: delivery is
+ * not the rollout, and pods still on the old settings keep the old token.
+ * False when that token is not the current one any more, or was already
+ * marked.
  */
 export async function markGateDelivered(
+  db: Kysely<VetraAppsDB>,
+  instanceId: string,
+  tokenId: string,
+  nowIso: string,
+): Promise<boolean> {
+  const r = await db
+    .updateTable("instance_gate_tokens")
+    .set({ delivered_at: nowIso })
+    .where("instance_id", "=", instanceId)
+    .where("token_id", "=", tokenId)
+    .where("delivered_at", "is", null)
+    .executeTakeFirst();
+  return Number(r.numUpdatedRows) > 0;
+}
+
+/**
+ * The environment was observed running the settings that carry token
+ * `tokenId`: the previous token's grace starts now, once. False when there
+ * is no previous token, that token is not current or not delivered, or the
+ * grace already started.
+ */
+export async function startGatePreviousGrace(
   db: Kysely<VetraAppsDB>,
   instanceId: string,
   tokenId: string,
@@ -95,18 +120,12 @@ export async function markGateDelivered(
   const until = new Date(Date.parse(nowIso) + graceMs).toISOString();
   const r = await db
     .updateTable("instance_gate_tokens")
-    .set((eb) => ({
-      delivered_at: nowIso,
-      previous_until: eb
-        .case()
-        .when("previous_hash", "is not", null)
-        .then(until)
-        .else(null)
-        .end(),
-    }))
+    .set({ previous_until: until })
     .where("instance_id", "=", instanceId)
     .where("token_id", "=", tokenId)
-    .where("delivered_at", "is", null)
+    .where("delivered_at", "is not", null)
+    .where("previous_hash", "is not", null)
+    .where("previous_until", "is", null)
     .executeTakeFirst();
   return Number(r.numUpdatedRows) > 0;
 }
@@ -125,7 +144,7 @@ export async function deleteGateToken(
 /**
  * The row a presented token's hash belongs to: its current token, or its
  * previous one while accepted (previous_until null = the new one is not
- * delivered yet, else until then).
+ * observed running yet, else until then).
  */
 export async function findByTokenHash(
   db: Kysely<VetraAppsDB>,

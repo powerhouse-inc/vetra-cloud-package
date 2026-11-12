@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
-import { getGateToken } from "../gate/repo.js";
+import { findByTokenHash, getGateToken } from "../gate/repo.js";
 import {
   GATE_PREVIOUS_GRACE_MS,
   rotateInstanceGateToken,
@@ -99,17 +99,20 @@ describe("the licence gate on shared instances", () => {
     expect(JSON.stringify(await tokenRows())).not.toContain(delivered);
   });
 
-  it("delivers a rotation as a settings change; the old token's grace starts at delivery", async () => {
+  it("delivers a rotation as a settings change; the old token's grace starts once the new settings run", async () => {
     await plan(h, appId);
     await ready();
     const before = await shared();
     const old = (await getGateToken(h.db, before.id))!;
     await rotateInstanceGateToken(h.deps, owner, before.id);
     expect((await getGateToken(h.db, before.id))!.delivered_at).toBeNull();
+    // Delivered, but the rollout has not been observed: no grace yet.
+    h.envs.setStatus(before.environment_id!, "DEPLOYING");
     await reconcileInstancesOnce(h.deps);
     const after = await shared();
     expect(after.target_settings).not.toBe(before.target_settings);
-    const gate = (await getGateToken(h.db, after.id))!;
+    expect(after.running_settings).not.toBe(after.target_settings);
+    let gate = (await getGateToken(h.db, after.id))!;
     expect(
       hashGateToken(
         h.secrets.store.get(tenantOf(after))!.get("VETRA_GATE_TOKEN")!,
@@ -117,9 +120,27 @@ describe("the licence gate on shared instances", () => {
     ).toBe(gate.token_hash);
     expect(gate.previous_hash).toBe(old.token_hash);
     expect(gate.delivered_at).not.toBeNull();
-    expect(Date.parse(gate.previous_until!)).toBe(
-      Date.parse(gate.delivered_at!) + GATE_PREVIOUS_GRACE_MS,
-    );
+    expect(gate.previous_until).toBeNull();
+    // A stalled rollout: pods still on the old token keep passing.
+    h.advance(GATE_PREVIOUS_GRACE_MS + 60_000);
+    await reconcileInstancesOnce(h.deps);
+    expect(
+      await findByTokenHash(h.db, old.token_hash, h.deps.now().toISOString()),
+    ).not.toBeNull();
+    // Observed running the new revision: the grace starts now.
+    const observedFrom = h.deps.now().getTime();
+    h.envs.setStatus(before.environment_id!, "READY");
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect((await shared()).running_settings).toBe(after.target_settings);
+    gate = (await getGateToken(h.db, after.id))!;
+    const until = Date.parse(gate.previous_until!) - GATE_PREVIOUS_GRACE_MS;
+    expect(until).toBeGreaterThanOrEqual(observedFrom);
+    expect(until).toBeLessThanOrEqual(h.deps.now().getTime());
+    h.advance(GATE_PREVIOUS_GRACE_MS + 1000);
+    expect(
+      await findByTokenHash(h.db, old.token_hash, h.deps.now().toISOString()),
+    ).toBeNull();
   });
 
   it("changes nothing with the gate off: no env, no token rows, the same settings revision", async () => {

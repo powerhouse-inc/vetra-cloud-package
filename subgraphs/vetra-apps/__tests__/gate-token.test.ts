@@ -25,6 +25,7 @@ import {
   insertGateToken,
   lockGateToken,
   markGateDelivered,
+  startGatePreviousGrace,
   replaceGateToken,
 } from "../gate/repo.js";
 
@@ -85,13 +86,30 @@ describe("gate token rows", () => {
     expect(
       (await findByTokenHash(h.db, "b".repeat(64), NOW))?.instance_id,
     ).toBe("i1");
-    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW, 15 * 60_000)).toBe(
-      true,
-    );
+    // Grace before delivery does nothing.
+    expect(
+      await startGatePreviousGrace(h.db, "i1", "tid-b", NOW, 15 * 60_000),
+    ).toBe(false);
+    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW)).toBe(true);
     // Once only.
-    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW, 15 * 60_000)).toBe(
-      false,
-    );
+    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW)).toBe(false);
+    // Delivered but not observed running: the previous one stays accepted.
+    expect(
+      await findByTokenHash(h.db, "a".repeat(64), "2026-11-13T10:16:00.000Z"),
+    ).not.toBeNull();
+    expect(
+      await startGatePreviousGrace(h.db, "i1", "tid-b", NOW, 15 * 60_000),
+    ).toBe(true);
+    // Once only: a later pass never pushes the end out.
+    expect(
+      await startGatePreviousGrace(
+        h.db,
+        "i1",
+        "tid-b",
+        "2026-11-12T11:00:00.000Z",
+        15 * 60_000,
+      ),
+    ).toBe(false);
     expect(
       await findByTokenHash(h.db, "a".repeat(64), "2026-11-12T10:14:00.000Z"),
     ).not.toBeNull();
@@ -107,9 +125,7 @@ describe("gate token rows", () => {
     await first();
     await rotate("b");
     await rotate("c");
-    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW, 60_000)).toBe(
-      false,
-    );
+    expect(await markGateDelivered(h.db, "i1", "tid-b", NOW)).toBe(false);
     expect((await getGateToken(h.db, "i1"))!.delivered_at).toBeNull();
   });
 

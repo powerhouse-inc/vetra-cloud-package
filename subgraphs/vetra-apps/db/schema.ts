@@ -151,7 +151,7 @@ export interface InstanceGateTokensTable {
   token_ciphertext: string;
   /** Changes with every token: the ResolvedSecret writeId, so the settings revision moves. */
   token_id: string;
-  /** The token before the last rotation, accepted while previous_until is null (new one not delivered) or in the future. */
+  /** The token before the last rotation, accepted while previous_until is null (new one not observed running yet) or in the future. */
   previous_hash: string | null;
   previous_until: string | null;
   /** When the current token reached the tenant; null until then. */
