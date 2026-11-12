@@ -15,6 +15,7 @@ import {
   tenantOfIn,
 } from "./envs.js";
 import { fetchProbe } from "./instances/probe.js";
+import { monitorInstancesOnce } from "./instances/monitor.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createGithubAttestationVerifier } from "./releases/attestation.js";
@@ -392,6 +393,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
       every(SWEEP_INTERVAL_MS, "instance sweeper", () =>
         sweepInstancesOnce(deps),
+      );
+      every(WATCH_INTERVAL_MS, "instance health", () =>
+        monitorInstancesOnce(deps),
       );
     } else {
       console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");

@@ -1,5 +1,6 @@
 import type { Insertable, Kysely, Selectable, Updateable } from "kysely";
 import type {
+  InstanceHealth,
   InstanceKind,
   InstancesTable,
   VetraAppsDB,
@@ -80,4 +81,56 @@ export async function isHostUsed(
     .select("id")
     .where("host", "=", host)
     .executeTakeFirst());
+}
+
+export interface HealthRecord {
+  health: InstanceHealth;
+  health_check: string | null;
+  health_reason: string | null;
+  health_checked_at: string;
+  health_since: string;
+  health_digest: string | null;
+  health_restarts: number | null;
+  observed_digest: string | null;
+  observed_digest_source: "pod" | "document" | null;
+}
+
+/** Live instances with an environment and a host, not checked since dueBeforeIso, never-checked first. */
+export async function listDueForHealth(
+  db: Kysely<VetraAppsDB>,
+  dueBeforeIso: string,
+  limit: number,
+): Promise<InstanceRow[]> {
+  const rows = await db
+    .selectFrom("instances")
+    .selectAll()
+    .where("environment_id", "is not", null)
+    .where("host", "is not", null)
+    .where("removed_at", "is", null)
+    .where("status", "!=", "removed")
+    .where((eb) =>
+      eb.or([
+        eb("health_checked_at", "is", null),
+        eb("health_checked_at", "<", dueBeforeIso),
+      ]),
+    )
+    .orderBy("health_checked_at", (ob) => ob.asc().nullsFirst())
+    .orderBy("id")
+    .limit(limit)
+    .execute();
+  return rows.map(normalize);
+}
+
+/** Health columns only: never status, reason, targets or updated_at; a row removed meanwhile is left alone. */
+export async function recordHealth(
+  db: Kysely<VetraAppsDB>,
+  id: string,
+  r: HealthRecord,
+): Promise<void> {
+  await db
+    .updateTable("instances")
+    .set(r)
+    .where("id", "=", id)
+    .where("removed_at", "is", null)
+    .execute();
 }

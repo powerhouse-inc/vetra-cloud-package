@@ -475,7 +475,10 @@ function targetImage(row: InstanceRow): InstanceImage {
 }
 
 /** This App's environment and no licence's (overview rule 1). */
-function ours(state: VetraCloudEnvironmentState, row: InstanceRow): boolean {
+export function ours(
+  state: VetraCloudEnvironmentState,
+  row: InstanceRow,
+): boolean {
   return !state.managedBy && state.app?.appId === row.app_id;
 }
 
