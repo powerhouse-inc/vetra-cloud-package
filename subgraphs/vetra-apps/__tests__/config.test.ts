@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadAppsConfig } from "../config.js";
+import { DEFAULT_INSTANCE_HEALTH, loadAppsConfig } from "../config.js";
 
 describe("Studio Apps config", () => {
   it("reads no Vetra-managed GitHub org: Studio App repos live in the user's own GitHub", () => {
@@ -16,6 +16,7 @@ describe("instances config", () => {
     expect(loadAppsConfig({}).instances).toEqual({
       enabled: true,
       labelSuffix: "",
+      health: DEFAULT_INSTANCE_HEALTH,
     });
   });
   it.each(["off", "false", "0", "no", " OFF ", "No"])(
@@ -45,6 +46,7 @@ describe("instances config", () => {
     ).toEqual({
       enabled: true,
       labelSuffix: "-stg",
+      health: DEFAULT_INSTANCE_HEALTH,
     });
   });
   it("accepts dashes inside the suffix", () => {
@@ -70,4 +72,39 @@ describe("instances config", () => {
       ).toThrow(/VETRA_APPS_INSTANCE_LABEL_SUFFIX/);
     },
   );
+});
+
+describe("instance health config", () => {
+  it("reports by default", () => {
+    expect(loadAppsConfig({}).instances.health).toEqual({
+      mode: "report",
+      unhealthyWindowMs: 300_000,
+      probesPerPass: 10,
+      probesPerApp: 3,
+    });
+  });
+  it("takes enforce, a window and probe budgets", () => {
+    expect(
+      loadAppsConfig({
+        VETRA_APPS_INSTANCE_HEALTH: "ENFORCE",
+        VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S: "180",
+        VETRA_APPS_INSTANCE_PROBES_PER_PASS: "20",
+        VETRA_APPS_INSTANCE_PROBES_PER_APP: "5",
+      }).instances.health,
+    ).toEqual({
+      mode: "enforce",
+      unhealthyWindowMs: 180_000,
+      probesPerPass: 20,
+      probesPerApp: 5,
+    });
+  });
+  it.each([
+    ["VETRA_APPS_INSTANCE_HEALTH", "strict"],
+    ["VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S", "30"],
+    ["VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S", "5m"],
+    ["VETRA_APPS_INSTANCE_PROBES_PER_PASS", "0"],
+    ["VETRA_APPS_INSTANCE_PROBES_PER_APP", "21"],
+  ])("throws at startup on %s=%j", (name, value) => {
+    expect(() => loadAppsConfig({ [name]: value })).toThrow(new RegExp(name));
+  });
 });

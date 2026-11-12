@@ -204,6 +204,15 @@ const CLEAN: InstancePatch = {
   running_digest: null,
   running_repository: null,
   failed_digest: null,
+  health: null,
+  health_check: null,
+  health_reason: null,
+  health_checked_at: null,
+  health_since: null,
+  health_digest: null,
+  health_restarts: null,
+  observed_digest: null,
+  observed_digest_source: null,
 };
 
 /** Rows for the wanted branch instances; targets moved; unwanted ones marked for removal. */

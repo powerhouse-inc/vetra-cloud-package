@@ -52,10 +52,34 @@ export interface VetraAppsConfig {
    * e.g. "-stg") ends every instance host, so staging and production never
    * claim the same <slug>-<name>.vetra.io.
    */
-  instances: { enabled: boolean; labelSuffix: string };
+  instances: {
+    enabled: boolean;
+    labelSuffix: string;
+    /** VETRA_APPS_INSTANCE_HEALTH=off|report|enforce (default report), VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S (60-3600, default 300), VETRA_APPS_INSTANCE_PROBES_PER_PASS, VETRA_APPS_INSTANCE_PROBES_PER_APP. */
+    health?: InstanceHealthConfig;
+  };
 }
 
 type Env = Record<string, string | undefined>;
+
+export type InstanceHealthMode = "off" | "report" | "enforce";
+export interface InstanceHealthConfig {
+  /** off: no monitor; report: measured and shown, status unchanged; enforce: status follows health. */
+  mode: InstanceHealthMode;
+  /** An update unhealthy this long after it started fails (and reverts). */
+  unhealthyWindowMs: number;
+  probesPerPass: number;
+  probesPerApp: number;
+}
+export const DEFAULT_INSTANCE_HEALTH: InstanceHealthConfig = {
+  mode: "report",
+  unhealthyWindowMs: 300_000,
+  probesPerPass: 10,
+  probesPerApp: 3,
+};
+/** Configs built by hand (tests) may leave health out. */
+export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
+  cfg.instances.health ?? DEFAULT_INSTANCE_HEALTH;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -89,6 +113,39 @@ function instancesConfig(env: Env): VetraAppsConfig["instances"] {
   return {
     enabled: !INSTANCES_OFF.has(rawSwitch),
     labelSuffix: suffix,
+    health: healthConfig(env),
+  };
+}
+
+function intIn(
+  env: Env,
+  name: string,
+  def: number,
+  min: number,
+  max: number,
+): number {
+  const raw = trimmed(env[name]);
+  if (raw === null) return def;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || n < min || n > max)
+    throw new Error(
+      `${name} "${raw}" is invalid: use a whole number from ${min} to ${max}`,
+    );
+  return n;
+}
+
+function healthConfig(env: Env): InstanceHealthConfig {
+  const mode = (trimmed(env.VETRA_APPS_INSTANCE_HEALTH) ?? "report").toLowerCase();
+  if (mode !== "off" && mode !== "report" && mode !== "enforce")
+    throw new Error(
+      `VETRA_APPS_INSTANCE_HEALTH "${env.VETRA_APPS_INSTANCE_HEALTH}" is invalid: use off, report or enforce`,
+    );
+  return {
+    mode,
+    unhealthyWindowMs:
+      intIn(env, "VETRA_APPS_INSTANCE_UNHEALTHY_WINDOW_S", 300, 60, 3600) * 1000,
+    probesPerPass: intIn(env, "VETRA_APPS_INSTANCE_PROBES_PER_PASS", 10, 1, 100),
+    probesPerApp: intIn(env, "VETRA_APPS_INSTANCE_PROBES_PER_APP", 3, 1, 20),
   };
 }
 

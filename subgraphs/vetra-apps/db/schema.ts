@@ -192,12 +192,16 @@ export interface RegistryNamespacesTable {
   created_at: string;
 }
 
+/** Spec 14.7 as measured by the health monitor (instances/monitor.ts). */
+export type InstanceHealth = "healthy" | "unhealthy" | "unknown";
+
 export type InstanceKind = "branch" | "preview" | "shared" | "own";
-/** `removed`: a tombstone for a deleted branch (never shown). */
+/** `removed`: a tombstone for a deleted branch (never shown). `degraded`: ran the target healthy, is not healthy now (no update in flight). */
 export type InstanceStatus =
   | "pending"
   | "updating"
   | "ready"
+  | "degraded"
   | "failed"
   | "stopped"
   | "removed";
@@ -235,6 +239,21 @@ export interface InstancesTable {
   removed_at: string | null;
   /** "branch deleted" keeps a tombstone; anything else deletes the row. */
   removed_reason: string | null;
+  /** Last health verdict; null until first checked. Written by the monitor only. */
+  health: InstanceHealth | null;
+  /** The check that decided it (gitops | image | crash | restarts | pod | switchboard | connect | stopped | data); null when healthy. */
+  health_check: string | null;
+  health_reason: string | null;
+  health_checked_at: string | null;
+  /** When health last flipped between healthy and not healthy, or the judged digest changed. */
+  health_since: string | null;
+  /** The digest that check judged (the environment's FUSION digest then). */
+  health_digest: string | null;
+  /** Restarts of the judged pods at that check (a rise is a crash). */
+  health_restarts: number | null;
+  /** What the cluster runs: the pod's imageID digest, else the environment document's. */
+  observed_digest: string | null;
+  observed_digest_source: "pod" | "document" | null;
   created_at: string;
   updated_at: string;
 }

@@ -129,6 +129,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppsReleaseBranchesColumn(db);
   await ensureInstancesTable(db);
   await ensureAppsInstancesEnabledColumn(db);
+  await ensureInstancesHealthColumns(db);
 }
 
 /** Name of the partial unique index that makes a Studio launch idempotent. */
@@ -568,5 +569,32 @@ export async function ensureAppsInstancesEnabledColumn(
   } catch (err) {
     if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
       throw err;
+  }
+}
+
+/** Instance health (releases phase 2 slice 3, spec 14.7). Nullable, filled by the health monitor. */
+export async function ensureInstancesHealthColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [name, type] of [
+    ["health", "varchar(16)"],
+    ["health_check", "varchar(16)"],
+    ["health_reason", "text"],
+    ["health_checked_at", "varchar(64)"],
+    ["health_since", "varchar(64)"],
+    ["health_digest", "varchar(128)"],
+    ["health_restarts", "integer"],
+    ["observed_digest", "varchar(128)"],
+    ["observed_digest_source", "varchar(16)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+        throw err;
+    }
   }
 }

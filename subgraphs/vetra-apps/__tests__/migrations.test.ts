@@ -450,3 +450,37 @@ describe("ensureAppsReleaseBranchesColumn", () => {
     }
   });
 });
+
+it("adds the instance health columns, idempotently", async () => {
+  const db = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+  await up(db);
+  await up(db);
+  await db
+    .insertInto("instances")
+    .values({
+      id: "i1",
+      app_id: "a1",
+      kind: "branch",
+      name: "main",
+      status: "degraded",
+      health: "unhealthy",
+      health_check: "crash",
+      health_reason: "x",
+      health_checked_at: "2026-11-12T00:00:00.000Z",
+      health_since: "2026-11-12T00:00:00.000Z",
+      health_digest: "sha256:aa",
+      health_restarts: 4,
+      observed_digest: "sha256:aa",
+      observed_digest_source: "pod",
+      created_at: "2026-11-12T00:00:00.000Z",
+      updated_at: "2026-11-12T00:00:00.000Z",
+    })
+    .execute();
+  const row = await db.selectFrom("instances").selectAll().executeTakeFirstOrThrow();
+  expect(row).toMatchObject({
+    health: "unhealthy",
+    health_restarts: 4,
+    observed_digest_source: "pod",
+  });
+  await db.destroy();
+});
