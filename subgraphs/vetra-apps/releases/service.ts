@@ -14,6 +14,7 @@ import {
   assertReleaseBranchPush,
   assertReportAllowed,
 } from "./claim.js";
+import { recordLicensedHost } from "./licensed-host.js";
 import { ensureAppNamespace } from "./namespace.js";
 import {
   forgetPushRobot,
@@ -287,6 +288,23 @@ export async function ciReportRelease(
     deps.logger.info(
       `[vetra-apps] ${app.slug} ${input.kind} ${input.version} (${input.image.digest.slice(0, 19)})`,
     );
+  }
+  // BRIDGE (licensed-host.ts): the release's image becomes the host image
+  // licensed environments run. On every report, not only the first: a
+  // retry after a failed write records it then (the write is idempotent).
+  // The release row is already stored; a failure asks CI to retry.
+  if (deps.docs) {
+    try {
+      await recordLicensedHost(deps, app, row);
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] ${app.slug} ${row.version}: host image not recorded for licensed environments: ${String(err)}`,
+      );
+      throw appsError(
+        "SERVICE_UNAVAILABLE",
+        `${row.version} is recorded, but its host image could not be offered to licensed environments yet; retry`,
+      );
+    }
   }
   return releaseJson(row);
 }
