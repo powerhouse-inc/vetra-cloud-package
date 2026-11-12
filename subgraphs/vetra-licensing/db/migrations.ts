@@ -339,7 +339,7 @@ export async function up(db: Kysely<any>): Promise<void> {
       .columns(["app_id", "user_address"]).ifNotExists().execute();
   } catch (error) {
     // Another replica booting at the same time created it first.
-    const code = (error as { code?: string })?.code;
+    const code = (error as { code?: string } | null)?.code;
     if (code !== "42P07" && code !== "23505") throw error;
   }
 }

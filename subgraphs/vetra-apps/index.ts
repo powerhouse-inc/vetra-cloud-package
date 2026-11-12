@@ -434,9 +434,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     every(5 * 60 * 1000, "push robot sweep", () => sweepPushRobots(deps));
 
     // Gate counters (G7): one line per 5 minutes when anything happened.
-    every(5 * 60 * 1000, "gate counters", async () => {
+    every(5 * 60 * 1000, "gate counters", () => {
       const line = gate?.counters.flush();
       if (line) console.info(`[vetra-apps] gate: ${line}`);
+      return Promise.resolve();
     });
 
     // The audit log keeps one year (spec section 10); bounded batches per pass.
