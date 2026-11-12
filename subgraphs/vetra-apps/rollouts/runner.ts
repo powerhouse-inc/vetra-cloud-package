@@ -224,7 +224,8 @@ async function settle(
     return false;
   }
   if (inst.target_version !== want) {
-    await endStep(deps, step, gone, {
+    // Not back on the old release: someone moved it elsewhere.
+    await endStep(deps, step, "skipped", {
       note: `moved to ${inst.target_version} meanwhile`,
     });
     return false;

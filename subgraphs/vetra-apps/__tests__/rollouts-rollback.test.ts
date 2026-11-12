@@ -305,4 +305,21 @@ describe("rolling back (spec section 7, image swap)", () => {
     ).toMatchObject({ status: "skipped", note: "left on 1.4.0" });
     expect((await instance(h, "o1")).target_version).toBe("1.4.0");
   });
+
+  it("a way back whose instance target moved elsewhere meanwhile is skipped, not rolled back", async () => {
+    const r = await completed();
+    await rollBackRollout(h.deps, owner, r.id);
+    await advance();
+    const o1 = (await stepsOf(h.db, r.id)).find((s) => s.instance_id === "o1")!;
+    expect(o1.status).toBe("reverting");
+    await h.db
+      .updateTable("instances")
+      .set({ target_version: "1.5.0" })
+      .where("id", "=", "o1")
+      .execute();
+    await advance();
+    expect(
+      (await stepsOf(h.db, r.id)).find((s) => s.instance_id === "o1"),
+    ).toMatchObject({ status: "skipped", note: "moved to 1.5.0 meanwhile" });
+  });
 });
