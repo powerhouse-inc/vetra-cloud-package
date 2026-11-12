@@ -11,6 +11,7 @@ import {
   type InstanceSettings,
   type ResolvedSecret,
 } from "../settings/resolve.js";
+import { GATE_LOOSENING_NAMES } from "../settings/names.js";
 import {
   getGateToken,
   insertGateToken,
@@ -159,7 +160,11 @@ const GATE_NAMES: ReadonlySet<string> = new Set([
   GATE_APP_ID_ENV,
   GATE_URL_ENV,
   GATE_TOKEN_ENV,
+  ...GATE_LOOSENING_NAMES,
 ]);
+/** A name no base setting may carry onto a gated instance. */
+const isGateName = (name: string) =>
+  GATE_NAMES.has(name) || name.startsWith("VETRA_GATE_");
 const byName = <T extends { name: string }>(a: T, b: T) =>
   a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 
@@ -167,8 +172,10 @@ const byName = <T extends { name: string }>(a: T, b: T) =>
  * A shared instance's settings with the gate's: ACCESS=licensed, VETRA_APP_ID
  * and VETRA_GATE_URL plain, and the token as a secret whose writeId is the
  * token's id, so issuing or rotating a token moves the revision and is
- * delivered like any settings change. Base entries with a gate name are
- * dropped first (publishers cannot set them; defence only).
+ * delivered like any settings change. Base entries with a gate name, one
+ * that loosens the gate (GATE_LOOSENING_NAMES) or VETRA_GATE_* are dropped
+ * first (publishers cannot set them, rows from before they were reserved
+ * included; defence only).
  */
 export function withGate(
   base: InstanceSettings,
@@ -179,13 +186,13 @@ export function withGate(
   },
 ): InstanceSettings {
   const plain = [
-    ...base.plain.filter((p) => !GATE_NAMES.has(p.name)),
+    ...base.plain.filter((p) => !isGateName(p.name)),
     { name: GATE_ACCESS_ENV, value: "licensed" },
     { name: GATE_APP_ID_ENV, value: gate.appId },
     { name: GATE_URL_ENV, value: gate.url },
   ].sort(byName);
   const secrets: ResolvedSecret[] = [
-    ...base.secrets.filter((s) => !GATE_NAMES.has(s.name)),
+    ...base.secrets.filter((s) => !isGateName(s.name)),
     {
       name: GATE_TOKEN_ENV,
       ciphertext: gate.token.token_ciphertext,

@@ -18,7 +18,11 @@ import {
   newGateToken,
   sameGateHash,
 } from "../gate/token.js";
-import { ensureGateToken, rotateInstanceGateToken } from "../gate/service.js";
+import {
+  ensureGateToken,
+  rotateInstanceGateToken,
+  withGate,
+} from "../gate/service.js";
 import {
   findByTokenHash,
   getGateToken,
@@ -137,6 +141,46 @@ describe("gate token rows", () => {
     expect(row.token_hash).toBe("c".repeat(64));
     expect(await findByTokenHash(h.db, "b".repeat(64), NOW)).toBeNull();
     expect(await findByTokenHash(h.db, "a".repeat(64), NOW)).not.toBeNull();
+  });
+});
+
+describe("withGate", () => {
+  it("drops base settings that would open or loosen the gate (rows from before they were reserved)", () => {
+    const names = [
+      "ACCESS",
+      "ACCESS_GATE_GRACE_MS",
+      "REQUIRE_AUTHENTICATED_CALLER_EXEMPT_PATHS",
+      "AUTH_ENABLED",
+      "VETRA_GATE_URL",
+      "VETRA_GATE_EXTRA",
+      "RELAY",
+    ];
+    const out = withGate(
+      {
+        revision: "r",
+        plain: names.map((name) => ({ name, value: "open" })),
+        secrets: [
+          { name: "VETRA_GATE_TOKEN", ciphertext: "vault:old", writeId: "w" },
+          { name: "AUTH_ENABLED", ciphertext: "vault:x", writeId: "w" },
+          { name: "API_TOKEN", ciphertext: "vault:y", writeId: "w" },
+        ],
+      },
+      {
+        appId: "app-1",
+        url: "https://gate/apps/gate/check",
+        token: { token_ciphertext: "vault:t", token_id: "tid" },
+      },
+    );
+    expect(out.plain).toEqual([
+      { name: "ACCESS", value: "licensed" },
+      { name: "RELAY", value: "open" },
+      { name: "VETRA_APP_ID", value: "app-1" },
+      { name: "VETRA_GATE_URL", value: "https://gate/apps/gate/check" },
+    ]);
+    expect(out.secrets.map((x) => [x.name, x.ciphertext])).toEqual([
+      ["API_TOKEN", "vault:y"],
+      ["VETRA_GATE_TOKEN", "vault:t"],
+    ]);
   });
 });
 
