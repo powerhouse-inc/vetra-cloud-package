@@ -122,7 +122,7 @@ const pointer = async (channel: string) =>
 
 /** The old CI path's record (vetra-deploy-action: `host` at a commit tag, on LATEST). */
 async function oldPathLatest(version = "sha-cac9276bc10b") {
-  await docs.create(app.id);
+  if (!(await docs.exists(app.id))) await docs.create(app.id);
   await docs.execute(app.id, [
     {
       type: "RECORD_ARTIFACT_VERSION",
@@ -178,6 +178,13 @@ describe("a release feeds licensed environments' host image", () => {
     await oldPathLatest();
     await report("1.0.10");
     expect(await pointer("LATEST")).toBe("1.0.10");
+  });
+
+  it("leaves a commit-tag channel recorded after the release (the old path ran later)", async () => {
+    await report("1.0.10");
+    await oldPathLatest("sha-0123456789ab");
+    await report("1.0.10", {}, "refs/heads/main", "501");
+    expect(await pointer("LATEST")).toBe("sha-0123456789ab");
   });
 
   it("records nothing for a build", async () => {

@@ -4771,27 +4771,36 @@ async function channelFor(
 
 const withAppArtifacts = keyedMutex();
 
-/** The version a channel of an artifact points at in an App document's global state. */
+/**
+ * The version a channel of an artifact points at in an App document's global
+ * state, and the artifact's recorded versions (recording order, newest last).
+ */
 export function channelPointer(
   state: Record<string, unknown> | null,
   kind: string,
   name: string,
   channel: string,
-): string | null {
+): { current: string | null; recorded: string[] } {
   const artifacts = (state?.artifacts ?? []) as Array<{
     kind: string;
     name: string;
+    versions: Array<{ version: string }>;
     channels: Array<{ channel: string; version: string }>;
   }>;
   const artifact = artifacts.find((a) => a.kind === kind && a.name === name);
-  return artifact?.channels.find((c) => c.channel === channel)?.version ?? null;
+  return {
+    current:
+      artifact?.channels.find((c) => c.channel === channel)?.version ?? null,
+    recorded: artifact?.versions.map((v) => v.version) ?? [],
+  };
 }
 
 /**
  * Records one artifact version on the App's document and aims the channel at
  * it (LATEST of a gated App's FUSION image moves STAGING), creating the
  * document on demand. `moveFrom`, when given, decides from the channel's
- * current version whether it moves at all. Throws when the document store is
+ * current version (and the artifact's recorded versions) whether it moves
+ * at all. Throws when the document store is
  * missing or the write fails: the document is the only record of an artifact.
  * Returns the channel it moved, or null.
  */
@@ -4799,7 +4808,7 @@ export async function recordAppArtifact(
   deps: AppsDeps,
   app: AppRow,
   rec: AppArtifactRecord,
-  moveFrom?: (current: string | null) => boolean,
+  moveFrom?: (current: string | null, recorded: string[]) => boolean,
 ): Promise<AppArtifactRecord["channel"]> {
   const docs = deps.docs;
   if (!docs) throw notConfigured("The App document store");
@@ -4812,21 +4821,16 @@ export async function recordAppArtifact(
     // Create-on-demand: an App registered before the document backfill ran still
     // has to be able to publish.
     const created = !(await docs.exists(app.id));
-    if (
-      channel !== null &&
-      moveFrom &&
-      !moveFrom(
-        created
-          ? null
-          : channelPointer(
-              await docs.getState(app.id),
-              rec.kind,
-              rec.name,
-              channel,
-            ),
-      )
-    ) {
-      channel = null;
+    if (channel !== null && moveFrom) {
+      const { current, recorded } = created
+        ? { current: null, recorded: [] }
+        : channelPointer(
+            await docs.getState(app.id),
+            rec.kind,
+            rec.name,
+            channel,
+          );
+      if (!moveFrom(current, recorded)) channel = null;
     }
 
     const actions: Action[] = [

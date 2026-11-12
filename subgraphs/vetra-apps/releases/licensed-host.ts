@@ -22,10 +22,10 @@ import { compareReleases, parseVersion, versionKind } from "./version.js";
  *   tag and orders two semver versions exactly; an old commit tag such as
  *   `sha-cac9276bc10b` is ordered by the record, where the release comes
  *   later). The reference carries the digest CI attested.
- * - The channel only moves forward: a maintenance release older than the
- *   channel's version, or a retried report of an older release, records the
- *   version but leaves the channel. A commit-tag pointer (the old path) is
- *   superseded.
+ * - The channel only moves forward (movesForward): a maintenance release
+ *   older than the channel's version, or a retried report of an older
+ *   release, records the version but leaves the channel. A commit-tag
+ *   pointer (the old path) is superseded only when recorded before it.
  */
 export function feedsLicensedHost(
   row: Pick<ReleaseRow, "kind" | "version">,
@@ -35,10 +35,24 @@ export function feedsLicensedHost(
   );
 }
 
-/** Moves the channel unless it points at a release this one is older than. */
-export function movesForward(version: string, current: string | null): boolean {
-  if (current === null || versionKind(current) !== "release") return true;
-  return compareReleases(version, current) >= 0;
+/**
+ * Whether the channel moves from `current` to the release `version`: from a
+ * release only when this one is not older (semver); from anything else (a
+ * commit tag of the old path) only when the record cannot prove it newer:
+ * it is unrecorded, or recorded before this release (`recorded`: the
+ * artifact's versions, newest last; this release may not be in it yet).
+ */
+export function movesForward(
+  version: string,
+  current: string | null,
+  recorded: readonly string[],
+): boolean {
+  if (current === null) return true;
+  if (versionKind(current) === "release")
+    return compareReleases(version, current) >= 0;
+  const from = recorded.indexOf(current);
+  const at = recorded.indexOf(version);
+  return from === -1 || at === -1 || from < at;
 }
 
 /** Records a stable release's image as the App's `host` FUSION image; throws when the document write fails. */
@@ -60,6 +74,6 @@ export async function recordLicensedHost(
       runId: String(row.run),
       channel: "LATEST",
     },
-    (current) => movesForward(row.version, current),
+    (current, recorded) => movesForward(row.version, current, recorded),
   );
 }
