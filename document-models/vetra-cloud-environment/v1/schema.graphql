@@ -158,6 +158,7 @@ type VetraCloudAppLink {
 enum AppEnvironmentRole {
   PRODUCTION
   PREVIEW
+  PLAN
 }
 
 type VetraCloudManagedBy {

@@ -108,4 +108,17 @@ describe("SET_APP_LINK / CLEAR_APP_LINK", () => {
     const doc = reducer(utils.createDocument(), setAppLink(PREVIEW));
     expect(doc.state.global.status).toBe("DRAFT");
   });
+
+  it("accepts the PLAN role (a plan's instance, releases phase 3)", () => {
+    const link = {
+      appId: "app-1",
+      role: "PLAN" as const,
+      prNumber: null,
+      gitRef: null,
+      imageProject: "acme",
+    };
+    const doc = reducer(utils.createDocument(), setAppLink(link));
+    expect(doc.operations.global.at(-1)?.error).toBeUndefined();
+    expect(doc.state.global.app).toStrictEqual(link);
+  });
 });

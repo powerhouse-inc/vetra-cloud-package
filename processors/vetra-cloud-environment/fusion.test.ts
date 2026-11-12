@@ -311,6 +311,23 @@ describe("generateValuesYaml — FUSION host image (PH_HOST)", () => {
     expect(app).toContain("  persistence:\n    enabled: false");
   });
 
+  it("gives a plan instance the full profile: kept /data and backed-up database", async () => {
+    const yaml = await render(
+      hostState([], {
+        app: {
+          appId: "app-1",
+          role: "PLAN",
+          prNumber: null,
+          gitRef: null,
+          imageProject: null,
+        },
+      }),
+    );
+    expect(appBlock(yaml)).toContain("  persistence:\n    enabled: true");
+    expect(yaml).toContain("    storageSize: 50Gi");
+    expect(yaml).toMatch(/    backup:\n      enabled: true/);
+  });
+
   it("takes the port from PH_HOST_PORT", async () => {
     const app = appBlock(
       await render(hostState([{ name: "PH_HOST_PORT", value: "3000", isSecret: false }])),
