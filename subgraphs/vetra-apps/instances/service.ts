@@ -41,6 +41,8 @@ export interface InstanceJson {
   observedDigest: string | null;
   observedDigestSource: string | null;
   environmentId: string | null;
+  /** restore:<id> while a backup is restored into it; held:<id> after a failed restore. */
+  maintenance: string | null;
   /** A warm-pool instance: no holder yet, closed to everyone. */
   warm: boolean;
   /** When a holder claimed it from the warm pool. */
@@ -80,6 +82,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigest: r.observed_digest,
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
+    maintenance: r.maintenance ?? null,
     warm: r.warm === true,
     claimedAt: r.claimed_at ?? null,
     holderSettingsCount: 0,

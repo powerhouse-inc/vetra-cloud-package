@@ -31,7 +31,8 @@ import {
   createDefaultRestartK8sClient,
   type RestartResolverDeps,
 } from "./restart.js";
-import { reconcileJob } from "./dumps/watcher.js";
+import { ArchivesRepo } from "./dumps/archive-repo.js";
+import { watchJobsOnce } from "./dumps/job-watch.js";
 import {
   MAX_SCHEDULED_IN_FLIGHT,
   runBackupScheduleTick,
@@ -63,6 +64,20 @@ import {
   type EnvProtectionTarget,
 } from "./env-protection.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
+import { backupsConfigOf, loadAppsConfig } from "../vetra-apps/config.js";
+
+/** VETRA_APPS_BACKUPS on and the dumps' S3 credentials set (what vetra-apps needs to back up PLAN instances). */
+function appsBackupsActive(env = process.env): boolean {
+  try {
+    return (
+      backupsConfigOf(loadAppsConfig(env)).enabled &&
+      !!env.VETRA_DUMPS_S3_ACCESS_KEY &&
+      !!env.VETRA_DUMPS_S3_SECRET_KEY
+    );
+  } catch {
+    return false;
+  }
+}
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -88,6 +103,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   private restoreAdvancer: ReturnType<typeof setInterval> | null = null;
   private dumpsK8s: DumpsK8sClient | null = null;
   private dumpsRepo: DumpsRepo | null = null;
+  private archivesRepo: ArchivesRepo | null = null;
   private dumpsS3: S3Helper | null = null;
 
   async onSetup() {
@@ -429,6 +445,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
     });
 
     this.dumpsRepo = repo;
+    this.archivesRepo = new ArchivesRepo(db);
     this.dumpsK8s = k8s;
     this.dumpsS3 = s3;
 
@@ -470,62 +487,15 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         return;
       }
       try {
-        const inFlight = await repo.listInFlight();
-        if (inFlight.length === 0) return;
-        console.info(
-          `[dump-job-watcher] tick: ${inFlight.length} in-flight dump(s)`,
-        );
-        const managed = await k8s.listManagedJobs();
-        console.info(
-          `[dump-job-watcher] cluster reports ${managed.length} managed Job(s): ${managed.map((j) => j.dumpId).join(",")}`,
-        );
-        const byDumpId = new Map<string, { namespace: string; name: string }>();
-        for (const j of managed) {
-          byDumpId.set(j.dumpId, { namespace: j.namespace, name: j.name });
-        }
-
-        for (const dump of inFlight) {
-          const ref = byDumpId.get(dump.id);
-          if (!ref) {
-            // Two cases produce a missing Job ref:
-            //
-            // 1. Race: the resolver has just inserted the row but
-            //    `setJobName` hasn't run yet (or `createJob` failed
-            //    before it could). `jobName` is still null.
-            // 2. Orphan: the row had a Job that's now gone — manually
-            //    deleted, evicted, or the cluster lost it. `jobName`
-            //    is set but no managed Job carries that label.
-            //
-            // We only act on case 2. Case 1 resolves itself on the
-            // next tick or via the resolver's catch path (markFailed
-            // on createJob error).
-            if (dump.jobName) {
-              await repo.markFailed(
-                dump.id,
-                `Job "${dump.jobName}" no longer exists in namespace ${dump.tenantId}; orphaned dump marked failed.`,
-                new Date(),
-              );
-            }
-            continue;
-          }
-          const status = await k8s.readJobStatus(ref.namespace, ref.name);
-          if (!status) continue;
-          const podPhase = await k8s.readPodPhaseForJob(
-            ref.namespace,
-            ref.name,
-          );
-          await reconcileJob({
-            repo,
-            dumpId: dump.id,
-            jobName: ref.name,
-            jobStatus: status,
-            podPhase,
-            now: new Date(),
-            headSize: (key) => s3.headSize(key),
-            readPodLogs: () =>
-              k8s.readPodLogsForJob(ref.namespace, ref.name),
-          });
-        }
+        const archives = this.archivesRepo;
+        if (!archives) return;
+        await watchJobsOnce({
+          dumps: repo,
+          archives,
+          k8s,
+          headSize: (key) => s3.headSize(key),
+          now: () => new Date(),
+        });
       } catch (err) {
         console.warn("[dump-job-watcher] error:", err);
       }
@@ -548,6 +518,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    */
   private startBackupScheduler(dumpDeps: DumpResolverDeps, envDb: Kysely<any>) {
     let running = false;
+    // Same process as vetra-apps: PLAN instances leave the scheduler only when its backups run.
+    const appsBackups = appsBackupsActive();
     const tick = async () => {
       if (running) return;
       running = true;
@@ -561,7 +533,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           (await dumpDeps.restores.listActive()).map((r) => r.tenantId),
         );
         const envs = rows.flatMap((r) => {
-          const env = toBackupEnvSnapshot(r);
+          const env = toBackupEnvSnapshot(r, { appsBackups });
           return env && !restoring.has(env.tenantId) ? [env] : [];
         });
         const { fired, deleted } = await runBackupScheduleTick(
@@ -660,8 +632,9 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
       if (!repo) return;
       try {
         const removed = await repo.pruneExpired(new Date());
-        if (removed > 0) {
-          console.info(`[dump-row-pruner] pruned ${removed} row(s)`);
+        const archived = (await this.archivesRepo?.pruneExpired(new Date())) ?? 0;
+        if (removed + archived > 0) {
+          console.info(`[dump-row-pruner] pruned ${removed + archived} row(s)`);
         }
       } catch (err) {
         console.warn("[dump-row-pruner] error:", err);

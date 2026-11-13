@@ -38,6 +38,8 @@ import {
 } from "../service.js";
 import { syncPlanPools, WARM_LABEL } from "../plans/pool.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { advanceRestores } from "../backups/restore.js";
+import { advanceBackups, preStopGate } from "../backups/service.js";
 import { syncTeamPlan } from "../plans/team.js";
 import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
 import { advanceRollouts } from "../rollouts/runner.js";
@@ -256,6 +258,22 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
       );
     }
+  }
+  if (deps.backups) {
+    // Outside the plans branch: a restore that began holds its instance in
+    // maintenance, and must finish (and hand it back) even if plans were
+    // switched off meanwhile.
+    try {
+      // Before the rows (and slice 3's rollouts, which go after this): a
+      // backup that became ready, or a restore that hands an instance back,
+      // is seen in this pass.
+      await advanceBackups(deps, app.id);
+      await advanceRestores(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] backups of ${app.slug}: ${message(err)}`);
+    }
+  }
+  if (plans.enabled && wantsInstances(app)) {
     try {
       // Before the rows are read: a target a step moves is applied in this pass.
       await advanceRollouts(deps, app);
@@ -407,6 +425,16 @@ async function tenantOf(
   );
 }
 
+async function heldAlready(deps: AppsDeps, envId: string): Promise<boolean> {
+  try {
+    return !!(await getHold(deps.db, envId));
+  } catch (err) {
+    // The holds table does not exist yet (vetra-apps creates it): nothing is held.
+    if ((err as { code?: unknown } | null)?.code === "42P01") return false;
+    throw err;
+  }
+}
+
 /**
  * A plan instance Vetra wants stopped (licence ended, plan retired): its
  * environment is held (no app pod, no ingress; its database, backups and
@@ -439,6 +467,15 @@ async function stopPlanInstance(
       if (row.status !== "stopped" || row.reason !== reason)
         await patch(deps, row, { status: "stopped", reason });
       return;
+    }
+    // Decision B9: a final backup before the first hold (while the app still
+    // runs; once held it only waits for its pod to go).
+    if (state.status === "READY" && !(await heldAlready(deps, envId))) {
+      if ((await preStopGate(deps, row)) === "wait") {
+        const waiting = `${reason}: taking a final backup before it stops`;
+        if (row.reason !== waiting) await patch(deps, row, { reason: waiting });
+        return;
+      }
     }
     // Recorded before holding: a crash in between must not leave a hold that
     // a renewal never releases.
@@ -825,6 +862,8 @@ export async function reconcileInstance(
     return row.environment_id
       ? withEnvLock(row.environment_id, () => removeInstance(deps, row))
       : removeInstance(deps, row);
+  // A restore owns it (backups/restore.ts): it hands the instance back itself.
+  if (row.maintenance) return;
   if (row.stop_reason) return stopPlanInstance(deps, row);
   if (!row.target_digest) return;
   if (row.target_settings !== settings.revision) {

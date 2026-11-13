@@ -64,6 +64,8 @@ export interface RolloutStepJson {
   attempts: number;
   error: string | null;
   note: string | null;
+  backupId: string | null;
+  restoreId: string | null;
 }
 
 export interface RolloutJson {
@@ -102,6 +104,8 @@ export const stepJson = (s: RolloutStepRow): RolloutStepJson => ({
   attempts: s.attempts,
   error: s.error,
   note: s.note,
+  backupId: s.backup_id ?? null,
+  restoreId: s.restore_id ?? null,
 });
 
 export async function rolloutJson(

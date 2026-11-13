@@ -354,3 +354,30 @@ describe("team soak", () => {
     expect(teamSoakMs(loadAppsConfig({}))).toBe(30 * 60_000);
   });
 });
+
+describe("backups config (releases phase 3 slice 4)", () => {
+  it("is off by default and validated", () => {
+    expect(loadAppsConfig({}).backups).toEqual({
+      enabled: false,
+      dailyKeepDays: 14,
+      maxInFlight: 3,
+    });
+    expect(
+      loadAppsConfig({
+        VETRA_APPS_BACKUPS: "on",
+        VETRA_APPS_BACKUP_DAILY_KEEP_DAYS: "7",
+        VETRA_APPS_BACKUP_MAX_IN_FLIGHT: "5",
+      }).backups,
+    ).toEqual({ enabled: true, dailyKeepDays: 7, maxInFlight: 5 });
+    expect(() => loadAppsConfig({ VETRA_APPS_BACKUPS: "maybe" })).toThrow(
+      /VETRA_APPS_BACKUPS/,
+    );
+    // The dumps bucket deletes everything after 30 days.
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_BACKUP_DAILY_KEEP_DAYS: "31" }),
+    ).toThrow(/KEEP_DAYS/);
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_BACKUP_MAX_IN_FLIGHT: "0" }),
+    ).toThrow(/MAX_IN_FLIGHT/);
+  });
+});
