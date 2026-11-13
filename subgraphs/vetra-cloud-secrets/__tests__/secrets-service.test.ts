@@ -402,6 +402,14 @@ describe("Studio launch secret (a rotatable managed key)", () => {
     expect(await purgeTenantRows(db, "t")).toStrictEqual({ envVars: 0, secrets: 1 });
     expect(await keysOf("t")).toStrictEqual([[WORKFLOWS_MASTER_KEY, "vault:v1:t:master"]]);
   });
+
+  it("takes the master key too when asked (a deleted clone's copy)", async () => {
+    await service.ensureSecret("t", WORKFLOWS_MASTER_KEY, () => "master");
+    await service.ensureSecret("other", WORKFLOWS_MASTER_KEY, () => "theirs");
+    await service.purgeTenant("t", { includeMasterKey: true });
+    expect(await keysOf("t")).toStrictEqual([]);
+    expect(await keysOf("other")).toHaveLength(1);
+  });
 });
 
 describe("platform-managed keys (user-facing service)", () => {

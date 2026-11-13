@@ -86,8 +86,25 @@ describe("a dry run end to end", () => {
       .get(newEnv)!
       .state.global.fusion?.env?.find((e) => e.name === "ADMINS")?.value;
     expect(admins).toBe("");
+    // The clone holds copies of the holder's keys (master key, attachment secret).
+    const cloneTenant = getTenantId(inst.host!, newEnv);
+    const keep = new Map(f.h.secrets.store.get(OLD_TENANT) ?? []);
+    f.h.secrets.store.set(
+      cloneTenant,
+      new Map([
+        ["PH_WORKFLOWS_SECRETS_MASTER_KEY", "copied-master"],
+        ["PH_ATTACHMENT_URL_SIGNING_SECRET", "copied-attachment"],
+        ["SOMETHING_ELSE", "x"],
+      ]),
+    );
+    f.h.secrets.store.set(OLD_TENANT, new Map([["PH_WORKFLOWS_SECRETS_MASTER_KEY", "old-master"], ...keep]));
     await f.tick();
     expect((await f.row()).state).toBe("CLEANED");
+    // Every secret Vetra wrote for the clone is purged, keys included; the old tenant is never purged.
+    expect(f.h.secrets.purgedWithMasterKey).toEqual([cloneTenant]);
+    expect(f.h.secrets.store.get(cloneTenant)?.size ?? 0).toBe(0);
+    expect(f.h.secrets.purged).not.toContain(OLD_TENANT);
+    expect(f.h.secrets.store.get(OLD_TENANT)?.get("PH_WORKFLOWS_SECRETS_MASTER_KEY")).toBe("old-master");
     // The clone is gone: document, hold, instance row. Nothing else was deleted.
     expect(f.h.envs.deleted).toEqual([newEnv]);
     expect(await getHold(f.h.db, newEnv)).toBeNull();

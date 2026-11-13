@@ -199,7 +199,10 @@ export interface SecretsService {
    * deleted). Notifies the controller when rows went, so the tenant's
    * ConfigMap/Secret are emptied if the namespace still exists.
    */
-  purgeTenant(tenantId: string): Promise<{ envVars: number; secrets: number }>;
+  purgeTenant(
+    tenantId: string,
+    opts?: PurgeTenantOptions,
+  ): Promise<{ envVars: number; secrets: number }>;
   /**
    * Ask the controller to (re)materialize a tenant's ConfigMap/Secret without
    * writing anything: its namespace may only now exist (rows written before
@@ -229,9 +232,19 @@ export interface SecretsService {
  * anything went. Idempotent. Namespace-safe: query builder only,
  * so the statements resolve through the schema-bound instance.
  */
+export interface PurgeTenantOptions {
+  /**
+   * Also delete the workflows master key. Only for a tenant whose database is
+   * gone for good and was never the only holder of what the key protects (a
+   * dry-run clone or a prepared instance holds a COPY of an owner's key).
+   */
+  includeMasterKey?: boolean;
+}
+
 export async function purgeTenantRows(
   db: Kysely<SecretsDB>,
   tenantId: string,
+  opts: PurgeTenantOptions = {},
 ): Promise<{ envVars: number; secrets: number }> {
   return db.transaction().execute(async (trx) => {
     const envVars = await trx
@@ -246,7 +259,7 @@ export async function purgeTenantRows(
     const secrets = await trx
       .deleteFrom("tenant_secrets")
       .where("tenantId", "=", tenantId)
-      .where("key", "not in", [...PURGE_KEPT_KEYS])
+      .where("key", "not in", opts.includeMasterKey ? [""] : [...PURGE_KEPT_KEYS])
       .executeTakeFirst();
     const out = {
       envVars: Number(envVars.numDeletedRows),
@@ -530,8 +543,8 @@ export function createSecretsService({
       });
     },
 
-    async purgeTenant(tenantId) {
-      return purgeTenantRows(db, tenantId);
+    async purgeTenant(tenantId, opts) {
+      return purgeTenantRows(db, tenantId, opts);
     },
 
     async notifyTenant(tenantId) {

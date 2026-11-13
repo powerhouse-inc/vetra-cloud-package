@@ -17,6 +17,7 @@ import {
   newInstance,
   newTenant,
   wait,
+  type StepCtx,
   type Step,
 } from "./steps.js";
 
@@ -94,6 +95,22 @@ export async function rollBackSwitchover(
 }
 
 /**
+ * Every secret Vetra wrote for a deleted clone's (or prepared instance's)
+ * tenant goes, the copied workflows master key and attachment secret
+ * included: its database is deleted with it, so nothing needs the key. Never
+ * the old environment's tenant.
+ */
+async function forgetCloneTenant(
+  c: StepCtx,
+  row: SwitchoverRow,
+  tenant: string | null,
+): Promise<void> {
+  if (!tenant || !c.deps.instanceSecrets) return;
+  if (tenant === row.old_tenant) return;
+  await c.deps.instanceSecrets.purgeTenant(tenant, { includeMasterKey: true });
+}
+
+/**
  * ROLLING_BACK, one idempotent step per pass: hold the new instance (it
  * stays, data kept; only a never-used prepared one is removed); unlink the
  * licensed row; once the new app pod is gone, release the old environment's
@@ -116,8 +133,7 @@ export const rollingBack: Step = async (c, row) => {
         inst.switchover_id === row.id
       ) {
         await c.deps.envs.delete(inst.environment_id);
-        if (tenant && c.deps.instanceSecrets)
-          await c.deps.instanceSecrets.purgeTenant(tenant);
+        await forgetCloneTenant(c, row, tenant);
       }
       await deleteHold(c.deps.db, inst.environment_id);
       await deleteInstance(c.deps.db, inst.id);
@@ -204,8 +220,7 @@ export const cleaning: Step = async (c, row) => {
         );
       const tenant = await newTenant(c, inst);
       await c.deps.envs.delete(inst.environment_id);
-      if (tenant && c.deps.instanceSecrets)
-        await c.deps.instanceSecrets.purgeTenant(tenant);
+      await forgetCloneTenant(c, row, tenant);
     }
     await deleteHold(c.deps.db, inst.environment_id);
   }

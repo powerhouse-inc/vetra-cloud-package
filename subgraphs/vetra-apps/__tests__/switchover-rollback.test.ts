@@ -67,6 +67,14 @@ describe("rollBackSwitchover", () => {
     const oldWrites = () =>
       f!.h.envs.executed.filter((e) => e.id === f!.oldEnv).length;
     const before = oldWrites();
+    const preparedTenant = getTenantId(inst.host!, newEnv);
+    f.h.secrets.store.set(
+      preparedTenant,
+      new Map([
+        ["PH_WORKFLOWS_SECRETS_MASTER_KEY", "copied-master"],
+        ["PH_ATTACHMENT_URL_SIGNING_SECRET", "copied-attachment"],
+      ]),
+    );
     const row = await rollBackSwitchover(f.h.deps, admin, f.sw.id);
     expect(row).toMatchObject({
       state: "ROLLING_BACK",
@@ -74,6 +82,10 @@ describe("rollBackSwitchover", () => {
     });
     await settleRollback(f);
     expect(f.h.envs.deleted).toEqual([newEnv]);
+    // The prepared instance's secrets, copied keys included, are gone; never the old tenant's.
+    expect(f.h.secrets.purgedWithMasterKey).toEqual([preparedTenant]);
+    expect(f.h.secrets.store.get(preparedTenant)?.size ?? 0).toBe(0);
+    expect(f.h.secrets.purged).not.toContain(OLD_TENANT);
     expect(await instances(f)).toEqual([]);
     expect(await getHold(f.h.db, newEnv)).toBeNull();
     expect(await getHold(f.h.db, f.oldEnv)).toBeNull();
