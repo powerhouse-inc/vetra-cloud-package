@@ -26,16 +26,16 @@ database:
       defaultPoolSize: 50
       maxClientConnections: 400
     backup:
-      enabled: true
+      enabled: false
       destinationPath: s3://powerhouse-cnpg-backups/fair-ibis-huk51fts-8tgxdfjj/
       endpointURL: https://hel1.your-objectstorage.com
       credentialsSecret: s3-credentials
       retentionPolicy: 180d
       useExistingSecret: true
       scheduledBackup:
-        enabled: true
+        enabled: false
         schedule: 0 2 * * *
-        immediate: true
+        immediate: false
     resources:
       # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
       # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was

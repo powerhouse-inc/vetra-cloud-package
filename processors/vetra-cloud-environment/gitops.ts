@@ -1071,17 +1071,6 @@ const HOST_DEFAULT_PORT = 6540;
  * entrypoint reads to pick the host. It gets the tenant database, a data
  * volume, `PUBLIC_URL` and the Connect port instead of the NEXT_PUBLIC_* set.
  */
-/**
- * A PLAN instance nobody claimed (no ADMINS): a dry-run clone or a prepared
- * switch-over instance. It is never publicly reachable: every ingress of its
- * environment (app, switchboard, Connect, custom domains) stays closed.
- */
-export function isUnclaimedPlan(state: VetraCloudEnvironmentState): boolean {
-  if (state.app?.role !== "PLAN") return false;
-  const admins = (state.fusion?.env ?? []).find((e) => e.name === "ADMINS");
-  return !(admins?.value ?? "").trim();
-}
-
 export function isFusionHost(state: VetraCloudEnvironmentState): boolean {
   const service = (state.services ?? []).find(
     (s) => s.type === "FUSION" && s.enabled,
@@ -1358,10 +1347,10 @@ export function generateFusionBlock(
     if (publicHost) env.set(VITE_ALLOWED_HOST, publicHost);
   }
 
-  // A PLAN instance with no ADMINS yet is not claimed by anyone: closed, even
-  // when the pool lookup does not say warm (an unclaimed row is never open).
-  const closed =
-    !opts.held && (opts.warm === true || isUnclaimedPlan(state));
+  // Only an explicitly marked warm row is closed (holder_address IS NULL and
+  // warm = true via the pool lookup). Never on empty ADMINS: a Team instance
+  // legitimately renders with ADMINS "" and its members reach it via this ingress.
+  const closed = !opts.held && opts.warm === true;
 
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
@@ -1575,7 +1564,10 @@ export async function generateValuesYaml(
     customDomain && apexService === "CONNECT" && connectEnabled
       ? customDomain
       : null;
-  const unclaimedPlan = isUnclaimedPlan(state);
+  // One warm-pool lookup per render, shared with the image resolver.
+  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
+  // A switch-over dry-run clone (marked by the lookup): never publicly reachable.
+  const unclaimedPlan = warm?.rehearsal === true;
   const switchboardCustomIngress =
     !unclaimedPlan && customDomain && switchboardEnabled && !switchboardApexDomain
       ? generateCustomDomainIngress("switchboard", customDomain)
@@ -1621,8 +1613,6 @@ export async function generateValuesYaml(
     connectApexDomain,
   );
 
-  // One warm-pool lookup per render, shared with the image resolver.
-  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
   // A held environment keeps every data-bearing object (CNPG Cluster, its
   // PVC, Pooler, ScheduledBackup, the /data and attachments PVCs) and runs no
   // app pod and no ingress. Unlike STOPPED (global.disabled), which removes
@@ -1767,16 +1757,16 @@ database:
       defaultPoolSize: 50
       maxClientConnections: 400
     backup:
-      enabled: ${!preview}
+      enabled: ${!preview && !unclaimedPlan}
       destinationPath: s3://powerhouse-cnpg-backups/${tenantId}/
       endpointURL: https://hel1.your-objectstorage.com
       credentialsSecret: s3-credentials
       retentionPolicy: 180d
       useExistingSecret: true
       scheduledBackup:
-        enabled: ${!preview}
+        enabled: ${!preview && !unclaimedPlan}
         schedule: 0 2 * * *
-        immediate: ${!preview}
+        immediate: ${!preview && !unclaimedPlan}
     resources:
       # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
       # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was

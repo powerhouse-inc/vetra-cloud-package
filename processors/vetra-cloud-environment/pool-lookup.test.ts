@@ -216,3 +216,64 @@ describe("generateValuesYaml with the composed lookup", () => {
     expect(open).not.toContain("closed:");
   });
 });
+
+describe("createInstancePoolLookup: rehearsal clones", () => {
+  beforeEach(() => upApps(db));
+  const sw = (id: string, mode: string) =>
+    db
+      .insertInto("switchovers")
+      .values({
+        id,
+        mode,
+        app_id: "app-1",
+        environment_id: "env-old",
+        old_tenant: "t",
+        old_host: "h",
+        licence_root_id: "r",
+        holder_address: "0x9",
+        kind: "own",
+        plan_id: "p",
+        release_version: "1",
+        release_digest: "d",
+        state: "PLANNED",
+        created_by: "x",
+        created_at: "2026-11-12",
+        updated_at: "2026-11-12",
+      } as never)
+      .execute();
+
+  it("marks a holderless row of a dry-run switch-over, not of a real one", async () => {
+    await sw("s-dry", "dry_run");
+    await sw("s-real", "real");
+    await db
+      .insertInto("instances")
+      .values(
+        row({ id: "c1", warm: false, environment_id: "env-clone", switchover_id: "s-dry" }),
+      )
+      .execute();
+    await db
+      .insertInto("instances")
+      .values(
+        row({ id: "c2", name: "own-2", warm: false, environment_id: "env-new", switchover_id: "s-real" }),
+      )
+      .execute();
+    const lookup = createInstancePoolLookup(db);
+    expect(await lookup("env-clone")).toEqual({ appId: "app-1", rehearsal: true });
+    expect(await lookup("env-new")).toBeNull();
+  });
+
+  it("does not mark a clone row that has a holder", async () => {
+    await sw("s-dry", "dry_run");
+    await db
+      .insertInto("instances")
+      .values(
+        row({ id: "c1", warm: false, environment_id: "env-clone", switchover_id: "s-dry", holder_address: "0x1" }),
+      )
+      .execute();
+    expect(await createInstancePoolLookup(db)("env-clone")).toBeNull();
+  });
+
+  it("throws on other errors", async () => {
+    await expect(createInstancePoolLookup(brokenDb())("x")).rejects.toThrow("connection reset");
+  });
+});

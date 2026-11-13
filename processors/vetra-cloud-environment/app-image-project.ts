@@ -14,7 +14,11 @@ export type AppImageProjectResolver = (
   warm?: WarmPoolEntry | null,
 ) => Promise<string | null>;
 
-export type WarmPoolEntry = { appId: string };
+export type WarmPoolEntry = {
+  appId: string;
+  /** A switch-over dry-run clone: every ingress closed, backups off. */
+  rehearsal?: boolean;
+};
 
 /**
  * Whether a document is a live warm-pool environment (pre-started, ownerless,
