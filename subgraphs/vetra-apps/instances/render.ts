@@ -206,6 +206,7 @@ export function instanceUpdateActions(
   settings: InstanceSettingsEnv,
   start = true,
   size: VetraCloudRessourceSize | null = null,
+  label: string | null = null,
 ): Action[] {
   if (state.managedBy)
     throw new Error(
@@ -236,6 +237,8 @@ export function instanceUpdateActions(
       }),
     );
   }
+  // A claimed warm instance gets its holder-neutral name (slice 8).
+  if (label && state.label !== label) changes.push(setLabel({ label }));
   if (size && fusion?.selectedRessource !== size)
     changes.push(setServiceSize({ prefix: "fusion", size }));
   // Not started yet (no version) and not allowed to start: env and image only.

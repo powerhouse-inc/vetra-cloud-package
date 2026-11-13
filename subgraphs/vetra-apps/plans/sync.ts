@@ -35,7 +35,7 @@ export const isPlanKind = (kind: string) => kind === "shared" || kind === "own";
 export const ownInstanceName = (root: string) =>
   `own-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`;
 
-async function planTarget(
+export async function planTarget(
   deps: AppsDeps,
   plan: PlanRow,
 ): Promise<InstanceTarget | null> {
