@@ -41,7 +41,7 @@ export const subscriptionsSchema: DocumentNode = gql`
   }
 
   type SubscriptionWarning {
-    "EXPIRING | ENDED_STOP_PENDING | STOPPED_DELETE_PENDING | DELETE_IMMINENT"
+    "EXPIRING | ENDED_STOP_PENDING | STOPPED_DELETE_PENDING | DELETE_IMMINENT | ENVIRONMENT_DELETED | SWITCHOVER_SCHEDULED | SWITCHED_OVER"
     kind: String!
     "The moment the warning is about (expiry, stop, deletion)."
     at: String!

@@ -81,6 +81,7 @@ import {
 } from "../vetra-cloud-observability/env-protection.js";
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import type { HttpProbe } from "./instances/probe.js";
+import type { SwitchoverPorts } from "./switchover/ports.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import { liveChains } from "./plans/holders.js";
 import { listPlans } from "./plans/repo.js";
@@ -213,12 +214,18 @@ export interface AppsDeps {
     | "deleteSecret"
     | "notifyTenant"
     | "purgeTenant"
+    | "secretFingerprint"
   > | null;
   /**
    * Instance backups (releases phase 3 slice 4): the cluster, dump/archive
    * Job settings and S3 deletes. Null/absent: backups are not configured.
    */
   backups?: InstanceBackupDeps | null;
+  /**
+   * What the switch-over runs on (releases phase 3 plan 9): copies, counts,
+   * the cluster's readiness. Null/absent: the runner does nothing.
+   */
+  switchover?: SwitchoverPorts | null;
   /**
    * Whether a tenant's namespace exists (observability has a pod of it). Absent:
    * an instance's first start does not wait for it (tests).

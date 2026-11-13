@@ -301,3 +301,37 @@ describe("a release feeds licensed environments' host image", () => {
     expect(await hostArtifact()).toBeUndefined();
   });
 });
+
+describe("the bridge while the App's releases are frozen (switch-over)", () => {
+  const settings = h2();
+  function h2() {
+    return {
+      freeze: (reason: string | null) =>
+        h.deps
+          .licensingDb!.insertInto("app_release_settings")
+          .values({
+            app_id: app.id,
+            policy: "AUTO",
+            default_notice_hours: 72,
+            updated_at: "2026-11-10T00:00:00.000Z",
+            frozen_reason: reason,
+            frozen_at: reason ? "2026-11-10T00:00:00.000Z" : null,
+          })
+          .execute(),
+    };
+  }
+
+  it("records nothing for a stable release, but stores the release", async () => {
+    await settings.freeze("Sektar switch-over");
+    await report("1.5.0");
+    expect(await listReleases(h.deps.db, app.id, { limit: 5 })).toHaveLength(1);
+    expect(docs.executed).toEqual([]);
+    expect(await hostArtifact()).toBeUndefined();
+  });
+
+  it("records as usual when the row says not frozen (the default)", async () => {
+    await settings.freeze(null);
+    await report("1.5.0");
+    expect(await pointer("LATEST")).toBe("1.5.0");
+  });
+});

@@ -9,6 +9,7 @@ import { createInviteCode, keyCiphertextForCode, redeemedCodeOf, setInviteCodeAc
 import { authorisedLicences, createHolderLicences } from "../licence-view.js";
 import { createLifecycleStore } from "../lifecycle.js";
 import { createReactorLicenseGateway } from "../license-gateway.js";
+import type { SwitchoverNotice } from "../offboarding.js";
 import { createSubscriptionResolvers, type SubscriptionDeps } from "../subscriptions-resolvers.js";
 
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -604,5 +605,49 @@ describe("vetraSubscriptions: a new environment for a deleted one", () => {
     expect(await grants.chainRootOf(back.licenseId)).toBe(before.licenseId);
     expect(await rowOf(before.licenseId)).toBeUndefined();
     expect(forgotten).toContain("env-gone-6");
+  });
+});
+
+describe("vetraSubscriptions: switch-over banners (plan 9)", () => {
+  async function licenceWithEnv(c: string, environmentId: string) {
+    await code(APP_DED, "pro", c);
+    const l = await redeem({ code: c, label: c });
+    await h.db.insertInto("license_environments").values({
+      environment_id: environmentId, root_license_id: l.licenseId, app_id: APP_DED, user_did: HOLDER_DID,
+      license_id: l.licenseId, template_id: null, label: c, template_hash: "h",
+      ended_at: null, stopped_at: null, delete_after: null, created_at: clock, updated_at: clock,
+    }).execute();
+    return l;
+  }
+  type Warn = { kind: string; message: string };
+  const warningsOf = async (id: string) =>
+    ((await mine()).find((s) => s.licenseId === id)?.warnings ?? []) as Warn[];
+  const kinds = async (id: string) => (await warningsOf(id)).map((w) => w.kind);
+
+  it("announces the window, then asks the holder to check, then shows nothing", async () => {
+    const l = await licenceWithEnv("kv-sw-01", "env-sw-1");
+    let notice: SwitchoverNotice | null = {
+      state: "PREPARED",
+      windowStart: "2026-12-01T10:00:00.000Z",
+      windowEnd: "2026-12-01T11:30:00.000Z",
+      startedAt: null,
+      doneAt: null,
+    };
+    deps.switchoverOf = async () => notice;
+    try {
+      const scheduled = (await warningsOf(l.licenseId)).find((w) => w.kind === "SWITCHOVER_SCHEDULED")!;
+      expect(scheduled.message).toMatch(/moves to its own instance on 2026-12-01 between 10:00 and 11:30 \(UTC\)\. It will be unavailable for up to 90 minutes\. Its address stays the same\./);
+      notice = { ...notice, state: "AWAITING_CONFIRMATION", startedAt: "2026-12-01T10:40:00.000Z" };
+      expect(await kinds(l.licenseId)).toContain("SWITCHED_OVER");
+      notice = null;
+      expect(await kinds(l.licenseId)).not.toContain("SWITCHED_OVER");
+      // A failing lookup shows no banner, never an error.
+      deps.switchoverOf = async () => {
+        throw new Error("boom");
+      };
+      expect(await kinds(l.licenseId)).not.toContain("SWITCHED_OVER");
+    } finally {
+      delete deps.switchoverOf;
+    }
   });
 });

@@ -253,3 +253,37 @@ describe("publicHostOf", () => {
     expect(publicUrlOf({ host: null })).toBeNull();
   });
 });
+
+describe("a switch-over's instance (plan 9)", () => {
+  it("is not the holder's until linked; then it carries the confirm-by of its switch-over", async () => {
+    const own = (await listInstances(h.db, appId, "own"))[0];
+    await h.db
+      .updateTable("instances")
+      .set({ switchover_id: "sw1" })
+      .where("id", "=", own.id)
+      .execute();
+    expect((await myInstancesFor(h.deps, holder)).map((m) => m.access)).toEqual(["shared"]);
+    expect(await holderInstancesFor(h.deps, appId, HOLDER)).toHaveLength(1);
+    await h.db.updateTable("instances").set({ switchover_id: null }).where("id", "=", own.id).execute();
+    const { insertSwitchover } = await import("../switchover/repo.js");
+    const { switchoverRow } = await import("./switchover-fixtures.js");
+    await insertSwitchover(
+      h.db,
+      switchoverRow({
+        id: "sw1",
+        app_id: appId,
+        holder_address: HOLDER,
+        instance_id: own.id,
+        state: "AWAITING_CONFIRMATION",
+        started_at: "2026-10-02T12:00:00.000Z",
+      }),
+    );
+    const mine = await myInstancesFor(h.deps, holder);
+    expect(mine[0].switchover).toEqual({
+      id: "sw1",
+      state: "AWAITING_CONFIRMATION",
+      confirmBy: "2026-10-05T12:00:00.000Z",
+    });
+    expect(mine[1].switchover).toBeNull();
+  });
+});

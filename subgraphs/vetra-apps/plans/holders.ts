@@ -158,7 +158,11 @@ export async function grantKinds(
   return rows.map((r) => r.kind);
 }
 
-/** Chains the old model runs a licensed environment for (overview rule 1). */
+/**
+ * Chains the old model runs a licensed environment for (overview rule 1). A
+ * switched-over row (`switched_over_at`) is not one: its chain is the
+ * instances model's now, and its old environment is only held.
+ */
 export async function licensedRoots(
   db: Kysely<VetraLicensingDB>,
   appId: string,
@@ -167,6 +171,7 @@ export async function licensedRoots(
     .selectFrom("license_environments")
     .select("root_license_id")
     .where("app_id", "=", appId)
+    .where("switched_over_at", "is", null)
     .execute();
   return new Set(rows.map((r) => r.root_license_id));
 }
@@ -179,6 +184,7 @@ export async function hasLicensedEnvironments(
     .selectFrom("license_environments")
     .select("environment_id")
     .where("app_id", "=", appId)
+    .where("switched_over_at", "is", null)
     .executeTakeFirst());
 }
 

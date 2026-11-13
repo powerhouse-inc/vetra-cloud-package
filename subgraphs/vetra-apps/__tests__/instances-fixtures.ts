@@ -112,6 +112,8 @@ export async function seedLicensedEnvironment(
     root: string;
     environmentId?: string;
     endedAt?: string | null;
+    /** Set: the environment was switched over to an own instance (plan 9). */
+    switchedOverAt?: string | null;
   },
 ): Promise<void> {
   const at = "2026-10-01T00:00:00.000Z";
@@ -131,6 +133,7 @@ export async function seedLicensedEnvironment(
       delete_after: null,
       created_at: at,
       updated_at: at,
+      switched_over_at: o.switchedOverAt ?? null,
     })
     .execute();
 }

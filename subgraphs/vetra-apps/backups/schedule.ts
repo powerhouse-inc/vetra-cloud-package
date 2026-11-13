@@ -41,6 +41,9 @@ export async function runDailyBackupsOnce(
     .where("status", "=", "ready")
     .where("stop_reason", "is", null)
     .where("maintenance", "is", null)
+    // A switch-over's instance (a rehearsal clone, or a new one before LINKING)
+    // is not backed up: its data is a copy, and the old environment keeps its own.
+    .where("switchover_id", "is", null)
     .orderBy("created_at")
     .orderBy("id")
     .execute();
@@ -62,6 +65,7 @@ export async function runDailyBackupsOnce(
         if (
           !cur ||
           cur.maintenance ||
+          cur.switchover_id ||
           cur.stop_reason ||
           cur.status !== "ready"
         )

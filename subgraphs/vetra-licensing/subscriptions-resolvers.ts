@@ -10,7 +10,7 @@ import { resolveKind, type AppReads } from "./app-reads.js";
 import type { LicenseEnvironments } from "./db/schema.js";
 import { addressOfDid, callerDid } from "./did.js";
 import { dropDeletedEnvironment } from "./deleted-environment.js";
-import { lockChain, type ChainEnvRows } from "./environments.js";
+import { isSwitchedOver, lockChain, type ChainEnvRows } from "./environments.js";
 import type { GrantStore } from "./grants.js";
 import { InvalidCodeError, getCode, isUsable } from "./invite-codes.js";
 import { TermNotIssuableError, withLicenceLock } from "./issue.js";
@@ -18,7 +18,14 @@ import { redeemInviteCode, type InviteCodeIssuerDeps } from "./issuers/invite-co
 import type { LicenseGateway } from "./license-gateway.js";
 import { authorisedLicences, isLive, type AuthorisedLicence } from "./licence-view.js";
 import type { LifecycleStore } from "./lifecycle.js";
-import { DESTROY_AFTER_DAYS, addDays, subscriptionWarnings, type SubscriptionWarning } from "./offboarding.js";
+import {
+  DESTROY_AFTER_DAYS,
+  addDays,
+  subscriptionWarnings,
+  switchoverWarnings,
+  type SubscriptionWarning,
+  type SwitchoverNotice,
+} from "./offboarding.js";
 import {
   ForbiddenError,
   InvalidSecretNameError,
@@ -43,6 +50,11 @@ export interface SubscriptionDeps {
   /** Forgets a dropped environment's reporting token (offboarding's forgetEnvironment). */
   forgetEnvironment(environmentId: string): Promise<void>;
   envState(environmentId: string): Promise<VetraCloudEnvironmentState | null>;
+  /**
+   * The switch-over (plan 9) of a licensed environment, if any (vetra-apps'
+   * switchovers table). Absent or null: no notice.
+   */
+  switchoverOf?(environmentId: string): Promise<SwitchoverNotice | null>;
   /** The recording gateway: a cancel also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   studio: StudioAccessDeps;
@@ -139,6 +151,9 @@ export async function subscriptionFor(
     const state = await deps.envState(envRow.environment_id);
     if (state) openUrl = primaryUrlOf(state);
     else liveRow = null;
+    // Switched over: the old environment is held, and licensing offers the
+    // holder nothing to stop or delete there (the own instance is theirs now).
+    if (isSwitchedOver(envRow)) liveRow = null;
   } else if (!dedicated && resolved?.ok && resolved.stage) openUrl = await primaryUrl(deps, resolved.stage);
   return {
     licenseId: l.id,
@@ -157,8 +172,15 @@ export async function subscriptionFor(
     stoppedAt: liveRow?.stopped_at ?? null,
     deleteAfter: liveRow?.delete_after ?? null,
     warnings: [
+      ...(envRow && deps.switchoverOf
+        ? switchoverWarnings(
+            await deps.switchoverOf(envRow.environment_id).catch(() => null),
+            app?.name ?? app?.slug ?? "app",
+            deps.now(),
+          )
+        : []),
       // The holder deleted the environment their live licence covers: they may have a new one.
-      ...(envRow && !liveRow && isLive(l.status)
+      ...(envRow && !liveRow && !isSwitchedOver(envRow) && isLive(l.status)
         ? [
             {
               kind: "ENVIRONMENT_DELETED" as const,

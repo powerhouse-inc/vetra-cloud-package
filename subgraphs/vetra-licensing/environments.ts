@@ -44,6 +44,16 @@ export class EnvironmentOwnershipMismatchError extends Error {
   override name = "EnvironmentOwnershipMismatchError";
 }
 
+/**
+ * The chain's environment was switched over to an own plan instance (apps
+ * plan 9): licensing no longer acts on the row. It stays in the table for
+ * display and for the processor's vouching of the held environment's image
+ * project, which reads it through `byEnvironment`/`byRoot`, never filtered.
+ */
+export const isSwitchedOver = (row: {
+  switched_over_at?: string | null;
+}): boolean => (row.switched_over_at ?? null) !== null;
+
 export type ChainEnvRows = ReturnType<typeof createChainEnvironmentRows>;
 
 type RowPatch = Partial<Omit<LicenseEnvironments, "environment_id" | "root_license_id">>;

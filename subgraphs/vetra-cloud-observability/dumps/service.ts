@@ -21,6 +21,12 @@ export type CreateDumpInput = {
   source: DumpSource;
   /** Defaults to the wall clock; vetra-apps passes its own (tests use a fake clock). */
   now?: Date;
+  /** Where the dump is stored (default `<tenant>/<id>.dump`). */
+  s3Key?: string;
+  /** Days kept (default 30). */
+  ttlDays?: number;
+  /** The Job's deadline in seconds (default 3600). */
+  deadlineSeconds?: number;
 };
 
 /**
@@ -44,6 +50,8 @@ export async function createDumpAndJob(
     s3Endpoint: deps.s3Endpoint,
     s3AccessKey: deps.s3AccessKey,
     s3SecretKey: deps.s3SecretKey,
+    s3Key: input.s3Key,
+    deadlineSeconds: input.deadlineSeconds,
   });
   try {
     const jobName = await deps.createJob(input.tenantId, job);

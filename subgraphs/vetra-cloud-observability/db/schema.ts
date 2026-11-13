@@ -126,10 +126,11 @@ export type DumpSource =
   | "SCHEDULED"
   | "PRE_RESTORE"
   | "PRE_UPDATE"
-  | "INSTANCE";
+  | "INSTANCE"
+  | "SWITCHOVER";
 export type ObservabilityDumpSource = Exclude<
   DumpSource,
-  "PRE_UPDATE" | "INSTANCE"
+  "PRE_UPDATE" | "INSTANCE" | "SWITCHOVER"
 >;
 
 /**

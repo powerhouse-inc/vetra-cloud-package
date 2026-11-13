@@ -74,6 +74,15 @@ export interface LicenseEnvironments {
    * absent on a row built in code before the column existed): the template's.
    */
   channel_override?: string | null;
+  /**
+   * Set when the chain's environment was switched over to an own plan
+   * instance (apps plan 9): licensing no longer acts on the row, which stays
+   * for display and for the processor's image-project vouching. Null or
+   * absent: a live licensed environment, as always.
+   */
+  switched_over_at?: string | null;
+  /** The own instance that replaced the environment. */
+  switched_over_instance_id?: string | null;
   /** First moment the keeper saw the chain without an ACTIVE licence. */
   ended_at: string | null;
   stopped_at: string | null;
@@ -229,6 +238,14 @@ export interface AppReleaseSettings {
   policy: ReleasePolicy;
   default_notice_hours: number;
   updated_at: string;
+  /**
+   * Why the App's gated releases are frozen (a switch-over campaign is on);
+   * null: not frozen, the normal state. Set and cleared only by
+   * freezeAppReleases / unfreezeAppReleases.
+   */
+  frozen_reason: string | null;
+  /** When the freeze began; kept when the freeze is set again. */
+  frozen_at: string | null;
 }
 
 /** A promotion of one FUSION artifact version to the app's customers (spec 4.3). */

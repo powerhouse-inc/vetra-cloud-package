@@ -84,7 +84,7 @@ function block(yaml: string, key: string): string {
 const render = (
   state: VetraCloudEnvironmentState,
   held: boolean | (() => Promise<boolean>),
-  isWarm: (() => Promise<{ appId: string } | null>) | null = null,
+  isWarm: (() => Promise<{ appId: string; rehearsal?: boolean; unverified?: boolean } | null>) | null = null,
 ) =>
   generateValuesYaml(
     dbStub,
@@ -239,5 +239,118 @@ describe("hold lookup failures", () => {
     await render(envState(), isHeld);
     expect(isHeld).toHaveBeenCalledTimes(1);
     expect(isHeld).toHaveBeenCalledWith(DOC_ID);
+  });
+});
+
+describe("a dry-run clone (marked by the lookup) has no public ingress and no backups", () => {
+  const plan = (
+    over: Partial<VetraCloudEnvironmentState> = {},
+  ): VetraCloudEnvironmentState =>
+    envState({
+      app: { role: "PLAN", appId: "app-1" } as unknown as VetraCloudEnvironmentState["app"],
+      ...over,
+    });
+  const rehearsal = async () => ({ appId: "app-1", rehearsal: true });
+  const noPublicIngress = (yaml: string) => {
+    // Every ingress block is either closed (fusion app) or disabled.
+    for (const m of yaml.matchAll(/^ {2}ingress:\n( {4}.*\n)+/gm)) {
+      expect(m[0]).toMatch(/enabled: false|closed: true/);
+    }
+    expect(yaml).not.toContain("additionalIngress");
+    expect(yaml).not.toMatch(/ingress:\n {4}enabled: true\n {4}className: traefik\n {4}host: [^\n]*\n(?! {4}closed)/);
+  };
+
+  it("a FUSION host renders its app ingress closed", async () => {
+    const yaml = await render(plan(), false, rehearsal);
+    expect(block(yaml, "app")).toMatch(/  ingress:\n    enabled: true\n    className: traefik\n    closed: true/);
+    await expect(yaml).toMatchFileSnapshot("./__golden__/plan-clone-values.yaml");
+  });
+
+  it("switchboard and Connect ingresses (and custom-domain ones) are off too", async () => {
+    const yaml = await render(
+      plan({
+        services: [
+          svc("SWITCHBOARD", "switchboard"),
+          svc("CONNECT", "connect"),
+        ],
+        fusion: null,
+        customDomain: { enabled: true, domain: "holder.example", dnsRecords: [] },
+      }),
+      false,
+      rehearsal,
+    );
+    expect(block(yaml, "switchboard")).toMatch(/  ingress:\n    enabled: false/);
+    expect(block(yaml, "connect")).toMatch(/  ingress:\n    enabled: false/);
+    expect(yaml).not.toContain("holder.example");
+    noPublicIngress(yaml);
+  });
+
+  it("renders its database backups off", async () => {
+    const yaml = await render(plan(), false, rehearsal);
+    expect(yaml).toMatch(/backup:\n {6}enabled: false/);
+    expect(yaml).toMatch(/scheduledBackup:\n {8}enabled: false/);
+    expect(yaml).toMatch(/immediate: false/);
+  });
+
+  it("a real switch-over's new instance renders closed until verified, with its backups kept", async () => {
+    const unverified = async () => ({ appId: "app-1", unverified: true });
+    const yaml = await render(plan(), false, unverified);
+    expect(block(yaml, "app")).toMatch(/  ingress:\n    enabled: true\n    className: traefik\n    closed: true/);
+    expect(yaml).toMatch(/backup:\n {6}enabled: true/);
+    // Verified (lookup says nothing): it opens.
+    expect(block(await render(plan(), false, async () => null), "app")).not.toContain("closed:");
+  });
+
+  it("a Team-like PLAN env (ADMINS empty, lookup null) keeps every ingress and its backups", async () => {
+    const yaml = await render(
+      plan({
+        services: [
+          svc("SWITCHBOARD", "switchboard"),
+          svc("CONNECT", "connect"),
+        ],
+        fusion: null,
+        customDomain: { enabled: true, domain: "team.example", dnsRecords: [] },
+      }),
+      false,
+      null,
+    );
+    expect(block(yaml, "switchboard")).toMatch(/  ingress:\n    enabled: true/);
+    expect(block(yaml, "connect")).toMatch(/  ingress:\n    enabled: true/);
+    expect(yaml).toContain("team.example");
+    expect(yaml).toMatch(/backup:\n {6}enabled: true/);
+    const fusion = await render(
+      plan({
+        fusion: {
+          image: "cr.vetra.io/achra/host",
+          env: [
+            { name: "PH_HOST", value: "cli", isSecret: false },
+            { name: "ADMINS", value: "", isSecret: false },
+          ],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+      false,
+      async () => null,
+    );
+    expect(block(fusion, "app")).not.toContain("closed:");
+  });
+
+  it("a claimed PLAN instance (ADMINS set) keeps its ingress open", async () => {
+    const yaml = await render(
+      plan({
+        fusion: {
+          image: "cr.vetra.io/achra/host",
+          env: [
+            { name: "PH_HOST", value: "cli", isSecret: false },
+            { name: "ADMINS", value: "0xabc", isSecret: false },
+          ],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+      false,
+    );
+    expect(block(yaml, "app")).not.toContain("closed:");
   });
 });

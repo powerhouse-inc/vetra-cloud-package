@@ -14,6 +14,8 @@ export interface ReleaseSettings {
   appId: string;
   policy: ReleasePolicy;
   defaultNoticeHours: number;
+  /** Set while the App's gated releases are frozen (switch-over); null normally. */
+  frozenReason: string | null;
 }
 
 /** What an app without a settings row has: every app before this feature. */
@@ -39,6 +41,29 @@ export async function releasePolicyOf(
   } catch (err) {
     if ((err as { code?: string } | null)?.code === UNDEFINED_TABLE)
       return "AUTO";
+    throw err;
+  }
+}
+
+/**
+ * Why the App's gated releases are frozen, or null (the normal state), for
+ * vetra-apps' bridge. A missing table or column (licensing has not booted
+ * with the freeze yet) reads as not frozen; any other failure propagates.
+ */
+export async function frozenReasonOf(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+): Promise<string | null> {
+  try {
+    const row = await db
+      .selectFrom("app_release_settings")
+      .select("frozen_reason")
+      .where("app_id", "=", appId)
+      .executeTakeFirst();
+    return row?.frozen_reason ?? null;
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === UNDEFINED_TABLE || code === "42703") return null;
     throw err;
   }
 }
@@ -139,9 +164,49 @@ function rolloutQueries(db: Kysely<VetraLicensingDB>) {
         appId,
         policy: row?.policy ?? "AUTO",
         defaultNoticeHours: row?.default_notice_hours ?? DEFAULT_NOTICE_HOURS,
+        frozenReason: row?.frozen_reason ?? null,
       };
     },
-    async saveSettings(s: ReleaseSettings, now: string): Promise<void> {
+    /**
+     * Freezes (reason) or unfreezes (null) the App's gated releases. A freeze
+     * set again keeps its first frozen_at and reason; unfreezing clears both.
+     * Never touches the policy or the notice.
+     */
+    async setFrozen(
+      appId: string,
+      reason: string | null,
+      now: string,
+    ): Promise<void> {
+      if (reason === null) {
+        await db
+          .updateTable("app_release_settings")
+          .set({ frozen_reason: null, frozen_at: null })
+          .where("app_id", "=", appId)
+          .execute();
+        return;
+      }
+      await db
+        .insertInto("app_release_settings")
+        .values({
+          app_id: appId,
+          policy: "AUTO",
+          default_notice_hours: DEFAULT_NOTICE_HOURS,
+          updated_at: now,
+          frozen_reason: reason,
+          frozen_at: now,
+        })
+        .onConflict((oc) =>
+          oc
+            .column("app_id")
+            .doUpdateSet({ frozen_reason: reason, frozen_at: now })
+            .where("app_release_settings.frozen_reason", "is", null),
+        )
+        .execute();
+    },
+    async saveSettings(
+      s: Omit<ReleaseSettings, "frozenReason">,
+      now: string,
+    ): Promise<void> {
       const row = {
         policy: s.policy,
         default_notice_hours: s.defaultNoticeHours,

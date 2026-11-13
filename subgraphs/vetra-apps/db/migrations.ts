@@ -148,6 +148,85 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureRolloutColumns(db);
   await ensureRolloutBackupColumns(db);
   await ensureTeamPlanSchema(db);
+  await ensureSwitchoverSchema(db);
+}
+
+/** Switch-overs and the instances' switchover_id (plan 9). Schema builder only (namespaced). */
+export async function ensureSwitchoverSchema(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .createTable("switchovers")
+      .ifNotExists()
+      .addColumn("id", "varchar(64)", (c) => c.primaryKey())
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("environment_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("old_tenant", "varchar(255)", (c) => c.notNull())
+      .addColumn("old_host", "varchar(255)", (c) => c.notNull())
+      .addColumn("licence_root_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("holder_address", "varchar(255)", (c) => c.notNull())
+      .addColumn("kind", "varchar(255)", (c) => c.notNull())
+      .addColumn("plan_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)")
+      .addColumn("release_version", "varchar(255)", (c) => c.notNull())
+      .addColumn("release_digest", "varchar(255)", (c) => c.notNull())
+      .addColumn("mode", "varchar(16)", (c) => c.notNull())
+      .addColumn("state", "varchar(32)", (c) => c.notNull())
+      .addColumn("failed_state", "varchar(32)")
+      .addColumn("error", "varchar(500)")
+      .addColumn("window_start", "varchar(64)")
+      .addColumn("window_end", "varchar(64)")
+      .addColumn("step_started_at", "varchar(64)")
+      .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("prepare_archive_id", "varchar(255)")
+      .addColumn("dump_id", "varchar(255)")
+      .addColumn("archive_id", "varchar(255)")
+      .addColumn("restore_db_id", "varchar(255)")
+      .addColumn("restore_data_id", "varchar(255)")
+      .addColumn("key_fingerprints", "text")
+      .addColumn("source_counts", "text")
+      .addColumn("copy_counts", "text")
+      .addColumn("started_counts", "text")
+      .addColumn("timings", "text")
+      .addColumn("downtime_started_at", "varchar(64)")
+      .addColumn("started_at", "varchar(64)")
+      .addColumn("confirmed_at", "varchar(64)")
+      .addColumn("done_at", "varchar(64)")
+      .addColumn("hold_until", "varchar(64)")
+      .addColumn("rolled_back_at", "varchar(64)")
+      .addColumn("created_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createIndex("switchovers_environment_real_uq")
+      .ifNotExists()
+      .unique()
+      .on("switchovers")
+      .column("environment_id")
+      .where(sql.ref("mode"), "=", "real")
+      .where(sql.ref("state"), "<>", "ROLLED_BACK")
+      .execute();
+    await db.schema
+      .createIndex("switchovers_app_state_idx")
+      .ifNotExists()
+      .on("switchovers")
+      .columns(["app_id", "state"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .alterTable("instances")
+      .addColumn("switchover_id", "varchar(64)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
 }
 
 /** The Team plan (releases phase 3 slice 6). Schema builder only (namespaced). */

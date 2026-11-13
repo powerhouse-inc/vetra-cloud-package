@@ -33,6 +33,7 @@ export async function createArchiveAndJob(
     s3Endpoint: deps.s3Endpoint,
     s3AccessKey: deps.s3AccessKey,
     s3SecretKey: deps.s3SecretKey,
+    s3Key: input.s3Key,
   });
   try {
     const name = await deps.createJob(input.tenantId, job);

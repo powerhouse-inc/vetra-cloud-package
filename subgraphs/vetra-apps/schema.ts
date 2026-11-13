@@ -265,8 +265,54 @@ export const schema: DocumentNode = gql`
     "own, licence ended, deletion on: when its data is deleted"
     deletesAt: String
     notices: [HolderNotice!]!
+    "own, just moved from a licensed environment: ask the holder to check it (confirmSwitchover); null otherwise"
+    switchover: HolderSwitchover
     "A coming update of this instance; null when none"
     update: HolderUpdate
+  }
+
+  """
+  A licensed environment moving to an own plan instance (plan 9; platform
+  admins, except confirmSwitchover for its holder). Counts are per document
+  type, never content.
+  """
+  type Switchover {
+    id: ID!
+    appId: ID!
+    environmentId: ID!
+    oldHost: String!
+    kind: String!
+    planId: ID!
+    instanceId: ID
+    "real | dry_run"
+    mode: String!
+    state: String!
+    failedState: String
+    error: String
+    windowStart: String
+    windowEnd: String
+    releaseVersion: String!
+    "JSON counts (admins only)"
+    sourceCounts: String
+    copyCounts: String
+    startedCounts: String
+    "JSON seconds per step (admins only)"
+    timings: String
+    downtimeStartedAt: String
+    startedAt: String
+    confirmedAt: String
+    doneAt: String
+    holdUntil: String
+    canRollBack: Boolean!
+    rollBackLosesWrites: Boolean!
+  }
+
+  type HolderSwitchover {
+    id: ID!
+    "LINKING | AWAITING_CONFIRMATION"
+    state: String!
+    "Without an answer by then the switch-over counts as confirmed"
+    confirmBy: String!
   }
 
   enum HolderNoticeKind {
@@ -771,6 +817,10 @@ export const schema: DocumentNode = gql`
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
     appPlans(appId: ID!): [AppPlan!]!
+    "Platform admins: the App's switch-overs, newest first"
+    switchovers(appId: ID!): [Switchover!]!
+    "Platform admins: why a licensed environment cannot be switched over (empty: it can)"
+    switchoverChecks(environmentId: ID!): [String!]!
     "The App's audit log, newest first (default 50, at most 200 per page)"
     appAudit(appId: ID!, limit: Int, before: String): AppAuditPage!
     "The App's release managers"
@@ -820,6 +870,30 @@ export const schema: DocumentNode = gql`
     removeMyInstanceCustomDomain(instanceId: ID!): Boolean!
     "Platform admins: slice 9 moves a licensed environment's domain to the holder's instance."
     moveCustomDomainToInstance(fromEnvironmentId: ID!, instanceId: ID!): InstanceCustomDomain!
+    "Platform admins: turn a licensing term that has licensed environments into an own plan (the first step of a switch-over)"
+    adoptLicensedKind(
+      appId: ID!
+      kind: String!
+      slug: String!
+      name: String!
+      size: String!
+      targetVersion: String!
+    ): AppPlan!
+    "Platform admins: no gated promotion or update of the App's licensed environments while it is frozen"
+    freezeAppReleases(appId: ID!, reason: String!): Boolean!
+    unfreezeAppReleases(appId: ID!): Boolean!
+    "Platform admins: plan a switch-over of a licensed environment; the window starts 72 h or more from now"
+    planSwitchover(environmentId: ID!, windowStart: String!, windowEnd: String!): Switchover!
+    "Platform admins: copy the environment into a throwaway clone while it keeps running, to size the window"
+    dryRunSwitchover(environmentId: ID!): Switchover!
+    "Platform admins: a failed switch-over goes back to the step it failed in"
+    resumeSwitchover(id: ID!): Switchover!
+    "Platform admins: back to the old environment; from the start of the new instance this discards what was written on it (acceptDataLoss)"
+    rollBackSwitchover(id: ID!, acceptDataLoss: Boolean): Switchover!
+    "Platform admins: remove the clone of a failed dry run"
+    cleanUpDryRun(id: ID!): Switchover!
+    "The holder of that switch-over: the moved instance looks right"
+    confirmSwitchover(id: ID!): Switchover!
     "Turn a licensing term into a plan (shared or own instances)"
     createPlan(input: CreatePlanInput!): AppPlan!
     updatePlan(input: UpdatePlanInput!): AppPlan!

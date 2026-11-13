@@ -32,12 +32,71 @@ export interface SubscriptionWarning {
     | "STOPPED_DELETE_PENDING"
     | "DELETE_IMMINENT"
     // A live licence whose environment the holder deleted (subscriptions-resolvers.ts).
-    | "ENVIRONMENT_DELETED";
+    | "ENVIRONMENT_DELETED"
+    // The environment moves to an own instance (plan 9): announced, then "please check it".
+    | "SWITCHOVER_SCHEDULED"
+    | "SWITCHED_OVER";
   at: string;
   message: string;
 }
 
 const day = (iso: string) => iso.slice(0, 10);
+const clock = (iso: string) => new Date(iso).toISOString().slice(11, 16);
+const SWITCHED_OVER_SHOWN_DAYS = 7;
+
+/** What the holder is told of a switch-over of their environment (the vetra-apps switchovers row, no more). */
+export interface SwitchoverNotice {
+  state: string;
+  windowStart: string | null;
+  windowEnd: string | null;
+  /** Set once the new instance started (STARTING). */
+  startedAt: string | null;
+  doneAt: string | null;
+}
+
+const ANNOUNCED = new Set(["PLANNED", "PREPARING", "PREPARED"]);
+const CHECKING = new Set(["LINKING", "AWAITING_CONFIRMATION"]);
+
+/**
+ * Banners for a switch-over: SWITCHOVER_SCHEDULED from PLANNED until the old
+ * environment is held (the window, in UTC, and how long it may take);
+ * SWITCHED_OVER from LINKING until DONE and seven days after, asking the
+ * holder to sign in and check (confirmSwitchover). Nothing for a dry run, a
+ * rolled-back or a failed one.
+ */
+export function switchoverWarnings(
+  n: SwitchoverNotice | null,
+  appName: string,
+  now: string,
+): SubscriptionWarning[] {
+  if (!n) return [];
+  if (ANNOUNCED.has(n.state) && n.windowStart && n.windowEnd) {
+    const minutes = Math.max(
+      1,
+      Math.round((Date.parse(n.windowEnd) - Date.parse(n.windowStart)) / 60_000),
+    );
+    return [
+      {
+        kind: "SWITCHOVER_SCHEDULED",
+        at: n.windowStart,
+        message: `Your ${appName} moves to its own instance on ${day(n.windowStart)} between ${clock(n.windowStart)} and ${clock(n.windowEnd)} (UTC). It will be unavailable for up to ${minutes} minutes. Its address stays the same.`,
+      },
+    ];
+  }
+  const doneShown =
+    n.state === "DONE" &&
+    n.doneAt !== null &&
+    Date.parse(now) < Date.parse(n.doneAt) + SWITCHED_OVER_SHOWN_DAYS * DAY_MS;
+  if (CHECKING.has(n.state) || doneShown)
+    return [
+      {
+        kind: "SWITCHED_OVER",
+        at: n.startedAt ?? n.doneAt ?? now,
+        message: `Your ${appName} now runs as its own instance. Please sign in and check it.`,
+      },
+    ];
+  return [];
+}
 
 /** Banners for vetra.io. Computed on read; email is out of scope. */
 export function subscriptionWarnings(

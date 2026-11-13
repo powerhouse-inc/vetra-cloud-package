@@ -135,6 +135,9 @@ export const publisherSchema: DocumentNode = gql`
     templateHash: String!
     stoppedAt: String
     deleteAfter: String
+    "Set when the holder moved to an own plan instance: this environment is held, licensing no longer acts on it."
+    switchedOverAt: String
+    switchedOverInstanceId: String
   }
 
   type PublisherInviteCode {

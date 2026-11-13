@@ -181,11 +181,14 @@ export async function plannedSteps(
       r.target_version !== version,
   );
   const out: PlannedStep[] = rows.map((r) => {
-    const note = r.pinned_version
-      ? `pinned at ${r.pinned_version}`
-      : newerRelease(r.target_version, version)
-        ? `ahead at ${r.target_version}`
-        : null;
+    // A switch-over owns the instance until it links it (plan 9).
+    const note = r.switchover_id
+      ? "switch-over in progress"
+      : r.pinned_version
+        ? `pinned at ${r.pinned_version}`
+        : newerRelease(r.target_version, version)
+          ? `ahead at ${r.target_version}`
+          : null;
     return {
       plan: byId.get(r.plan_id!)!,
       instance: r,

@@ -1564,12 +1564,17 @@ export async function generateValuesYaml(
     customDomain && apexService === "CONNECT" && connectEnabled
       ? customDomain
       : null;
+  // One warm-pool lookup per render, shared with the image resolver.
+  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
+  // A switch-over dry-run clone, or a new instance not yet verified (marked by
+  // the lookup): no public ingress.
+  const unclaimedPlan = warm?.rehearsal === true || warm?.unverified === true;
   const switchboardCustomIngress =
-    customDomain && switchboardEnabled && !switchboardApexDomain
+    !unclaimedPlan && customDomain && switchboardEnabled && !switchboardApexDomain
       ? generateCustomDomainIngress("switchboard", customDomain)
       : "";
   const connectCustomIngress =
-    customDomain && connectEnabled && !connectApexDomain
+    !unclaimedPlan && customDomain && connectEnabled && !connectApexDomain
       ? generateCustomDomainIngress("connect", customDomain)
       : "";
   // Generic (non-customDomain-apex) services get an explicit flattened host so
@@ -1609,8 +1614,6 @@ export async function generateValuesYaml(
     connectApexDomain,
   );
 
-  // One warm-pool lookup per render, shared with the image resolver.
-  const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
   // A held environment keeps every data-bearing object (CNPG Cluster, its
   // PVC, Pooler, ScheduledBackup, the /data and attachments PVCs) and runs no
   // app pod and no ingress. Unlike STOPPED (global.disabled), which removes
@@ -1755,16 +1758,16 @@ database:
       defaultPoolSize: 50
       maxClientConnections: 400
     backup:
-      enabled: ${!preview}
+      enabled: ${!preview && warm?.rehearsal !== true}
       destinationPath: s3://powerhouse-cnpg-backups/${tenantId}/
       endpointURL: https://hel1.your-objectstorage.com
       credentialsSecret: s3-credentials
       retentionPolicy: 180d
       useExistingSecret: true
       scheduledBackup:
-        enabled: ${!preview}
+        enabled: ${!preview && warm?.rehearsal !== true}
         schedule: 0 2 * * *
-        immediate: ${!preview}
+        immediate: ${!preview && warm?.rehearsal !== true}
     resources:
       # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
       # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
@@ -1794,7 +1797,7 @@ switchboard:
     port: 80
     targetPort: 3000
   ingress:
-    enabled: ${!held}
+    enabled: ${!held && !unclaimedPlan}
     className: traefik${switchboardHostLine}
     tls:
       enabled: true
@@ -1868,7 +1871,7 @@ connect:
     port: 80
     targetPort: 3001
   ingress:
-    enabled: true
+    enabled: ${!unclaimedPlan}
     className: traefik${connectHostLine}
     tls:
       enabled: true

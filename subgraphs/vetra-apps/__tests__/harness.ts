@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -659,6 +660,7 @@ export function fakeTenantSecrets() {
   const store = new Map<string, Map<string, string>>();
   const notified: string[] = [];
   const purged: string[] = [];
+  const purgedWithMasterKey: string[] = [];
   const of = (t: string) => {
     if (!store.has(t)) store.set(t, new Map());
     return store.get(t)!;
@@ -667,6 +669,7 @@ export function fakeTenantSecrets() {
     store,
     notified,
     purged,
+    purgedWithMasterKey,
     async ensureSecret(tenantId: string, key: string, generate: () => string) {
       const m = of(tenantId);
       if (m.has(key)) return false;
@@ -686,12 +689,22 @@ export function fakeTenantSecrets() {
     async notifyTenant(tenantId: string) {
       notified.push(tenantId);
     },
-    async purgeTenant(tenantId: string) {
+    async secretFingerprint(tenantId: string, key: string) {
+      const v = of(tenantId).get(key);
+      return v === undefined
+        ? null
+        : createHash("sha256").update(v).digest("hex");
+    },
+    async purgeTenant(
+      tenantId: string,
+      opts?: { includeMasterKey?: boolean },
+    ) {
       purged.push(tenantId);
+      if (opts?.includeMasterKey) purgedWithMasterKey.push(tenantId);
       const m = of(tenantId);
       let secrets = 0;
       for (const k of [...m.keys()])
-        if (k !== "PH_WORKFLOWS_SECRETS_MASTER_KEY") {
+        if (opts?.includeMasterKey || k !== "PH_WORKFLOWS_SECRETS_MASTER_KEY") {
           m.delete(k);
           secrets++;
         }

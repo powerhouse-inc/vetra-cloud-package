@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import type { SecretsDB } from "../db/schema.js";
 import type { OpenBaoTransitClient } from "../openbao-transit.js";
@@ -182,6 +183,13 @@ export interface SecretsService {
     generate: () => string,
   ): Promise<boolean>;
   /**
+   * sha256 (hex) of a stored secret's value, decrypted and hashed here: the
+   * value never leaves the service. Null when the tenant has no such secret.
+   * A switch-over checks that a new instance holds exactly the keys of the
+   * old environment by comparing these.
+   */
+  secretFingerprint(tenantId: string, key: string): Promise<string | null>;
+  /**
    * Overwrite one rotatable managed secret (ROTATABLE_MANAGED_KEYS) of a
    * tenant, touching no other key. Notifies the controller.
    */
@@ -191,7 +199,10 @@ export interface SecretsService {
    * deleted). Notifies the controller when rows went, so the tenant's
    * ConfigMap/Secret are emptied if the namespace still exists.
    */
-  purgeTenant(tenantId: string): Promise<{ envVars: number; secrets: number }>;
+  purgeTenant(
+    tenantId: string,
+    opts?: PurgeTenantOptions,
+  ): Promise<{ envVars: number; secrets: number }>;
   /**
    * Ask the controller to (re)materialize a tenant's ConfigMap/Secret without
    * writing anything: its namespace may only now exist (rows written before
@@ -221,9 +232,19 @@ export interface SecretsService {
  * anything went. Idempotent. Namespace-safe: query builder only,
  * so the statements resolve through the schema-bound instance.
  */
+export interface PurgeTenantOptions {
+  /**
+   * Also delete the workflows master key. Only for a tenant whose database is
+   * gone for good and was never the only holder of what the key protects (a
+   * dry-run clone or a prepared instance holds a COPY of an owner's key).
+   */
+  includeMasterKey?: boolean;
+}
+
 export async function purgeTenantRows(
   db: Kysely<SecretsDB>,
   tenantId: string,
+  opts: PurgeTenantOptions = {},
 ): Promise<{ envVars: number; secrets: number }> {
   return db.transaction().execute(async (trx) => {
     const envVars = await trx
@@ -238,7 +259,7 @@ export async function purgeTenantRows(
     const secrets = await trx
       .deleteFrom("tenant_secrets")
       .where("tenantId", "=", tenantId)
-      .where("key", "not in", [...PURGE_KEPT_KEYS])
+      .where("key", "not in", opts.includeMasterKey ? [""] : [...PURGE_KEPT_KEYS])
       .executeTakeFirst();
     const out = {
       envVars: Number(envVars.numDeletedRows),
@@ -428,6 +449,18 @@ export function createSecretsService({
       });
     },
 
+    async secretFingerprint(tenantId, key) {
+      const row = await db
+        .selectFrom("tenant_secrets")
+        .select("ciphertext")
+        .where("tenantId", "=", tenantId)
+        .where("key", "=", key)
+        .executeTakeFirst();
+      if (!row?.ciphertext) return null;
+      const value = await transit.decrypt(tenantId, row.ciphertext);
+      return createHash("sha256").update(value).digest("hex");
+    },
+
     async setManagedSecret(tenantId, key, value) {
       assertRotatable(key, value);
       await transit.ensureTenantKey(tenantId);
@@ -510,8 +543,8 @@ export function createSecretsService({
       });
     },
 
-    async purgeTenant(tenantId) {
-      return purgeTenantRows(db, tenantId);
+    async purgeTenant(tenantId, opts) {
+      return purgeTenantRows(db, tenantId, opts);
     },
 
     async notifyTenant(tenantId) {

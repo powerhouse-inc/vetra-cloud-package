@@ -202,6 +202,11 @@ export async function syncPlanInstances(
     if (!plan || licensed.has(head.root)) continue;
     const target = targets.get(plan.id) ?? null;
     const row = own.find((r) => r.licence_root_id === head.root);
+    // A switch-over owns the row until it links it (instances.switchover_id).
+    if (row?.switchover_id) {
+      served.add(head.root);
+      continue;
+    }
     if (row?.removed_at) {
       served.add(head.root);
       continue;
@@ -242,7 +247,8 @@ export async function syncPlanInstances(
   }
   const stopAfterMs = cfg.stopAfterDays * DAY_MS;
   const unserved = own.filter(
-    (r) => !r.removed_at && !served.has(r.licence_root_id ?? ""),
+    (r) =>
+      !r.removed_at && !r.switchover_id && !served.has(r.licence_root_id ?? ""),
   );
   const ends = await chainEnds(
     deps.licensingDb,

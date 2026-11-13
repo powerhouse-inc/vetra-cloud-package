@@ -357,6 +357,31 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
       grants,
       envRows: chainRows,
       envState: (id) => envs.getState(id),
+      // The holder's banners for a switch-over of their environment (plan 9; vetra-apps' table).
+      switchoverOf: async (environmentId) => {
+        try {
+          const r = await appsDb
+            .selectFrom("switchovers")
+            .select(["state", "window_start", "window_end", "started_at", "done_at"])
+            .where("environment_id", "=", environmentId)
+            .where("mode", "=", "real")
+            .where("state", "<>", "ROLLED_BACK")
+            .executeTakeFirst();
+          return r
+            ? {
+                state: r.state,
+                windowStart: r.window_start,
+                windowEnd: r.window_end,
+                startedAt: r.started_at,
+                doneAt: r.done_at,
+              }
+            : null;
+        } catch (err) {
+          // The table does not exist before vetra-apps created it.
+          if ((err as { code?: unknown } | null)?.code === "42P01") return null;
+          throw err;
+        }
+      },
       // As offboarding's: the token row and the issuer's memory of it.
       forgetEnvironment: async (id) => {
         await deleteReportingToken(db, id);

@@ -206,6 +206,7 @@ export function createDumpResolvers(deps: DumpResolverDeps) {
         await authorizeDump(access, { caller: ctx.user?.address ?? null, env });
         if (!env) throw new Error("ENV_NOT_FOUND");
         if (env.status !== "READY") throw new Error("ENV_NOT_READY");
+        if (dump.source === "SWITCHOVER") throw new Error("DUMP_NOT_RESTORABLE");
         if (dump.status !== "READY" || !dump.s3Key) throw new Error("DUMP_NOT_READY");
         if (new Date(dump.expiresAt).getTime() < Date.now()) throw new Error("DUMP_EXPIRED");
         if (await restores.activeForTenant(dump.tenantId)) {

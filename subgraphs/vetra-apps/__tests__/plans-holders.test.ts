@@ -88,6 +88,17 @@ describe("plan holders", () => {
     ]);
   });
 
+  it("does not count a switched-over environment as licensed", async () => {
+    await seedLicence(h, { appId: "app", kind: "pro", holder: A, licenseId: "l1" });
+    await seedLicence(h, { appId: "app", kind: "pro", holder: B, licenseId: "l2" });
+    await seedLicensedEnvironment(h, { appId: "app", root: "l1", switchedOverAt: NOW });
+    await seedLicensedEnvironment(h, { appId: "app", root: "l2" });
+    expect([...(await licensedRoots(lic, "app"))]).toEqual(["l2"]);
+    expect(await hasLicensedEnvironments(lic, "app")).toBe(true);
+    await lic.deleteFrom("license_environments").where("root_license_id", "=", "l2").execute();
+    expect(await hasLicensedEnvironments(lic, "app")).toBe(false);
+  });
+
   it("picks the newest live grant of a chain by created_at, not by insertion order", async () => {
     await seedLicence(h, {
       appId: "app",

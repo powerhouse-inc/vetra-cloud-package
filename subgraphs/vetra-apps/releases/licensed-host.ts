@@ -1,3 +1,4 @@
+import { frozenReasonOf } from "../../vetra-licensing/rollout-db.js";
 import { HOST_ARTIFACT } from "../../vetra-licensing/template.js";
 import type { AppRow } from "../repo.js";
 import { recordAppArtifact, type AppsDeps } from "../service.js";
@@ -62,6 +63,11 @@ export async function recordLicensedHost(
   row: ReleaseRow,
 ): Promise<void> {
   if (!feedsLicensedHost(row)) return;
+  // A switch-over campaign froze the App's licensed releases: its remaining
+  // licensed environments get no new image until it is lifted. Off (null)
+  // unless the switch-over runner set it, so nothing changes without a campaign.
+  if (deps.licensingDb && (await frozenReasonOf(deps.licensingDb, app.id)) !== null)
+    return;
   await recordAppArtifact(
     deps,
     app,

@@ -67,7 +67,7 @@ export async function reconcileArchiveJob(
       );
       return;
     }
-    const key = archiveKey(a.tenantId, a.id);
+    const key = a.s3Key ?? archiveKey(a.tenantId, a.id);
     const size = await i.headSize(key).catch(() => null);
     if (size === null) {
       await i.repo.markFailed(a.id, "the archive is not in the bucket", i.now);

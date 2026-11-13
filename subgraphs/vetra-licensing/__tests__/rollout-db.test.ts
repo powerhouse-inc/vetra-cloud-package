@@ -76,6 +76,7 @@ describe("release settings", () => {
       appId: "a",
       policy: "AUTO",
       defaultNoticeHours: 72,
+      frozenReason: null,
     });
     await store.saveSettings(
       { appId: "a", policy: "GATED", defaultNoticeHours: 0 },
@@ -89,6 +90,7 @@ describe("release settings", () => {
       appId: "a",
       policy: "GATED",
       defaultNoticeHours: 24,
+      frozenReason: null,
     });
     expect(await releasePolicyOf(db, "a")).toBe("GATED");
     expect(await releasePolicyOf(db, "b")).toBe("AUTO");
