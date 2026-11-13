@@ -19,6 +19,7 @@ import {
   type ChainEntry,
   type ChainHead,
 } from "./holders.js";
+import { claimWarmInstance } from "./pool-repo.js";
 import { listPlans, type PlanRow } from "./repo.js";
 
 export const LICENCE_ENDED = "the licence ended";
@@ -153,7 +154,10 @@ export async function syncPlanInstances(
   if (!cfg.enabled || !deps.licensingDb) return;
   const plans = await listPlans(deps.db, app.id);
   const shared = await listInstances(deps.db, app.id, "shared");
-  const own = await listInstances(deps.db, app.id, "own");
+  // Warm-pool rows (slice 8) have no chain: never matched, never "unserved".
+  const own = (await listInstances(deps.db, app.id, "own")).filter(
+    (r) => !r.warm,
+  );
   if (plans.length === 0 && shared.length === 0 && own.length === 0) return;
   const nowIso = deps.now().toISOString();
   const live = await liveChains(deps.licensingDb, app.id, nowIso);
@@ -197,10 +201,22 @@ export async function syncPlanInstances(
     }
     if (!row) {
       if (target) {
-        await insertInstance(
-          deps.db,
-          newRow(deps, app, plan, target, nowIso, head),
-        );
+        // A ready warm instance of the plan first (slice 8); else a cold row.
+        const claimed = await claimWarmInstance(deps.db, {
+          appId: app.id,
+          planId: plan.id,
+          digest: target.target_digest!,
+          targetSize: plan.size,
+          holder: head.address,
+          root: head.root,
+          name: ownInstanceName(head.root),
+          nowIso,
+        });
+        if (!claimed)
+          await insertInstance(
+            deps.db,
+            newRow(deps, app, plan, target, nowIso, head),
+          );
         served.add(head.root);
       }
       continue;
