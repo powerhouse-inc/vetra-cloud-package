@@ -32,9 +32,14 @@ function admitted(job: V1Job): boolean {
   const volumes = pod.volumes ?? [];
   return (
     [undefined, "", "default"].includes(pod.serviceAccountName) &&
-    volumes.length <= 1 &&
+    volumes.filter((v) => v.persistentVolumeClaim).length === 1 &&
     volumes.every(
-      (v) => !!v.persistentVolumeClaim?.claimName.endsWith("-app-data"),
+      (v) =>
+        !!v.persistentVolumeClaim?.claimName.endsWith("-app-data") ||
+        (v.name === "tmp" &&
+          Object.keys(v).length === 2 &&
+          v.emptyDir?.sizeLimit === "20Gi" &&
+          !v.emptyDir.medium),
     ) &&
     !pod.hostPID &&
     !pod.hostNetwork &&
@@ -46,7 +51,7 @@ function admitted(job: V1Job): boolean {
       (c) =>
         c.image!.startsWith("cr.vetra.io/") &&
         (c.volumeMounts ?? []).every(
-          (m) => m.mountPath === "/data" && !m.subPath,
+          (m) => ["/data", "/tmp"].includes(m.mountPath) && !m.subPath,
         ) &&
         !c.securityContext?.privileged &&
         !c.securityContext?.allowPrivilegeEscalation &&
@@ -90,9 +95,11 @@ describe("the /data archive Job", () => {
           readOnly: true,
         },
       },
+      { name: "tmp", emptyDir: { sizeLimit: "20Gi" } },
     ]);
     expect(pod.containers[0].volumeMounts).toEqual([
       { name: "app-data", mountPath: "/data", readOnly: true },
+      { name: "tmp", mountPath: "/tmp" },
     ]);
     expect(
       pod.affinity?.podAffinity
@@ -121,6 +128,13 @@ describe("the /data archive Job", () => {
 });
 
 describe("the /data restore Job", () => {
+  it("refuses an archive larger than the /tmp limit before downloading it", () => {
+    const sizeCheck = DATA_RESTORE_SCRIPT.indexOf("larger than the 20Gi /tmp limit");
+    expect(sizeCheck).toBeGreaterThan(-1);
+    expect(sizeCheck).toBeLessThan(DATA_RESTORE_SCRIPT.indexOf(" cat "));
+    expect(DATA_RESTORE_SCRIPT).toContain("21474836480");
+  });
+
   it("checks the checksum before it empties /data, mounts it read-write, and is not a dump or archive Job", () => {
     const job = buildDataRestoreJob({
       ...base,
@@ -137,6 +151,16 @@ describe("the /data restore Job", () => {
     const pod = job.spec!.template.spec!;
     expect(pod.volumes![0].persistentVolumeClaim!.readOnly).toBe(false);
     expect(pod.containers[0].volumeMounts![0].readOnly).toBe(false);
+    expect(pod.volumes).toHaveLength(2);
+    expect(pod.volumes![1]).toEqual({
+      name: "tmp",
+      emptyDir: { sizeLimit: "20Gi" },
+    });
+    expect(pod.containers[0].volumeMounts).toContainEqual({
+      name: "tmp",
+      mountPath: "/tmp",
+    });
+    expect(admitted(job)).toBe(true);
     expect(pod.affinity).toBeUndefined();
     expect(env(job)).toMatchObject({
       S3_KEY: "calm-bat-t1/data/abc123.tar.zst",
@@ -149,10 +173,10 @@ describe("the /data restore Job", () => {
   });
 
   it("downloads the archive once and extracts the very file it verified", () => {
-    expect(DATA_RESTORE_SCRIPT.match(/s5cmd/g)).toHaveLength(1);
+    expect(DATA_RESTORE_SCRIPT.match(/s5cmd [^\n]* cat /g)).toHaveLength(1);
     const lines = DATA_RESTORE_SCRIPT.split("\n");
     const at = (needle: string) => lines.findIndex((l) => l.includes(needle));
-    expect(at("s5cmd")).toBeLessThan(at("sha256sum"));
+    expect(at(" cat ")).toBeLessThan(at("sha256sum"));
     expect(at("checksum mismatch")).toBeLessThan(at("rm -rf"));
     expect(at("rm -rf")).toBeLessThan(at("tar --no-same-owner"));
     expect(lines[at("zstd -q -d")]).toContain('"$FILE"');

@@ -32,6 +32,10 @@ export type BuildDataRestoreJobInput = DataJobInput & {
   sha256: string;
 };
 
+/** The one scratch volume the admission policy allows: a disk emptyDir <= 20Gi at /tmp. */
+export const TMP_SIZE_LIMIT = "20Gi";
+const TMP_LIMIT_BYTES = 20 * 1024 ** 3;
+
 /** Restore Jobs: kept a day after they end (a missing Job is an unknown outcome). */
 export const RESTORE_JOB_TTL_S = 24 * 3600;
 
@@ -70,6 +74,10 @@ export const DATA_RESTORE_SCRIPT = [
   REQUIRE_GNU_TAR,
   'FILE=/tmp/archive.tar.zst',
   'trap \'rm -f "$FILE"\' EXIT',
+  // Fail clearly, before downloading, when the archive cannot fit in /tmp.
+  's5cmd --endpoint-url "$S3_ENDPOINT" ls "s3://$S3_BUCKET/$S3_KEY" > /tmp/ls.out',
+  `SIZE=$(awk 'NR==1 {print $3}' /tmp/ls.out)`,
+  `if [ -n "$SIZE" ] && [ "$SIZE" -gt ${TMP_LIMIT_BYTES} ]; then echo "archive is $SIZE bytes, larger than the ${TMP_SIZE_LIMIT} /tmp limit"; exit 1; fi`,
   // One download: the bytes checked are the bytes extracted.
   's5cmd --endpoint-url "$S3_ENDPOINT" cat "s3://$S3_BUCKET/$S3_KEY" > "$FILE"',
   'GOT=$(sha256sum "$FILE" | cut -d" " -f1)',
@@ -148,6 +156,7 @@ function dataJob(o: {
                 readOnly: o.readOnly,
               },
             },
+            { name: "tmp", emptyDir: { sizeLimit: TMP_SIZE_LIMIT } },
           ],
           containers: [
             {
@@ -158,6 +167,7 @@ function dataJob(o: {
               env: o.env,
               volumeMounts: [
                 { name: "app-data", mountPath: "/data", readOnly: o.readOnly },
+                { name: "tmp", mountPath: "/tmp" },
               ],
               securityContext: { allowPrivilegeEscalation: false },
               resources: {
