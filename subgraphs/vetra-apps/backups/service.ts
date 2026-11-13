@@ -14,6 +14,7 @@ import type { InstanceRow } from "../instances/repo.js";
 import type { AppsDeps } from "../service.js";
 import { APP_SELECTOR } from "./k8s.js";
 import {
+  lastBackupOf,
   insertBackup,
   pendingBackupsOfApp,
   updateBackup,
@@ -217,13 +218,9 @@ export async function advanceBackups(
 }
 
 /**
- * TODO(releases phase 3 slice 4, decision B9): the final backup before Vetra
- * stops a plan instance (licence ended, plan retired). A hook only: nothing
- * calls it yet. The stop path (instances/reconciler.ts stopPlanInstance) is
- * being reworked on fix/environment-hold ("stopped environments keep their
- * database"); wire it there once that lands, deciding how long the stop
- * waits for the backup (the plan's preStopGate: a pre_stop backup within the
- * last day decides, pending waits, ready or failed goes).
+ * The final backup before Vetra stops a plan instance (licence ended, plan
+ * retired; decision B9). Called by the stop path (instances/reconciler.ts
+ * stopPlanInstance) through preStopGate.
  *
  * Behind VETRA_APPS_BACKUPS: off (or not configured) is a no-op returning
  * null. On: starts a pre_stop backup and returns its id; throws
@@ -240,4 +237,33 @@ export async function beforePlanInstanceStop(
     requestedBy: AUDIT_SYSTEM_ACTOR,
   });
   return b.id;
+}
+
+/**
+ * The stop path's question before it holds a plan instance: "wait" while its
+ * final backup runs (or cannot start yet because another backup does), "go"
+ * otherwise. A pre_stop backup of the last day decides: pending waits, ready
+ * or failed goes (the hold keeps the database and /data anyway; the backup
+ * is the extra copy, never a reason to keep running an instance whose
+ * licence ended). Backups off or not possible for this instance: "go".
+ */
+export async function preStopGate(
+  deps: AppsDeps,
+  instance: InstanceRow,
+): Promise<"wait" | "go"> {
+  if (!backupsConfigOf(deps.cfg).enabled || !deps.backups) return "go";
+  const last = await lastBackupOf(deps.db, instance.id, "pre_stop");
+  if (
+    last &&
+    deps.now().getTime() - Date.parse(last.created_at) < DAY_MS
+  )
+    return last.status === "pending" ? "wait" : "go";
+  try {
+    await beforePlanInstanceStop(deps, instance);
+    return "wait";
+  } catch (err) {
+    if (err instanceof BackupBusyError) return "wait";
+    if (err instanceof BackupUnavailableError) return "go";
+    throw err;
+  }
 }

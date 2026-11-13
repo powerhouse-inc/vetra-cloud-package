@@ -38,7 +38,7 @@ import {
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
 import { advanceRestores } from "../backups/restore.js";
-import { advanceBackups } from "../backups/service.js";
+import { advanceBackups, preStopGate } from "../backups/service.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
 import { getHold } from "../holds/repo.js";
@@ -352,6 +352,16 @@ async function tenantOf(
   );
 }
 
+async function heldAlready(deps: AppsDeps, envId: string): Promise<boolean> {
+  try {
+    return !!(await getHold(deps.db, envId));
+  } catch (err) {
+    // The holds table does not exist yet (vetra-apps creates it): nothing is held.
+    if ((err as { code?: unknown } | null)?.code === "42P01") return false;
+    throw err;
+  }
+}
+
 /**
  * A plan instance Vetra wants stopped (licence ended, plan retired): its
  * environment is held (no app pod, no ingress; its database, backups and
@@ -387,6 +397,15 @@ async function stopPlanInstance(
           ...(row.status !== "stopped" ? { stopped_by_vetra: true } : {}),
         });
       return;
+    }
+    // Decision B9: a final backup before the first hold (while the app still
+    // runs; once held it only waits for its pod to go).
+    if (state.status === "READY" && !(await heldAlready(deps, envId))) {
+      if ((await preStopGate(deps, row)) === "wait") {
+        const waiting = `${reason}: taking a final backup before it stops`;
+        if (row.reason !== waiting) await patch(deps, row, { reason: waiting });
+        return;
+      }
     }
     // Recorded before holding: a crash in between must not leave a hold that
     // a renewal never releases.
