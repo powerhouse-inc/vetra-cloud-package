@@ -158,6 +158,11 @@ export function settingsForInstance(
     } else plain.set(r.name, r.value ?? "");
   }
 
+  // Vetra's own secrets win over any setting of the same name.
+  for (const n of vetraSecrets) {
+    plain.delete(n);
+    secrets.delete(n);
+  }
   const layers: Omit<InstanceSettings, "revision"> = {
     plain: [...plain].map(([name, value]) => ({ name, value })).sort(byName),
     secrets: [...secrets.values()].sort(byName),

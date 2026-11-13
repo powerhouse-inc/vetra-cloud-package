@@ -98,6 +98,12 @@ export const RESERVED_SETTING_NAMES: ReadonlySet<string> = new Set([
   ...VETRA_SETTINGS.map((s) => s.name),
   ...ALSO_RESERVED,
 ]);
+/**
+ * Names Vetra writes on plan instances (AI key; the VETRA_ ones are reserved
+ * by prefix): refused for holders, always, so a holder can never shadow them.
+ */
+export const HOLDER_RESERVED_NAMES: readonly string[] = ["OPENROUTER_API_KEY"];
+
 export const RESERVED_PREFIXES: readonly string[] = [
   "VETRA_",
   "NODE_",

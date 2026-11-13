@@ -277,6 +277,8 @@ export interface PlansTable {
   access: PlanAccess;
   /** VETRA_AGENT_S … VETRA_AGENT_XXL: the FUSION size of every instance of the plan. */
   size: string;
+  /** Monthly AI budget (USD) of every instance's own key; null: no AI key (plan 7 Task 10). */
+  ai_budget_usd?: number | null;
   /** A recorded release of the App (never a build); null: no instances yet. */
   target_version: string | null;
   /** manual | patches | minor | follow:<branch>. Stored; rollouts (slice 3) act on it. */

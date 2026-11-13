@@ -16,6 +16,7 @@ import {
 import {
   checkPlanSlug,
   parseAccess,
+  parseAiBudget,
   parseSize,
   slugFromKind,
 } from "./rules.js";
@@ -28,6 +29,7 @@ export interface PlanJson {
   kind: string;
   access: string;
   size: string;
+  aiBudgetUsd: number | null;
   targetVersion: string | null;
   policy: string;
   noticeHours: number;
@@ -44,6 +46,7 @@ export const planJson = (p: PlanRow): PlanJson => ({
   kind: p.kind,
   access: p.access,
   size: p.size,
+  aiBudgetUsd: p.ai_budget_usd ?? null,
   targetVersion: p.target_version,
   policy: p.policy,
   noticeHours: p.notice_hours,
@@ -59,6 +62,7 @@ export interface CreatePlanInput {
   slug?: string | null;
   name?: string | null;
   size?: string | null;
+  aiBudgetUsd?: number | null;
   targetVersion?: string | null;
 }
 
@@ -81,6 +85,8 @@ export interface UpdatePlanInput {
   planId: string;
   name?: string | null;
   size?: string | null;
+  /** null clears; absent leaves it */
+  aiBudgetUsd?: number | null;
 }
 
 /** A plan's target is a recorded release of its App, never a build (spec section 2). */
@@ -140,6 +146,8 @@ export async function createPlan(
   const name = checkText("name", input.name?.trim() || kind);
   const access = parseAccess(input.access);
   const size = parseSize(input.size);
+  const aiBudget =
+    input.aiBudgetUsd == null ? null : parseAiBudget(input.aiBudgetUsd);
   const given = input.slug?.trim();
   const slug = given || slugFromKind(kind);
   checkPlanSlug(slug, app, given ? {} : { derivedFrom: kind });
@@ -194,6 +202,7 @@ export async function createPlan(
         kind,
         access,
         size,
+        ai_budget_usd: aiBudget,
         target_version: target,
         policy: "manual",
         notice_hours: 72,
@@ -213,6 +222,7 @@ export async function createPlan(
           kind: p.kind,
           access: p.access,
           size: p.size,
+          aiBudgetUsd: p.ai_budget_usd ?? null,
           targetVersion: p.target_version,
         },
       });
@@ -243,17 +253,31 @@ export async function updatePlanFor(
   const patch = {
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
+    ...(input.aiBudgetUsd === undefined
+      ? {}
+      : {
+          ai_budget_usd:
+            input.aiBudgetUsd === null ? null : parseAiBudget(input.aiBudgetUsd),
+        }),
   };
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
       // Re-read under lock: a concurrent change is audited once, from what is stored.
       const cur = await lockPlan(trx, plan.id);
-      const changes: Record<string, { from: string; to: string }> = {};
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
       if (patch.name !== undefined && patch.name !== cur.name)
         changes.name = { from: cur.name, to: patch.name };
       if (patch.size !== undefined && patch.size !== cur.size)
         changes.size = { from: cur.size, to: patch.size };
+      if (
+        patch.ai_budget_usd !== undefined &&
+        patch.ai_budget_usd !== (cur.ai_budget_usd ?? null)
+      )
+        changes.aiBudgetUsd = {
+          from: cur.ai_budget_usd ?? null,
+          to: patch.ai_budget_usd,
+        };
       const p = await updatePlan(trx, plan.id, patch, nowIso);
       if (Object.keys(changes).length > 0)
         await auditCaller(trx, caller, {

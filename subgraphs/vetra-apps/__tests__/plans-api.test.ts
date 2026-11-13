@@ -71,6 +71,36 @@ describe("plans API", () => {
     ]);
   });
 
+  it("takes an AI budget on create and update (cents, 0 < x <= 1000, null clears) and audits the change", async () => {
+    const p = await createPlan(h.deps, owner, {
+      appId,
+      kind: "pro",
+      access: "own",
+      aiBudgetUsd: 25.456,
+    });
+    expect(p.aiBudgetUsd).toBe(25.46);
+    for (const bad of [0, -1, 1000.5, Number.NaN])
+      await expect(
+        updatePlanFor(h.deps, owner, { planId: p.id, aiBudgetUsd: bad }),
+      ).rejects.toMatchObject(code("BAD_USER_INPUT"));
+    expect(
+      (await updatePlanFor(h.deps, owner, { planId: p.id, aiBudgetUsd: 40 }))
+        .aiBudgetUsd,
+    ).toBe(40);
+    expect(
+      (await updatePlanFor(h.deps, owner, { planId: p.id, name: "Pro 2" }))
+        .aiBudgetUsd,
+    ).toBe(40);
+    expect(
+      (await updatePlanFor(h.deps, owner, { planId: p.id, aiBudgetUsd: null }))
+        .aiBudgetUsd,
+    ).toBeNull();
+    const log = JSON.stringify(
+      await h.db.selectFrom("app_audit").selectAll().execute(),
+    );
+    expect(log).toContain("aiBudgetUsd");
+  });
+
   it("is for the App's operators only", async () => {
     await expect(
       createPlan(h.deps, stranger, { appId, kind: "pro", access: "own" }),

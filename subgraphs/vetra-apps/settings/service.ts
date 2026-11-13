@@ -2,6 +2,8 @@ import { auditCaller } from "../audit/service.js";
 import type { Caller } from "../auth.js";
 import type { AppSettingScope } from "../db/schema.js";
 import { appsError, notConfigured } from "../errors.js";
+import { AI_KEY_SECRET } from "../instances/vetra-secrets.js";
+import { listPlans } from "../plans/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import {
   checkFileValue,
@@ -98,10 +100,14 @@ function scopeOf(s: AppSettingScopeName | null | undefined): AppSettingScope {
  * the budget). None yet.
  */
 export async function planReservedNames(
-  _deps: AppsDeps,
-  _appId: string,
+  deps: AppsDeps,
+  appId: string,
 ): Promise<string[]> {
-  return [];
+  // H7: the AI key is Vetra's while an active plan of the App has a budget.
+  const budgeted = (await listPlans(deps.db, appId)).some(
+    (p) => p.status === "active" && (p.ai_budget_usd ?? 0) > 0,
+  );
+  return budgeted ? [AI_KEY_SECRET] : [];
 }
 
 /**

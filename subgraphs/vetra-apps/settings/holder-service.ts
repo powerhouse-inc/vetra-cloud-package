@@ -17,6 +17,7 @@ import {
   type InstanceSettingRow,
 } from "./holder-repo.js";
 import {
+  HOLDER_RESERVED_NAMES,
   checkFileValue,
   checkMountPath,
   fileKey,
@@ -115,6 +116,8 @@ async function prepareRow(
   } else {
     if (!name) throw new SettingInputError("A setting needs a name");
     checkSettingName(name);
+    if (HOLDER_RESERVED_NAMES.includes(name))
+      throw new SettingInputError(`"${name}" is set by Vetra on this instance`);
     checkSettingValue(name, input.value, kind !== "plain");
   }
   let ciphertext: string | null = null;
@@ -204,7 +207,9 @@ export async function myInstanceSettingsFor(
       ...publisher.plain.map((p) => p.name),
       ...publisher.secrets.map((s) => s.name),
     ].sort(),
-    reservedNames: [...RESERVED_SETTING_NAMES].sort(),
+    reservedNames: [
+      ...new Set([...RESERVED_SETTING_NAMES, ...HOLDER_RESERVED_NAMES]),
+    ].sort(),
     reservedPrefixes: [...RESERVED_PREFIXES],
   };
 }

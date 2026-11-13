@@ -139,6 +139,19 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstanceSettingsTable(db);
   await ensureInstanceDomainColumns(db);
   await ensureSettingsMountPath(db);
+  await ensurePlanAiBudget(db);
+}
+
+/** The AI budget of a plan's instances (plan 7 Task 10). */
+export async function ensurePlanAiBudget(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("ai_budget_usd", "double precision", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
 }
 
 /** Publisher file settings (plan 7 Task 9): where a file row is mounted. */

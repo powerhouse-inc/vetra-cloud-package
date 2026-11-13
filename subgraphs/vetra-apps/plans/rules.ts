@@ -31,6 +31,16 @@ export function parseSize(v?: string | null): PlanSize {
   return found;
 }
 
+/** An AI budget: a positive amount up to 1000 USD a month, in cents. */
+export function parseAiBudget(v: number): number {
+  if (!Number.isFinite(v) || v <= 0 || v > 1000)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "The AI budget is more than 0 and at most 1000 USD a month",
+    );
+  return Math.round(v * 100) / 100;
+}
+
 const SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 /**
  * The longest plan slug. It names the shared instance, whose host label

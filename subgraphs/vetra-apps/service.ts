@@ -81,6 +81,7 @@ import {
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import type { HttpProbe } from "./instances/probe.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import type { LlmBroker } from "../vetra-llm/broker.js";
 import type { SettingsVault } from "./settings/vault.js";
 import { deleteAppSettings } from "./settings/repo.js";
 import {
@@ -193,6 +194,8 @@ export interface AppsDeps {
   settingsVault?: SettingsVault | null;
   /** Holder secrets at rest (transit pseudo-tenant `instance-settings`). Null/absent: holder secrets are refused (SERVICE_NOT_CONFIGURED). */
   holderVault?: SettingsVault | null;
+  /** The AI key broker for plan instances (plan 7 Task 10). Null/absent (no OPENROUTER_MANAGEMENT_KEY): plan instances run keyless. */
+  llm?: Pick<LlmBroker, "provisionVetraKey" | "releaseVetraKey"> | null;
   /** Licensing's tables (licences of plans' kinds, licensed environments). Null/absent: plans have no holders and cannot be created. */
   licensingDb?: Kysely<VetraLicensingDB> | null;
   /**

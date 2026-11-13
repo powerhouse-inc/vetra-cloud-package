@@ -41,6 +41,11 @@ import {
   type InstanceImage,
 } from "./render.js";
 import { appliedDomainOf } from "../domains/service.js";
+import {
+  ensureInstanceVetraSecrets,
+  vetraSecretsOf,
+} from "./vetra-secrets.js";
+import { getPlan, listPlans } from "../plans/repo.js";
 import { deliverSettings } from "../settings/deliver.js";
 import { listAppSettings } from "../settings/repo.js";
 import {
@@ -231,6 +236,9 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   // own instances add their holder's (one query for all of them).
   const settingRows = await listAppSettings(deps.db, app.id);
   const rows = await listInstances(deps.db, app.id);
+  const planRows = new Map(
+    (await listPlans(deps.db, app.id)).map((p) => [p.id, p]),
+  );
   const holderRows = await listInstanceSettings(
     deps.db,
     rows.filter((r) => r.kind === "own").map((r) => r.id),
@@ -249,7 +257,11 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
           settingRows,
           holderRows.get(row.id) ?? [],
           row.kind,
-          vetraSecretsOf(app, row),
+          vetraSecretsOf(
+            deps,
+            row,
+            row.plan_id ? (planRows.get(row.plan_id) ?? null) : null,
+          ),
         ),
       );
     } catch (err) {
@@ -299,13 +311,6 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
 
-/**
- * Secret names Vetra writes to an instance's tenant by other paths (the AI
- * key and the reporting token, plan 7 Tasks 10-11). None yet.
- */
-export function vetraSecretsOf(_app: AppRow, _row: InstanceRow): string[] {
-  return [];
-}
 
 /** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
 export function adminsOf(app: AppRow, row: InstanceRow): string {
@@ -879,6 +884,15 @@ async function reconcileEnvironment(
         tenantId,
         settings,
         [...declaredSecretNames(state), ...declaredFileKeys(state)],
+      );
+      // The AI key (and reporting token) are Vetra's own, written after the
+      // settings and before the first start.
+      await ensureInstanceVetraSecrets(
+        deps,
+        app,
+        row,
+        row.plan_id ? await getPlan(deps.db, row.plan_id) : null,
+        tenantId,
       );
     } catch (err) {
       // Retried each pass (no failed target); the row changes only when the reason does.

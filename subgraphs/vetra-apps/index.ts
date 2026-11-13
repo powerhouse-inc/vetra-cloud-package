@@ -80,6 +80,14 @@ import {
 import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
 import { environmentConnections } from "../vetra-github-auth/db/installations.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
+import { createLlmBroker } from "../vetra-llm/broker.js";
+import { loadLlmConfig } from "../vetra-llm/config.js";
+import { up as ensureLlmTables } from "../vetra-llm/db/migrations.js";
+import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
+import { createOpenRouterApi } from "../vetra-llm/openrouter.js";
+import { createLlmKeyStore } from "../vetra-llm/store.js";
+import { createKeyVault } from "../vetra-licensing/key-vault.js";
+import { planBudgetOf } from "./instances/vetra-secrets.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -214,7 +222,40 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     const licensingDb = (await this.relationalDb.createNamespace(
       "vetra-licensing",
     )) as unknown as Kysely<VetraLicensingDB>;
+    // The AI key of plan instances (plan 7 Task 10). Without
+    // OPENROUTER_MANAGEMENT_KEY (or OpenBao) plan instances run keyless.
+    let llm: AppsDeps["llm"] = null;
+    const llmCfg = loadLlmConfig(process.env);
+    if (plansConfigOf(cfg).enabled && llmCfg.managementKey && transit) {
+      try {
+        const llmDb = (await this.relationalDb.createNamespace(
+          "vetra-llm",
+        )) as unknown as Kysely<VetraLlmDB>;
+        await ensureLlmTables(llmDb as Kysely<any>);
+        llm = createLlmBroker({
+          store: createLlmKeyStore(llmDb),
+          openrouter: createOpenRouterApi({
+            managementKey: llmCfg.managementKey,
+            baseUrl: llmCfg.baseUrl,
+          }),
+          keyVault: createKeyVault(transit),
+          secrets: tenantSecrets,
+          // Instance keys answer to their plan alone, never a Studio licence.
+          budgetForDid: async () => ({ allowed: false, budgetUsd: 0 }),
+          budgetOverride: async () => null,
+          planBudget: planBudgetOf(db),
+          cfg: llmCfg,
+          now: () => new Date(),
+          logger: console,
+        });
+      } catch (err) {
+        console.warn(
+          `[vetra-apps] AI keys of plan instances unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     const deps: AppsDeps = {
+      llm,
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
       cfg,

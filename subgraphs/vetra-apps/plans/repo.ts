@@ -1,7 +1,10 @@
 import type { Kysely, Selectable } from "kysely";
 import type { PlansTable, VetraAppsDB } from "../db/schema.js";
 
-export type PlanRow = Selectable<PlansTable>;
+/** ai_budget_usd stays optional: rows built by hand leave it out (no AI key). */
+export type PlanRow = Omit<Selectable<PlansTable>, "ai_budget_usd"> & {
+  ai_budget_usd?: number | null;
+};
 export type PlanPatch = Partial<
   Omit<PlanRow, "id" | "app_id" | "kind" | "created_at" | "created_by">
 >;

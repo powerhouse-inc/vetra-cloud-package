@@ -151,6 +151,8 @@ export const schema: DocumentNode = gql`
     access: String!
     "VETRA_AGENT_S … VETRA_AGENT_XXL"
     size: String!
+    "Monthly AI budget in USD of every instance's own key; null: no AI key"
+    aiBudgetUsd: Float
     targetVersion: String
     "manual (rollouts arrive later)"
     policy: String!
@@ -249,6 +251,8 @@ export const schema: DocumentNode = gql`
     slug: String
     name: String
     size: String
+    "Monthly AI budget in USD (0 < x <= 1000)"
+    aiBudgetUsd: Float
     "A recorded release of the App"
     targetVersion: String
   }
@@ -257,6 +261,8 @@ export const schema: DocumentNode = gql`
     planId: ID!
     name: String
     size: String
+    "Monthly AI budget in USD; null removes it"
+    aiBudgetUsd: Float
   }
 
   "Who did what to an App, when and from where (spec: releases and instances, section 10). Kept one year."
