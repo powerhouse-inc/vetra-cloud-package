@@ -35,6 +35,9 @@ const set = (o: Partial<Parameters<typeof setAppSetting>[2]> = {}) =>
     ...o,
   });
 
+// File settings need the chart support flag (E1).
+process.env.FUSION_SECRET_FILES = "on";
+
 describe("publisher settings", () => {
   it("stores a plain setting and shows its value", async () => {
     expect(await set()).toMatchObject({

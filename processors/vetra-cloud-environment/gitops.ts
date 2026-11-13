@@ -1186,7 +1186,7 @@ function hostBlock(preview: boolean): string {
 /** The plain FUSION env entry Vetra Apps lists file mounts in: JSON [{key, mountPath}]. */
 export const VETRA_FILES_ENV = "VETRA_FILES";
 const FILE_KEY = /^FILE_[0-9A-F]{16}$/;
-const FILE_FORBIDDEN_ROOTS = ["/data", "/app", "/proc", "/sys", "/etc", "/var", "/dev", "/run", "/tmp"];
+const FILE_FORBIDDEN_ROOTS = ["/data", "/app", "/proc", "/sys", "/etc", "/var", "/dev", "/run", "/tmp", "/usr", "/bin", "/lib", "/root", "/home", "/opt"];
 
 /** Whether the chart renders `app.secretFiles` (powerhouse-chart E1 deployed). */
 const secretFilesSupported = () =>

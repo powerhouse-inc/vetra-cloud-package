@@ -127,7 +127,22 @@ const FORBIDDEN_ROOTS = [
   "/dev",
   "/run",
   "/tmp",
+  "/usr",
+  "/bin",
+  "/lib",
+  "/root",
+  "/home",
+  "/opt",
 ];
+
+/**
+ * Whether the chart mounts secret files (powerhouse-chart E1 deployed and
+ * FUSION_SECRET_FILES=on, read the same way as the gitops processor).
+ */
+export const secretFilesSupported = (env: NodeJS.ProcessEnv = process.env) =>
+  ["on", "true", "1", "yes"].includes(
+    (env.FUSION_SECRET_FILES ?? "").trim().toLowerCase(),
+  );
 
 /** Tenant secret key of a file: FILE_<16 hex of sha256(mountPath)>. */
 export const fileKey = (mountPath: string) =>
@@ -135,6 +150,10 @@ export const fileKey = (mountPath: string) =>
 
 /** Absolute, normalised (no //, ., ..), at most 512 characters of [A-Za-z0-9._/-], not "/" and not under a system directory. */
 export function checkMountPath(p: string): void {
+  if (!secretFilesSupported())
+    throw new SettingInputError(
+      "Files are not supported yet: this Vetra deployment does not mount secret files",
+    );
   if (!p.startsWith("/") || p === "/" || p.endsWith("/"))
     throw new SettingInputError(
       "A mount path is an absolute file path, such as /client_secret.json",

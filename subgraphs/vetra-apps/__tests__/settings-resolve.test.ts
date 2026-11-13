@@ -33,6 +33,9 @@ const row = (o: Partial<AppSettingRow>): AppSettingRow => ({
   ...o,
 });
 
+// File settings need the chart support flag (E1).
+process.env.FUSION_SECRET_FILES = "on";
+
 describe("file mount paths (plan 7 Task 9)", () => {
   it.each(["/client_secret_sektar-web-app.json", "/config/oauth/client.json"])(
     "accepts %s",

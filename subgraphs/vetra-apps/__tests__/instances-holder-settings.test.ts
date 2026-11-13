@@ -100,6 +100,9 @@ const hset = async (name: string, value: string, kind: "PLAIN" | "SECRET") =>
     kind,
   });
 
+// File settings need the chart support flag (E1).
+process.env.FUSION_SECRET_FILES = "on";
+
 describe("holder settings on the instance", () => {
   it("delivers a holder secret, declares it, rolls the revision, then ready", async () => {
     const before = await own();
@@ -326,5 +329,42 @@ describe("file settings on the instance (plan 7 Task 9)", () => {
     if (!b?.environment_id) return;
     const e = (await h.envs.getState(b.environment_id))!;
     expect(e.fusion!.env.some((x) => x.name === "VETRA_FILES")).toBe(false);
+  });
+});
+
+describe("files are refused without the chart flag (review I2)", () => {
+  it("publisher and holder file settings fail until FUSION_SECRET_FILES is on", async () => {
+    const prev = process.env.FUSION_SECRET_FILES;
+    process.env.FUSION_SECRET_FILES = "";
+    try {
+      await expect(
+        setAppSetting(h.deps, owner, {
+          appId,
+          value: "x",
+          secret: true,
+          scope: "PLAN",
+          mountPath: "/f.json",
+        }),
+      ).rejects.toThrow(/not supported/);
+      await expect(
+        setMyInstanceSetting(h.deps, holder, {
+          instanceId: (await own()).id,
+          kind: "FILE",
+          value: "x",
+          mountPath: "/f.json",
+        }),
+      ).rejects.toThrow(/not supported/);
+      process.env.FUSION_SECRET_FILES = "on";
+      await expect(
+        setMyInstanceSetting(h.deps, holder, {
+          instanceId: (await own()).id,
+          kind: "FILE",
+          value: "x",
+          mountPath: "/opt/app/f.json",
+        }),
+      ).rejects.toThrow(/cannot be mounted under \/opt/);
+    } finally {
+      process.env.FUSION_SECRET_FILES = prev;
+    }
   });
 });
