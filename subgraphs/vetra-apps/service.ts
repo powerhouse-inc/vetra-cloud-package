@@ -81,6 +81,8 @@ import {
 import type { ObservabilityDB } from "../vetra-cloud-observability/db/schema.js";
 import type { HttpProbe } from "./instances/probe.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
+import { liveChains } from "./plans/holders.js";
+import { listPlans } from "./plans/repo.js";
 import type { LlmBroker } from "../vetra-llm/broker.js";
 import type { SettingsVault } from "./settings/vault.js";
 import { deleteAppSettings } from "./settings/repo.js";
@@ -3035,6 +3037,46 @@ export async function deletePreviewsOfApp(
  * stays up. CI is cut off: the Harbor robot and the Renown workload identity
  * are deleted.
  */
+/**
+ * Interim guard (plan 7 Task 13): deleting an App deletes the settings its
+ * plan instances run on, so it is refused while customers have instances (or
+ * live licences of a plan's kind that will get one). Scheduled deletion with
+ * notice replaces this (PR B).
+ */
+async function assertNoCustomerInstances(
+  deps: AppsDeps,
+  appId: string,
+): Promise<void> {
+  const count = Number(
+    (
+      await deps.db
+        .selectFrom("instances")
+        .select((eb) => eb.fn.countAll().as("n"))
+        .where("app_id", "=", appId)
+        .where("kind", "in", ["shared", "own"])
+        .where("status", "!=", "removed")
+        .executeTakeFirstOrThrow()
+    ).n,
+  );
+  let waiting = 0;
+  if (count === 0 && deps.licensingDb) {
+    const kinds = new Set(
+      (await listPlans(deps.db, appId)).map((p) => p.kind),
+    );
+    if (kinds.size > 0)
+      for (const c of (
+        await liveChains(deps.licensingDb, appId, deps.now().toISOString())
+      ).values())
+        if (c.kind !== null && kinds.has(c.kind)) waiting += 1;
+  }
+  const n = count + waiting;
+  if (n > 0)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `This App runs ${n} customer ${n === 1 ? "instance" : "instances"} (plans). Retire its plans and wait until its holders' instances have ended, or contact Vetra`,
+    );
+}
+
 export async function deleteApp(
   deps: AppsDeps,
   caller: Caller,
@@ -3042,6 +3084,7 @@ export async function deleteApp(
   deleteEnvironments: boolean,
 ): Promise<boolean> {
   const app = await loadAppForOwner(deps, caller, appId);
+  await assertNoCustomerInstances(deps, app.id);
   await deletePreviewsOfApp(deps, app, "app deleted", { strict: true });
   if (deleteEnvironments) {
     const prod = await deps.envs.getState(app.production_environment_id);
