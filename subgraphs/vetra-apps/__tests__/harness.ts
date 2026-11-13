@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -685,6 +686,12 @@ export function fakeTenantSecrets() {
     },
     async notifyTenant(tenantId: string) {
       notified.push(tenantId);
+    },
+    async secretFingerprint(tenantId: string, key: string) {
+      const v = of(tenantId).get(key);
+      return v === undefined
+        ? null
+        : createHash("sha256").update(v).digest("hex");
     },
     async purgeTenant(tenantId: string) {
       purged.push(tenantId);

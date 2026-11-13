@@ -27,6 +27,8 @@ export interface BackupK8s extends RestoreK8s {
    * exists before anything is restored into it). Absent: not asked.
    */
   dataPvcBound?(namespace: string): Promise<boolean>;
+  /** The tenant's CNPG primary pod is Ready (switch-over: the new instance's database exists before the copy). Absent: not asked. */
+  databaseReady?(namespace: string): Promise<boolean>;
 }
 
 export interface DumpJobConfig {
@@ -81,6 +83,19 @@ export async function createDefaultBackupK8s(): Promise<BackupK8s> {
         (p) =>
           (p.metadata?.name ?? "").endsWith("-app-data") &&
           p.status?.phase === "Bound",
+      );
+    },
+    async databaseReady(namespace) {
+      const res = await core.listNamespacedPod({
+        namespace,
+        labelSelector: `cnpg.io/cluster=${namespace}-pg,cnpg.io/instanceRole=primary`,
+      });
+      return res.items.some(
+        (p) =>
+          p.status?.phase === "Running" &&
+          (p.status.conditions ?? []).some(
+            (c) => c.type === "Ready" && c.status === "True",
+          ),
       );
     },
     async deploymentImages(namespace, labelSelector) {

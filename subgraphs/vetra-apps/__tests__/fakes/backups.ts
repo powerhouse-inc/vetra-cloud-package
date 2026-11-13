@@ -7,7 +7,7 @@ import type { JobState, SwitchoverBackups } from "../../switchover/backups.js";
 import { BackupBusyError } from "../../backups/service.js";
 
 type Phase = JobState["status"];
-interface Job {
+export interface Job {
   id: string;
   tenant: string;
   key: string;

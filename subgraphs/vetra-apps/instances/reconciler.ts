@@ -45,6 +45,7 @@ import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
 import { getHold } from "../holds/repo.js";
+import { switchoverMayStart } from "../switchover/guard.js";
 import {
   appPodGone,
   holdEnvironment,
@@ -305,9 +306,10 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
   for (const row of rows) {
     if (isPlanKind(row.kind) && !plans.enabled) continue;
-    // A switch-over owns the instance until it links it (plan 9): it creates,
-    // starts, holds and stops its environment itself.
-    if (row.switchover_id) continue;
+    // A switch-over owns the instance until it links it (plan 9): the
+    // reconciler creates its environment (never started) and, once the
+    // switch-over's guard allows it (reconcileEnvironment), delivers its
+    // settings and sets its version; everything else is the switch-over's.
     try {
       let settings = settingsForInstance(
         settingRows,
@@ -389,6 +391,8 @@ export function adminsOf(
   if (row.warm) return "";
   if (opts.team) return validTeamAdmins(app, row, opts.now ?? new Date()) ?? "";
   if (row.admins_override) return row.admins_override;
+  // A dry run's clone (no holder) serves nobody: never the App's owner.
+  if (row.switchover_id && !row.holder_address) return "";
   return row.kind === "own" && row.holder_address
     ? row.holder_address
     : app.owner_address;
@@ -926,6 +930,15 @@ async function reconcileEnvironment(
   settings: InstanceSettings,
 ): Promise<void> {
   const state = await deps.envs.getState(envId);
+  if (
+    row.switchover_id &&
+    !(await switchoverMayStart(
+      deps,
+      row,
+      getTenantId(state?.genericSubdomain ?? row.host!, envId),
+    ))
+  )
+    return;
   if (state && GOING.has(state.status)) {
     // Left to finish, never reverted; recreated once it is gone.
     const reason = `waiting for the old environment (${state.status}) to go`;

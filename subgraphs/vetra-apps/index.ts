@@ -14,7 +14,12 @@ import {
   loadAppsConfig,
   missingConfig,
   plansConfigOf,
+  switchoverConfigOf,
 } from "./config.js";
+import { createSwitchoverBackups } from "./switchover/backups.js";
+import { createCountsRunner } from "./switchover/counts-job.js";
+import { switchoverPortsOver } from "./switchover/ports.js";
+import { advanceSwitchoversOnce } from "./switchover/runner.js";
 import {
   createReactorEnvGateway,
   subdomainTakenIn,
@@ -355,6 +360,37 @@ export class VetraAppsSubgraph extends BaseSubgraph {
           "[vetra-apps] VETRA_APPS_BACKUPS is on but dumps are not configured (VETRA_DUMPS_S3_*): rollout steps fail with 'backups are not configured'",
         );
     }
+    // The switch-over (plan 9) copies with the backups' cluster client and
+    // buckets even when VETRA_APPS_BACKUPS (the daily backups) is off.
+    if (switchoverConfigOf(cfg).enabled) {
+      deps.backups ??= await instanceBackupDepsFromEnv().catch(
+        (err: unknown) => {
+          console.warn(
+            `[vetra-apps] switch-over: kubernetes client failed: ${String(err)}`,
+          );
+          return null;
+        },
+      );
+      if (deps.backups && deps.observabilityDb) {
+        const k8s = deps.backups.k8s;
+        deps.switchover = switchoverPortsOver({
+          backups: createSwitchoverBackups({
+            backups: deps.backups,
+            observabilityDb: deps.observabilityDb,
+            now: () => new Date(),
+          }),
+          counts: createCountsRunner({
+            k8s,
+            image: deps.backups.dumpJob.image,
+          }),
+          k8s,
+          observabilityDb: deps.observabilityDb,
+        });
+      } else
+        console.warn(
+          "[vetra-apps] VETRA_APPS_SWITCHOVER is on but dumps (VETRA_DUMPS_S3_*) or observability are not configured: the switch-over runner does nothing",
+        );
+    }
     deps.onDeploymentChanged = (id) => reportDeploymentToGithub(deps, id);
     // A Studio launch/rollback is applied right after it was recorded (the
     // agent's request returns at once); the watcher picks up any it misses.
@@ -559,6 +595,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
       if (backupsConfigOf(cfg).enabled)
         every(5 * 60_000, "instance backups", () => runDailyBackupsOnce(deps));
+      // The Sektar switch-over (plan 9): off unless VETRA_APPS_SWITCHOVER is on.
+      if (switchoverConfigOf(cfg).enabled)
+        every(15_000, "switch-over runner", () => advanceSwitchoversOnce(deps));
       // Holders' custom domains: dns → issuing → active (plan 7 Task 8).
       if (plansConfigOf(cfg).enabled)
         every(60_000, "custom domains", () => checkDomainsOnce(deps));

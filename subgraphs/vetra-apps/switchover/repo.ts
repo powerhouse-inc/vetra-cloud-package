@@ -1,4 +1,5 @@
 import type { Kysely, Selectable } from "kysely";
+import type { InstanceRow } from "../instances/repo.js";
 import type {
   SwitchoverState,
   SwitchoversTable,
@@ -128,4 +129,39 @@ export async function updateSwitchover(
   const row = await getSwitchover(db, id);
   if (!row) throw new Error(`switch-over ${id} vanished`);
   return row;
+}
+
+/** Every switch-over a runner pass looks at: not closed, not FAILED (a failed one waits for resume or roll back). */
+export async function listActiveSwitchovers(
+  db: Kysely<VetraAppsDB>,
+): Promise<SwitchoverRow[]> {
+  return db
+    .selectFrom("switchovers")
+    .selectAll()
+    .where("state", "not in", [...CLOSED_STATES, "FAILED"])
+    .orderBy("created_at", "asc")
+    .orderBy("id", "asc")
+    .execute();
+}
+
+/** The instance a switch-over created, while it still owns it (instances.switchover_id), or after: by id. */
+export async function instanceOfSwitchover(
+  db: Kysely<VetraAppsDB>,
+  sw: Pick<SwitchoverRow, "id" | "instance_id">,
+): Promise<InstanceRow | null> {
+  const r = await db
+    .selectFrom("instances")
+    .selectAll()
+    .where((eb) =>
+      sw.instance_id
+        ? eb.or([
+            eb("switchover_id", "=", sw.id),
+            eb("id", "=", sw.instance_id),
+          ])
+        : eb("switchover_id", "=", sw.id),
+    )
+    .executeTakeFirst();
+  return r
+    ? { ...r, target_run: r.target_run == null ? null : Number(r.target_run) }
+    : null;
 }

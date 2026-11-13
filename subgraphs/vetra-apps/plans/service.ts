@@ -1,3 +1,4 @@
+import { hasOpenSwitchover } from "../switchover/repo.js";
 import { withKeyLock } from "../../../shared/key-lock.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
@@ -543,6 +544,11 @@ export async function setPlanTarget(
     );
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
+  if (await hasOpenSwitchover(deps.db, plan.id))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "A switch-over of this plan is in progress; its target stays until it is done",
+    );
   const target = await checkTarget(deps, plan.app_id, version, plan.access);
   await withKeyLock(appInstancesLock(app.id), async () => {
     const cur = (await getPlan(deps.db, plan.id))!;

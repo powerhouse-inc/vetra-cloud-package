@@ -195,7 +195,7 @@ describe("syncPlanInstances", () => {
       expect((await rows())[0].stop_reason).not.toBe(LICENSED_ENVIRONMENT);
     });
 
-    it("the reconciler skips an instance a switch-over owns", async () => {
+    it("the reconciler creates but never starts an instance a switch-over owns (no hold, keys or copy: no version)", async () => {
       await plan();
       await licence();
       await sync();
@@ -207,10 +207,14 @@ describe("syncPlanInstances", () => {
         .execute();
       h.envs.executed.length = 0;
       await reconcileInstancesOnce(h.deps);
-      // The App's branch instance is reconciled as ever; the own row is not.
+      // Its document is created (never started); nothing sets its version.
+      await reconcileInstancesOnce(h.deps);
       const own = (await rows()).find((r) => r.kind === "own")!;
-      expect(own.environment_id).toBeNull();
-      expect(own.status).toBe("pending");
+      expect(own.environment_id).not.toBeNull();
+      const state = await h.envs.getState(own.environment_id!);
+      expect(
+        state?.services.find((x) => x.type === "FUSION")?.version ?? null,
+      ).toBeNull();
     });
   });
 
