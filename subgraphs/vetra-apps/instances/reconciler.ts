@@ -303,8 +303,9 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
 
-/** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
+/** ADMINS per kind (spec section 5): an override (Team: the org's admins), the holder of an own instance, else the App owner. */
 export function adminsOf(app: AppRow, row: InstanceRow): string {
+  if (row.admins_override) return row.admins_override;
   return row.kind === "own" && row.holder_address
     ? row.holder_address
     : app.owner_address;
