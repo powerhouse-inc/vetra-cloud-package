@@ -52,14 +52,20 @@ export type BackupEnvRow = {
  * vetra-apps, releases phase 3 slice 4), or no
  * enabled Switchboard (the chart's gate for the CNPG cluster).
  */
-export function toBackupEnvSnapshot(row: BackupEnvRow): BackupEnvSnapshot | null {
-  // PLAN: shared and own instances of vetra-apps; their backups (database and
-  // /data) are vetra-apps' (releases phase 3 slice 4), never the scheduler's.
+export function toBackupEnvSnapshot(
+  row: BackupEnvRow,
+  /**
+   * VETRA_APPS_BACKUPS is on and backups are configured: vetra-apps backs up
+   * PLAN instances itself (database and /data, releases phase 3 slice 4).
+   * Otherwise they keep the scheduled dumps they always had.
+   */
+  opts: { appsBackups?: boolean } = {},
+): BackupEnvSnapshot | null {
   if (
     row.status !== "READY" ||
     !row.tenantId ||
     row.appRole === "PREVIEW" ||
-    row.appRole === "PLAN"
+    (row.appRole === "PLAN" && opts.appsBackups)
   )
     return null;
   let services: Array<{ type?: string; enabled?: boolean }>;

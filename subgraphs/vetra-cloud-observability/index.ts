@@ -63,6 +63,20 @@ import {
   type EnvProtectionTarget,
 } from "./env-protection.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
+import { backupsConfigOf, loadAppsConfig } from "../vetra-apps/config.js";
+
+/** VETRA_APPS_BACKUPS on and the dumps' S3 credentials set (what vetra-apps needs to back up PLAN instances). */
+function appsBackupsActive(env = process.env): boolean {
+  try {
+    return (
+      backupsConfigOf(loadAppsConfig(env)).enabled &&
+      !!env.VETRA_DUMPS_S3_ACCESS_KEY &&
+      !!env.VETRA_DUMPS_S3_SECRET_KEY
+    );
+  } catch {
+    return false;
+  }
+}
 
 export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
   name = "vetra-cloud-observability";
@@ -501,6 +515,8 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
    */
   private startBackupScheduler(dumpDeps: DumpResolverDeps, envDb: Kysely<any>) {
     let running = false;
+    // Same process as vetra-apps: PLAN instances leave the scheduler only when its backups run.
+    const appsBackups = appsBackupsActive();
     const tick = async () => {
       if (running) return;
       running = true;
@@ -514,7 +530,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
           (await dumpDeps.restores.listActive()).map((r) => r.tenantId),
         );
         const envs = rows.flatMap((r) => {
-          const env = toBackupEnvSnapshot(r);
+          const env = toBackupEnvSnapshot(r, { appsBackups });
           return env && !restoring.has(env.tenantId) ? [env] : [];
         });
         const { fired, deleted } = await runBackupScheduleTick(

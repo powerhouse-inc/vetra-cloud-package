@@ -163,7 +163,7 @@ describe("toBackupEnvSnapshot", () => {
 });
 
 describe("toBackupEnvSnapshot and plan instances", () => {
-  it("leaves PLAN environments to vetra-apps' instance backups", () => {
+  it("keeps scheduling PLAN environments while vetra-apps' backups are off", () => {
     const row = {
       id: "env-1",
       tenantId: "t-1",
@@ -172,7 +172,22 @@ describe("toBackupEnvSnapshot and plan instances", () => {
       services: JSON.stringify([{ type: "SWITCHBOARD", enabled: true }]),
       backupSchedule: null,
     };
-    expect(toBackupEnvSnapshot(row)).toBeNull();
-    expect(toBackupEnvSnapshot({ ...row, appRole: null })).not.toBeNull();
+    expect(toBackupEnvSnapshot(row)).not.toBeNull();
+    expect(toBackupEnvSnapshot(row, { appsBackups: false })).not.toBeNull();
+  });
+
+  it("leaves PLAN environments to vetra-apps' instance backups when they are on", () => {
+    const row = {
+      id: "env-1",
+      tenantId: "t-1",
+      status: "READY",
+      appRole: "PLAN",
+      services: JSON.stringify([{ type: "SWITCHBOARD", enabled: true }]),
+      backupSchedule: null,
+    };
+    expect(toBackupEnvSnapshot(row, { appsBackups: true })).toBeNull();
+    expect(
+      toBackupEnvSnapshot({ ...row, appRole: null }, { appsBackups: true }),
+    ).not.toBeNull();
   });
 });
