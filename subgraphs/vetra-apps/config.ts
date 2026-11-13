@@ -48,6 +48,8 @@ export interface VetraAppsConfig {
    * Reserved: no app row is ever given it, so no app document can carry it.
    */
   studioAppSlug: string;
+  /** VETRA_LICENSING_URL: where own instances report user stats (plan 7 Task 11). */
+  licensingUrl?: string | null;
   /**
    * Releases phase 2 instances. enabled=false (VETRA_APPS_INSTANCES=off)
    * stops the reconciler. labelSuffix (VETRA_APPS_INSTANCE_LABEL_SUFFIX,
@@ -109,14 +111,24 @@ export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
 export interface PlansConfig {
   enabled: boolean;
   stopAfterDays: number;
+  /** VETRA_APPS_PLANS_DESTROY: deletion of ended plan instances (default off). */
+  destroy?: boolean;
   /**
    * VETRA_APPS_ROLLOUTS_HOLD=on: no rollout step and no policy rollout starts
    * (decision R1); a moving step still settles. Present only when on.
    */
   rolloutsHold?: boolean;
+  /** Upper bound of every plan's warm pool (slice 8); 0 turns pools off. */
+  poolMax?: number;
+  /** Minutes a release must run healthy on Team before customers get it (slice 6). Default 30. */
+  teamSoakMinutes?: number;
 }
 
-export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
+export const DEFAULT_PLANS: PlansConfig = {
+  enabled: false,
+  stopAfterDays: 14,
+  poolMax: 0,
+};
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
@@ -131,6 +143,24 @@ export interface BackupsConfig {
 export const DEFAULT_BACKUPS: BackupsConfig = { enabled: false, dailyKeepDays: 14, maxInFlight: 3 };
 export const backupsConfigOf = (cfg: VetraAppsConfig): BackupsConfig =>
   cfg.backups ?? DEFAULT_BACKUPS;
+/** A plan's effective warm pool (W2, W9): own, active, not Team, capped by VETRA_APPS_PLAN_POOL_MAX. */
+export function planPoolSize(
+  cfg: VetraAppsConfig,
+  plan: {
+    warm_pool_size?: number | null;
+    access: string;
+    status: string;
+    team?: boolean | null;
+  },
+): number {
+  if (plan.access !== "own" || plan.status !== "active" || plan.team === true)
+    return 0;
+  return Math.max(
+    0,
+    Math.min(plan.warm_pool_size ?? 0, plansConfigOf(cfg).poolMax ?? 0),
+  );
+}
+
 export interface SwitchoverConfig {
   enabled: boolean;
   /** Hours before a window that the new instance is prepared. */
@@ -167,6 +197,10 @@ export const switchoverConfigOf = (cfg: VetraAppsConfig): SwitchoverConfig => {
  */
 export const rolloutsEnabled = (cfg: VetraAppsConfig): boolean =>
   plansConfigOf(cfg).enabled && cfg.instances.enabled;
+
+/** How long a release runs healthy on the Team instance before customers get it. */
+export const teamSoakMs = (cfg: VetraAppsConfig): number =>
+  (plansConfigOf(cfg).teamSoakMinutes ?? 30) * 60_000;
 
 /** The brake: nothing starts while it is on. */
 export const rolloutsHeld = (cfg: VetraAppsConfig): boolean =>
@@ -230,6 +264,17 @@ function instancesConfig(env: Env): VetraAppsConfig["instances"] {
   };
 }
 
+/** Off unless explicitly on: destroying data needs its own switch. */
+function destroyOn(env: Env): boolean {
+  const raw = (trimmed(env.VETRA_APPS_PLANS_DESTROY) ?? "").toLowerCase();
+  if (raw === "") return false;
+  if (INSTANCES_OFF.has(raw)) return false;
+  if (INSTANCES_ON.has(raw)) return true;
+  throw new Error(
+    `VETRA_APPS_PLANS_DESTROY "${env.VETRA_APPS_PLANS_DESTROY}" is invalid: use on/off`,
+  );
+}
+
 function plansConfig(env: Env): PlansConfig {
   const raw = (trimmed(env.VETRA_APPS_PLANS) ?? "").toLowerCase();
   if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
@@ -241,7 +286,14 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+    destroy: destroyOn(env),
     ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
+    poolMax: intIn(env, "VETRA_APPS_PLAN_POOL_MAX", 0, 0, 10),
+    ...(trimmed(env.VETRA_APPS_TEAM_SOAK_MINUTES) !== null
+      ? {
+          teamSoakMinutes: intIn(env, "VETRA_APPS_TEAM_SOAK_MINUTES", 30, 0, 1440),
+        }
+      : {}),
   };
 }
 
@@ -446,6 +498,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
+    licensingUrl: trimmed(env.VETRA_LICENSING_URL),
     instances: instancesConfig(env),
     plans: plansConfig(env),
     backups: backupsConfig(env),

@@ -137,11 +137,177 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
   await ensureInstanceBackupTables(db);
+  await ensureInstanceSettingsTable(db);
+  await ensureInstanceDomainColumns(db);
+  await ensureSettingsMountPath(db);
+  await ensurePlanAiBudget(db);
   await ensureEnvironmentHoldsTable(db);
   await ensureInstanceGateTokensTable(db);
+  await ensureWarmPoolColumns(db);
   await ensureRolloutTables(db);
   await ensureRolloutColumns(db);
   await ensureRolloutBackupColumns(db);
+  await ensureTeamPlanSchema(db);
+}
+
+/** The Team plan (releases phase 3 slice 6). Schema builder only (namespaced). */
+export async function ensureTeamPlanSchema(db: Kysely<any>): Promise<void> {
+  const tolerate = (err: unknown) => {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("team", "boolean", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  // A kind-less plan; DROP NOT NULL on a nullable column is a no-op.
+  try {
+    await db.schema
+      .alterTable("plans")
+      .alterColumn("kind", (c) => c.dropNotNull())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  try {
+    await db.schema
+      .createIndex("plans_app_team_uq")
+      .ifNotExists()
+      .unique()
+      .on("plans")
+      .column("app_id")
+      .where(sql.ref("team"), "=", true)
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  for (const [name, type] of [
+    ["admins_override", "text"],
+    ["admins_checked_at", "varchar(64)"],
+    ["admins_override_org", "varchar(255)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  try {
+    await db.schema
+      .createTable("team_release_runs")
+      .ifNotExists()
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("version", "varchar(255)", (c) => c.notNull())
+      .addColumn("digest", "varchar(128)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("healthy_since", "varchar(64)", (c) => c.notNull())
+      .addColumn("recorded_at", "varchar(64)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("team_release_runs_pk", ["app_id", "version"])
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+}
+
+/** The AI budget of a plan's instances (plan 7 Task 10). */
+export async function ensurePlanAiBudget(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("ai_budget_usd", "double precision", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
+}
+
+/** Publisher file settings (plan 7 Task 9): where a file row is mounted. */
+export async function ensureSettingsMountPath(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("app_settings")
+      .addColumn("mount_path", "varchar(512)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
+}
+
+/** A holder's custom domain on an own instance (plan 7 Task 7), unique where set. */
+export async function ensureInstanceDomainColumns(
+  db: Kysely<any>,
+): Promise<void> {
+  for (const [name, type] of [
+    ["custom_domain", "varchar(253)"],
+    ["custom_domain_status", "varchar(16)"],
+    ["custom_domain_reason", "text"],
+    ["custom_domain_since", "varchar(64)"],
+    ["custom_domain_checked_at", "varchar(64)"],
+    ["custom_domain_failures", "integer"],
+    ["custom_domain_token", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
+        throw err;
+    }
+  }
+  try {
+    await db.schema
+      .createIndex("instances_custom_domain_uq")
+      .ifNotExists()
+      .unique()
+      .on("instances")
+      .column("custom_domain")
+      .where(sql.ref("custom_domain"), "is not", null)
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+}
+
+/** Holder settings per own instance (phase 3 plan 7, spec 14.2). Schema builder only (namespaced). */
+export async function ensureInstanceSettingsTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("instance_settings")
+      .ifNotExists()
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("name", "varchar(128)", (c) => c.notNull())
+      .addColumn("kind", "varchar(16)", (c) => c.notNull())
+      .addColumn("mount_path", "varchar(512)")
+      .addColumn("value", "text")
+      .addColumn("ciphertext", "text")
+      .addColumn("write_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_at", "varchar(64)", (c) => c.notNull())
+      .addColumn("updated_by", "varchar(255)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("instance_settings_pk", ["instance_id", "name"])
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema
+      .createIndex("instance_settings_instance_idx")
+      .ifNotExists()
+      .on("instance_settings")
+      .column("instance_id")
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
 }
 
 /** Rollouts (releases phase 3 slice 3, spec section 7). Schema builder only (namespaced). */
@@ -1075,5 +1241,44 @@ export async function ensureInstanceBackupTables(db: Kysely<any>): Promise<void>
       .execute();
   } catch (err) {
     if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
+}
+
+/** Warm pools of own plans (releases phase 3 slice 8). Schema builder only (namespaced). */
+export async function ensureWarmPoolColumns(db: Kysely<any>): Promise<void> {
+  const tolerate = (err: unknown) => {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("warm_pool_size", "integer", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  for (const [name, type] of [
+    ["warm", "boolean"],
+    ["claimed_at", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  try {
+    await db.schema
+      .createIndex("instances_warm_idx")
+      .ifNotExists()
+      .on("instances")
+      .columns(["app_id", "plan_id"])
+      .where(sql.ref("warm"), "=", true)
+      .execute();
+  } catch (err) {
+    tolerate(err);
   }
 }

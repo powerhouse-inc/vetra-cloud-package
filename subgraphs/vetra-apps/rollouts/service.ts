@@ -175,6 +175,8 @@ export async function plannedSteps(
       !!r.plan_id &&
       byId.has(r.plan_id) &&
       !r.removed_at &&
+      // A warm-pool row has no holder: the keeper replaces it, rollouts never step it.
+      !r.warm &&
       r.status !== "removed" &&
       r.target_version !== version,
   );
@@ -228,7 +230,7 @@ export async function rolloutProblems(
         `${p.slug} is in the rollout of ${open.version} (${open.status}); finish, cancel or roll it back first`,
       );
   }
-  const team = await teamGateProblem(deps, app.id, version);
+  const team = await teamGateProblem(deps, app, version, plans);
   if (team) out.push(team);
   if (
     steps.some((s) => s.status === "pending") &&

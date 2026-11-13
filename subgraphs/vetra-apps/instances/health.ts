@@ -54,7 +54,11 @@ export const STOPPED: HealthVerdict = {
   check: "stopped",
   reason: "the environment is stopped",
 };
-const HEALTHY: HealthVerdict = { health: "healthy", check: null, reason: null };
+export const HEALTHY: HealthVerdict = {
+  health: "healthy",
+  check: null,
+  reason: null,
+};
 
 const PULL_FAILURES = new Set([
   "ErrImagePull",

@@ -89,6 +89,7 @@ export function fakeOrgs() {
     publishers: new Map<string, AppPublisher>(),
     orgHandles: new Map<string, string | null>(),
     personHandles: new Map<string, string | null>(),
+    admins: new Map<string, string[] | null>(),
     down: false,
     join(
       orgId: string,
@@ -119,6 +120,10 @@ export function fakeOrgs() {
     async orgHandle(orgId: string) {
       if (self.down) throw new RenownOrgsUnavailableError("down");
       return self.orgHandles.get(orgId) ?? null;
+    },
+    async orgAdmins(orgId: string) {
+      if (self.down) throw new RenownOrgsUnavailableError("down");
+      return self.admins.has(orgId) ? self.admins.get(orgId)! : null;
     },
     async personHandle(address: string) {
       if (self.down) throw new RenownOrgsUnavailableError("down");

@@ -20,6 +20,7 @@ import {
 } from "../vetra-licensing/studio-access-factory.js";
 import { studioLlmBudgetForDid } from "../vetra-licensing/studio-access.js";
 import { appBudgetForLicence } from "../vetra-licensing/invite-codes.js";
+import { planBudgetOf } from "../vetra-apps/instances/vetra-secrets.js";
 import { up } from "./db/migrations.js";
 import type { VetraLlmDB } from "./db/schema.js";
 import { createBudgetStore, createLlmKeyStore } from "./store.js";
@@ -176,6 +177,7 @@ export class VetraLlmSubgraph extends BaseSubgraph {
           budgetForDid: (did) => studioLlmBudgetForDid(studio, did),
           budgetOverride,
           appBudget,
+          planBudget: planBudgetOf(appsDb),
           envOf: async (environmentId) =>
             (await envDb
               .selectFrom("environments")

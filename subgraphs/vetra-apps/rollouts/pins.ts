@@ -30,6 +30,11 @@ async function loadOwnInstance(
   const app = await loadAppForOwner(deps, caller, inst.app_id, {
     need: "release",
   });
+  if (inst.warm === true)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "A warm instance has no holder yet; it is not pinned",
+    );
   if (inst.kind !== "own")
     throw appsError(
       "BAD_USER_INPUT",

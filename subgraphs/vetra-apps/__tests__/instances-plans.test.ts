@@ -25,6 +25,7 @@ import { getApp } from "../repo.js";
 import {
   PLAN_NEEDS_NEW_SECRETS,
   reconcileInstancesOnce,
+  STOPPED_OUTSIDE_VETRA,
 } from "../instances/reconciler.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
 import { getHold } from "../holds/repo.js";
@@ -736,6 +737,49 @@ describe("reconcileInstancesOnce — plan instances", () => {
       status: "updating",
       stopped_by_vetra: false,
     });
+  });
+
+  it("never wakes an instance someone else slept, even after renewal (H10)", async () => {
+    const envId = await readyThenDue();
+    h.envs.setStatus(envId, "STOPPED");
+    await reconcileInstancesOnce(h.deps);
+    expect((await planRows())[0]).toMatchObject({
+      status: "stopped",
+      reason: LICENCE_ENDED,
+    });
+    expect((await planRows())[0].stopped_by_vetra).not.toBe(true);
+    await renew();
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    expect((await planRows())[0]).toMatchObject({
+      status: "stopped",
+      reason: STOPPED_OUTSIDE_VETRA,
+    });
+    expect((await planRows())[0].stopped_by_vetra).not.toBe(true);
+  });
+
+  it("shows a running instance someone else slept as stopped outside Vetra, without marking or waking it", async () => {
+    await plan();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await planRows())[0].environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await reconcileInstancesOnce(h.deps);
+    h.envs.setStatus(envId, "STOPPED");
+    await reconcileInstancesOnce(h.deps);
+    await reconcileInstancesOnce(h.deps);
+    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    expect((await planRows())[0]).toMatchObject({
+      status: "stopped",
+      reason: STOPPED_OUTSIDE_VETRA,
+    });
+    expect((await planRows())[0].stopped_by_vetra).not.toBe(true);
   });
 
   it("approves a leftover CHANGES_PENDING before stopping", async () => {

@@ -7,7 +7,7 @@ import { appsError, notConfigured } from "../errors.js";
 import { getInstance, type InstanceRow } from "../instances/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import {
-  settingsRevision,
+  instanceRevision,
   type InstanceSettings,
   type ResolvedSecret,
 } from "../settings/resolve.js";
@@ -199,7 +199,8 @@ export function withGate(
       writeId: gate.token.token_id,
     },
   ].sort(byName);
-  return { revision: settingsRevision(plain, secrets), plain, secrets };
+  const next = { ...base, plain, secrets };
+  return { ...next, revision: instanceRevision(next) };
 }
 
 /**

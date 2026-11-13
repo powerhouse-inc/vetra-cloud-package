@@ -498,6 +498,48 @@ describe("generateValuesYaml — warm environment is closed", () => {
     expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
   });
 
+  describe("a PLAN environment without ADMINS is closed even when the lookup says not warm", () => {
+    const planState = (admins: string | null, role: "PLAN" | "PREVIEW" | "PRODUCTION" = "PLAN") => {
+      const s = warmState();
+      return {
+        ...s,
+        fusion: {
+          ...s.fusion!,
+          env: [
+            ...s.fusion!.env,
+            ...(admins === null ? [] : [{ name: "ADMINS", value: admins, isSecret: false }]),
+          ],
+        },
+        app: { appId: "app-1", role, prNumber: null, gitRef: null, imageProject: null },
+      } as VetraCloudEnvironmentState;
+    };
+    const notWarm = vi.fn(async () => null);
+
+    it("renders closed for an empty or missing ADMINS", async () => {
+      for (const admins of ["", "  ", null]) {
+        const yaml = await generateValuesYaml(dbStub, planState(admins), DOC_ID, null, allow, notWarm);
+        expect(appBlock(yaml)).toContain("    closed: true");
+      }
+    });
+
+    it("renders open once ADMINS is set", async () => {
+      const yaml = await generateValuesYaml(dbStub, planState("0xabc"), DOC_ID, null, allow, notWarm);
+      expect(yaml).not.toContain("closed:");
+    });
+
+    it("never closes a non-PLAN environment for its ADMINS", async () => {
+      for (const role of ["PREVIEW", "PRODUCTION"] as const) {
+        const yaml = await generateValuesYaml(dbStub, planState("", role), DOC_ID, null, allow, notWarm);
+        expect(yaml).not.toContain("closed:");
+      }
+    });
+
+    it("a held PLAN environment still has no ingress", async () => {
+      const yaml = await generateValuesYaml(dbStub, planState(""), DOC_ID, null, allow, notWarm, async () => true);
+      expect(appBlock(yaml)).not.toContain("closed:");
+    });
+  });
+
   it("looks the warm pool up once per render and hands the result to the image resolver", async () => {
     const isWarm = vi.fn(async () => ({ appId: "app-1" }));
     const resolver = vi.fn(async () => "app-sektar");
@@ -521,5 +563,65 @@ describe("generateValuesYaml — warm environment is closed", () => {
     await expect(
       generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow, isWarm),
     ).rejects.toThrow("connection reset");
+  });
+});
+
+describe("generateValuesYaml — file mounts (VETRA_FILES, plan 7 Task 9)", () => {
+  const KEY = "FILE_0123456789ABCDEF";
+  const files = (value: string) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [
+          { name: "PH_HOST", value: "cli", isSecret: false },
+          { name: "VETRA_FILES", value, isSecret: false },
+        ],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+    });
+  const listed = JSON.stringify([
+    { key: KEY, mountPath: "/client_secret_sektar-web-app.json" },
+  ]);
+
+  it("renders secretFiles from the tenant secret, never VETRA_FILES as env, once the chart supports it (FUSION_SECRET_FILES)", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    const app = appBlock(await render(files(listed)));
+    expect(app).toContain(
+      `  secretFiles:\n    - name: "${KEY}"\n      secretName: ${TENANT}-secrets\n      key: "${KEY}"\n      mountPath: "/client_secret_sektar-web-app.json"`,
+    );
+    expect(app).not.toContain("VETRA_FILES");
+    expect(app).toContain("  secretEnv: []");
+  });
+
+  it("before the chart supports it: no secretFiles, VETRA_FILES dropped (nothing else changes)", async () => {
+    const app = appBlock(await render(files(listed)));
+    expect(app).not.toContain("secretFiles");
+    expect(app).not.toContain("VETRA_FILES");
+    const plain = appBlock(await render(files("[]")));
+    expect(app).toBe(plain);
+  });
+
+  it("ignores a malformed list or entry (logged), rendering no secretFiles", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    for (const bad of [
+      "not json",
+      JSON.stringify({ key: KEY }),
+      JSON.stringify([{ key: "OTHER", mountPath: "/x.json" }]),
+      JSON.stringify([{ key: KEY, mountPath: "relative.json" }]),
+      JSON.stringify([{ key: KEY, mountPath: "/etc/passwd" }]),
+      JSON.stringify([{ key: KEY, mountPath: "/a/../etc/x" }]),
+    ]) {
+      const app = appBlock(await render(files(bad)));
+      expect(app).not.toContain("secretFiles:\n    -");
+      expect(app).not.toContain("VETRA_FILES");
+    }
+  });
+
+  it("an environment without VETRA_FILES renders exactly as before (no secretFiles key)", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    const app = appBlock(await render(envState()));
+    expect(app).not.toContain("secretFiles");
   });
 });

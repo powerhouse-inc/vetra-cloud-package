@@ -7,18 +7,26 @@ import { schema } from "./schema.js";
 import { createResolvers } from "./resolvers.js";
 import { up } from "./db/migrations.js";
 import type { VetraAppsDB } from "./db/schema.js";
-import { backupsConfigOf, loadAppsConfig, missingConfig } from "./config.js";
 import { instanceBackupDepsFromEnv } from "./backups/k8s.js";
 import { runDailyBackupsOnce } from "./backups/schedule.js";
+import {
+  backupsConfigOf,
+  loadAppsConfig,
+  missingConfig,
+  plansConfigOf,
+} from "./config.js";
 import {
   createReactorEnvGateway,
   subdomainTakenIn,
   subdomainUsedIn,
+  customDomainUsedIn,
   tenantOfIn,
 } from "./envs.js";
 import { namespaceExists } from "./instances/cluster.js";
 import { fetchProbe } from "./instances/probe.js";
 import { monitorInstancesOnce } from "./instances/monitor.js";
+import { defaultDomainProbe } from "./domains/dns.js";
+import { checkDomainsOnce } from "./domains/service.js";
 import type { DB as EnvironmentsDB } from "../../processors/vetra-cloud-environment/schema.js";
 import { createGithubDeployApi } from "./github.js";
 import { createGithubAttestationVerifier } from "./releases/attestation.js";
@@ -69,13 +77,25 @@ import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
 import { createGateRoutes } from "./gate/routes.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
+import { holderInstancesFor } from "./plans/holder-view.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
 import { createSecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { SecretsDB } from "../vetra-cloud-secrets/db/schema.js";
-import { createSettingsVault } from "./settings/vault.js";
+import {
+  createSettingsVault,
+  INSTANCE_SETTINGS_TRANSIT_TENANT,
+} from "./settings/vault.js";
 import type { VetraGithubAuthDB } from "../vetra-github-auth/db/schema.js";
 import { environmentConnections } from "../vetra-github-auth/db/installations.js";
 import { withoutStacktraces } from "../../shared/graphql-errors.js";
+import { createLlmBroker } from "../vetra-llm/broker.js";
+import { loadLlmConfig } from "../vetra-llm/config.js";
+import { up as ensureLlmTables } from "../vetra-llm/db/migrations.js";
+import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
+import { createOpenRouterApi } from "../vetra-llm/openrouter.js";
+import { createLlmKeyStore } from "../vetra-llm/store.js";
+import { createKeyVault } from "../vetra-licensing/key-vault.js";
+import { planBudgetOf } from "./instances/vetra-secrets.js";
 
 /**
  * Vetra Apps: Git-connected apps with a production env and one preview env
@@ -210,7 +230,45 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     const licensingDb = (await this.relationalDb.createNamespace(
       "vetra-licensing",
     )) as unknown as Kysely<VetraLicensingDB>;
+    // The AI key of plan instances (plan 7 Task 10). Without
+    // OPENROUTER_MANAGEMENT_KEY (or OpenBao) plan instances run keyless.
+    const llmCfg = loadLlmConfig(process.env);
+    const buildLlm = async (): Promise<AppsDeps["llm"]> => {
+      const llmDb = (await this.relationalDb.createNamespace(
+        "vetra-llm",
+      )) as unknown as Kysely<VetraLlmDB>;
+      await ensureLlmTables(llmDb as Kysely<any>);
+      return createLlmBroker({
+        store: createLlmKeyStore(llmDb),
+        openrouter: createOpenRouterApi({
+          managementKey: llmCfg.managementKey!,
+          baseUrl: llmCfg.baseUrl,
+        }),
+        keyVault: createKeyVault(transit!),
+        secrets: tenantSecrets,
+        // Instance keys answer to their plan alone, never a Studio licence.
+        budgetForDid: async () => ({ allowed: false, budgetUsd: 0 }),
+        budgetOverride: async () => null,
+        planBudget: planBudgetOf(db),
+        cfg: llmCfg,
+        now: () => new Date(),
+        logger: console,
+      });
+    };
+    const llmWanted =
+      plansConfigOf(cfg).enabled && !!llmCfg.managementKey && !!transit;
+    let llm: AppsDeps["llm"] = null;
+    if (llmWanted) {
+      try {
+        llm = await buildLlm();
+      } catch (err) {
+        console.warn(
+          `[vetra-apps] AI keys of plan instances unavailable (retrying every minute): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     const deps: AppsDeps = {
+      llm,
       db,
       envs: createReactorEnvGateway(this.reactorClient as never),
       cfg,
@@ -229,6 +287,10 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       studioSecrets,
       instanceSecrets: tenantSecrets,
       settingsVault: createSettingsVault(transit),
+      holderVault: createSettingsVault(
+        transit,
+        INSTANCE_SETTINGS_TRANSIT_TENANT,
+      ),
       // A namespace exists once Argo synced it (an environment created stopped has no pods yet).
       tenantLive: (tenantId) => namespaceExists(orgHandoverDb, tenantId),
       studioGithubConnections: (studioEnvironmentId) =>
@@ -237,6 +299,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       subdomainTaken: subdomainTakenIn(envReadModel),
       // An instance label is blocked only by an exact env subdomain.
       subdomainUsed: subdomainUsedIn(envReadModel),
+      // Custom domains: one holder per domain across environments and instances.
+      customDomainUsed: customDomainUsedIn(envReadModel),
+      domainProbe: defaultDomainProbe,
       protectAppDoc: perm
         ? (id, owner) => protectAppDocument(perm, id, owner)
         : null,
@@ -249,6 +314,24 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       releasePolicy,
       licensingDb,
     };
+    if (llmWanted && !llm) {
+      // The broker's database may not be ready at boot: keep trying.
+      const timer = setInterval(() => {
+        if (deps.llm) return clearInterval(timer);
+        buildLlm().then(
+          (b) => {
+            deps.llm = b;
+            clearInterval(timer);
+            console.log("[vetra-apps] AI key broker is up");
+          },
+          (err) =>
+            console.warn(
+              `[vetra-apps] AI key broker still unavailable: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        );
+      }, 60_000);
+      timer.unref?.();
+    }
     if (cfg.allowUnattestedReleases)
       console.warn(
         "[vetra-apps] VETRA_APPS_ALLOW_UNATTESTED_RELEASES is on: release reports are accepted without an attestation when no verifier is wired",
@@ -377,6 +460,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
         candidates: candidatesIn(envReadModel),
         getState: (id: string) => deps.envs.getState(id),
         orgs: deps.orgs ?? null,
+        logger: console,
+        // Holders find their plan instances ("Open your Sektar").
+        holderInstances:
+          deps.licensingDb && plansConfigOf(cfg).enabled
+            ? (appId: string, address: string) =>
+                holderInstancesFor(deps, appId, address)
+            : undefined,
       };
       this.routeHandles.push(
         this.http.get(
@@ -469,6 +559,9 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       );
       if (backupsConfigOf(cfg).enabled)
         every(5 * 60_000, "instance backups", () => runDailyBackupsOnce(deps));
+      // Holders' custom domains: dns → issuing → active (plan 7 Task 8).
+      if (plansConfigOf(cfg).enabled)
+        every(60_000, "custom domains", () => checkDomainsOnce(deps));
     } else {
       console.info("[vetra-apps] instances are off (VETRA_APPS_INSTANCES)");
     }

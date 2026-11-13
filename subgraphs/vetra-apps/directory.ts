@@ -50,6 +50,16 @@ export interface AppMarks {
   imagePrefix: string | null;
 }
 
+/** A plan instance (shared or own) the caller may open as a holder (plan 7 Task 6). */
+export interface HolderDirectoryEntry {
+  environmentId: string;
+  name: string;
+  /** The instance's public URL (its custom domain once active). */
+  url: string | null;
+  /** The instance's status (the listing shows the environment's when it has one). */
+  status: string;
+}
+
 export interface DirectoryDeps {
   /** The App's packages and image prefix (any of them makes an env "run it"). */
   appMarks(appId: string): Promise<AppMarks>;
@@ -57,7 +67,25 @@ export interface DirectoryDeps {
   candidates(appId: string, marks: AppMarks): Promise<DirectoryEnvRow[]>;
   getState(id: string): Promise<VetraCloudEnvironmentState | null>;
   orgs: MembershipReader | null;
+  /**
+   * The caller's plan instances of the App (own, and shared of live kinds).
+   * PLAN environments are owned by Vetra's service identity: they are listed
+   * through this only, never through their owner. Absent: none.
+   */
+  holderInstances?(appId: string, address: string): Promise<HolderDirectoryEntry[]>;
+  /** Where a failed holder lookup is reported (the directory still answers). */
+  logger?: { warn(message: string): void };
 }
+
+/** An instance status as an environment status, for a plan instance whose document is not readable. */
+const ENV_STATUS_OF_INSTANCE: Record<string, string> = {
+  pending: "DEPLOYING",
+  updating: "DEPLOYING",
+  ready: "READY",
+  degraded: "READY",
+  failed: "DEPLOYMENt_FAILED",
+  stopped: "STOPPED",
+};
 
 /** Statuses of environments that are gone or going: never listed. */
 const RELEASED = new Set(["TERMINATING", "DESTROYED", "ARCHIVED"]);
@@ -88,7 +116,8 @@ function runsImage(row: DirectoryEnvRow, prefix: string | null): boolean {
  */
 export function runsApp(row: DirectoryEnvRow, appId: string, marks: AppMarks): boolean {
   if (row.status && RELEASED.has(row.status)) return false;
-  if (row.appId === appId) return row.appRole !== "PREVIEW";
+  // PLAN environments are listed for their holders only (holderInstances).
+  if (row.appId === appId) return row.appRole !== "PREVIEW" && row.appRole !== "PLAN";
   return installs(row, new Set(marks.packages)) || runsImage(row, marks.imagePrefix);
 }
 
@@ -130,7 +159,41 @@ export async function listDirectory(
       status: state?.status ?? row.status ?? "UNKNOWN",
     });
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  if (deps.holderInstances) {
+    // Holder entries must never break the owner's directory (plans may be
+    // off, or licensing's tables not there yet): log and answer without them.
+    try {
+      await appendHolderInstances(deps, caller, appId, out);
+    } catch (err) {
+      deps.logger?.warn(`[vetra-apps] directory: holder instances skipped: ${String(err)}`);
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+async function appendHolderInstances(
+  deps: DirectoryDeps,
+  caller: string,
+  appId: string,
+  out: DirectoryEnvironment[],
+): Promise<void> {
+  const seen = new Set(out.map((e) => e.environmentId));
+  const added: DirectoryEnvironment[] = [];
+  for (const h of await deps.holderInstances!(appId, caller)) {
+    if (!h.url || seen.has(h.environmentId)) continue;
+    seen.add(h.environmentId);
+    const state = await deps.getState(h.environmentId);
+    if (state && RELEASED.has(state.status)) continue;
+    added.push({
+      environmentId: h.environmentId,
+      name: h.name,
+      connectUrl: h.url,
+      kind: "vetra",
+      status: state?.status ?? ENV_STATUS_OF_INSTANCE[h.status] ?? "UNKNOWN",
+    });
+  }
+  out.push(...added);
 }
 
 /** appMarks over the apps tables: every package name an App deployed, and its image prefix. */

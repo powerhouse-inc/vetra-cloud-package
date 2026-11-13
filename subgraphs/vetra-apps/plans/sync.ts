@@ -19,7 +19,9 @@ import {
   type ChainEntry,
   type ChainHead,
 } from "./holders.js";
+import { claimWarmInstance } from "./pool-repo.js";
 import { listPlans, type PlanRow } from "./repo.js";
+import { isOrgApp, isTeamPlan, TEAM_NOT_ORG } from "./team-base.js";
 
 export const LICENCE_ENDED = "the licence ended";
 export const PLAN_RETIRED = "the plan is retired and has no live licences";
@@ -34,7 +36,7 @@ export const isPlanKind = (kind: string) => kind === "shared" || kind === "own";
 export const ownInstanceName = (root: string) =>
   `own-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`;
 
-async function planTarget(
+export async function planTarget(
   deps: AppsDeps,
   plan: PlanRow,
 ): Promise<InstanceTarget | null> {
@@ -105,7 +107,9 @@ async function ownPlanResolver(
   plans: PlanRow[],
   live: Map<string, ChainHead>,
 ): Promise<(head: ChainHead) => PlanRow | undefined> {
-  const byKind = new Map(plans.map((p) => [p.kind, p]));
+  const byKind = new Map(
+    plans.flatMap((p) => (p.kind ? [[p.kind, p] as const] : [])),
+  );
   const own = (p: PlanRow | undefined) => (p?.access === "own" ? p : undefined);
   // Only chains whose head is of no plan's kind need their history.
   const roots = plans.some((p) => p.access === "own")
@@ -153,7 +157,10 @@ export async function syncPlanInstances(
   if (!cfg.enabled || !deps.licensingDb) return;
   const plans = await listPlans(deps.db, app.id);
   const shared = await listInstances(deps.db, app.id, "shared");
-  const own = await listInstances(deps.db, app.id, "own");
+  // Warm-pool rows (slice 8) have no chain: never matched, never "unserved".
+  const own = (await listInstances(deps.db, app.id, "own")).filter(
+    (r) => !r.warm,
+  );
   if (plans.length === 0 && shared.length === 0 && own.length === 0) return;
   const nowIso = deps.now().toISOString();
   const live = await liveChains(deps.licensingDb, app.id, nowIso);
@@ -167,8 +174,12 @@ export async function syncPlanInstances(
 
   for (const plan of plans.filter((p) => p.access === "shared")) {
     const target = targets.get(plan.id) ?? null;
-    const held = [...live.values()].some((c) => c.kind === plan.kind);
-    const wanted = plan.status === "active" || held;
+    // A kind-less plan (Team) is never held: untyped licences have kind null too.
+    const held =
+      plan.kind !== null &&
+      [...live.values()].some((c) => c.kind === plan.kind);
+    const notOrg = isTeamPlan(plan) && !isOrgApp(app);
+    const wanted = (plan.status === "active" || held) && !notOrg;
     const row = shared.find((r) => r.plan_id === plan.id);
     if (!row) {
       if (wanted && target)
@@ -180,7 +191,7 @@ export async function syncPlanInstances(
     }
     await patch(row, {
       target_size: plan.size,
-      stop_reason: wanted ? null : PLAN_RETIRED,
+      stop_reason: wanted ? null : notOrg ? TEAM_NOT_ORG : PLAN_RETIRED,
     });
   }
 
@@ -197,10 +208,25 @@ export async function syncPlanInstances(
     }
     if (!row) {
       if (target) {
-        await insertInstance(
-          deps.db,
-          newRow(deps, app, plan, target, nowIso, head),
-        );
+        // A ready warm instance of the plan first (slice 8); else a cold row.
+        // No digest, nothing to match a warm row on.
+        const claimed = target.target_digest
+          ? await claimWarmInstance(deps.db, {
+          appId: app.id,
+          planId: plan.id,
+          digest: target.target_digest,
+          targetSize: plan.size,
+          holder: head.address,
+          root: head.root,
+          name: ownInstanceName(head.root),
+          nowIso,
+        })
+          : null;
+        if (!claimed)
+          await insertInstance(
+            deps.db,
+            newRow(deps, app, plan, target, nowIso, head),
+          );
         served.add(head.root);
       }
       continue;

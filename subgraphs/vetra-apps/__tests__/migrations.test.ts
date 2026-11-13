@@ -10,15 +10,20 @@ import {
   ensureDeploymentTriggerColumns,
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
-  ensureInstanceBackupTables,
   ensureInstanceGateTokensTable,
+  ensureInstanceSettingsTable,
+  ensureInstanceDomainColumns,
+  ensureSettingsMountPath,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
-  ensureRolloutBackupColumns,
   ensureRolloutColumns,
+  ensureTeamPlanSchema,
   ensureRolloutTables,
   ensureStudioProductColumns,
+  ensureInstanceBackupTables,
+  ensureRolloutBackupColumns,
+  ensureWarmPoolColumns,
   isConcurrentIndexError,
   up,
 } from "../db/migrations.js";
@@ -38,6 +43,13 @@ import {
   upsertAppRole,
 } from "../roles/repo.js";
 import type { VetraAppsDB } from "../db/schema.js";
+import {
+  countInstanceSettings,
+  deleteInstanceSetting,
+  deleteInstanceSettings,
+  listInstanceSettings,
+  upsertInstanceSetting,
+} from "../settings/holder-repo.js";
 
 describe("ensureAppsOrgColumn (m4)", () => {
   it("adds owner_org_id to an apps table that lacks it; idempotent; no table is fine", async () => {
@@ -838,6 +850,265 @@ describe("instance_gate_tokens", () => {
       await expect(
         db.insertInto("instance_gate_tokens").values(row("i2")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("ensureWarmPoolColumns", () => {
+  it("is idempotent and race tolerant; the columns can be written and read", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await Promise.all([1, 2, 3].map(() => ensureWarmPoolColumns(db)));
+      await ensureWarmPoolColumns(db);
+      await db
+        .insertInto("plans")
+        .values({
+          id: "p1",
+          app_id: "a1",
+          slug: "pro",
+          name: "Pro",
+          kind: "pro",
+          access: "own",
+          size: "VETRA_AGENT_M",
+          policy: "manual",
+          notice_hours: 0,
+          status: "active",
+          created_by: "0x1",
+          warm_pool_size: 2,
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      await db
+        .insertInto("instances")
+        .values({
+          id: "i1",
+          app_id: "a1",
+          kind: "own",
+          name: "own-warm-x",
+          status: "pending",
+          warm: true,
+          claimed_at: "2026-11-12T01:00:00.000Z",
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      expect(
+        await db.selectFrom("plans").select("warm_pool_size").executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm_pool_size: 2 });
+      expect(
+        await db.selectFrom("instances").select(["warm", "claimed_at"]).executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm: true, claimed_at: "2026-11-12T01:00:00.000Z" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance_settings (holder settings, plan 7)", () => {
+  it("are created idempotently and concurrently in the namespace schema with their index; one row per instance and name", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceSettingsTable(any)));
+      const idx = await sql<{ indexname: string }>`
+        SELECT indexname FROM pg_indexes WHERE schemaname = 'vetra-apps' AND tablename = 'instance_settings'`.execute(
+        root,
+      );
+      expect(idx.rows.map((r) => r.indexname)).toContain("instance_settings_instance_idx");
+      const db = any as unknown as Kysely<VetraAppsDB>;
+      const row = {
+        instance_id: "i1",
+        name: "MODE",
+        kind: "plain" as const,
+        mount_path: null,
+        value: "a",
+        ciphertext: null,
+        write_id: "w1",
+        updated_at: "2026-11-12T00:00:00.000Z",
+        updated_by: "0xaa",
+      };
+      await upsertInstanceSetting(db, row);
+      await upsertInstanceSetting(db, { ...row, value: "b", write_id: "w2" });
+      await upsertInstanceSetting(db, {
+        ...row,
+        name: "TOKEN",
+        kind: "secret",
+        value: null,
+        ciphertext: "ct",
+      });
+      await upsertInstanceSetting(db, { ...row, instance_id: "i2" });
+      expect(await countInstanceSettings(db, "i1")).toBe(2);
+      const all = await listInstanceSettings(db, ["i1", "i2", "i3"]);
+      expect(all.get("i1")!.map((r) => [r.name, r.value])).toEqual([
+        ["MODE", "b"],
+        ["TOKEN", null],
+      ]);
+      expect(all.get("i2")).toHaveLength(1);
+      expect(all.get("i3")).toBeUndefined();
+      expect((await listInstanceSettings(db, [])).size).toBe(0);
+      expect(await deleteInstanceSetting(db, "i1", "MODE")).toBe(true);
+      expect(await deleteInstanceSetting(db, "i1", "MODE")).toBe(false);
+      expect(await deleteInstanceSettings(db, "i1")).toBe(1);
+      expect(await countInstanceSettings(db, "i1")).toBe(0);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instances custom domain columns (plan 7 Task 7)", () => {
+  const COLUMNS = [
+    "custom_domain",
+    "custom_domain_status",
+    "custom_domain_reason",
+    "custom_domain_since",
+    "custom_domain_checked_at",
+    "custom_domain_failures",
+    "custom_domain_token",
+  ];
+  const instance = (id: string, domain: string | null = null) => ({
+    id,
+    app_id: "a1",
+    kind: "own",
+    name: id,
+    status: "pending",
+    created_at: "2026-11-12T00:00:00.000Z",
+    updated_at: "2026-11-12T00:00:00.000Z",
+    custom_domain: domain,
+  });
+
+  it("are added idempotently and concurrently; old rows keep null; a domain is held by one instance only", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await sql`DROP INDEX "vetra-apps".instances_custom_domain_uq`.execute(root);
+      for (const c of COLUMNS)
+        await sql`ALTER TABLE "vetra-apps".instances DROP COLUMN ${sql.ref(c)}`.execute(root);
+      await db
+        .insertInto("instances")
+        .values({ ...instance("old"), custom_domain: undefined })
+        .execute();
+      await Promise.all([1, 2, 3].map(() => ensureInstanceDomainColumns(db)));
+      await ensureInstanceDomainColumns(db);
+      const old = await db
+        .selectFrom("instances")
+        .select(COLUMNS)
+        .where("id", "=", "old")
+        .executeTakeFirstOrThrow();
+      expect(old).toStrictEqual(Object.fromEntries(COLUMNS.map((c) => [c, null])));
+      const index = await sql<{ schemaname: string }>`
+        SELECT schemaname FROM pg_indexes WHERE indexname = 'instances_custom_domain_uq'`.execute(root);
+      expect(index.rows).toStrictEqual([{ schemaname: "vetra-apps" }]);
+
+      await db.insertInto("instances").values(instance("n1")).execute();
+      await db.insertInto("instances").values(instance("n2")).execute();
+      await db.insertInto("instances").values(instance("d1", "app.acme.io")).execute();
+      await expect(
+        db.insertInto("instances").values(instance("d2", "app.acme.io")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("app_settings.mount_path (plan 7 Task 9)", () => {
+  it("is added idempotently and concurrently; old rows keep null", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await sql`ALTER TABLE "vetra-apps".app_settings DROP COLUMN mount_path`.execute(root);
+      await db
+        .insertInto("app_settings")
+        .values({
+          app_id: "a1",
+          scope: "all",
+          name: "OLD",
+          secret: false,
+          value: "v",
+          ciphertext: null,
+          write_id: "w",
+          updated_at: "2026-11-12T00:00:00.000Z",
+          updated_by: "0xaa",
+        })
+        .execute();
+      await Promise.all([1, 2, 3].map(() => ensureSettingsMountPath(db)));
+      await ensureSettingsMountPath(db);
+      const row = await db
+        .selectFrom("app_settings")
+        .select("mount_path")
+        .executeTakeFirstOrThrow();
+      expect(row.mount_path).toBeNull();
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("Team plan schema", () => {
+  it("lets kind be NULL, allows one Team plan per App, and creates team_release_runs, idempotently and concurrently", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await Promise.all([1, 2, 3].map(() => ensureTeamPlanSchema(db)));
+      const plan = (
+        id: string,
+        slug: string,
+        team: boolean,
+        kind: string | null,
+      ) => ({
+        id,
+        app_id: "a1",
+        slug,
+        name: slug,
+        kind,
+        access: "shared",
+        size: "VETRA_AGENT_S",
+        target_version: null,
+        policy: "manual",
+        notice_hours: 0,
+        status: "active",
+        created_by: "0xaa",
+        created_at: "t",
+        updated_at: "t",
+        team,
+      });
+      await db.insertInto("plans").values(plan("p1", "team", true, null)).execute();
+      await db.insertInto("plans").values(plan("p2", "free", false, "free")).execute();
+      await db.insertInto("plans").values(plan("p3", "other", false, null)).execute();
+      await expect(
+        db.insertInto("plans").values(plan("p4", "team-2", true, null)).execute(),
+      ).rejects.toThrow();
+      await db
+        .insertInto("team_release_runs")
+        .values({
+          app_id: "a1",
+          version: "1.0.0",
+          digest: "sha256:x",
+          instance_id: "i1",
+          healthy_since: "t",
+          recorded_at: "t",
+        })
+        .execute();
+      await db
+        .updateTable("instances")
+        .set({ admins_override: "0xaa", admins_checked_at: "t" })
+        .execute();
     } finally {
       await root.destroy();
     }

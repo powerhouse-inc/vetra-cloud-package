@@ -3,9 +3,8 @@ import type { Kysely } from "kysely";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { AppDocView, AppReads } from "./app-reads.js";
 import { UnauthenticatedError } from "./auth.js";
-import type { VetraLicensingDB } from "./db/schema.js";
+import type { LicenseEnvironments, VetraLicensingDB } from "./db/schema.js";
 import { normaliseUserDid } from "./did.js";
-import type { ChainEnvRows } from "./environments.js";
 import type { GrantStore } from "./grants.js";
 import { isLiveEntry, type LifecycleStore } from "./lifecycle.js";
 import { InvalidPublisherInputError } from "./publisher-errors.js";
@@ -236,7 +235,12 @@ export async function environmentForToken(db: Kysely<VetraLicensingDB>, token: s
 
 export interface RelayDeps {
   db: Kysely<VetraLicensingDB>;
-  envRows: Pick<ChainEnvRows, "byEnvironment">;
+  /** The chain of an environment: a licensed environment's row, or (plan 7) an own plan instance's. */
+  envRows: {
+    byEnvironment(
+      environmentId: string,
+    ): Promise<Pick<LicenseEnvironments, "root_license_id" | "app_id" | "user_did"> | null>;
+  };
   grants: Pick<GrantStore, "chainHead" | "grantFor">;
   lifecycle: Pick<LifecycleStore, "entry">;
   /** Ledger-checked app reads: only `tampered` is used here; the document's identity is never the source of an app's DID. */

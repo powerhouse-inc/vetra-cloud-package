@@ -253,7 +253,7 @@ describe("rollouts with backups: pausing, rolling back mid-update, ordering", ()
     await becomeReady(h, "o1");
     await pass();
     const [step] = await stepsOf(h.db, r.id);
-    await h.db.updateTable("instance_backups").set({ status: "expired" }).where("id", "=", step.backup_id!).execute();
+    await h.db.updateTable("instance_backups").set({ expires_at: "2020-01-01T00:00:00.000Z" }).where("id", "=", step.backup_id!).execute();
     await rollBackRollout(h.deps, owner, r.id, { acceptDataLoss: true });
     await pass();
     expect((await stepsOf(h.db, r.id))[0]).toMatchObject({ status: "revert_failed", error: expect.stringMatching(/expired.*restore by hand/) });

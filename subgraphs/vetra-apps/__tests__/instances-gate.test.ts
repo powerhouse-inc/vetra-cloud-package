@@ -40,6 +40,8 @@ beforeEach(async () => {
     name: "API_TOKEN",
     value: "s3cret",
     secret: true,
+    // Publisher secrets reach customers' instances only in PLAN scope (H1).
+    scope: "PLAN",
   });
 });
 afterEach(async () => {

@@ -4,9 +4,17 @@ import { appsError, notConfigured } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { plansConfigOf, rolloutsEnabled } from "../config.js";
+import {
+  planPoolSize,
+  plansConfigOf,
+  rolloutsEnabled,
+  type VetraAppsConfig,
+} from "../config.js";
+import { estimateEnvironmentEurPerMonth } from "../../vetra-licensing/warm-cost.js";
+import { MAX_WARM_POOL_SIZE } from "./pool.js";
+import { warmReadyCounts } from "./pool-repo.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
-import { releaseProblem } from "../rollouts/check.js";
+import { releaseProblem, teamGateProblem } from "../rollouts/check.js";
 import { appInstancesLock } from "../rollouts/repo.js";
 import {
   beginRollout,
@@ -34,18 +42,24 @@ import {
   checkNoticeHours,
   checkPlanSlug,
   parseAccess,
+  parseAiBudget,
   parseSize,
   slugFromKind,
 } from "./rules.js";
+import { isTeamPlan } from "./team-base.js";
 
 export interface PlanJson {
   id: string;
   appId: string;
   slug: string;
   name: string;
-  kind: string;
+  /** The licensing term adopted; null for the Team plan. */
+  kind: string | null;
+  /** The App's Team plan (organisation members; follows a branch). */
+  team: boolean;
   access: string;
   size: string;
+  aiBudgetUsd: number | null;
   targetVersion: string | null;
   policy: string;
   noticeHours: number;
@@ -56,26 +70,47 @@ export interface PlanJson {
   status: string;
   createdAt: string;
   updatedAt: string;
+  /** Warm instances kept ready for new holders (own plans); capped by Vetra. */
+  warmPoolSize: number;
+  /** What is kept: warmPoolSize capped by the environment's VETRA_APPS_PLAN_POOL_MAX. */
+  warmPoolEffective: number;
+  /** Monthly cost of the warm instances, in euros (estimate). */
+  warmPoolEurPerMonth: number;
+  /** Warm instances ready to be claimed now. */
+  warmReady: number;
 }
 
-export const planJson = (p: PlanRow): PlanJson => ({
-  id: p.id,
-  appId: p.app_id,
-  slug: p.slug,
-  name: p.name,
-  kind: p.kind,
-  access: p.access,
-  size: p.size,
-  targetVersion: p.target_version,
-  policy: p.policy,
-  noticeHours: p.notice_hours,
-  // A stored window that does not parse reads as one that is never open.
-  updateWindow: parseWindow(p.update_window),
-  policyNote: p.policy_note ?? null,
-  status: p.status,
-  createdAt: p.created_at,
-  updatedAt: p.updated_at,
-});
+export const planJson = (
+  p: PlanRow,
+  cfg?: VetraAppsConfig,
+  warmReady = 0,
+): PlanJson => {
+  const effective = cfg ? planPoolSize(cfg, p) : 0;
+  return {
+    id: p.id,
+    appId: p.app_id,
+    slug: p.slug,
+    name: p.name,
+    kind: p.kind,
+    team: p.team === true,
+    access: p.access,
+    size: p.size,
+    aiBudgetUsd: p.ai_budget_usd ?? null,
+    targetVersion: p.target_version,
+    policy: p.policy,
+    noticeHours: p.notice_hours,
+    // A stored window that does not parse reads as one that is never open.
+    updateWindow: parseWindow(p.update_window),
+    policyNote: p.policy_note ?? null,
+    status: p.status,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+    warmPoolSize: p.warm_pool_size ?? 0,
+    warmPoolEffective: effective,
+    warmPoolEurPerMonth: estimateEnvironmentEurPerMonth(p.size) * effective,
+    warmReady,
+  };
+};
 
 export interface CreatePlanInput {
   appId: string;
@@ -84,6 +119,7 @@ export interface CreatePlanInput {
   slug?: string | null;
   name?: string | null;
   size?: string | null;
+  aiBudgetUsd?: number | null;
   targetVersion?: string | null;
 }
 
@@ -106,6 +142,8 @@ export interface UpdatePlanInput {
   planId: string;
   name?: string | null;
   size?: string | null;
+  /** null clears; absent leaves it */
+  aiBudgetUsd?: number | null;
   /** manual | patches | minor | follow:<branch> (a release branch of the App). */
   policy?: string | null;
   /** Hours between a rollout's start and the plan's updates (0-720). */
@@ -114,6 +152,19 @@ export interface UpdatePlanInput {
   updateWindow?: UpdateWindow | null;
   /** Removes the window: updates any time after the notice. */
   clearUpdateWindow?: boolean | null;
+  /** Warm instances kept for new holders (own plans only; 0 to MAX_WARM_POOL_SIZE). */
+  warmPoolSize?: number | null;
+}
+
+function checkPoolSize(plan: { access: string }, n: number): number {
+  if (!Number.isInteger(n) || n < 0 || n > MAX_WARM_POOL_SIZE)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `The warm pool is 0 to ${MAX_WARM_POOL_SIZE} instances`,
+    );
+  if (plan.access !== "own")
+    throw appsError("BAD_USER_INPUT", "Only own plans keep warm instances");
+  return n;
 }
 
 /**
@@ -158,7 +209,10 @@ export async function appPlansFor(
   appId: string,
 ): Promise<PlanJson[]> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
-  return (await listPlans(deps.db, app.id)).map(planJson);
+  const ready = await warmReadyCounts(deps.db, app.id);
+  return (await listPlans(deps.db, app.id)).map((p) =>
+    planJson(p, deps.cfg, ready.get(p.id) ?? 0),
+  );
 }
 
 export async function createPlan(
@@ -181,6 +235,8 @@ export async function createPlan(
   const name = checkText("name", input.name?.trim() || kind);
   const access = parseAccess(input.access);
   const size = parseSize(input.size);
+  const aiBudget =
+    input.aiBudgetUsd == null ? null : parseAiBudget(input.aiBudgetUsd);
   const given = input.slug?.trim();
   const slug = given || slugFromKind(kind);
   checkPlanSlug(slug, app, given ? {} : { derivedFrom: kind });
@@ -224,6 +280,13 @@ export async function createPlan(
   const target = input.targetVersion
     ? await checkTarget(deps, app.id, input.targetVersion, access)
     : null;
+  // A customer plan's first target is a rollout too: Team goes first (spec 7).
+  if (target) {
+    const team = await teamGateProblem(deps, app, target, [
+      { slug, team: false, target_version: null },
+    ]);
+    if (team) throw appsError("BAD_USER_INPUT", team);
+  }
   const row = await deps.db
     .transaction()
     .execute(async (trx) => {
@@ -235,6 +298,7 @@ export async function createPlan(
         kind,
         access,
         size,
+        ai_budget_usd: aiBudget,
         target_version: target,
         policy: "manual",
         notice_hours: 72,
@@ -254,6 +318,7 @@ export async function createPlan(
           kind: p.kind,
           access: p.access,
           size: p.size,
+          ...(p.ai_budget_usd ? { aiBudgetUsd: p.ai_budget_usd } : {}),
           targetVersion: p.target_version,
         },
       });
@@ -268,7 +333,7 @@ export async function createPlan(
         );
       throw err;
     });
-  return planJson(row);
+  return planJson(row, deps.cfg);
 }
 
 export async function updatePlanFor(
@@ -277,6 +342,11 @@ export async function updatePlanFor(
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
   const { plan, app } = await loadPlan(deps, caller, input.planId);
+  if (isTeamPlan(plan) && input.policy != null)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "The Team plan follows its branch; change it with enableTeamPlan",
+    );
   const name = input.name == null ? undefined : input.name.trim();
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
@@ -310,45 +380,56 @@ export async function updatePlanFor(
   const patch = {
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
+    ...(input.aiBudgetUsd === undefined
+      ? {}
+      : {
+          ai_budget_usd:
+            input.aiBudgetUsd === null ? null : parseAiBudget(input.aiBudgetUsd),
+        }),
     ...(policy !== undefined ? { policy } : {}),
     ...(input.noticeHours != null
       ? { notice_hours: checkNoticeHours(input.noticeHours) }
       : {}),
     ...(window !== undefined ? { update_window: window } : {}),
+    ...(input.warmPoolSize != null
+      ? { warm_pool_size: checkPoolSize(plan, input.warmPoolSize) }
+      : {}),
   };
   const nowIso = deps.now().toISOString();
-  return planJson(
-    await deps.db.transaction().execute(async (trx) => {
-      // Re-read under lock: a concurrent change is audited once, from what is stored.
-      const cur = await lockPlan(trx, plan.id);
-      const changes: Record<string, { from: unknown; to: unknown }> = {};
-      const note = (key: string, from: unknown, to: unknown) => {
-        if (to !== undefined && to !== from) changes[key] = { from, to };
-      };
-      note("name", cur.name, patch.name);
-      note("size", cur.size, patch.size);
-      note("policy", cur.policy, patch.policy);
-      note("noticeHours", cur.notice_hours, patch.notice_hours);
-      // The window audits its stored JSON text, from and to.
-      note("updateWindow", cur.update_window ?? null, patch.update_window);
-      const p = await updatePlan(
-        trx,
-        plan.id,
-        // A new policy starts over: its last refusal no longer applies.
-        changes.policy ? { ...patch, policy_note: null } : patch,
-        nowIso,
-      );
-      if (Object.keys(changes).length > 0)
-        await auditCaller(trx, caller, {
-          appId: plan.app_id,
-          at: nowIso,
-          action: "plan.updated",
-          subject: `plan:${plan.id}`,
-          detail: { slug: plan.slug, changes },
-        });
-      return p;
-    }),
-  );
+  const updated = await deps.db.transaction().execute(async (trx) => {
+    // Re-read under lock: a concurrent change is audited once, from what is stored.
+    const cur = await lockPlan(trx, plan.id);
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    const note = (key: string, from: unknown, to: unknown) => {
+      if (to !== undefined && to !== from) changes[key] = { from, to };
+    };
+    note("name", cur.name, patch.name);
+    note("size", cur.size, patch.size);
+    note("aiBudgetUsd", cur.ai_budget_usd ?? null, patch.ai_budget_usd);
+    note("policy", cur.policy, patch.policy);
+    note("noticeHours", cur.notice_hours, patch.notice_hours);
+    // The window audits its stored JSON text, from and to.
+    note("updateWindow", cur.update_window ?? null, patch.update_window);
+    note("warmPoolSize", cur.warm_pool_size ?? 0, patch.warm_pool_size);
+    const p = await updatePlan(
+      trx,
+      plan.id,
+      // A new policy starts over: its last refusal no longer applies.
+      changes.policy ? { ...patch, policy_note: null } : patch,
+      nowIso,
+    );
+    if (Object.keys(changes).length > 0)
+      await auditCaller(trx, caller, {
+        appId: plan.app_id,
+        at: nowIso,
+        action: "plan.updated",
+        subject: `plan:${plan.id}`,
+        detail: { slug: plan.slug, changes },
+      });
+    return p;
+  });
+  const ready = await warmReadyCounts(deps.db, plan.app_id);
+  return planJson(updated, deps.cfg, ready.get(plan.id) ?? 0);
 }
 
 /**
@@ -385,7 +466,7 @@ export async function setPlanTarget(
       return;
     await beginRollout(deps, app, target, [cur], callerActor(caller), null);
   });
-  return planJson((await getPlan(deps.db, plan.id))!);
+  return planJson((await getPlan(deps.db, plan.id))!, deps.cfg);
 }
 
 /** No new licences should be issued for it (retire the term too); existing holders keep their instances. */
@@ -395,7 +476,12 @@ export async function retirePlan(
   planId: string,
 ): Promise<PlanJson> {
   const { plan } = await loadPlan(deps, caller, planId);
-  if (plan.status === "retired") return planJson(plan);
+  if (isTeamPlan(plan))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Disable the Team plan instead (owner and organisation admins)",
+    );
+  if (plan.status === "retired") return planJson(plan, deps.cfg);
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
@@ -411,5 +497,6 @@ export async function retirePlan(
       });
       return p;
     }),
+    deps.cfg,
   );
 }

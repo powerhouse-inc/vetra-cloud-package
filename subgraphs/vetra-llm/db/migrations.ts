@@ -42,6 +42,16 @@ export async function up(db: Kysely<any>): Promise<void> {
     if (!exists && !isConcurrentIndexError(err)) throw err;
   }
   try {
+    // Plan instance keys (releases phase 3, plan 7): null for every other key.
+    await db.schema
+      .alterTable("studio_llm_keys")
+      .addColumn("instance_id", "varchar(64)")
+      .execute();
+  } catch (err) {
+    const exists = (err as { code?: unknown } | null)?.code === "42701";
+    if (!exists && !isConcurrentIndexError(err)) throw err;
+  }
+  try {
     await db.schema
       .createIndex("studio_llm_keys_status_idx")
       .ifNotExists()

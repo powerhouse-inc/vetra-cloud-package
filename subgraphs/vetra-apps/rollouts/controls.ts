@@ -492,6 +492,7 @@ export async function rollBackRollout(
         !!i.plan_id &&
         fromOf.has(i.plan_id) &&
         !i.removed_at &&
+        !i.warm &&
         i.target_version === cur.version &&
         !stepped.has(i.id),
     );

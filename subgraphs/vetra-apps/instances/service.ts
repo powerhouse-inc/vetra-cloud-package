@@ -4,7 +4,11 @@ import { getGateToken } from "../gate/repo.js";
 import { instanceGateJson, type InstanceGateJson } from "../gate/service.js";
 import { releaseByVersion, type ReleaseRow } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { INSTANCE_BASE_DOMAIN } from "./reconciler.js";
+import { publicUrlOf } from "./public-host.js";
+import {
+  customDomainJson,
+  type InstanceCustomDomainJson,
+} from "../domains/service.js";
 import { getInstance, listInstances, type InstanceRow } from "./repo.js";
 
 export interface InstanceJson {
@@ -39,12 +43,19 @@ export interface InstanceJson {
   environmentId: string | null;
   /** restore:<id> while a backup is restored into it; held:<id> after a failed restore. */
   maintenance: string | null;
+  /** A warm-pool instance: no holder yet, closed to everyone. */
+  warm: boolean;
+  /** When a holder claimed it from the warm pool. */
+  claimedAt: string | null;
+  /** own: how many settings its holder set (never their names, H2). */
+  holderSettingsCount: number;
+  customDomain: InstanceCustomDomainJson | null;
   updatedAt: string;
   /** shared only: the licence gate (releases phase 3 slice 5). */
   gate: InstanceGateJson | null;
 }
 
-/** Without the gate (null); appInstances adds it for shared instances. */
+/** Without the gate (null) and holderSettingsCount 0; appInstances adds them. */
 export function instanceJson(r: InstanceRow): InstanceJson {
   return {
     id: r.id,
@@ -55,7 +66,7 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     name: r.name,
     branch: r.branch,
     pr: r.pr,
-    url: r.host ? `https://${r.host}.${INSTANCE_BASE_DOMAIN}` : null,
+    url: publicUrlOf(r),
     status: r.status,
     reason: r.reason,
     targetVersion: r.target_version,
@@ -72,6 +83,10 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
     maintenance: r.maintenance ?? null,
+    warm: r.warm === true,
+    claimedAt: r.claimed_at ?? null,
+    holderSettingsCount: 0,
+    customDomain: customDomainJson(r),
     updatedAt: r.updated_at,
     gate: null,
   };
@@ -112,11 +127,36 @@ export async function appInstancesFor(
 ): Promise<InstanceJson[]> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
   const release = releaseReader(deps, app.id);
-  return Promise.all(
-    (await listInstances(deps.db, app.id))
-      .filter((r) => r.status !== "removed")
-      .map((r) => withGateJson(deps, r, release)),
+  const rows = (await listInstances(deps.db, app.id)).filter(
+    (r) => r.status !== "removed",
   );
+  const counts = await holderSettingCounts(
+    deps,
+    rows.filter((r) => r.kind === "own").map((r) => r.id),
+  );
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...(await withGateJson(deps, r, release)),
+      holderSettingsCount: counts.get(r.id) ?? 0,
+    })),
+  );
+}
+
+/** How many settings each own instance's holder set (never their names, H2). */
+async function holderSettingCounts(
+  deps: AppsDeps,
+  own: string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (own.length > 0)
+    for (const c of await deps.db
+      .selectFrom("instance_settings")
+      .select(["instance_id", (eb) => eb.fn.countAll<string>().as("n")])
+      .where("instance_id", "in", own)
+      .groupBy("instance_id")
+      .execute())
+      counts.set(c.instance_id, Number(c.n));
+  return counts;
 }
 
 /** One instance as appInstances shows it. */
@@ -128,5 +168,9 @@ export async function instanceJsonFor(
   const r = await getInstance(deps.db, instanceId);
   if (!r) throw appsError("NOT_FOUND", "Instance not found");
   await loadAppForOwner(deps, caller, r.app_id, { need: "view" });
-  return withGateJson(deps, r, releaseReader(deps, r.app_id));
+  const counts = await holderSettingCounts(deps, r.kind === "own" ? [r.id] : []);
+  return {
+    ...(await withGateJson(deps, r, releaseReader(deps, r.app_id))),
+    holderSettingsCount: counts.get(r.id) ?? 0,
+  };
 }

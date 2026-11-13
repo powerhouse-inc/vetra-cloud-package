@@ -95,6 +95,8 @@ export const schema: DocumentNode = gql`
     withdrawnAt: String
     withdrawnBy: String
     withdrawnReason: String
+    "When this release ran healthy on the App's Team instance (customer rollouts need it)"
+    teamHealthyAt: String
   }
 
   type AppReleasePackage {
@@ -141,6 +143,14 @@ export const schema: DocumentNode = gql`
     environmentId: String
     "restore:<id> while a backup is restored into it; held:<id> after a failed restore (stays stopped until a restore succeeds)"
     maintenance: String
+    "A warm-pool instance: no holder yet, closed to everyone"
+    warm: Boolean!
+    "When a holder claimed it from the warm pool"
+    claimedAt: String
+    "own: how many settings its holder set (their names stay the holder's)"
+    holderSettingsCount: Int!
+    "own: the holder's custom domain"
+    customDomain: InstanceCustomDomain
     updatedAt: String!
     "shared only: the licence gate"
     gate: AppInstanceGate
@@ -202,11 +212,16 @@ export const schema: DocumentNode = gql`
     appId: ID!
     slug: String!
     name: String!
-    kind: String!
+    "The licensing term adopted; null for the Team plan"
+    kind: String
+    "The App's Team plan (organisation members; follows a branch)"
+    team: Boolean!
     "shared | own"
     access: String!
     "VETRA_AGENT_S … VETRA_AGENT_XXL"
     size: String!
+    "Monthly AI budget in USD of every instance's own key; null: no AI key"
+    aiBudgetUsd: Float
     targetVersion: String
     "manual | patches | minor | follow:<branch>: whether new releases roll out by themselves (stable only; in 0.x minor takes patches only; in 0.0.x patches and minor take nothing)"
     policy: String!
@@ -219,6 +234,14 @@ export const schema: DocumentNode = gql`
     status: String!
     createdAt: String!
     updatedAt: String!
+    "Warm instances kept ready for new holders (own plans); capped by Vetra"
+    warmPoolSize: Int!
+    "What is kept: warmPoolSize capped by this Vetra's limit"
+    warmPoolEffective: Int!
+    "Monthly cost of the warm instances, in euros (estimate)"
+    warmPoolEurPerMonth: Int!
+    "Warm instances ready to be claimed now"
+    warmReady: Int!
   }
 
   "An instance the caller holds a licence for"
@@ -233,8 +256,95 @@ export const schema: DocumentNode = gql`
     status: String!
     reason: String
     runningVersion: String
+    "own: the custom domain the holder set"
+    customDomain: InstanceCustomDomain
+    "The live licence's end; null when open-ended or none is live"
+    licenceEndsAt: String
+    "own, licence ended: when Vetra stops the instance"
+    stopsAt: String
+    "own, licence ended, deletion on: when its data is deleted"
+    deletesAt: String
+    notices: [HolderNotice!]!
     "A coming update of this instance; null when none"
     update: HolderUpdate
+  }
+
+  enum HolderNoticeKind {
+    EXPIRING
+    ENDED_STOP_PENDING
+    STOPPED
+    STOPPED_DELETE_PENDING
+    DELETE_IMMINENT
+    APP_DISCONTINUED
+  }
+
+  type HolderNotice {
+    kind: HolderNoticeKind!
+    at: String
+    message: String!
+  }
+
+  "Where a holder's custom domain stands: DNS (waiting for the holder's DNS), ISSUING (applied, certificate pending), ACTIVE (served), FAILED (see reason)"
+  enum CustomDomainStatus {
+    DNS
+    ISSUING
+    ACTIVE
+    FAILED
+  }
+
+  "A DNS record the holder sets"
+  type DnsRecordHint {
+    type: String!
+    host: String!
+    value: String!
+  }
+
+  "A holder's custom domain on their own instance. Applying it moves the instance's host: the generated host stops serving, and HTTPS works once the certificate is issued (minutes)."
+  type InstanceCustomDomain {
+    domain: String!
+    status: CustomDomainStatus!
+    reason: String
+    since: String
+    records: [DnsRecordHint!]!
+    "A CNAME instead of the A record (not at an apex domain)"
+    alternative: DnsRecordHint
+  }
+
+  "A holder setting's kind: plain (value shown), secret or file (write-only)"
+  enum HolderSettingKind {
+    PLAIN
+    SECRET
+    FILE
+  }
+
+  "A setting the holder of an own instance set on it (spec 14.2). Only its holder sees it; secrets and files are write-only."
+  type HolderSetting {
+    name: String!
+    kind: HolderSettingKind!
+    "Plain settings only"
+    value: String
+    "Files only"
+    mountPath: String
+    updatedAt: String!
+  }
+
+  type HolderSettings {
+    settings: [HolderSetting!]!
+    vetra: [VetraInstanceSetting!]!
+    "Names the App's publisher sets on this instance; a holder setting of the same name replaces it."
+    publisherNames: [String!]!
+    reservedNames: [String!]!
+    reservedPrefixes: [String!]!
+  }
+
+  input SetHolderSettingInput {
+    instanceId: ID!
+    "Capitals, digits and _ (derived for files)"
+    name: String
+    kind: HolderSettingKind!
+    value: String!
+    "Files only: where the file is mounted"
+    mountPath: String
   }
 
   input CreatePlanInput {
@@ -246,6 +356,8 @@ export const schema: DocumentNode = gql`
     slug: String
     name: String
     size: String
+    "Monthly AI budget in USD (0 < x <= 1000)"
+    aiBudgetUsd: Float
     "A recorded release of the App"
     targetVersion: String
   }
@@ -254,6 +366,8 @@ export const schema: DocumentNode = gql`
     planId: ID!
     name: String
     size: String
+    "Monthly AI budget in USD; null removes it"
+    aiBudgetUsd: Float
     "manual | patches | minor | follow:<branch>"
     policy: String
     "Hours holders are told before an update"
@@ -261,6 +375,8 @@ export const schema: DocumentNode = gql`
     updateWindow: PlanUpdateWindowInput
     "Remove the update window (any time after the notice)"
     clearUpdateWindow: Boolean
+    "Warm instances kept ready for new holders (own plans only, 0 to 10); capped by Vetra"
+    warmPoolSize: Int
   }
 
   "Weekdays 1 (Monday) to 7 (Sunday) the window starts on; local HH:MM; end <= start runs past midnight; equal: the whole day"
@@ -425,11 +541,13 @@ export const schema: DocumentNode = gql`
     releaseManager: Boolean!
   }
 
-  "Where a publisher setting applies: every instance of the App, or only its branch or preview instances (wins over ALL for the same name)."
+  "Where a publisher setting applies: every instance of the App, or only its branch, preview or plan instances (wins over ALL for the same name)."
   enum AppSettingScope {
     ALL
     BRANCH
     PREVIEW
+    "PLAN: shared and own instances (customers). ALL secrets do not reach them."
+    PLAN
   }
 
   "A publisher setting (spec 14.2). Secrets are write-only: value is null for them."
@@ -438,6 +556,8 @@ export const schema: DocumentNode = gql`
     scope: AppSettingScope!
     secret: Boolean!
     value: String
+    "Files only: where the file is mounted (needs powerhouse-chart secretFiles)"
+    mountPath: String
     updatedAt: String!
     updatedBy: String!
   }
@@ -463,13 +583,15 @@ export const schema: DocumentNode = gql`
 
   input SetAppSettingInput {
     appId: ID!
-    "Capitals, digits and _ (e.g. SEKTAR_OAUTH_RELAY_BASE)"
-    name: String!
+    "Capitals, digits and _ (e.g. SEKTAR_OAUTH_RELAY_BASE); derived for files"
+    name: String
     value: String!
-    "Secret: stored encrypted, never shown again"
+    "Secret: stored encrypted, never shown again (files always are)"
     secret: Boolean!
     "Default ALL"
     scope: AppSettingScope
+    "A file: mounted at this absolute path from a tenant secret (at most 64 KiB, 10 per scope)"
+    mountPath: String
   }
 
   type AppDeployment {
@@ -657,6 +779,8 @@ export const schema: DocumentNode = gql`
     appAccess(appId: ID!): AppAccess!
     "Instances of the plans the caller holds licences of"
     myInstances: [HolderInstance!]!
+    "The settings the caller set on their own instance (holder only)"
+    myInstanceSettings(instanceId: ID!): HolderSettings!
     "The App's rollouts, newest first (default 20, at most 100)"
     appRollouts(appId: ID!, limit: Int): [AppRollout!]!
     rollout(id: ID!): AppRollout
@@ -686,6 +810,16 @@ export const schema: DocumentNode = gql`
       name: String!
       scope: AppSettingScope
     ): Boolean!
+    "Set or replace a setting on the caller's own instance (holder only); it rolls on the next pass"
+    setMyInstanceSetting(input: SetHolderSettingInput!): HolderSetting!
+    "Delete a setting from the caller's own instance (holder only)"
+    deleteMyInstanceSetting(instanceId: ID!, name: String!): Boolean!
+    "Point the caller's own instance at a custom domain (holder only); applied once DNS points at Vetra, and then the generated host stops serving"
+    setMyInstanceCustomDomain(instanceId: ID!, domain: String!): InstanceCustomDomain!
+    "Drop the custom domain of the caller's own instance (holder only); it is served at its generated host again"
+    removeMyInstanceCustomDomain(instanceId: ID!): Boolean!
+    "Platform admins: slice 9 moves a licensed environment's domain to the holder's instance."
+    moveCustomDomainToInstance(fromEnvironmentId: ID!, instanceId: ID!): InstanceCustomDomain!
     "Turn a licensing term into a plan (shared or own instances)"
     createPlan(input: CreatePlanInput!): AppPlan!
     updatePlan(input: UpdatePlanInput!): AppPlan!
@@ -714,6 +848,10 @@ export const schema: DocumentNode = gql`
     backUpInstance(instanceId: ID!): InstanceBackup!
     "Restore one of the instance's backups into it; acceptDataLoss must be true (data written since is lost)"
     restoreInstanceBackup(instanceId: ID!, backupId: ID!, acceptDataLoss: Boolean!): InstanceRestore!
+    "Owner and organisation admins: turn on the Team plan (organisation Apps), following a release branch (default: the production branch)"
+    enableTeamPlan(appId: ID!, followBranch: String): AppPlan!
+    "Owner and organisation admins: turn the Team plan off (its instance stops; data kept)"
+    disableTeamPlan(appId: ID!): AppPlan!
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!
     removeAppRole(appId: ID!, address: String!, role: String): Boolean!

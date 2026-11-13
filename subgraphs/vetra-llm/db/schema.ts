@@ -19,6 +19,8 @@ export interface StudioLlmKeys {
    * licence chain whose redeemed code sets its budget. Null for a Studio key.
    */
   root_license_id?: string | null;
+  /** Set for a plan instance's key (`instance:<id>`): its plan's fixed budget answers for it. */
+  instance_id?: string | null;
   status: LlmKeyStatus;
   created_at: string;
   updated_at: string;

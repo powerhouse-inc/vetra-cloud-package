@@ -5,6 +5,7 @@ import type { KeyVault } from "../vetra-licensing/key-vault.js";
 import type { StudioLlmBudget } from "../vetra-licensing/studio-access.js";
 import {
   APP_KEY_NAME_PREFIX,
+  INSTANCE_KEY_NAME_PREFIX,
   KEY_NAME_PREFIX,
   OPENROUTER_KEY_SECRET,
   keyBudget,
@@ -37,6 +38,8 @@ export interface SweepDeps {
    * the licence is active, else null. Absent: app keys are left alone.
    */
   appBudget?(rootLicenseId: string, ownerDid: string): Promise<number | null>;
+  /** A plan instance's AI budget (plan 7 Task 10); null: disabled. Absent: instance keys are left alone. */
+  planBudget?(instanceId: string): Promise<number | null>;
   /** The env's projection row; null when the env document is gone. */
   envOf(
     environmentId: string,
@@ -80,14 +83,24 @@ async function sweepRow(
 
   // An app licence environment's key answers to its licence, not to Studio.
   const root = row.root_license_id ?? null;
+  const instance = row.instance_id ?? null;
   if (root && !d.appBudget) return;
-  const budget = await keyBudget(d, row.owner_did, environmentId, root);
+  if (instance && !d.planBudget) return;
+  const budget = await keyBudget(
+    d,
+    row.owner_did,
+    environmentId,
+    root,
+    instance,
+  );
+  // App and instance keys are mounted by key: their tenant secret stays.
+  const mounted = Boolean(root || instance);
   if (!budget.allowed || budget.budgetUsd <= 0) {
     if (row.status === "ACTIVE") {
       await d.openrouter.updateKey(row.key_hash, { disabled: true });
       // An app's FUSION service mounts the secret by key: it stays, and the
       // disabled key is the app's business.
-      if (env.tenantId && !root)
+      if (env.tenantId && !mounted)
         await d.secrets.deleteSecret(env.tenantId, OPENROUTER_KEY_SECRET);
       await d.store.update(environmentId, {
         status: "DISABLED",
@@ -103,7 +116,7 @@ async function sweepRow(
       disabled: false,
       limitUsd: budget.budgetUsd,
     });
-    if (env.tenantId && row.key_ciphertext && !root) {
+    if (env.tenantId && row.key_ciphertext && !mounted) {
       await d.secrets.setSecret(
         env.tenantId,
         OPENROUTER_KEY_SECRET,
@@ -139,7 +152,8 @@ async function sweepOrphans(
   for (const key of await d.openrouter.listKeys({ workspaceId })) {
     const ours =
       key.name.startsWith(KEY_NAME_PREFIX) ||
-      key.name.startsWith(APP_KEY_NAME_PREFIX);
+      key.name.startsWith(APP_KEY_NAME_PREFIX) ||
+      key.name.startsWith(INSTANCE_KEY_NAME_PREFIX);
     if (!ours || known.has(key.hash)) continue;
     const created = Date.parse(key.createdAt);
     if (!Number.isFinite(created) || created > cutoff) continue;
