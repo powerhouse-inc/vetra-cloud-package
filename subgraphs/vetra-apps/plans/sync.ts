@@ -105,7 +105,9 @@ async function ownPlanResolver(
   plans: PlanRow[],
   live: Map<string, ChainHead>,
 ): Promise<(head: ChainHead) => PlanRow | undefined> {
-  const byKind = new Map(plans.map((p) => [p.kind, p]));
+  const byKind = new Map(
+    plans.flatMap((p) => (p.kind ? [[p.kind, p] as const] : [])),
+  );
   const own = (p: PlanRow | undefined) => (p?.access === "own" ? p : undefined);
   // Only chains whose head is of no plan's kind need their history.
   const roots = plans.some((p) => p.access === "own")

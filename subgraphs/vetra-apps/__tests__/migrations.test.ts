@@ -15,6 +15,7 @@ import {
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
   ensureRolloutColumns,
+  ensureTeamPlanSchema,
   ensureRolloutTables,
   ensureStudioProductColumns,
   isConcurrentIndexError,
@@ -836,6 +837,63 @@ describe("instance_gate_tokens", () => {
       await expect(
         db.insertInto("instance_gate_tokens").values(row("i2")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("Team plan schema", () => {
+  it("lets kind be NULL, allows one Team plan per App, and creates team_release_runs, idempotently and concurrently", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await Promise.all([1, 2, 3].map(() => ensureTeamPlanSchema(db)));
+      const plan = (
+        id: string,
+        slug: string,
+        team: boolean,
+        kind: string | null,
+      ) => ({
+        id,
+        app_id: "a1",
+        slug,
+        name: slug,
+        kind,
+        access: "shared",
+        size: "VETRA_AGENT_S",
+        target_version: null,
+        policy: "manual",
+        notice_hours: 0,
+        status: "active",
+        created_by: "0xaa",
+        created_at: "t",
+        updated_at: "t",
+        team,
+      });
+      await db.insertInto("plans").values(plan("p1", "team", true, null)).execute();
+      await db.insertInto("plans").values(plan("p2", "free", false, "free")).execute();
+      await db.insertInto("plans").values(plan("p3", "other", false, null)).execute();
+      await expect(
+        db.insertInto("plans").values(plan("p4", "team-2", true, null)).execute(),
+      ).rejects.toThrow();
+      await db
+        .insertInto("team_release_runs")
+        .values({
+          app_id: "a1",
+          version: "1.0.0",
+          digest: "sha256:x",
+          instance_id: "i1",
+          healthy_since: "t",
+          recorded_at: "t",
+        })
+        .execute();
+      await db
+        .updateTable("instances")
+        .set({ admins_override: "0xaa", admins_checked_at: "t" })
+        .execute();
     } finally {
       await root.destroy();
     }

@@ -43,7 +43,10 @@ export interface PlanJson {
   appId: string;
   slug: string;
   name: string;
-  kind: string;
+  /** The licensing term adopted; null for the Team plan. */
+  kind: string | null;
+  /** The App's Team plan (organisation members; follows a branch). */
+  team: boolean;
   access: string;
   size: string;
   targetVersion: string | null;
@@ -64,6 +67,7 @@ export const planJson = (p: PlanRow): PlanJson => ({
   slug: p.slug,
   name: p.name,
   kind: p.kind,
+  team: p.team === true,
   access: p.access,
   size: p.size,
   targetVersion: p.target_version,

@@ -72,6 +72,17 @@ export async function checkGate(
         ttlSeconds: GATE_TTL_SECONDS,
       },
     };
+  // A kind-less plan (Team) has no licences: only ADMINS get in (slice 6 Task 7 adds members).
+  if (plan.kind === null)
+    return {
+      instanceId: row.id,
+      answer: {
+        allowed: false,
+        reason: "none",
+        until: null,
+        ttlSeconds: GATE_DENIED_TTL_SECONDS,
+      },
+    };
   if (!deps.licensingDb) throw notConfigured("The licensing tables");
   const live = await liveLicenceOf(
     deps.licensingDb,
