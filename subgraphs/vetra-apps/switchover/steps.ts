@@ -2,7 +2,12 @@ import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
 import { BackupBusyError } from "../backups/service.js";
 import { switchoverConfigOf, type SwitchoverConfig } from "../config.js";
 import { getHold } from "../holds/repo.js";
-import { appPodGone, holdEnvironment, releaseHold } from "../holds/service.js";
+import {
+  appPodGone,
+  holdEnvironment,
+  releaseHold,
+  rerender,
+} from "../holds/service.js";
 import { insertInstance, type InstanceRow } from "../instances/repo.js";
 import { targetOf } from "../instances/targets.js";
 import { ownInstanceName } from "../plans/sync.js";
@@ -616,6 +621,9 @@ const linking: Step = async (c, row) => {
         },
       });
   });
+  // Verification passed: the instance's ingress opens (it rendered closed
+  // until its switch-over left VERIFYING).
+  if (inst.environment_id) await rerender(c.deps.envs, inst.environment_id);
   return advance();
 };
 

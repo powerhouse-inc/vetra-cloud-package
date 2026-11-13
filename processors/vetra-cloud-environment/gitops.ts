@@ -1566,8 +1566,9 @@ export async function generateValuesYaml(
       : null;
   // One warm-pool lookup per render, shared with the image resolver.
   const warm = isWarm ? await lookupWarm(isWarm, documentId) : undefined;
-  // A switch-over dry-run clone (marked by the lookup): never publicly reachable.
-  const unclaimedPlan = warm?.rehearsal === true;
+  // A switch-over dry-run clone, or a new instance not yet verified (marked by
+  // the lookup): no public ingress.
+  const unclaimedPlan = warm?.rehearsal === true || warm?.unverified === true;
   const switchboardCustomIngress =
     !unclaimedPlan && customDomain && switchboardEnabled && !switchboardApexDomain
       ? generateCustomDomainIngress("switchboard", customDomain)
@@ -1757,16 +1758,16 @@ database:
       defaultPoolSize: 50
       maxClientConnections: 400
     backup:
-      enabled: ${!preview && !unclaimedPlan}
+      enabled: ${!preview && warm?.rehearsal !== true}
       destinationPath: s3://powerhouse-cnpg-backups/${tenantId}/
       endpointURL: https://hel1.your-objectstorage.com
       credentialsSecret: s3-credentials
       retentionPolicy: 180d
       useExistingSecret: true
       scheduledBackup:
-        enabled: ${!preview && !unclaimedPlan}
+        enabled: ${!preview && warm?.rehearsal !== true}
         schedule: 0 2 * * *
-        immediate: ${!preview && !unclaimedPlan}
+        immediate: ${!preview && warm?.rehearsal !== true}
     resources:
       # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
       # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was

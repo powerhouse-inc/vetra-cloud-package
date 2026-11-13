@@ -242,7 +242,12 @@ describe("the window: hold the old environment, copy, check, start", () => {
       `http://powerhouse-${tenant}-app.${tenant}.svc.cluster.local:80/`,
     );
     expect(f.h.probed).not.toContain(`https://${OLD_HOST}.vetra.io/`);
+    const renders = () =>
+      f!.h.envs.executed.filter((e) => e.id === inst0.environment_id).length;
+    const before = renders();
     await advanceSwitchover(f.h.deps, f.sw.id);
+    // LINKING re-renders the verified instance: its ingress opens.
+    expect(renders()).toBeGreaterThan(before);
     const linked = await f.row();
     expect(linked.state).toBe("AWAITING_CONFIRMATION");
     const lic = await f.h.deps

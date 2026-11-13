@@ -18,6 +18,8 @@ export type WarmPoolEntry = {
   appId: string;
   /** A switch-over dry-run clone: every ingress closed, backups off. */
   rehearsal?: boolean;
+  /** A switch-over's new instance that runs but is not verified yet: ingress closed. */
+  unverified?: boolean;
 };
 
 /**

@@ -84,7 +84,7 @@ function block(yaml: string, key: string): string {
 const render = (
   state: VetraCloudEnvironmentState,
   held: boolean | (() => Promise<boolean>),
-  isWarm: (() => Promise<{ appId: string; rehearsal?: boolean } | null>) | null = null,
+  isWarm: (() => Promise<{ appId: string; rehearsal?: boolean; unverified?: boolean } | null>) | null = null,
 ) =>
   generateValuesYaml(
     dbStub,
@@ -290,6 +290,15 @@ describe("a dry-run clone (marked by the lookup) has no public ingress and no ba
     expect(yaml).toMatch(/backup:\n {6}enabled: false/);
     expect(yaml).toMatch(/scheduledBackup:\n {8}enabled: false/);
     expect(yaml).toMatch(/immediate: false/);
+  });
+
+  it("a real switch-over's new instance renders closed until verified, with its backups kept", async () => {
+    const unverified = async () => ({ appId: "app-1", unverified: true });
+    const yaml = await render(plan(), false, unverified);
+    expect(block(yaml, "app")).toMatch(/  ingress:\n    enabled: true\n    className: traefik\n    closed: true/);
+    expect(yaml).toMatch(/backup:\n {6}enabled: true/);
+    // Verified (lookup says nothing): it opens.
+    expect(block(await render(plan(), false, async () => null), "app")).not.toContain("closed:");
   });
 
   it("a Team-like PLAN env (ADMINS empty, lookup null) keeps every ingress and its backups", async () => {

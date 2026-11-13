@@ -262,6 +262,28 @@ describe("createInstancePoolLookup: rehearsal clones", () => {
     expect(await lookup("env-new")).toBeNull();
   });
 
+  it("marks a real switch-over's new instance unverified only in STARTING and VERIFYING", async () => {
+    await sw("s-real", "real");
+    await db
+      .insertInto("instances")
+      .values(
+        row({ id: "n1", warm: false, environment_id: "env-new", switchover_id: "s-real", holder_address: "0x9" }),
+      )
+      .execute();
+    const lookup = createInstancePoolLookup(db);
+    const at = async (state: string) => {
+      await db.updateTable("switchovers").set({ state }).execute();
+      return lookup("env-new");
+    };
+    for (const state of ["PREPARED", "HOLDING_OLD", "RESTORING", "CHECKING_COPY", "LINKING", "AWAITING_CONFIRMATION"])
+      expect(await at(state)).toBeNull();
+    for (const state of ["STARTING", "VERIFYING"])
+      expect(await at(state)).toEqual({ appId: "app-1", unverified: true });
+    // Linked (switchover_id cleared): open.
+    await db.updateTable("instances").set({ switchover_id: null }).execute();
+    expect(await lookup("env-new")).toBeNull();
+  });
+
   it("does not mark a clone row that has a holder", async () => {
     await sw("s-dry", "dry_run");
     await db
