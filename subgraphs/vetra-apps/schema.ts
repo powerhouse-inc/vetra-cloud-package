@@ -95,6 +95,8 @@ export const schema: DocumentNode = gql`
     withdrawnAt: String
     withdrawnBy: String
     withdrawnReason: String
+    "When this release ran healthy on the App's Team instance (customer rollouts need it)"
+    teamHealthyAt: String
   }
 
   type AppReleasePackage {
@@ -167,7 +169,10 @@ export const schema: DocumentNode = gql`
     appId: ID!
     slug: String!
     name: String!
-    kind: String!
+    "The licensing term adopted; null for the Team plan"
+    kind: String
+    "The App's Team plan (organisation members; follows a branch)"
+    team: Boolean!
     "shared | own"
     access: String!
     "VETRA_AGENT_S … VETRA_AGENT_XXL"
@@ -778,6 +783,10 @@ export const schema: DocumentNode = gql`
     "A holder's own instance: its waiting update starts now, outside the notice and window"
     updateInstanceNow(instanceId: ID!): HolderUpdate!
     retirePlan(planId: ID!): AppPlan!
+    "Owner and organisation admins: turn on the Team plan (organisation Apps), following a release branch (default: the production branch)"
+    enableTeamPlan(appId: ID!, followBranch: String): AppPlan!
+    "Owner and organisation admins: turn the Team plan off (its instance stops; data kept)"
+    disableTeamPlan(appId: ID!): AppPlan!
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!
     removeAppRole(appId: ID!, address: String!, role: String): Boolean!

@@ -164,6 +164,7 @@ export interface VetraAppsDB {
   instances: InstancesTable;
   instance_gate_tokens: InstanceGateTokensTable;
   plans: PlansTable;
+  team_release_runs: TeamReleaseRunsTable;
   environment_holds: EnvironmentHoldsTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
@@ -294,14 +295,25 @@ export type PlanAccess = "shared" | "own";
 export type PlanStatus = "active" | "retired";
 
 /** What holders of one licensing term get (spec section 7; overview gap 1: a plan adopts a term by kind). */
+/** A release that ran healthy on the App's Team instance (spec section 7 step 1). */
+export interface TeamReleaseRunsTable {
+  app_id: string;
+  version: string;
+  digest: string;
+  instance_id: string;
+  /** The health_since that qualified (healthy on the digest since then). */
+  healthy_since: string;
+  recorded_at: string;
+}
+
 export interface PlansTable {
   id: string;
   app_id: string;
   /** Names the shared instance; unique per App (plans/rules.ts). */
   slug: string;
   name: string;
-  /** The licensing term kind adopted: its live licences are this plan's holders. Unique per App. */
-  kind: string;
+  /** The licensing term kind adopted: its live licences are this plan's holders. Unique per App when set; NULL only for the Team plan (no term). */
+  kind: string | null;
   access: PlanAccess;
   /** VETRA_AGENT_S … VETRA_AGENT_XXL: the FUSION size of every instance of the plan. */
   size: string;
@@ -317,6 +329,8 @@ export interface PlansTable {
   /** "<version>: <reason>" of the last policy rollout the check refused; null when none. */
   policy_note?: string | null;
   status: PlanStatus;
+  /** The App's Team plan (spec section 5): kind NULL, slug team, one per App. */
+  team?: boolean | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -543,6 +557,12 @@ export interface InstancesTable {
   custom_domain_failures?: number | null;
   /** dns: the per-instance token the holder publishes at _vetra-verify.<domain> (TXT). */
   custom_domain_token?: string | null;
+  /** ADMINS to render instead of the kind's default (Team: the org's admins). */
+  admins_override?: string | null;
+  /** The organisation the override was read for; ignored once the App's org differs. */
+  admins_override_org?: string | null;
+  /** When the override was last refreshed from Renown. */
+  admins_checked_at?: string | null;
   /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
   pinned_version?: string | null;
   created_at: string;

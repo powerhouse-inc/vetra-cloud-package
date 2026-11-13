@@ -258,3 +258,29 @@ describe("RenownSyncGuard", () => {
     expect(guard.size).toBeLessThan(5);
   });
 });
+
+describe("orgAdmins", () => {
+  it("lists public ACTIVE owners and admins, lowercased and sorted; null for private, archived or unknown orgs", async () => {
+    const { orgs, calls } = client([
+      {
+        data: {
+          organization: { membersPublic: true, archived: false, takenDown: false },
+          organizationMembers: [
+            { address: "0xBB", role: "ADMIN", status: "ACTIVE" },
+            { address: "0xaa", role: "OWNER", status: "ACTIVE" },
+            { address: "0xcc", role: "MEMBER", status: "ACTIVE" },
+            { address: "0xdd", role: "ADMIN", status: "ENDED" },
+            { address: "0xaa", role: "OWNER", status: "ACTIVE" },
+          ],
+        },
+      },
+      { data: { organization: { membersPublic: false, archived: false, takenDown: false }, organizationMembers: [] } },
+      { data: { organization: null, organizationMembers: [] } },
+    ]);
+    expect(await orgs.orgAdmins!("o1")).toEqual(["0xaa", "0xbb"]);
+    expect(await orgs.orgAdmins!("o1")).toEqual(["0xaa", "0xbb"]);
+    expect(calls).toHaveLength(1);
+    expect(await orgs.orgAdmins!("o2")).toBeNull();
+    expect(await orgs.orgAdmins!("o3")).toBeNull();
+  });
+});

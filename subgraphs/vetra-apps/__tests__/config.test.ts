@@ -8,6 +8,7 @@ import {
   rolloutsEnabled,
   rolloutsHeld,
   switchoverConfigOf,
+  teamSoakMs,
 } from "../config.js";
 
 describe("Studio Apps config", () => {
@@ -304,5 +305,20 @@ describe("gate config", () => {
     expect(() => loadAppsConfig({ VETRA_APPS_GATE: "maybe" })).toThrow(
       /on\/off/,
     );
+  });
+});
+
+describe("team soak", () => {
+  it("reads VETRA_APPS_TEAM_SOAK_MINUTES (0-1440), defaults to 30, refuses bad values", () => {
+    expect(
+      loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "0" }).plans?.teamSoakMinutes,
+    ).toBe(0);
+    expect(
+      teamSoakMs(loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "45" })),
+    ).toBe(45 * 60_000);
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "1441" }),
+    ).toThrow();
+    expect(teamSoakMs(loadAppsConfig({}))).toBe(30 * 60_000);
   });
 });

@@ -37,6 +37,8 @@ import {
   type AppsDeps,
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { syncTeamPlan } from "../plans/team.js";
+import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
 import { getHold } from "../holds/repo.js";
@@ -246,6 +248,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   if (plans.enabled && wantsInstances(app)) {
     try {
       await syncPlanInstances(deps, app);
+      await syncTeamPlan(deps, app);
     } catch (err) {
       // Licensing's tables may not exist yet (boot order); branch and preview instances go on.
       deps.logger.warn(
@@ -341,12 +344,32 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
 
-
-/** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
-export function adminsOf(app: AppRow, row: InstanceRow): string {
+/**
+ * ADMINS per kind (spec section 5): the holder of an own instance, else the App
+ * owner. A Team instance gets the org's admins (a valid override) or none at
+ * all: its access then goes through the gate's membership branch, never the
+ * App's creator (who may have left the organisation).
+ */
+export function adminsOf(
+  app: AppRow,
+  row: InstanceRow,
+  opts: { team?: boolean; now?: Date } = {},
+): string {
+  if (opts.team) return validTeamAdmins(app, row, opts.now ?? new Date()) ?? "";
+  if (row.admins_override) return row.admins_override;
   return row.kind === "own" && row.holder_address
     ? row.holder_address
     : app.owner_address;
+}
+
+async function adminsFor(
+  deps: AppsDeps,
+  app: AppRow,
+  row: InstanceRow,
+): Promise<string> {
+  const team =
+    !!row.plan_id && (await teamPlanOf(deps.db, app.id))?.id === row.plan_id;
+  return adminsOf(app, row, { team, now: deps.now() });
 }
 
 const sizeOf = (row: InstanceRow) =>
@@ -935,7 +958,7 @@ async function reconcileEnvironment(
       await patch(deps, row, { stopped_by_vetra: false });
     }
   }
-  const admins = adminsOf(app, row);
+  const admins = await adminsFor(deps, app, row);
   const size = sizeOf(row);
 
   if (!declaresVetraSecrets(state) && isPlanKind(row.kind)) {
@@ -1324,7 +1347,7 @@ async function initEnvironment(
         prNumber: row.kind === "preview" ? row.pr : null,
         imageProject: app.registry_namespace!,
         image,
-        admins: adminsOf(app, row),
+        admins: await adminsFor(deps, app, row),
         settings: envSettings(settings),
         // Started by reconcileEnvironment once its tenant has the secrets.
         start: false,
