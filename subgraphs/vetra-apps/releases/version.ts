@@ -45,13 +45,16 @@ function compareIdent(a: string | number, b: string | number): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Semver order of two releases; throws when either is a build. */
-export function compareReleases(a: string, b: string): number {
-  if (versionKind(a) !== "release" || versionKind(b) !== "release") {
-    throw new Error(`compareReleases: ${a} or ${b} is a build, not a release`);
-  }
-  const x = parseVersion(a)!;
-  const y = parseVersion(b)!;
+/**
+ * Full semver precedence of any two parseable versions, builds' prereleases
+ * included (e.g. Powerhouse 6.2.3-dev.101 < 6.2.3-dev.102 < 6.2.3). Throws
+ * when either does not parse.
+ */
+export function compareSemver(a: string, b: string): number {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  if (!x || !y)
+    throw new Error(`compareSemver: ${a} or ${b} is not a semver version`);
   for (const k of ["major", "minor", "patch"] as const) {
     if (x[k] !== y[k]) return x[k] - y[k];
   }
@@ -65,4 +68,18 @@ export function compareReleases(a: string, b: string): number {
     if (c !== 0) return c;
   }
   return 0;
+}
+
+/** Semver order of two releases; throws when either is a build. */
+export function compareReleases(a: string, b: string): number {
+  if (versionKind(a) !== "release" || versionKind(b) !== "release") {
+    throw new Error(`compareReleases: ${a} or ${b} is a build, not a release`);
+  }
+  return compareSemver(a, b);
+}
+
+/** v >= min in semver precedence; false when either does not parse. */
+export function powerhouseAtLeast(v: string, min: string): boolean {
+  if (!parseVersion(v) || !parseVersion(min)) return false;
+  return compareSemver(v, min) >= 0;
 }
