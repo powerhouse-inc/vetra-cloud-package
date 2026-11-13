@@ -89,15 +89,17 @@ export function createEnvironmentStopper(
     sleepsClint?: boolean;
   },
 ): EnvironmentStopper {
-  const ownHold = async (id: string) => {
-    let hold;
+  const holdOf = async (id: string) => {
     try {
-      hold = await getHold(deps.db, id);
+      return await getHold(deps.db, id);
     } catch (err) {
       // vetra-apps has not created the holds table yet: nothing is held.
-      if ((err as { code?: unknown } | null)?.code === "42P01") return false;
+      if ((err as { code?: unknown } | null)?.code === "42P01") return null;
       throw err;
     }
+  };
+  const ownHold = async (id: string) => {
+    const hold = await holdOf(id);
     return (
       !!hold && hold.switchover_id === null && hold.reason === opts.reason
     );
@@ -105,6 +107,15 @@ export function createEnvironmentStopper(
   return {
     async stop(id) {
       if (opts.keepsDatabase) {
+        // Already held: ours is in place, and another's (a switch-over, a
+        // plan instance) is left as it is; never slept (that would delete
+        // the database the hold keeps).
+        const existing = await holdOf(id);
+        if (existing)
+          return existing.switchover_id === null &&
+            existing.reason === opts.reason
+            ? "held"
+            : "skipped";
         const state = await deps.envs.getState(id);
         if (!state) return "skipped";
         if (

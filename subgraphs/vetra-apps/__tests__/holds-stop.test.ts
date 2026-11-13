@@ -159,6 +159,35 @@ describe("environment stopper", () => {
     expect(await s.stop(id)).toBe("held");
   });
 
+  it("skips an environment already held: no state read, no re-render, never a sleep", async () => {
+    const id = await switchboardEnv();
+    const s = createEnvironmentStopper(h.deps, { keepsDatabase: true, reason: "licence ended" });
+    expect(await s.stop(id)).toBe("held");
+    h.envs.executed.length = 0;
+    let reads = 0;
+    const getState = h.envs.getState.bind(h.envs);
+    h.envs.getState = async (envId: string) => {
+      reads++;
+      return getState(envId);
+    };
+    expect(await s.stop(id)).toBe("held");
+    expect(reads).toBe(0);
+    expect(types()).toEqual([]);
+
+    // held by someone else (a switch-over): left as it is, not slept
+    const other = await switchboardEnv();
+    await insertHold(h.db, {
+      environment_id: other,
+      reason: "switch-over",
+      switchover_id: "sw-1",
+      created_by: "vetra",
+      created_at: "2026-11-12T00:00:00.000Z",
+    });
+    expect(await s.stop(other)).toBe("skipped");
+    expect(types()).toEqual([]);
+    expect(await getHold(h.db, other)).toMatchObject({ switchover_id: "sw-1" });
+  });
+
   it("knows which environments carry a database", async () => {
     const sb = await switchboardEnv();
     const clint = await clintOnlyEnv();
