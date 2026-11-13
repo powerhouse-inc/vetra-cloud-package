@@ -9,6 +9,7 @@ import {
   rolloutsEnabled,
   rolloutsHeld,
   switchoverConfigOf,
+  teamSoakMs,
 } from "../config.js";
 
 describe("Studio Apps config", () => {
@@ -125,7 +126,12 @@ describe("plans config", () => {
       enabled: false,
       stopAfterDays: 14,
       poolMax: 0,
+      destroy: false,
     });
+    expect(
+      loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "on" }).plans?.destroy,
+    ).toBe(true);
+    expect(() => loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "x" })).toThrow();
     expect(DEFAULT_PLANS).toEqual({
       enabled: false,
       stopAfterDays: 14,
@@ -138,7 +144,7 @@ describe("plans config", () => {
         VETRA_APPS_PLANS: " On ",
         VETRA_APPS_PLAN_STOP_AFTER_DAYS: "7",
       }).plans,
-    ).toEqual({ enabled: true, stopAfterDays: 7, poolMax: 0 });
+    ).toEqual({ enabled: true, stopAfterDays: 7, destroy: false, poolMax: 0 });
   });
   it("reads VETRA_APPS_PLAN_POOL_MAX (0-10, default 0) and caps a plan's pool with it", () => {
     expect(loadAppsConfig({}).plans?.poolMax).toBe(0);
@@ -179,7 +185,12 @@ describe("plans config", () => {
     const on = loadAppsConfig({ VETRA_APPS_PLANS: "on" });
     expect(rolloutsEnabled(on)).toBe(true);
     expect(rolloutsHeld(on)).toBe(false);
-    expect(on.plans).toEqual({ enabled: true, stopAfterDays: 14, poolMax: 0 });
+    expect(on.plans).toEqual({
+      enabled: true,
+      stopAfterDays: 14,
+      destroy: false,
+      poolMax: 0,
+    });
     expect(
       rolloutsEnabled(
         loadAppsConfig({ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "off" }),
@@ -194,6 +205,7 @@ describe("plans config", () => {
       enabled: true,
       stopAfterDays: 14,
       poolMax: 0,
+      destroy: false,
       rolloutsHold: true,
     });
     expect(() => loadAppsConfig({ VETRA_APPS_ROLLOUTS_HOLD: "later" })).toThrow(
@@ -325,5 +337,20 @@ describe("gate config", () => {
     expect(() => loadAppsConfig({ VETRA_APPS_GATE: "maybe" })).toThrow(
       /on\/off/,
     );
+  });
+});
+
+describe("team soak", () => {
+  it("reads VETRA_APPS_TEAM_SOAK_MINUTES (0-1440), defaults to 30, refuses bad values", () => {
+    expect(
+      loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "0" }).plans?.teamSoakMinutes,
+    ).toBe(0);
+    expect(
+      teamSoakMs(loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "45" })),
+    ).toBe(45 * 60_000);
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "1441" }),
+    ).toThrow();
+    expect(teamSoakMs(loadAppsConfig({}))).toBe(30 * 60_000);
   });
 });

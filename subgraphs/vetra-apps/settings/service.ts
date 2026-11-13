@@ -3,10 +3,16 @@ import type { Caller } from "../auth.js";
 import type { AppSettingScope } from "../db/schema.js";
 import { gateConfigOf } from "../config.js";
 import { appsError, notConfigured } from "../errors.js";
+import { AI_KEY_SECRET } from "../instances/vetra-secrets.js";
+import { listPlans } from "../plans/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import {
+  checkFileValue,
+  checkMountPath,
   checkSettingName,
   checkSettingValue,
+  fileKey,
+  MAX_FILES,
   MAX_SETTINGS_PER_APP,
   RESERVED_PREFIXES,
   RESERVED_SETTING_NAMES,
@@ -22,21 +28,24 @@ import {
   type AppSettingRow,
 } from "./repo.js";
 
-export type AppSettingScopeName = "ALL" | "BRANCH" | "PREVIEW";
+export type AppSettingScopeName = "ALL" | "BRANCH" | "PREVIEW" | "PLAN";
 const TO_SCOPE: Record<AppSettingScopeName, AppSettingScope> = {
   ALL: "all",
   BRANCH: "branch",
   PREVIEW: "preview",
+  PLAN: "plan",
 };
 const FROM_SCOPE: Record<AppSettingScope, AppSettingScopeName> = {
   all: "ALL",
   branch: "BRANCH",
   preview: "PREVIEW",
+  plan: "PLAN",
 };
 const SCOPE_ORDER: Record<AppSettingScope, number> = {
   all: 0,
   branch: 1,
   preview: 2,
+  plan: 3,
 };
 
 export interface AppSettingJson {
@@ -45,6 +54,8 @@ export interface AppSettingJson {
   secret: boolean;
   /** Plain settings only; null for secrets (write-only). */
   value: string | null;
+  /** Files only: where the file is mounted (its name is derived). */
+  mountPath: string | null;
   updatedAt: string;
   updatedBy: string;
 }
@@ -60,10 +71,13 @@ export interface AppSettingsJson {
 
 export interface SetAppSettingInput {
   appId: string;
-  name: string;
+  /** Derived for files (FILE_<16 hex>); required otherwise. */
+  name?: string | null;
   value: string;
   secret: boolean;
   scope?: AppSettingScopeName | null;
+  /** A file (H6): mounted at this absolute path from a tenant secret; always secret. */
+  mountPath?: string | null;
 }
 
 const json = (r: AppSettingRow): AppSettingJson => ({
@@ -71,6 +85,7 @@ const json = (r: AppSettingRow): AppSettingJson => ({
   scope: FROM_SCOPE[r.scope],
   secret: r.secret,
   value: r.secret ? null : r.value,
+  mountPath: r.mount_path ?? null,
   updatedAt: r.updated_at,
   updatedBy: r.updated_by,
 });
@@ -81,6 +96,22 @@ function scopeOf(s: AppSettingScopeName | null | undefined): AppSettingScope {
     : undefined;
   if (!scope) throw appsError("BAD_USER_INPUT", `Unknown scope ${String(s)}`);
   return scope;
+}
+
+/**
+ * Names Vetra sets itself on the App's plan instances, so refused in scope
+ * PLAN: OPENROUTER_API_KEY while a plan has an AI budget (H7, Task 10 adds
+ * the budget). None yet.
+ */
+export async function planReservedNames(
+  deps: AppsDeps,
+  appId: string,
+): Promise<string[]> {
+  // H7: the AI key is Vetra's while an active plan of the App has a budget.
+  const budgeted = (await listPlans(deps.db, appId)).some(
+    (p) => p.status === "active" && (p.ai_budget_usd ?? 0) > 0,
+  );
+  return budgeted ? [AI_KEY_SECRET] : [];
 }
 
 /**
@@ -119,16 +150,35 @@ export async function setAppSetting(
     need: "release",
   });
   const scope = scopeOf(input.scope);
+  const mountPath = input.mountPath ?? null;
+  const isFile = mountPath !== null;
+  // A file's name is derived from its path; it is always secret.
+  let name = input.name ?? "";
+  const secret = isFile || input.secret;
   try {
-    checkSettingName(input.name);
-    checkSettingValue(input.name, input.value, input.secret);
+    if (isFile) {
+      checkMountPath(mountPath);
+      checkFileValue(input.value);
+      name = fileKey(mountPath);
+    } else {
+      checkSettingName(name);
+      checkSettingValue(name, input.value, secret);
+    }
   } catch (err) {
     if (err instanceof SettingInputError)
       throw appsError("BAD_USER_INPUT", err.message);
     throw err;
   }
+  if (
+    scope === "plan" &&
+    (await planReservedNames(deps, app.id)).includes(name)
+  )
+    throw appsError(
+      "BAD_USER_INPUT",
+      `"${name}" is set by Vetra on this App's plan instances`,
+    );
   let ciphertext: string | null = null;
-  if (input.secret) {
+  if (secret) {
     if (!deps.settingsVault)
       throw notConfigured("Secret settings (OPENBAO_ADDR)");
     try {
@@ -136,7 +186,7 @@ export async function setAppSetting(
     } catch (err) {
       // The detail (addresses, OpenBao's own message) stays in the log.
       deps.logger.warn(
-        `[vetra-apps] encrypting setting ${input.name} of ${app.slug}: ${err instanceof Error ? err.message : String(err)}`,
+        `[vetra-apps] encrypting setting ${name} of ${app.slug}: ${err instanceof Error ? err.message : String(err)}`,
       );
       throw appsError("SERVICE_UNAVAILABLE", "Secret storage unavailable");
     }
@@ -144,10 +194,11 @@ export async function setAppSetting(
   const row: AppSettingRow = {
     app_id: app.id,
     scope,
-    name: input.name,
-    secret: input.secret,
-    value: input.secret ? null : input.value,
+    name,
+    secret,
+    value: secret ? null : input.value,
     ciphertext,
+    mount_path: mountPath,
     write_id: deps.newId(),
     updated_at: deps.now().toISOString(),
     updated_by: caller.address,
@@ -162,8 +213,18 @@ export async function setAppSetting(
       .execute();
     const existing = await listAppSettings(trx, app.id);
     const replaces = existing.some(
-      (r) => r.scope === scope && r.name === input.name,
+      (r) => r.scope === scope && r.name === name,
     );
+    if (
+      isFile &&
+      !replaces &&
+      existing.filter((r) => r.scope === scope && r.mount_path).length >=
+        MAX_FILES
+    )
+      throw appsError(
+        "BAD_USER_INPUT",
+        `A scope has at most ${MAX_FILES} files; delete one first`,
+      );
     if (!replaces && existing.length >= MAX_SETTINGS_PER_APP)
       throw appsError(
         "BAD_USER_INPUT",
@@ -180,6 +241,7 @@ export async function setAppSetting(
         name: row.name,
         scope: FROM_SCOPE[scope],
         secret: row.secret,
+        ...(isFile ? { file: true } : {}),
         replaced: replaces,
       },
     });

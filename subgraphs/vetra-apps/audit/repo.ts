@@ -15,6 +15,8 @@ export const AUDIT_ACTIONS = [
   "role.granted",
   "role.removed",
   "instance.status",
+  "instance.setting.changed",
+  "instance.domain",
   "release.recorded",
   "build.recorded",
   "rollout.started",
@@ -33,6 +35,10 @@ export const AUDIT_ACTIONS = [
   "gate.token_issued",
   "gate.token_rotated",
   "instance.claimed",
+  "plan.team_enabled",
+  "plan.team_disabled",
+  "team.ran_healthy",
+  "instance.admins_set",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

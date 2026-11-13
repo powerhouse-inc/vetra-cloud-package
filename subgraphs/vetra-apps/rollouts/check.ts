@@ -1,6 +1,12 @@
+import { teamSoakMs } from "../config.js";
+import { listInstances } from "../instances/repo.js";
 import type { PlanRow } from "../plans/repo.js";
+import { activeTeamPlan, isOrgApp } from "../plans/team-base.js";
+import { teamRunOf } from "../plans/team-runs.js";
 import { PLAN_SIZES } from "../plans/rules.js";
 import type { ReleaseRow } from "../releases/repo.js";
+import { parseVersion, versionKind } from "../releases/version.js";
+import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 
 /**
@@ -102,14 +108,53 @@ export function planFitProblem(
   return null;
 }
 
+/** A stable patch on the same major.minor, above `from` (decision T5 of slice 6). */
+export function isPatchOf(version: string, from: string | null): boolean {
+  if (
+    !from ||
+    versionKind(version) !== "release" ||
+    versionKind(from) !== "release"
+  )
+    return false;
+  const v = parseVersion(version)!;
+  const f = parseVersion(from)!;
+  return (
+    v.prerelease.length === 0 &&
+    v.major === f.major &&
+    v.minor === f.minor &&
+    v.patch > f.patch
+  );
+}
+
 /**
- * Slice 6 hook (spec 7 step 1): when the App has a Team plan, a customer
- * rollout needs the release to have run healthy on the Team instance.
+ * Spec 7 step 1: when the App has a Team plan, a customer rollout needs the
+ * release to have run healthy on the Team instance (the Team plan itself is
+ * exempt; stable patches of a plan's line too, decision T5).
  */
 export async function teamGateProblem(
-  _deps: AppsDeps,
-  _appId: string,
-  _version: string,
+  deps: AppsDeps,
+  app: Pick<AppRow, "id" | "owner_org_id" | "org_disputed">,
+  version: string,
+  plans: Pick<PlanRow, "slug" | "team" | "target_version">[],
 ): Promise<string | null> {
-  return null;
+  const customers = plans.filter((p) => p.team !== true);
+  if (customers.length === 0) return null;
+  // Team is for organisation Apps; a personal (or disputed) App has no gate.
+  if (!isOrgApp(app)) return null;
+  const appId = app.id;
+  const team = await activeTeamPlan(deps.db, appId);
+  if (!team) return null;
+  if (customers.length < plans.length)
+    return `roll ${version} out to Team on its own first; customer plans follow once it ran healthy there`;
+  const gated = customers.filter((p) => !isPatchOf(version, p.target_version));
+  if (gated.length === 0) return null;
+  if (await teamRunOf(deps.db, appId, version)) return null;
+  const row = (await listInstances(deps.db, appId, "shared")).find(
+    (r) => r.plan_id === team.id,
+  );
+  const soak = teamSoakMs(deps.cfg) / 60_000;
+  const stopped = row?.stop_reason
+    ? `; Team's instance is stopped (${row.stop_reason}), so it cannot run ${version}`
+    : "";
+  return `${version} has not run healthy on Team yet (${gated.map((p) => p.slug).join(", ")}); Team runs ${row?.running_version ?? "nothing"} and needs ${soak} minutes healthy on ${version}${stopped}`;
 }

@@ -21,6 +21,7 @@ import {
 } from "./holders.js";
 import { claimWarmInstance } from "./pool-repo.js";
 import { listPlans, type PlanRow } from "./repo.js";
+import { isOrgApp, isTeamPlan, TEAM_NOT_ORG } from "./team-base.js";
 
 export const LICENCE_ENDED = "the licence ended";
 export const PLAN_RETIRED = "the plan is retired and has no live licences";
@@ -106,7 +107,9 @@ async function ownPlanResolver(
   plans: PlanRow[],
   live: Map<string, ChainHead>,
 ): Promise<(head: ChainHead) => PlanRow | undefined> {
-  const byKind = new Map(plans.map((p) => [p.kind, p]));
+  const byKind = new Map(
+    plans.flatMap((p) => (p.kind ? [[p.kind, p] as const] : [])),
+  );
   const own = (p: PlanRow | undefined) => (p?.access === "own" ? p : undefined);
   // Only chains whose head is of no plan's kind need their history.
   const roots = plans.some((p) => p.access === "own")
@@ -171,8 +174,12 @@ export async function syncPlanInstances(
 
   for (const plan of plans.filter((p) => p.access === "shared")) {
     const target = targets.get(plan.id) ?? null;
-    const held = [...live.values()].some((c) => c.kind === plan.kind);
-    const wanted = plan.status === "active" || held;
+    // A kind-less plan (Team) is never held: untyped licences have kind null too.
+    const held =
+      plan.kind !== null &&
+      [...live.values()].some((c) => c.kind === plan.kind);
+    const notOrg = isTeamPlan(plan) && !isOrgApp(app);
+    const wanted = (plan.status === "active" || held) && !notOrg;
     const row = shared.find((r) => r.plan_id === plan.id);
     if (!row) {
       if (wanted && target)
@@ -184,7 +191,7 @@ export async function syncPlanInstances(
     }
     await patch(row, {
       target_size: plan.size,
-      stop_reason: wanted ? null : PLAN_RETIRED,
+      stop_reason: wanted ? null : notOrg ? TEAM_NOT_ORG : PLAN_RETIRED,
     });
   }
 

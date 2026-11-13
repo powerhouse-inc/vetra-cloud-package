@@ -504,3 +504,49 @@ describe("toLlmGraphQLError", () => {
       expect(String(line)).not.toMatch(/sk-or-|vault:v1:/);
   });
 });
+
+describe("plan instance keys (plan 7 Task 10)", () => {
+  const provisionInstance = (b: LlmBroker, fixed = 25) =>
+    b.provisionVetraKey({
+      environmentId: ENV,
+      tenantId: TENANT,
+      ownerDid: holderDid(),
+      instanceId: "inst-1",
+      fixedBudgetUsd: fixed,
+    });
+
+  it("mints instance:<id> at the plan's fixed budget, never asking the Studio licence, writing only OPENROUTER_API_KEY", async () => {
+    const s = await setup({ allowed: false, budgetUsd: 0 });
+    expect(await provisionInstance(s.broker)).toStrictEqual({
+      connected: true,
+      llmBudgetUsd: 25,
+    });
+    const [key] = [...s.fake.keys.values()];
+    expect(key).toMatchObject({ name: "instance:inst-1", limit: 25 });
+    expect(s.budgetForDid).not.toHaveBeenCalled();
+    expect(await s.store.get(ENV)).toMatchObject({
+      instance_id: "inst-1",
+      status: "ACTIVE",
+      limit_usd: 25,
+    });
+    expect(s.secrets.setSecret.mock.calls).toStrictEqual([
+      [TENANT, "OPENROUTER_API_KEY", key.secret],
+    ]);
+    expect(s.secrets.setEnvVar).not.toHaveBeenCalled();
+  });
+
+  it("planBudget answers when present; null disables the key and keeps the secret", async () => {
+    let usd: number | null = 30;
+    const planBudget = vi.fn(async (_id: string) => usd);
+    const s = await setup(undefined, { planBudget });
+    await provisionInstance(s.broker);
+    expect([...s.fake.keys.values()][0].limit).toBe(30);
+    usd = null;
+    expect(await provisionInstance(s.broker)).toStrictEqual({
+      connected: false,
+      llmBudgetUsd: 0,
+    });
+    expect([...s.fake.keys.values()][0].disabled).toBe(true);
+    expect(s.secrets.deleteSecret).not.toHaveBeenCalled();
+  });
+});

@@ -164,6 +164,7 @@ export interface VetraAppsDB {
   instances: InstancesTable;
   instance_gate_tokens: InstanceGateTokensTable;
   plans: PlansTable;
+  team_release_runs: TeamReleaseRunsTable;
   environment_holds: EnvironmentHoldsTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
@@ -171,6 +172,7 @@ export interface VetraAppsDB {
   rollout_plans: RolloutPlansTable;
   rollout_steps: RolloutStepsTable;
   app_settings: AppSettingsTable;
+  instance_settings: InstanceSettingsTable;
   apps: AppsTable;
   studio_launch_secrets: StudioLaunchSecretsTable;
   app_previews: AppPreviewsTable;
@@ -227,6 +229,8 @@ export interface RegistryNamespacesTable {
 /** Spec 14.7 as measured by the health monitor (instances/monitor.ts). */
 export type InstanceHealth = "healthy" | "unhealthy" | "unknown";
 
+export type CustomDomainStatus = "dns" | "issuing" | "active" | "failed";
+
 export type InstanceKind = "branch" | "preview" | "shared" | "own";
 /** `removed`: a tombstone for a deleted branch (never shown). `degraded`: ran the target healthy, is not healthy now (no update in flight). */
 export type InstanceStatus =
@@ -238,8 +242,12 @@ export type InstanceStatus =
   | "stopped"
   | "removed";
 
-/** Where a publisher setting applies (releases phase 2 slice 4): every instance, or one kind (wins over "all"). */
-export type AppSettingScope = "all" | "branch" | "preview";
+/**
+ * Where a publisher setting applies (releases phase 2 slice 4): every instance,
+ * or one kind (wins over "all"). "plan" (phase 3 plan 7, H1): shared and own
+ * instances; "all" secrets do not reach them.
+ */
+export type AppSettingScope = "all" | "branch" | "preview" | "plan";
 
 /** A publisher setting of an App (spec 14.2). Secrets: value null, ciphertext set. */
 export interface AppSettingsTable {
@@ -255,6 +263,31 @@ export interface AppSettingsTable {
   write_id: string;
   updated_at: string;
   updated_by: string;
+  /** Files only (secret true, name FILE_<16 hex>): where the file is mounted (plan 7 H6). */
+  mount_path?: string | null;
+}
+
+export type InstanceSettingKind = "plain" | "secret" | "file";
+
+/**
+ * A holder setting of an own instance (spec 14.2, plan 7 H2/H3). Holder-only:
+ * never shown to the publisher by name. Secrets and files: value null,
+ * ciphertext set (transit pseudo-tenant `instance-settings`).
+ */
+export interface InstanceSettingsTable {
+  instance_id: string;
+  /** Env name, or for files `FILE_<16 hex of sha256(mountPath)>`. */
+  name: string;
+  kind: InstanceSettingKind;
+  /** Files only. */
+  mount_path: string | null;
+  /** Plain settings only. */
+  value: string | null;
+  ciphertext: string | null;
+  /** Random per write: the revision uses it for secrets and files. */
+  write_id: string;
+  updated_at: string;
+  updated_by: string;
 }
 
 /** shared: one instance for all holders; own: one instance per licence chain (spec section 5). */
@@ -262,17 +295,30 @@ export type PlanAccess = "shared" | "own";
 export type PlanStatus = "active" | "retired";
 
 /** What holders of one licensing term get (spec section 7; overview gap 1: a plan adopts a term by kind). */
+/** A release that ran healthy on the App's Team instance (spec section 7 step 1). */
+export interface TeamReleaseRunsTable {
+  app_id: string;
+  version: string;
+  digest: string;
+  instance_id: string;
+  /** The health_since that qualified (healthy on the digest since then). */
+  healthy_since: string;
+  recorded_at: string;
+}
+
 export interface PlansTable {
   id: string;
   app_id: string;
   /** Names the shared instance; unique per App (plans/rules.ts). */
   slug: string;
   name: string;
-  /** The licensing term kind adopted: its live licences are this plan's holders. Unique per App. */
-  kind: string;
+  /** The licensing term kind adopted: its live licences are this plan's holders. Unique per App when set; NULL only for the Team plan (no term). */
+  kind: string | null;
   access: PlanAccess;
   /** VETRA_AGENT_S … VETRA_AGENT_XXL: the FUSION size of every instance of the plan. */
   size: string;
+  /** Monthly AI budget (USD) of every instance's own key; null: no AI key (plan 7 Task 10). */
+  ai_budget_usd?: number | null;
   /** A recorded release of the App (never a build); null: no instances yet. */
   target_version: string | null;
   /** Warm instances kept for new holders (own plans; slice 8). */
@@ -285,6 +331,8 @@ export interface PlansTable {
   /** "<version>: <reason>" of the last policy rollout the check refused; null when none. */
   policy_note?: string | null;
   status: PlanStatus;
+  /** The App's Team plan (spec section 5): kind NULL, slug team, one per App. */
+  team?: boolean | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -501,6 +549,26 @@ export interface InstancesTable {
   /** When a holder claimed it from the pool. */
   claimed_at?: string | null;
   target_size?: string | null;
+  /** own: the holder's custom domain, lowercased; unique where set (plan 7 Task 7). */
+  custom_domain?: string | null;
+  /** dns: waiting for DNS; issuing: applied, certificate pending; active: served; failed: gave up (see reason). */
+  custom_domain_status?: CustomDomainStatus | null;
+  /** Why `failed`, or what `dns` waits for. */
+  custom_domain_reason?: string | null;
+  /** When custom_domain_status last changed. */
+  custom_domain_since?: string | null;
+  /** active: when the daily TLS check last ran. */
+  custom_domain_checked_at?: string | null;
+  /** active: failed daily TLS checks in a row. */
+  custom_domain_failures?: number | null;
+  /** dns: the per-instance token the holder publishes at _vetra-verify.<domain> (TXT). */
+  custom_domain_token?: string | null;
+  /** ADMINS to render instead of the kind's default (Team: the org's admins). */
+  admins_override?: string | null;
+  /** The organisation the override was read for; ignored once the App's org differs. */
+  admins_override_org?: string | null;
+  /** When the override was last refreshed from Renown. */
+  admins_checked_at?: string | null;
   /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
   pinned_version?: string | null;
   created_at: string;

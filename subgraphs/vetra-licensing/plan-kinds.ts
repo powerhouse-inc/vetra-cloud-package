@@ -42,7 +42,7 @@ export function createPlanKindsReader(appsDb: Kysely<VetraAppsDB>) {
         .select("kind")
         .where("app_id", "=", appId)
         .execute();
-      return new Set(rows.map((r) => r.kind));
+      return new Set(rows.flatMap((r) => (r.kind ? [r.kind] : [])));
     } catch (err) {
       // vetra-apps has not created the table yet (boot order): no plans.
       if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)

@@ -38,6 +38,8 @@ import {
 } from "../service.js";
 import { syncPlanPools, WARM_LABEL } from "../plans/pool.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { syncTeamPlan } from "../plans/team.js";
+import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
 import { getHold } from "../holds/repo.js";
@@ -50,18 +52,30 @@ import {
 } from "../holds/service.js";
 import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
+  declaredFileKeys,
   declaredSecretNames,
   declaresVetraSecrets,
   envSettings,
   imageTag,
   instanceCreateActions,
   instanceUpdateActions,
+  domainActions,
   isInstanceRole,
   type InstanceImage,
 } from "./render.js";
+import { appliedDomainOf } from "../domains/service.js";
+import {
+  ensureInstanceVetraSecrets,
+  vetraSecretsOf,
+} from "./vetra-secrets.js";
+import { getPlan, listPlans } from "../plans/repo.js";
 import { deliverSettings } from "../settings/deliver.js";
 import { listAppSettings } from "../settings/repo.js";
-import { settingsForKind, type InstanceSettings } from "../settings/resolve.js";
+import {
+  settingsForInstance,
+  type InstanceSettings,
+} from "../settings/resolve.js";
+import { listInstanceSettings } from "../settings/holder-repo.js";
 import {
   deleteInstance,
   getInstance,
@@ -115,6 +129,15 @@ export const PR_REOPENED = "pull request reopened";
 export const SECRETS_SETTLE_MS = 30_000;
 export const RECREATING_FOR_SETTINGS =
   "recreating the environment with Vetra's settings (it predates the secrets master key)";
+/**
+ * A plan instance someone other than Vetra put to sleep (H10): Vetra does not
+ * wake it for nothing. A rollout (new target image or size), a settings change
+ * (publisher ALL/PLAN or holder) or a custom domain change still applies its
+ * update actions, and those wake it: that is Vetra acting on a change, not
+ * undoing someone's stop.
+ */
+export const STOPPED_OUTSIDE_VETRA =
+  "stopped outside Vetra; start it from the console";
 /** A plan instance's data is the holder's: never recreated to get Vetra's master key. */
 export const PLAN_NEEDS_NEW_SECRETS =
   "the environment predates Vetra's secrets master key; a plan instance keeps its data, so it is not recreated (needs an operator)";
@@ -226,6 +249,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   if (plans.enabled && wantsInstances(app)) {
     try {
       await syncPlanInstances(deps, app);
+      await syncTeamPlan(deps, app);
     } catch (err) {
       // Licensing's tables may not exist yet (boot order); branch and preview instances go on.
       deps.logger.warn(
@@ -247,16 +271,33 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
       deps.logger.warn(`[vetra-apps] warm pool of ${app.slug}: ${message(err)}`);
     }
   }
-  // Read once per pass: every instance of a kind gets the same revision.
+  // Read once per pass: every instance of a kind gets the same App layers;
+  // own instances add their holder's (one query for all of them).
   const settingRows = await listAppSettings(deps.db, app.id);
   const rows = await listInstances(deps.db, app.id);
+  const planRows = new Map(
+    (await listPlans(deps.db, app.id)).map((p) => [p.id, p]),
+  );
+  const holderRows = await listInstanceSettings(
+    deps.db,
+    rows.filter((r) => r.kind === "own").map((r) => r.id),
+  );
   // Removals first: an evicted preview frees its place before a new one is
   // created (spec 14.13). Array.prototype.sort is stable.
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
   for (const row of rows) {
     if (isPlanKind(row.kind) && !plans.enabled) continue;
     try {
-      let settings = settingsForKind(settingRows, row.kind);
+      let settings = settingsForInstance(
+        settingRows,
+        holderRows.get(row.id) ?? [],
+        row.kind,
+        vetraSecretsOf(
+          deps,
+          row,
+          row.plan_id ? (planRows.get(row.plan_id) ?? null) : null,
+        ),
+      );
       // The licence gate (releases phase 3 slice 5): shared instances only.
       if (gate.enabled && gate.url && row.kind === "shared" && !row.removed_at)
         settings = withGate(settings, {
@@ -312,13 +353,34 @@ async function retireOldPreviews(deps: AppsDeps, app: AppRow): Promise<void> {
 const patch = (deps: AppsDeps, row: InstanceRow, p: InstancePatch) =>
   updateInstance(deps.db, row.id, p, deps.now().toISOString());
 
-/** ADMINS per kind (spec section 5): the holder of an own instance, else the App owner. */
-export function adminsOf(app: AppRow, row: InstanceRow): string {
+/**
+ * ADMINS per kind (spec section 5): the holder of an own instance, else the App
+ * owner. A Team instance gets the org's admins (a valid override) or none at
+ * all: its access then goes through the gate's membership branch, never the
+ * App's creator (who may have left the organisation).
+ */
+export function adminsOf(
+  app: AppRow,
+  row: InstanceRow,
+  opts: { team?: boolean; now?: Date } = {},
+): string {
   // A warm-pool instance serves nobody until claimed (slice 8).
   if (row.warm) return "";
+  if (opts.team) return validTeamAdmins(app, row, opts.now ?? new Date()) ?? "";
+  if (row.admins_override) return row.admins_override;
   return row.kind === "own" && row.holder_address
     ? row.holder_address
     : app.owner_address;
+}
+
+async function adminsFor(
+  deps: AppsDeps,
+  app: AppRow,
+  row: InstanceRow,
+): Promise<string> {
+  const team =
+    !!row.plan_id && (await teamPlanOf(deps.db, app.id))?.id === row.plan_id;
+  return adminsOf(app, row, { team, now: deps.now() });
 }
 
 const sizeOf = (row: InstanceRow) =>
@@ -372,13 +434,10 @@ async function stopPlanInstance(
       return;
     }
     if (state.status === "STOPPED") {
-      // Slept by an earlier version (its database is gone already): left stopped.
+      // Someone else slept it (H10): shown stopped, never marked as Vetra's,
+      // so a renewal does not wake it. (Vetra marks before it sleeps.)
       if (row.status !== "stopped" || row.reason !== reason)
-        await patch(deps, row, {
-          status: "stopped",
-          reason,
-          ...(row.status !== "stopped" ? { stopped_by_vetra: true } : {}),
-        });
+        await patch(deps, row, { status: "stopped", reason });
       return;
     }
     // Recorded before holding: a crash in between must not leave a hold that
@@ -910,7 +969,7 @@ async function reconcileEnvironment(
       await patch(deps, row, { stopped_by_vetra: false });
     }
   }
-  const admins = adminsOf(app, row);
+  const admins = await adminsFor(deps, app, row);
   const size = sizeOf(row);
   // The claim's update relabels the environment in the same batch as ADMINS.
   // Only rows that came from the pool: any other own row keeps its label.
@@ -965,7 +1024,16 @@ async function reconcileEnvironment(
         deps,
         tenantId,
         settings,
-        declaredSecretNames(state),
+        [...declaredSecretNames(state), ...declaredFileKeys(state)],
+      );
+      // The AI key (and reporting token) are Vetra's own, written after the
+      // settings and before the first start.
+      await ensureInstanceVetraSecrets(
+        deps,
+        app,
+        row,
+        row.plan_id ? await getPlan(deps.db, row.plan_id) : null,
+        tenantId,
       );
     } catch (err) {
       // Retried each pass (no failed target); the row changes only when the reason does.
@@ -1017,7 +1085,21 @@ async function reconcileEnvironment(
   const want = envSettings(settings);
 
   const image = targetImage(row);
+  // A PLAN document carries its holder's custom domain once DNS points at
+  // Vetra (plan 7 Task 8). Also the drift repair: a re-created environment,
+  // or one changed by hand, gets it back. A STOPPED one is changed without
+  // waking it: it serves the domain on its next start.
+  let domain =
+    state.app?.role === "PLAN"
+      ? domainActions(state, appliedDomainOf(row))
+      : [];
+  if (domain.length > 0 && state.status === "STOPPED") {
+    await deps.envs.execute(envId, domain);
+    domain = [];
+  }
   if (failedOn(row, settings)) {
+    // The domain is the holder's choice, not part of the failed target.
+    if (domain.length > 0) await apply(deps, envId, domain);
     // Not retried; but a revert that did not land is.
     const back = revertImage(row);
     if (back && fusionVersion(state) === image.tag) {
@@ -1036,7 +1118,7 @@ async function reconcileEnvironment(
   }
 
   // Throws for anything that is not an instance (licensed, not a PREVIEW or PLAN).
-  const updates = instanceUpdateActions(
+  const imageUpdates = instanceUpdateActions(
     state,
     image,
     admins,
@@ -1045,6 +1127,22 @@ async function reconcileEnvironment(
     size,
     label,
   );
+  const updates = [...domain, ...imageUpdates];
+  if (
+    updates.length === 0 &&
+    state.status === "STOPPED" &&
+    state.app?.role === "PLAN" &&
+    !row.stopped_by_vetra
+  ) {
+    // Slept outside Vetra and nothing to roll out: left asleep (H10). A
+    // rollout or settings change still wakes it (Vetra's decision).
+    if (row.status !== "stopped" || row.reason !== STOPPED_OUTSIDE_VETRA)
+      await patch(deps, row, {
+        status: "stopped",
+        reason: STOPPED_OUTSIDE_VETRA,
+      });
+    return;
+  }
   if (updates.length > 0) {
     await apply(deps, envId, updates);
     await patch(deps, row, {
@@ -1276,7 +1374,7 @@ async function initEnvironment(
         prNumber: row.kind === "preview" ? row.pr : null,
         imageProject: app.registry_namespace!,
         image,
-        admins: adminsOf(app, row),
+        admins: await adminsFor(deps, app, row),
         settings: envSettings(settings),
         // Started by reconcileEnvironment once its tenant has the secrets.
         start: false,

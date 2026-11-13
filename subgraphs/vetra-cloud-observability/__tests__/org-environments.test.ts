@@ -179,6 +179,25 @@ describe("owner checks on org environments", () => {
     expect(dispatch).toHaveBeenCalledWith("org-env", "SET_CUSTOM_DOMAIN", { enabled: false, domain: null });
   });
 
+  it("refuses a domain a Vetra Apps instance holds (DOMAIN_TAKEN); without the check it passes", async () => {
+    const dispatch = vi.fn(async () => undefined);
+    const held = new Set(["a.example.com"]);
+    const r = createResolvers(db, {
+      prometheusUrl: "http://p",
+      lokiUrl: "http://l",
+      envDb,
+      dispatch,
+      access,
+      instanceDomainUsed: async (d) => held.has(d),
+    });
+    await expect(
+      r.Mutation.setCustomDomain(null, { documentId: "personal", enabled: true, domain: "A.example.com" }, ctx(OWNER)),
+    ).rejects.toThrow("DOMAIN_TAKEN");
+    expect(dispatch).not.toHaveBeenCalled();
+    await r.Mutation.setCustomDomain(null, { documentId: "personal", enabled: true, domain: "b.example.com" }, ctx(OWNER));
+    expect(dispatch).toHaveBeenCalledWith("personal", "SET_CUSTOM_DOMAIN", { enabled: true, domain: "b.example.com" });
+  });
+
   it("refuses the creator of an org env who is no longer a publisher, and plain members", async () => {
     for (const who of [OWNER, CAROL]) {
       await expect(

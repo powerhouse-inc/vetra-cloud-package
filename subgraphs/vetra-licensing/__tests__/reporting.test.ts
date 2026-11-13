@@ -345,6 +345,24 @@ describe("relayUserStat", () => {
     expect(await relayUserStat(relay, "token-1", stat())).toBe(true);
   });
 
+  it("relays for an own plan instance through its chain row (no license_environments row)", async () => {
+    await ensureReportingTokens(rep, ["inst-1"]);
+    const instance = {
+      byEnvironment: async (id: string) =>
+        id === "inst-1" ? { root_license_id: "l1", app_id: "app-1", user_did: DID } : null,
+    };
+    const viaInstance = { ...relay, envRows: instance };
+    expect(await relayUserStat(viaInstance, "token-2", stat(ADDR))).toBe(true);
+    expect(enqueue).toHaveBeenCalledWith({ appDid: APP_DID, userDid: DID, metric: "notes", value: 4 });
+    expect(await relayUserStat(viaInstance, "token-2", stat(OTHER))).toBe(false);
+    await setStatus("l1", "EXPIRE_LICENSE");
+    enqueue.mockClear();
+    expect(await relayUserStat(viaInstance, "token-2", stat(ADDR))).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+    // A shared instance has no chain: refused.
+    expect(await relayUserStat({ ...relay, envRows: { byEnvironment: async () => null } }, "token-2", stat(ADDR))).toBe(false);
+  });
+
   it.each(["EXPIRE_LICENSE", "REVOKE_LICENSE"])("refuses a stat once the chain ended (%s)", async (type) => {
     await setStatus("l1", type);
     expect(await relayUserStat(relay, "token-1", stat())).toBe(false);

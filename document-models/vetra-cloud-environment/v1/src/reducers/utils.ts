@@ -126,6 +126,8 @@ export function markPendingIfDeployed(state: { status: string }) {
 }
 
 const LB_IP = "138.199.129.93";
+/** The cluster ingress load balancer: custom domains point their A records here. */
+export const INGRESS_IP = LB_IP;
 
 /**
  * Regenerate custom domain DNS records based on currently enabled services.
