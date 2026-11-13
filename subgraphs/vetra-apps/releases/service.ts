@@ -7,6 +7,7 @@ import {
   type CiIdentity,
 } from "../service.js";
 import { GraphQLError } from "graphql";
+import { teamRunsOf } from "../plans/team-runs.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { recordAudit } from "../audit/repo.js";
@@ -190,6 +191,8 @@ export interface ReleaseJson {
   createdAt: string;
   /** Withdrawn by the publisher (spec 14.3); null while it may be targeted. */
   withdrawn: { at: string; by: string; reason: string | null } | null;
+  /** When it ran healthy on the App's Team instance (set by appReleasesFor); null otherwise. */
+  teamHealthyAt: string | null;
 }
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -219,6 +222,7 @@ export function releaseJson(r: ReleaseRow): ReleaseJson {
           reason: r.withdrawn_reason ?? null,
         }
       : null,
+    teamHealthyAt: null,
   };
 }
 
@@ -386,5 +390,9 @@ export async function appReleasesFor(
     kind: kind ?? undefined,
     limit: Math.min(Math.max(limit ?? 50, 1), 200),
   });
-  return rows.map(releaseJson);
+  const runs = await teamRunsOf(deps.db, app.id);
+  return rows.map((r) => ({
+    ...releaseJson(r),
+    teamHealthyAt: runs.get(r.version)?.recorded_at ?? null,
+  }));
 }
