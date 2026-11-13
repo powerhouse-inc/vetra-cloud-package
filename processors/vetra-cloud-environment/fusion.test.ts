@@ -498,7 +498,7 @@ describe("generateValuesYaml — warm environment is closed", () => {
     expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
   });
 
-  describe("a PLAN environment without ADMINS is closed even when the lookup says not warm", () => {
+  describe("a PLAN environment is closed only when the lookup says warm, never for empty ADMINS", () => {
     const planState = (admins: string | null, role: "PLAN" | "PREVIEW" | "PRODUCTION" = "PLAN") => {
       const s = warmState();
       return {
@@ -515,9 +515,17 @@ describe("generateValuesYaml — warm environment is closed", () => {
     };
     const notWarm = vi.fn(async () => null);
 
-    it("renders closed for an empty or missing ADMINS", async () => {
+    it("renders open for an empty or missing ADMINS (Team-like instance keeps its ingress)", async () => {
       for (const admins of ["", "  ", null]) {
         const yaml = await generateValuesYaml(dbStub, planState(admins), DOC_ID, null, allow, notWarm);
+        expect(yaml).not.toContain("closed:");
+      }
+    });
+
+    it("still renders closed when the lookup says warm, with or without ADMINS", async () => {
+      const warmLookup = vi.fn(async () => ({ appId: "app-1" }));
+      for (const admins of ["", "0xabc"]) {
+        const yaml = await generateValuesYaml(dbStub, planState(admins), DOC_ID, null, allow, warmLookup);
         expect(appBlock(yaml)).toContain("    closed: true");
       }
     });

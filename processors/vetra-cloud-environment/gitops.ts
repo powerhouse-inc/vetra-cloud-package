@@ -1347,12 +1347,10 @@ export function generateFusionBlock(
     if (publicHost) env.set(VITE_ALLOWED_HOST, publicHost);
   }
 
-  // A PLAN instance with no ADMINS yet is not claimed by anyone: closed, even
-  // when the pool lookup does not say warm (an unclaimed row is never open).
-  const closed =
-    !opts.held &&
-    (opts.warm === true ||
-      (state.app?.role === "PLAN" && !(env.get("ADMINS") ?? "").trim()));
+  // Only an explicitly marked warm row is closed (holder_address IS NULL and
+  // warm = true via the pool lookup). Never on empty ADMINS: a Team instance
+  // legitimately renders with ADMINS "" and its members reach it via this ingress.
+  const closed = !opts.held && opts.warm === true;
 
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
