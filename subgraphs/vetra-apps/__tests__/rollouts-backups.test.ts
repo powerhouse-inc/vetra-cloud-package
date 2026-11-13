@@ -244,6 +244,41 @@ describe("rollouts with backups: pausing, rolling back mid-update, ordering", ()
     expect(await statuses(older.id)).toEqual(["o2:backing_up"]);
   });
 
+  it("rolling back with an expired backup fails the step: never an image swap of a migrated instance", async () => {
+    await migrates();
+    const r = await start();
+    await pass();
+    await finishBackupJobs(h, fake);
+    await pass();
+    await becomeReady(h, "o1");
+    await pass();
+    const [step] = await stepsOf(h.db, r.id);
+    await h.db.updateTable("instance_backups").set({ status: "expired" }).where("id", "=", step.backup_id!).execute();
+    await rollBackRollout(h.deps, owner, r.id, { acceptDataLoss: true });
+    await pass();
+    expect((await stepsOf(h.db, r.id))[0]).toMatchObject({ status: "revert_failed", error: expect.stringMatching(/expired.*restore by hand/) });
+    expect((await instance(h, "o1")).target_version).toBe("1.4.1");
+    expect(await activeRestoresOfApp(h.db, appId)).toHaveLength(0);
+  });
+
+  it("a step whose failed update was already restored does not restore a second time on rollback", async () => {
+    await migrates();
+    const r = await start();
+    await pass();
+    await finishBackupJobs(h, fake);
+    await pass();
+    await runsTarget("o1");
+    await failUpdate(h, "o1");
+    await pass();
+    await settleRestores();
+    await pass();
+    expect((await stepsOf(h.db, r.id))[0].status).toBe("failed");
+    await rollBackRollout(h.deps, owner, r.id, { acceptDataLoss: true }).catch(() => {});
+    await pass();
+    const rows = await h.db.selectFrom("instance_restores").select("id").where("rollout_step_id", "=", (await stepsOf(h.db, r.id))[0].id).execute();
+    expect(rows).toHaveLength(1);
+  });
+
   it("a held instance (failed restore) fails the step instead of updating it", async () => {
     await h.db
       .updateTable("instances")

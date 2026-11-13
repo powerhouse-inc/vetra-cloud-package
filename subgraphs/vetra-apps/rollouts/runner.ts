@@ -712,7 +712,15 @@ async function startRevert(
   // B14: a release that migrates goes back by restoring the backup from before the update.
   let note: string | null = null;
   const forward = await releaseByVersion(deps.db, app.id, s.to_version);
-  if (forward?.migrates && backupsOn(deps)) {
+  // Already restored for this step (its failed forward update did), or already back: no second restore.
+  const restoredAlready =
+    inst.target_version === back ||
+    !!(await deps.db
+      .selectFrom("instance_restores")
+      .select("id")
+      .where("rollout_step_id", "=", s.id)
+      .executeTakeFirst());
+  if (forward?.migrates && backupsOn(deps) && !restoredAlready) {
     if (stopped) {
       await endStep(deps, s, "skipped", {
         note: `stopped: its database is from ${s.to_version}; restore its backup from before the update when it wakes`,
@@ -732,11 +740,22 @@ async function startRevert(
     }
     // Its update has not settled: wait (never restore under a moving update).
     if (inst.status === "updating") return true;
-    if (
-      s.backup_id &&
-      (await backupProgress(deps, s.backup_id)).state === "ready"
-    ) {
-      const restoreId = await restoreBackup(deps, inst, s.backup_id, {
+    const progress = s.backup_id
+      ? await backupProgress(deps, s.backup_id)
+      : null;
+    if (progress && progress.state !== "ready") {
+      // Never image only for a migrated instance: its database is from the new release.
+      await failStep(
+        deps,
+        app,
+        s,
+        "revert_failed",
+        `its backup from before the update is ${progress.state === "failed" ? `unusable (${progress.error})` : progress.state}; restore by hand`,
+      );
+      return false;
+    }
+    if (progress) {
+      const restoreId = await restoreBackup(deps, inst, s.backup_id!, {
         purpose: "rollback",
         thenVersion: back,
         stepId: s.id,

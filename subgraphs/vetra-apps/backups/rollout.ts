@@ -60,6 +60,8 @@ export async function backupProgress(
   if (b.status === "pending") return { state: "pending" };
   if (b.status === "failed")
     return { state: "failed", error: b.error ?? "the backup failed" };
+  if (b.status !== "ready")
+    return { state: "failed", error: `the backup is ${b.status}` };
   if (!(Date.parse(b.expires_at) > deps.now().getTime()))
     return { state: "failed", error: "the backup expired" };
   return { state: "ready", takenAt: b.created_at, version: b.version };
