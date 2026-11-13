@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { VetraAppsDB } from "../db/schema.js";
 import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
 import type { InstanceRow } from "../instances/repo.js";
@@ -53,6 +53,11 @@ export async function claimWarmInstance(
             .where("target_digest", "=", q.digest)
             .where("running_digest", "=", q.digest)
             .where("target_size", "=", q.targetSize)
+            // Never a row the monitor found unhealthy; healthy ones first.
+            .where((eb) =>
+              eb.or([eb("health", "is", null), eb("health", "!=", "unhealthy")]),
+            )
+            .orderBy(sql`coalesce(health = 'healthy', false)`, "desc")
             .orderBy("created_at")
             .orderBy("id")
             .limit(1)

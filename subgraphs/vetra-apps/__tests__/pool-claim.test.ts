@@ -70,6 +70,29 @@ describe("claimWarmInstance", () => {
     expect(await claimWarmInstance(h.db, q())).toBeNull();
   });
 
+  it("never claims an unhealthy row, and prefers a healthy one over an unchecked one", async () => {
+    await seedWarm(h, appId, {
+      health: "unhealthy",
+      created_at: "2026-11-10T00:00:00.000Z",
+    });
+    expect(await claimWarmInstance(h.db, q())).toBeNull();
+    const unchecked = await seedWarm(h, appId, {
+      created_at: "2026-11-11T00:00:00.000Z",
+    });
+    const healthy = await seedWarm(h, appId, { health: "healthy" });
+    expect((await claimWarmInstance(h.db, q()))?.id).toBe(healthy.id);
+    expect(
+      (
+        await claimWarmInstance(h.db, {
+          ...q(),
+          holder: "0x2222222222222222222222222222222222222222",
+          root: "l2",
+          name: ownInstanceName("l2"),
+        })
+      )?.id,
+    ).toBe(unchecked.id);
+  });
+
   it("two concurrent claims never take the same row", async () => {
     await seedWarm(h, appId);
     const [a, b] = await Promise.all([
