@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Harness } from "./harness.js";
 import { seedLicence, seedLicensedEnvironment } from "./instances-fixtures.js";
 import { HOLDER, poolHarness, seedWarm } from "./pool-fixtures.js";
@@ -7,12 +7,25 @@ import { insertPlan } from "../plans/repo.js";
 import { ownInstanceName, syncPlanInstances } from "../plans/sync.js";
 import { getApp } from "../repo.js";
 
+const noDigest = vi.hoisted(() => ({ on: false }));
+vi.mock("../instances/targets.js", async (orig) => {
+  const m = await orig<typeof import("../instances/targets.js")>();
+  return {
+    ...m,
+    targetOf: (r: Parameters<typeof m.targetOf>[0]) => ({
+      ...m.targetOf(r),
+      ...(noDigest.on ? { target_digest: null } : {}),
+    }),
+  };
+});
+
 let h: Harness;
 let appId: string;
 beforeEach(async () => {
   ({ h, appId } = await poolHarness());
 });
 afterEach(async () => {
+  noDigest.on = false;
   await h.close();
 });
 
@@ -116,5 +129,16 @@ describe("syncPlanInstances with a warm pool", () => {
         licence_ended_at: null,
       }),
     ]);
+  });
+
+  it("a target without a digest never claims (and never throws): a cold row", async () => {
+    await seedWarm(h, appId);
+    await licence();
+    noDigest.on = true;
+    await sync();
+    const own = await rows();
+    expect(own).toHaveLength(2);
+    expect(own.filter((r) => r.warm)).toHaveLength(1);
+    expect(own.find((r) => !r.warm)?.holder_address).toBe(HOLDER);
   });
 });

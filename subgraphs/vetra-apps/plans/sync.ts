@@ -202,16 +202,19 @@ export async function syncPlanInstances(
     if (!row) {
       if (target) {
         // A ready warm instance of the plan first (slice 8); else a cold row.
-        const claimed = await claimWarmInstance(deps.db, {
+        // No digest, nothing to match a warm row on.
+        const claimed = target.target_digest
+          ? await claimWarmInstance(deps.db, {
           appId: app.id,
           planId: plan.id,
-          digest: target.target_digest!,
+          digest: target.target_digest,
           targetSize: plan.size,
           holder: head.address,
           root: head.root,
           name: ownInstanceName(head.root),
           nowIso,
-        });
+        })
+          : null;
         if (!claimed)
           await insertInstance(
             deps.db,
