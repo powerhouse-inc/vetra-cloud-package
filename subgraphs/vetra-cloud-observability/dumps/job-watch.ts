@@ -18,6 +18,14 @@ export type WatchDeps = {
   now: () => Date;
 };
 
+/** A PENDING row that never got a Job name this long is dead (its creator crashed): it must not block a namespace's next backup forever. */
+export const STALE_PENDING_MS = 10 * 60_000;
+
+const stale = (requestedAt: unknown, now: Date) => {
+  const t = Date.parse(String(requestedAt));
+  return Number.isFinite(t) && now.getTime() - t > STALE_PENDING_MS;
+};
+
 const gone = (name: string, ns: string, what: string) =>
   `Job "${name}" no longer exists in namespace ${ns}; orphaned ${what} marked failed.`;
 
@@ -48,6 +56,12 @@ export async function watchJobsOnce(deps: WatchDeps): Promise<void> {
           gone(dump.jobName, dump.tenantId, "dump"),
           deps.now(),
         );
+      else if (stale(dump.requestedAt, deps.now()))
+        await deps.dumps.markFailed(
+          dump.id,
+          "The dump never started (no Job was created); marked failed.",
+          deps.now(),
+        );
       continue;
     }
     const status = await deps.k8s.readJobStatus(ref.namespace, ref.name);
@@ -71,6 +85,12 @@ export async function watchJobsOnce(deps: WatchDeps): Promise<void> {
         await deps.archives.markFailed(
           archive.id,
           gone(archive.jobName, archive.tenantId, "archive"),
+          deps.now(),
+        );
+      else if (stale(archive.requestedAt, deps.now()))
+        await deps.archives.markFailed(
+          archive.id,
+          "The archive never started (no Job was created); marked failed.",
           deps.now(),
         );
       continue;

@@ -13,6 +13,7 @@ import {
   BACKUP_TIMEOUT_MS,
   BackupBusyError,
   BackupUnavailableError,
+  preStopGate,
   startInstanceBackup,
 } from "../backups/service.js";
 
@@ -156,5 +157,27 @@ describe("advanceBackups", () => {
       "instance:o3",
       "instance:o2",
     ]);
+  });
+});
+
+describe("preStopGate", () => {
+  it("waits while the namespace is busy, but goes after the backup timeout", async () => {
+    const { h, appId, fake } = ctx;
+    const inst = await planInstance(h, fake, appId, { id: "o1" });
+    await startInstanceBackup(h.deps, inst, { reason: "daily", requestedBy: "vetra" });
+    expect(await preStopGate(h.deps, inst)).toBe("wait");
+    h.advance(BACKUP_TIMEOUT_MS - 1000);
+    expect(await preStopGate(h.deps, inst)).toBe("wait");
+    h.advance(2000);
+    expect(await preStopGate(h.deps, inst)).toBe("go");
+  });
+
+  it("goes (and logs) when the backup fails with an unexpected error", async () => {
+    const { h, appId, fake } = ctx;
+    const inst = await planInstance(h, fake, appId, { id: "o1" });
+    fake.k8s.findDataPvc = async () => {
+      throw new Error("k8s is down");
+    };
+    expect(await preStopGate(h.deps, inst)).toBe("go");
   });
 });

@@ -80,4 +80,23 @@ describe("watchJobsOnce", () => {
       errorMessage: expect.stringMatching(/no longer exists/),
     });
   });
+
+  it("fails PENDING rows that never got a Job after 10 minutes, and leaves younger ones", async () => {
+    const t0 = new Date("2026-11-12T10:00:00.000Z");
+    const dumps = new DumpsRepo(db);
+    const archives = new ArchivesRepo(db);
+    const oldDump = await dumps.create({ documentId: "e", tenantId: "t-1", requestedBy: "vetra", now: t0, source: "INSTANCE" });
+    const oldArchive = await archives.create({ documentId: "e", tenantId: "t-1", requestedBy: "vetra", pvcName: "p", now: t0 });
+    const fresh = await dumps.create({ documentId: "e", tenantId: "t-2", requestedBy: "vetra", now: new Date(t0.getTime() + 9 * 60_000), source: "INSTANCE" });
+    const k8s = {
+      listManagedJobs: async () => [],
+      readJobStatus: async () => null,
+      readPodPhaseForJob: async () => null,
+      readPodLogsForJob: async () => "",
+    };
+    await watchJobsOnce({ dumps, archives, now: () => new Date(t0.getTime() + 11 * 60_000), headSize: async () => 1, k8s });
+    expect((await dumps.getById(oldDump.id))!.status).toBe("FAILED");
+    expect((await archives.getById(oldArchive.id))!.status).toBe("FAILED");
+    expect((await dumps.getById(fresh.id))!.status).toBe("PENDING");
+  });
 });

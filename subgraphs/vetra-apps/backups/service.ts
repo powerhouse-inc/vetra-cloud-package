@@ -247,6 +247,9 @@ export async function beforePlanInstanceStop(
  * is the extra copy, never a reason to keep running an instance whose
  * licence ended). Backups off or not possible for this instance: "go".
  */
+/** When the stop gate first found an instance's namespace busy (bounds the wait). */
+const busySince = new Map<string, number>();
+
 export async function preStopGate(
   deps: AppsDeps,
   instance: InstanceRow,
@@ -260,10 +263,25 @@ export async function preStopGate(
     return last.status === "pending" ? "wait" : "go";
   try {
     await beforePlanInstanceStop(deps, instance);
+    busySince.delete(instance.id);
     return "wait";
   } catch (err) {
-    if (err instanceof BackupBusyError) return "wait";
-    if (err instanceof BackupUnavailableError) return "go";
-    throw err;
+    if (err instanceof BackupBusyError) {
+      // A stuck dump or archive must never keep a licence-ended instance running.
+      const now = deps.now().getTime();
+      const first = busySince.get(instance.id) ?? now;
+      busySince.set(instance.id, first);
+      if (now - first > BACKUP_TIMEOUT_MS) {
+        busySince.delete(instance.id);
+        return "go";
+      }
+      return "wait";
+    }
+    busySince.delete(instance.id);
+    if (!(err instanceof BackupUnavailableError))
+      deps.logger.warn(
+        `[vetra-apps] pre-stop backup of ${instance.name} failed, stopping without it: ${message(err)}`,
+      );
+    return "go";
   }
 }
