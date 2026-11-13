@@ -7,6 +7,7 @@ import {
 } from "../../vetra-licensing/reporting.js";
 import { didForAddress } from "../../vetra-licensing/did.js";
 import type { LlmBroker } from "../../vetra-llm/broker.js";
+import { notConfigured } from "../errors.js";
 import type { VetraAppsDB } from "../db/schema.js";
 import type { AppRow } from "../repo.js";
 import type { PlanRow } from "../plans/repo.js";
@@ -31,12 +32,14 @@ const isPlanInstance = (row: InstanceRow) =>
  * configured. Pure; the reconciler calls it for every pass.
  */
 export function vetraSecretsOf(
-  deps: Pick<AppsDeps, "llm" | "licensingDb" | "cfg">,
+  deps: Pick<AppsDeps, "licensingDb" | "cfg">,
   row: InstanceRow,
   plan: PlanRow | null,
 ): string[] {
   const out: string[] = [];
-  if (deps.llm && isPlanInstance(row) && plan && (plan.ai_budget_usd ?? 0) > 0)
+  // Declared whenever the plan has a budget, broker or not: a missing broker
+  // fails the pass (ensureInstanceVetraSecrets) instead of dropping the key.
+  if (isPlanInstance(row) && plan && (plan.ai_budget_usd ?? 0) > 0)
     out.push(AI_KEY_SECRET);
   // H8: an own instance reports its holder's user stats; a shared one has no single holder.
   if (row.kind === "own" && deps.cfg.licensingUrl && deps.licensingDb)
@@ -68,7 +71,8 @@ export async function ensureInstanceVetraSecrets(
   tenantId: string,
 ): Promise<void> {
   if (!row.environment_id) return;
-  if (vetraSecretsOf(deps, row, plan).includes(AI_KEY_SECRET) && deps.llm) {
+  if (vetraSecretsOf(deps, row, plan).includes(AI_KEY_SECRET)) {
+    if (!deps.llm) throw notConfigured("The AI key broker (OPENROUTER_MANAGEMENT_KEY)");
     const out = await deps.llm.provisionVetraKey({
       environmentId: row.environment_id,
       tenantId,

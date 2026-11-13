@@ -144,11 +144,20 @@ describe("AI key per plan budget (plan 7 Task 10)", () => {
     expect(await envEntry("OPENROUTER_API_KEY")).toBeUndefined();
   });
 
-  it("without a key broker nothing is declared even for a plan with a budget", async () => {
+  it("without a key broker the key is still declared, the instance fails its pass, and heals once the broker is there", async () => {
     await updatePlan(h.db, "plan-own", { ai_budget_usd: 25 }, "2026-10-02T00:00:00.000Z");
     await setMyInstanceSetting(h.deps, holder, { instanceId: (await own()).id, name: "X", value: "1", kind: "PLAIN" });
     await reconcileInstancesOnce(h.deps);
-    expect(await envEntry("OPENROUTER_API_KEY")).toBeUndefined();
+    expect(await own()).toMatchObject({ status: "failed" });
+    expect((await own()).reason).toContain("AI key broker");
+    h.deps.llm = {
+      provisionVetraKey: vi.fn(async () => ({ connected: true, llmBudgetUsd: 25 })),
+      releaseVetraKey: vi.fn(async () => undefined),
+    };
+    await reconcileInstancesOnce(h.deps);
+    expect(llmCalls()).toHaveLength(1);
+    expect((await own()).status).not.toBe("failed");
+    expect(await envEntry("OPENROUTER_API_KEY")).toMatchObject({ isSecret: true });
   });
 
   it("refuses OPENROUTER_API_KEY for holders, and in PLAN scope while a plan has a budget", async () => {

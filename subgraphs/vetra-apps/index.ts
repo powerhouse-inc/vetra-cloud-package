@@ -224,33 +224,38 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     )) as unknown as Kysely<VetraLicensingDB>;
     // The AI key of plan instances (plan 7 Task 10). Without
     // OPENROUTER_MANAGEMENT_KEY (or OpenBao) plan instances run keyless.
-    let llm: AppsDeps["llm"] = null;
     const llmCfg = loadLlmConfig(process.env);
-    if (plansConfigOf(cfg).enabled && llmCfg.managementKey && transit) {
+    const buildLlm = async (): Promise<AppsDeps["llm"]> => {
+      const llmDb = (await this.relationalDb.createNamespace(
+        "vetra-llm",
+      )) as unknown as Kysely<VetraLlmDB>;
+      await ensureLlmTables(llmDb as Kysely<any>);
+      return createLlmBroker({
+        store: createLlmKeyStore(llmDb),
+        openrouter: createOpenRouterApi({
+          managementKey: llmCfg.managementKey!,
+          baseUrl: llmCfg.baseUrl,
+        }),
+        keyVault: createKeyVault(transit!),
+        secrets: tenantSecrets,
+        // Instance keys answer to their plan alone, never a Studio licence.
+        budgetForDid: async () => ({ allowed: false, budgetUsd: 0 }),
+        budgetOverride: async () => null,
+        planBudget: planBudgetOf(db),
+        cfg: llmCfg,
+        now: () => new Date(),
+        logger: console,
+      });
+    };
+    const llmWanted =
+      plansConfigOf(cfg).enabled && !!llmCfg.managementKey && !!transit;
+    let llm: AppsDeps["llm"] = null;
+    if (llmWanted) {
       try {
-        const llmDb = (await this.relationalDb.createNamespace(
-          "vetra-llm",
-        )) as unknown as Kysely<VetraLlmDB>;
-        await ensureLlmTables(llmDb as Kysely<any>);
-        llm = createLlmBroker({
-          store: createLlmKeyStore(llmDb),
-          openrouter: createOpenRouterApi({
-            managementKey: llmCfg.managementKey,
-            baseUrl: llmCfg.baseUrl,
-          }),
-          keyVault: createKeyVault(transit),
-          secrets: tenantSecrets,
-          // Instance keys answer to their plan alone, never a Studio licence.
-          budgetForDid: async () => ({ allowed: false, budgetUsd: 0 }),
-          budgetOverride: async () => null,
-          planBudget: planBudgetOf(db),
-          cfg: llmCfg,
-          now: () => new Date(),
-          logger: console,
-        });
+        llm = await buildLlm();
       } catch (err) {
         console.warn(
-          `[vetra-apps] AI keys of plan instances unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          `[vetra-apps] AI keys of plan instances unavailable (retrying every minute): ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -301,6 +306,24 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       releasePolicy,
       licensingDb,
     };
+    if (llmWanted && !llm) {
+      // The broker's database may not be ready at boot: keep trying.
+      const timer = setInterval(() => {
+        if (deps.llm) return clearInterval(timer);
+        buildLlm().then(
+          (b) => {
+            deps.llm = b;
+            clearInterval(timer);
+            console.log("[vetra-apps] AI key broker is up");
+          },
+          (err) =>
+            console.warn(
+              `[vetra-apps] AI key broker still unavailable: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        );
+      }, 60_000);
+      timer.unref?.();
+    }
     if (cfg.allowUnattestedReleases)
       console.warn(
         "[vetra-apps] VETRA_APPS_ALLOW_UNATTESTED_RELEASES is on: release reports are accepted without an attestation when no verifier is wired",
