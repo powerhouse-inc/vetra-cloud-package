@@ -36,6 +36,7 @@ import {
   PREVIEWS_FROM_INSTANCES,
   type AppsDeps,
 } from "../service.js";
+import { syncPlanPools, WARM_LABEL } from "../plans/pool.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
 import { syncTeamPlan } from "../plans/team.js";
 import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
@@ -262,6 +263,14 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
       deps.logger.warn(`[vetra-apps] rollouts of ${app.slug}: ${message(err)}`);
     }
   }
+  if (plans.enabled) {
+    try {
+      // After syncPlanInstances: a new holder claims before the pool refills.
+      await syncPlanPools(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] warm pool of ${app.slug}: ${message(err)}`);
+    }
+  }
   // Read once per pass: every instance of a kind gets the same App layers;
   // own instances add their holder's (one query for all of them).
   const settingRows = await listAppSettings(deps.db, app.id);
@@ -318,7 +327,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   }
 }
 
-function wantsInstances(app: AppRow): boolean {
+export function wantsInstances(app: AppRow): boolean {
   return (
     Boolean(app.instances_enabled) &&
     app.status !== "DELETED" &&
@@ -355,6 +364,8 @@ export function adminsOf(
   row: InstanceRow,
   opts: { team?: boolean; now?: Date } = {},
 ): string {
+  // A warm-pool instance serves nobody until claimed (slice 8).
+  if (row.warm) return "";
   if (opts.team) return validTeamAdmins(app, row, opts.now ?? new Date()) ?? "";
   if (row.admins_override) return row.admins_override;
   return row.kind === "own" && row.holder_address
@@ -960,6 +971,12 @@ async function reconcileEnvironment(
   }
   const admins = await adminsFor(deps, app, row);
   const size = sizeOf(row);
+  // The claim's update relabels the environment in the same batch as ADMINS.
+  // Only rows that came from the pool: any other own row keeps its label.
+  const label =
+    row.kind === "own" && !row.warm && row.claimed_at
+      ? `${app.name} · ${row.name}`
+      : null;
 
   if (!declaresVetraSecrets(state) && isPlanKind(row.kind)) {
     // Never deleted: a plan instance's data is the holder's.
@@ -1093,6 +1110,7 @@ async function reconcileEnvironment(
         want,
         true,
         size,
+        label,
       );
       if (revert.length > 0) await apply(deps, envId, revert);
     }
@@ -1107,6 +1125,7 @@ async function reconcileEnvironment(
     want,
     start,
     size,
+    label,
   );
   const updates = [...domain, ...imageUpdates];
   if (
@@ -1216,7 +1235,15 @@ async function reconcileEnvironment(
     ...failure(row, settings),
   });
   if (back) {
-    const revert = instanceUpdateActions(state, back, admins, want, true, size);
+    const revert = instanceUpdateActions(
+      state,
+      back,
+      admins,
+      want,
+      true,
+      size,
+      label,
+    );
     if (revert.length > 0) await apply(deps, envId, revert);
   }
 }
@@ -1327,7 +1354,7 @@ async function initEnvironment(
       deps,
       envId,
       instanceCreateActions({
-        label: `${app.name} · ${row.name}`,
+        label: `${app.name} · ${row.warm ? WARM_LABEL : row.name}`,
         host,
         baseDomain: INSTANCE_BASE_DOMAIN,
         registry: isPlanKind(row.kind)
@@ -1374,7 +1401,14 @@ async function initEnvironment(
 }
 
 async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
-  if (isPlanKind(row.kind))
+  // Only an unclaimed warm-pool row is ever removed (slice 8); re-read, so a
+  // claim since this pass read the row is never undone.
+  const warmRemovable =
+    row.kind === "own" &&
+    row.warm === true &&
+    !row.holder_address &&
+    (await getInstance(deps.db, row.id))?.warm === true;
+  if (isPlanKind(row.kind) && !warmRemovable)
     throw new Error(
       "plan instances are never removed by the reconciler (releases phase 3: stopped, not deleted)",
     );
@@ -1389,6 +1423,7 @@ async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
       !GOING.has(state.status) &&
       state.status !== "DESTROYED" &&
       ((ours(state, row) && state.app?.role === "PREVIEW") ||
+        (warmRemovable && ours(state, row) && state.app?.role === "PLAN") ||
         ownDraft(state, row))
     ) {
       await deps.envs.delete(envId);

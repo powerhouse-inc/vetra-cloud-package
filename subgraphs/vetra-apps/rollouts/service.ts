@@ -171,6 +171,8 @@ export async function plannedSteps(
       !!r.plan_id &&
       byId.has(r.plan_id) &&
       !r.removed_at &&
+      // A warm-pool row has no holder: the keeper replaces it, rollouts never step it.
+      !r.warm &&
       r.status !== "removed" &&
       r.target_version !== version,
   );

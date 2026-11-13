@@ -498,6 +498,48 @@ describe("generateValuesYaml — warm environment is closed", () => {
     expect(yaml).toBe(await generateValuesYaml(dbStub, warmState(), DOC_ID, null, allow));
   });
 
+  describe("a PLAN environment without ADMINS is closed even when the lookup says not warm", () => {
+    const planState = (admins: string | null, role: "PLAN" | "PREVIEW" | "PRODUCTION" = "PLAN") => {
+      const s = warmState();
+      return {
+        ...s,
+        fusion: {
+          ...s.fusion!,
+          env: [
+            ...s.fusion!.env,
+            ...(admins === null ? [] : [{ name: "ADMINS", value: admins, isSecret: false }]),
+          ],
+        },
+        app: { appId: "app-1", role, prNumber: null, gitRef: null, imageProject: null },
+      } as VetraCloudEnvironmentState;
+    };
+    const notWarm = vi.fn(async () => null);
+
+    it("renders closed for an empty or missing ADMINS", async () => {
+      for (const admins of ["", "  ", null]) {
+        const yaml = await generateValuesYaml(dbStub, planState(admins), DOC_ID, null, allow, notWarm);
+        expect(appBlock(yaml)).toContain("    closed: true");
+      }
+    });
+
+    it("renders open once ADMINS is set", async () => {
+      const yaml = await generateValuesYaml(dbStub, planState("0xabc"), DOC_ID, null, allow, notWarm);
+      expect(yaml).not.toContain("closed:");
+    });
+
+    it("never closes a non-PLAN environment for its ADMINS", async () => {
+      for (const role of ["PREVIEW", "PRODUCTION"] as const) {
+        const yaml = await generateValuesYaml(dbStub, planState("", role), DOC_ID, null, allow, notWarm);
+        expect(yaml).not.toContain("closed:");
+      }
+    });
+
+    it("a held PLAN environment still has no ingress", async () => {
+      const yaml = await generateValuesYaml(dbStub, planState(""), DOC_ID, null, allow, notWarm, async () => true);
+      expect(appBlock(yaml)).not.toContain("closed:");
+    });
+  });
+
   it("looks the warm pool up once per render and hands the result to the image resolver", async () => {
     const isWarm = vi.fn(async () => ({ appId: "app-1" }));
     const resolver = vi.fn(async () => "app-sektar");

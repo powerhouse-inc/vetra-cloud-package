@@ -34,6 +34,7 @@ export const AUDIT_ACTIONS = [
   "release.withdrawn",
   "gate.token_issued",
   "gate.token_rotated",
+  "instance.claimed",
   "plan.team_enabled",
   "plan.team_disabled",
   "team.ran_healthy",

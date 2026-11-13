@@ -9,7 +9,7 @@ import type { PHDocumentHeader } from "document-model";
 import { type DB } from "./schema.js";
 import { VetraCloudEnvironmentProcessor } from "./processor.js";
 import { up } from "./migrations.js";
-import { createWarmPoolStore } from "../../subgraphs/vetra-licensing/warm-pool-db.js";
+import { createWarmLookup } from "./warm-lookup.js";
 import { createAppImageProjectResolver } from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsDB } from "../../subgraphs/vetra-cloud-secrets/db/schema.js";
@@ -78,8 +78,8 @@ export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
     const licensingDb = (await module.relationalDb.createNamespace(
       "vetra-licensing",
     )) as unknown as Kysely<any>;
-    const isWarm = (documentId: string) =>
-      createWarmPoolStore(licensingDb).isWarm(documentId);
+    // Licensing's pool (Sektar) first, then own plans' pools (phase 3 slice 8).
+    const isWarm = createWarmLookup(licensingDb, appsDb);
     const processor = new VetraCloudEnvironmentProcessor(
       db,
       module.dispatch,
