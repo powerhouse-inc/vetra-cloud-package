@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fakeVault, type Harness } from "./harness.js";
+import { fakeVault, ORG, OWNER, type Harness } from "./harness.js";
 import { seedLicence } from "./instances-fixtures.js";
 import {
   ORG_ADMIN_A,
@@ -29,7 +29,11 @@ beforeEach(async () => {
   const row = (await teamRow(h, appId))!;
   await h.db
     .updateTable("instances")
-    .set({ admins_override: ORG_ADMIN_A })
+    .set({
+      admins_override: ORG_ADMIN_A,
+      admins_override_org: ORG,
+      admins_checked_at: h.deps.now().toISOString(),
+    })
     .where("id", "=", row.id)
     .execute();
   token = await fakeVault().decrypt(
@@ -82,14 +86,26 @@ describe("the gate on the Team instance", () => {
     expect(res.status).toBe(503);
   });
 
-  it("an App that left its organisation admits nobody but ADMINS", async () => {
+  it("an org App whose creator left the org: the creator is not admitted, a member is", async () => {
+    await h.db
+      .updateTable("instances")
+      .set({ admins_override: null, admins_override_org: null })
+      .where("plan_id", "=", "p-team")
+      .execute();
+    h.orgs.members.delete(`${ORG}|${OWNER}`);
+    expect((await getApp(h.db, appId))!.owner_address).toBe(OWNER);
+    expect((await check(OWNER))?.allowed).toBe(false);
+    expect((await check(ORG_MEMBER))?.reason).toBe("member");
+  });
+
+  it("an App that left its organisation admits nobody, not even its old ADMINS", async () => {
     await h.db
       .updateTable("apps")
       .set({ owner_org_id: null })
       .where("id", "=", appId)
       .execute();
     expect((await check(ORG_MEMBER))?.reason).toBe("none");
-    expect((await check(ORG_ADMIN_A))?.reason).toBe("admin");
+    expect((await check(ORG_ADMIN_A))?.reason).toBe("none");
   });
 
   it("teamGateAnswer alone", async () => {

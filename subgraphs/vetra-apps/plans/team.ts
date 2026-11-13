@@ -185,6 +185,7 @@ export async function syncTeamPlan(deps: AppsDeps, app: AppRow): Promise<void> {
   );
   if (!row) return;
   if (isOrgApp(app)) await refreshAdmins(deps, app, row);
+  else await clearAdmins(deps, app, row);
   const now = deps.now();
   const soakMs = teamSoakMs(deps.cfg);
   if (qualifiesAsRun(row, soakMs, now))
@@ -233,7 +234,9 @@ async function refreshAdmins(
   const read = deps.orgs?.orgAdmins;
   if (!read || !app.owner_org_id) return;
   const checked = Date.parse(row.admins_checked_at ?? "");
+  // An override read for another organisation is refreshed at once.
   if (
+    row.admins_override_org === app.owner_org_id &&
     Number.isFinite(checked) &&
     deps.now().getTime() - checked < TEAM_ADMINS_REFRESH_MS
   )
@@ -242,12 +245,20 @@ async function refreshAdmins(
   try {
     list = await read.call(deps.orgs, app.owner_org_id);
   } catch {
-    return; // Renown down: keep the last list, ask again next pass.
+    return; // Renown down: the last list is trusted for an hour (validTeamAdmins).
   }
   const nowIso = deps.now().toISOString();
+  if (list && list.length > TEAM_ADMINS_MAX)
+    deps.logger.warn(
+      `[vetra-apps] Team plan of ${app.slug}: ${list.length} org admins, only the first ${TEAM_ADMINS_MAX} are set`,
+    );
   const override =
     list && list.length > 0 ? list.slice(0, TEAM_ADMINS_MAX).join(",") : null;
-  if ((row.admins_override ?? null) === override) {
+  const org = override ? app.owner_org_id : null;
+  if (
+    (row.admins_override ?? null) === override &&
+    (row.admins_override_org ?? null) === org
+  ) {
     await updateInstance(
       deps.db,
       row.id,
@@ -256,11 +267,36 @@ async function refreshAdmins(
     );
     return;
   }
+  await setOverride(deps, app, row, override, org, nowIso);
+}
+
+/** The App is no organisation's: whatever the override says is no longer true. */
+async function clearAdmins(
+  deps: AppsDeps,
+  app: AppRow,
+  row: InstanceRow,
+): Promise<void> {
+  if (!row.admins_override && !row.admins_override_org) return;
+  await setOverride(deps, app, row, null, null, deps.now().toISOString());
+}
+
+async function setOverride(
+  deps: AppsDeps,
+  app: AppRow,
+  row: InstanceRow,
+  override: string | null,
+  org: string | null,
+  nowIso: string,
+): Promise<void> {
   await deps.db.transaction().execute(async (trx) => {
     await updateInstance(
       trx,
       row.id,
-      { admins_override: override, admins_checked_at: nowIso },
+      {
+        admins_override: override,
+        admins_override_org: org,
+        admins_checked_at: nowIso,
+      },
       nowIso,
     );
     await recordAudit(trx, {
@@ -271,7 +307,7 @@ async function refreshAdmins(
       action: "instance.admins_set",
       subject: `instance:${row.id}`,
       detail: {
-        count: override ? override.split(",").length : 1,
+        count: override ? override.split(",").length : 0,
         fallback: override === null,
       },
     });

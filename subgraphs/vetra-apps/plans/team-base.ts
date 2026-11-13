@@ -36,3 +36,31 @@ export async function activeTeamPlan(
   const p = await teamPlanOf(db, appId);
   return p?.status === "active" ? p : null;
 }
+
+/** While Renown is down, an admins override is trusted this long past its last check. */
+export const TEAM_ADMINS_TRUST_MS = 60 * 60_000;
+
+/**
+ * The Team instance's ADMINS override, when still valid: read for the App's
+ * current organisation and checked within the trust window. Otherwise null:
+ * no admins, so access goes through the gate's membership branch.
+ */
+export function validTeamAdmins(
+  app: Pick<AppRow, "owner_org_id" | "org_disputed">,
+  row: {
+    admins_override?: string | null;
+    admins_override_org?: string | null;
+    admins_checked_at?: string | null;
+  },
+  now: Date,
+): string | null {
+  if (!row.admins_override || !isOrgApp(app)) return null;
+  if (row.admins_override_org !== app.owner_org_id) return null;
+  const checked = Date.parse(row.admins_checked_at ?? "");
+  if (
+    !Number.isFinite(checked) ||
+    now.getTime() - checked > TEAM_ADMINS_TRUST_MS
+  )
+    return null;
+  return row.admins_override;
+}

@@ -180,6 +180,7 @@ export async function ensureTeamPlanSchema(db: Kysely<any>): Promise<void> {
   for (const [name, type] of [
     ["admins_override", "text"],
     ["admins_checked_at", "varchar(64)"],
+    ["admins_override_org", "varchar(255)"],
   ] as const) {
     try {
       await db.schema

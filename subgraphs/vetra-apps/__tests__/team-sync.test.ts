@@ -73,14 +73,36 @@ describe("Team plan instances", () => {
     expect((await teamRow(h, appId))?.stop_reason).toBeNull();
   });
 
-  it("adminsOf prefers the instance's override", async () => {
+  it("adminsOf: a Team row has the valid override or no admins, never the owner", async () => {
     await seedTeamPlan(h, appId);
     await sync();
     const app = (await getApp(h.db, appId))!;
     const row = (await teamRow(h, appId))!;
-    expect(adminsOf(app, row)).toBe(app.owner_address);
-    expect(adminsOf(app, { ...row, admins_override: "0xa1,0xb2" })).toBe(
-      "0xa1,0xb2",
-    );
+    const now = h.deps.now();
+    const iso = (ms: number) => new Date(now.getTime() - ms).toISOString();
+    const own = adminsOf(app, row);
+    expect(own).toBe(app.owner_address);
+    const t = { team: true, now };
+    expect(adminsOf(app, row, t)).toBe("");
+    const set = {
+      ...row,
+      admins_override: "0xa1,0xb2",
+      admins_override_org: app.owner_org_id,
+      admins_checked_at: iso(0),
+    };
+    expect(adminsOf(app, set, t)).toBe("0xa1,0xb2");
+    // Read for another organisation: ignored.
+    expect(adminsOf(app, { ...set, admins_override_org: "org-x" }, t)).toBe("");
+    expect(adminsOf(app, { ...set, admins_override_org: null }, t)).toBe("");
+    // Renown down: trusted for an hour past the last check, then none.
+    expect(
+      adminsOf(app, { ...set, admins_checked_at: iso(59 * 60_000) }, t),
+    ).toBe("0xa1,0xb2");
+    expect(
+      adminsOf(app, { ...set, admins_checked_at: iso(61 * 60_000) }, t),
+    ).toBe("");
+    expect(adminsOf(app, { ...set, admins_checked_at: null }, t)).toBe("");
+    // Not an org App: none.
+    expect(adminsOf({ ...app, owner_org_id: null }, set, t)).toBe("");
   });
 });

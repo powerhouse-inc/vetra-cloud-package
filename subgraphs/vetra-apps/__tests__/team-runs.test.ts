@@ -70,6 +70,51 @@ describe("syncTeamPlan", () => {
     expect(set).toHaveLength(3);
   });
 
+  it("stores the org with the override, refreshes at once when the org changed, clears it off an org App, logs truncation", async () => {
+    await seedTeamPlan(h, appId);
+    h.orgs.admins.set(ORG, [ORG_ADMIN_A]);
+    await pass();
+    expect(await teamRow(h, appId)).toMatchObject({
+      admins_override: ORG_ADMIN_A,
+      admins_override_org: ORG,
+    });
+    // Stale org: refreshed within the 15 minutes.
+    await h.db
+      .updateTable("instances")
+      .set({ admins_override_org: "org-old" })
+      .execute();
+    await pass();
+    expect((await teamRow(h, appId))?.admins_override_org).toBe(ORG);
+    // Off an org App: cleared.
+    await h.db
+      .updateTable("apps")
+      .set({ owner_org_id: null })
+      .where("id", "=", appId)
+      .execute();
+    await pass();
+    expect(await teamRow(h, appId)).toMatchObject({
+      admins_override: null,
+      admins_override_org: null,
+    });
+    // Truncated at 50, and said so.
+    await h.db
+      .updateTable("apps")
+      .set({ owner_org_id: ORG })
+      .where("id", "=", appId)
+      .execute();
+    h.orgs.admins.set(
+      ORG,
+      Array.from({ length: 51 }, (_, i) => `0x${String(i).padStart(40, "0")}`),
+    );
+    await pass();
+    expect((await teamRow(h, appId))?.admins_override?.split(",")).toHaveLength(
+      50,
+    );
+    expect(h.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/51 org admins/),
+    );
+  });
+
   it("records a release as ran healthy after the soak, once, audited", async () => {
     await seedTeamPlan(h, appId);
     await pass();

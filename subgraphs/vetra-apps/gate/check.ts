@@ -60,7 +60,10 @@ export async function checkGate(
   ]);
   if (!plan || !app || plan.app_id !== app.id) return null;
   const who = address.toLowerCase();
-  const admins = adminsOf(app, row)
+  const admins = adminsOf(app, row, {
+    team: plan.team === true,
+    now: deps.now(),
+  })
     .split(",")
     .map((a) => a.trim().toLowerCase());
   if (admins.includes(who))

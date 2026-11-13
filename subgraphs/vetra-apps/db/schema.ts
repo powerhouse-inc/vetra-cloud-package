@@ -511,6 +511,8 @@ export interface InstancesTable {
   target_size?: string | null;
   /** ADMINS to render instead of the kind's default (Team: the org's admins). */
   admins_override?: string | null;
+  /** The organisation the override was read for; ignored once the App's org differs. */
+  admins_override_org?: string | null;
   /** When the override was last refreshed from Renown. */
   admins_checked_at?: string | null;
   /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
