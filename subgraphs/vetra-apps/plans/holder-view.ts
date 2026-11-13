@@ -1,4 +1,5 @@
-import { plansConfigOf } from "../config.js";
+import { plansConfigOf, switchoverConfigOf } from "../config.js";
+import type { SwitchoverRow } from "../switchover/repo.js";
 import { DESTROY_AFTER_DAYS } from "../holders/notices.js";
 import type { Caller } from "../auth.js";
 import type { HolderDirectoryEntry } from "../directory.js";
@@ -31,8 +32,17 @@ export interface HolderInstanceJson {
   /** own, licence ended and deletion on: when its data is deleted. */
   deletesAt: string | null;
   notices: HolderNotice[];
+  /** own, just switched over from a licensed environment: ask the holder to check it (confirmSwitchover). */
+  switchover: HolderSwitchoverJson | null;
   /** A coming update of this instance (spec 7 step 3); null when none. */
   update: HolderUpdateJson | null;
+}
+
+export interface HolderSwitchoverJson {
+  id: string;
+  state: string;
+  /** Without an answer by then the switch-over counts as confirmed. */
+  confirmBy: string;
 }
 
 /** The instances the caller holds a licence for (spec section 11: a holder's own instances under their licences). */
@@ -73,8 +83,22 @@ export async function myInstancesFor(
   const own = await base()
     .where("instances.kind", "=", "own")
     .where("instances.holder_address", "=", address)
+    // A switch-over owns its instance until it links it: not theirs to see before.
+    .where("instances.switchover_id", "is", null)
     .orderBy("instances.created_at")
     .execute();
+  const checking = new Map(
+    (
+      await deps.db
+        .selectFrom("switchovers")
+        .selectAll()
+        .where("holder_address", "=", address)
+        .where("mode", "=", "real")
+        .where("state", "in", ["LINKING", "AWAITING_CONFIRMATION"])
+        .execute()
+        .catch(() => [])
+    ).flatMap((s) => (s.instance_id ? [[s.instance_id, s] as const] : [])),
+  );
   const kinds = await liveKindsOfHolder(
     deps.licensingDb,
     address,
@@ -159,10 +183,26 @@ export async function myInstancesFor(
             n.kind === "STOPPED_DELETE_PENDING" || n.kind === "DELETE_IMMINENT",
         )?.at ?? null,
       notices,
+      switchover: switchoverJson(deps, checking.get(r.instanceId)),
       update: await holderUpdateOf(deps, r.instanceId, kind),
     });
   }
   return out;
+}
+
+function switchoverJson(
+  deps: AppsDeps,
+  s: SwitchoverRow | undefined,
+): HolderSwitchoverJson | null {
+  if (!s) return null;
+  const since = Date.parse(s.started_at ?? s.step_started_at ?? s.updated_at);
+  return {
+    id: s.id,
+    state: s.state,
+    confirmBy: new Date(
+      since + switchoverConfigOf(deps.cfg).confirmHours * 3_600_000,
+    ).toISOString(),
+  };
 }
 
 /**
@@ -201,6 +241,7 @@ export async function holderInstancesFor(
   const own = await base()
     .where("instances.kind", "=", "own")
     .where("instances.holder_address", "=", holder)
+    .where("instances.switchover_id", "is", null)
     .orderBy("instances.created_at")
     .execute();
   const kinds = (

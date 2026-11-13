@@ -8,7 +8,8 @@ import { loadLicensingConfig } from "../config.js";
 import { createChainEnvironmentRows } from "../environments.js";
 import {
   addDays, confirmedEndedRows, isLicenceStopped, markEnded, markResumed, offboardingAction,
-  subscriptionWarnings, tickOffboarding, type OffboardingDeps,
+  subscriptionWarnings,
+  switchoverWarnings, tickOffboarding, type OffboardingDeps,
 } from "../offboarding.js";
 
 const END = "2026-10-01T00:00:00.000Z";
@@ -310,5 +311,51 @@ describe("offboarding against rows", () => {
     expect(confirmedEndedRows([r], new Set(["r"]))).toStrictEqual([r]);
     expect(confirmedEndedRows([r], new Set())).toStrictEqual([]);
     expect(confirmedEndedRows([{ ...r, ended_at: null }], new Set(["r"]))).toStrictEqual([]);
+  });
+});
+
+describe("switchoverWarnings (plan 9)", () => {
+  const base = {
+    windowStart: "2026-12-01T10:00:00.000Z",
+    windowEnd: "2026-12-01T10:45:00.000Z",
+    startedAt: null,
+    doneAt: null,
+  };
+  const now = "2026-11-28T00:00:00.000Z";
+
+  it("is announced from PLANNED until the old environment is held", () => {
+    for (const state of ["PLANNED", "PREPARING", "PREPARED"])
+      expect(switchoverWarnings({ ...base, state }, "Sektar", now)).toEqual([
+        {
+          kind: "SWITCHOVER_SCHEDULED",
+          at: base.windowStart,
+          message:
+            "Your Sektar moves to its own instance on 2026-12-01 between 10:00 and 10:45 (UTC). It will be unavailable for up to 45 minutes. Its address stays the same.",
+        },
+      ]);
+    for (const state of ["HOLDING_OLD", "BACKING_UP", "RESTORING", "FAILED", "ROLLED_BACK", "CLEANED"])
+      expect(switchoverWarnings({ ...base, state }, "Sektar", now)).toEqual([]);
+  });
+
+  it("asks the holder to check from LINKING until a week after DONE", () => {
+    const started = { ...base, startedAt: "2026-12-01T10:30:00.000Z" };
+    for (const state of ["LINKING", "AWAITING_CONFIRMATION"])
+      expect(switchoverWarnings({ ...started, state }, "Sektar", now)).toEqual([
+        {
+          kind: "SWITCHED_OVER",
+          at: started.startedAt,
+          message: "Your Sektar now runs as its own instance. Please sign in and check it.",
+        },
+      ]);
+    const done = { ...started, state: "DONE", doneAt: "2026-12-04T10:00:00.000Z" };
+    expect(switchoverWarnings(done, "Sektar", "2026-12-10T00:00:00.000Z")).toHaveLength(1);
+    expect(switchoverWarnings(done, "Sektar", "2026-12-11T10:00:00.000Z")).toEqual([]);
+  });
+
+  it("is silent without a switch-over or without a window", () => {
+    expect(switchoverWarnings(null, "Sektar", now)).toEqual([]);
+    expect(
+      switchoverWarnings({ ...base, state: "PLANNED", windowStart: null }, "Sektar", now),
+    ).toEqual([]);
   });
 });

@@ -18,7 +18,14 @@ import { redeemInviteCode, type InviteCodeIssuerDeps } from "./issuers/invite-co
 import type { LicenseGateway } from "./license-gateway.js";
 import { authorisedLicences, isLive, type AuthorisedLicence } from "./licence-view.js";
 import type { LifecycleStore } from "./lifecycle.js";
-import { DESTROY_AFTER_DAYS, addDays, subscriptionWarnings, type SubscriptionWarning } from "./offboarding.js";
+import {
+  DESTROY_AFTER_DAYS,
+  addDays,
+  subscriptionWarnings,
+  switchoverWarnings,
+  type SubscriptionWarning,
+  type SwitchoverNotice,
+} from "./offboarding.js";
 import {
   ForbiddenError,
   InvalidSecretNameError,
@@ -43,6 +50,11 @@ export interface SubscriptionDeps {
   /** Forgets a dropped environment's reporting token (offboarding's forgetEnvironment). */
   forgetEnvironment(environmentId: string): Promise<void>;
   envState(environmentId: string): Promise<VetraCloudEnvironmentState | null>;
+  /**
+   * The switch-over (plan 9) of a licensed environment, if any (vetra-apps'
+   * switchovers table). Absent or null: no notice.
+   */
+  switchoverOf?(environmentId: string): Promise<SwitchoverNotice | null>;
   /** The recording gateway: a cancel also lands in license_lifecycle. */
   licenseGateway: Pick<LicenseGateway, "execute">;
   studio: StudioAccessDeps;
@@ -160,6 +172,13 @@ export async function subscriptionFor(
     stoppedAt: liveRow?.stopped_at ?? null,
     deleteAfter: liveRow?.delete_after ?? null,
     warnings: [
+      ...(envRow && deps.switchoverOf
+        ? switchoverWarnings(
+            await deps.switchoverOf(envRow.environment_id).catch(() => null),
+            app?.name ?? app?.slug ?? "app",
+            deps.now(),
+          )
+        : []),
       // The holder deleted the environment their live licence covers: they may have a new one.
       ...(envRow && !liveRow && !isSwitchedOver(envRow) && isLive(l.status)
         ? [

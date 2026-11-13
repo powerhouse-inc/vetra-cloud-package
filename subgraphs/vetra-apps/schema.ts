@@ -265,8 +265,18 @@ export const schema: DocumentNode = gql`
     "own, licence ended, deletion on: when its data is deleted"
     deletesAt: String
     notices: [HolderNotice!]!
+    "own, just moved from a licensed environment: ask the holder to check it (confirmSwitchover); null otherwise"
+    switchover: HolderSwitchover
     "A coming update of this instance; null when none"
     update: HolderUpdate
+  }
+
+  type HolderSwitchover {
+    id: ID!
+    "LINKING | AWAITING_CONFIRMATION"
+    state: String!
+    "Without an answer by then the switch-over counts as confirmed"
+    confirmBy: String!
   }
 
   enum HolderNoticeKind {

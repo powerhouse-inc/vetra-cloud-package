@@ -302,3 +302,54 @@ export async function cleanUpDryRun(
 }
 
 export { AUDIT_SYSTEM_ACTOR };
+
+/**
+ * The holder says "Looks right" (S12): sets confirmed_at, which ends
+ * AWAITING_CONFIRMATION (the runner moves it to DONE and starts the 30-day
+ * hold of the old environment). Only the holder of that switch-over, only
+ * once the new instance is linked; asking twice is the same answer.
+ */
+export async function confirmSwitchover(
+  deps: AppsDeps,
+  caller: Caller,
+  id: string,
+): Promise<SwitchoverRow> {
+  const row = await getSwitchover(deps.db, id);
+  // The same answer for "no such" and "not yours": ids of others are not probed.
+  if (
+    !row ||
+    row.mode !== "real" ||
+    row.holder_address.toLowerCase() !== caller.address.toLowerCase()
+  )
+    throw appsError("NOT_FOUND", "Switch-over not found");
+  return withKeyLock(appInstancesLock(row.app_id), async () => {
+    const cur = (await getSwitchover(deps.db, id))!;
+    if (cur.confirmed_at) return cur;
+    if (cur.state !== "AWAITING_CONFIRMATION")
+      throw appsError(
+        "BAD_USER_INPUT",
+        "There is nothing to confirm yet: your instance is not linked",
+      );
+    const nowIso = deps.now().toISOString();
+    return deps.db.transaction().execute(async (trx) => {
+      const next = await updateSwitchover(
+        trx,
+        cur.id,
+        { confirmed_at: nowIso },
+        nowIso,
+        "AWAITING_CONFIRMATION",
+      );
+      await auditCaller(trx, caller, {
+        appId: cur.app_id,
+        at: nowIso,
+        action: "switchover.confirmed",
+        subject: `switchover:${cur.id}`,
+        detail: {
+          environmentId: cur.environment_id,
+          instanceId: cur.instance_id,
+        },
+      });
+      return next;
+    });
+  });
+}
