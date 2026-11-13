@@ -3,7 +3,6 @@ import { BackupBusyError } from "../backups/service.js";
 import { switchoverConfigOf, type SwitchoverConfig } from "../config.js";
 import { getHold } from "../holds/repo.js";
 import { appPodGone, holdEnvironment, releaseHold } from "../holds/service.js";
-import { INSTANCE_BASE_DOMAIN } from "../instances/reconciler.js";
 import { insertInstance, type InstanceRow } from "../instances/repo.js";
 import { targetOf } from "../instances/targets.js";
 import { ownInstanceName } from "../plans/sync.js";
@@ -568,8 +567,10 @@ const verifying: Step = async (c, row) => {
   if (diff)
     return fail(`the started instance differs from the source in ${diff}`);
   if (!c.deps.probe) return fail("no HTTP probe is configured; cannot verify");
+  // The instance's ingress is closed until this step passes (a rehearsal
+  // clone's for good): ask the app's Service inside the cluster, not the public host.
   const probe = await c.deps.probe(
-    `https://${inst.host}.${INSTANCE_BASE_DOMAIN}/`,
+    `http://powerhouse-${tenant}-app.${tenant}.svc.cluster.local:80/`,
   );
   if (probe.status !== 200 || !/html/i.test(probe.contentType ?? ""))
     return wait;

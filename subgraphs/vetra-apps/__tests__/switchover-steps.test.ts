@@ -237,7 +237,11 @@ describe("the window: hold the old environment, copy, check, start", () => {
     await advanceSwitchover(f.h.deps, f.sw.id);
     expect((await f.row()).state).toBe("LINKING");
     expect((await f.row()).started_at).not.toBeNull();
-    expect(f.h.probed).toContain(`https://${OLD_HOST}.vetra.io/`);
+    // The new instance's ingress is closed until verified: the probe goes to its Service in the cluster.
+    expect(f.h.probed).toContain(
+      `http://powerhouse-${tenant}-app.${tenant}.svc.cluster.local:80/`,
+    );
+    expect(f.h.probed).not.toContain(`https://${OLD_HOST}.vetra.io/`);
     await advanceSwitchover(f.h.deps, f.sw.id);
     const linked = await f.row();
     expect(linked.state).toBe("AWAITING_CONFIRMATION");

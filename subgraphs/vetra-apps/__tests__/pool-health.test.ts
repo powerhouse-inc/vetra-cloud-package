@@ -116,3 +116,24 @@ describe("warm rows are judged from the cluster only (W7)", () => {
     });
   });
 });
+
+describe("switch-over instances are judged from the cluster only", () => {
+  it.each([
+    ["a rehearsal clone (no holder)", null],
+    ["a new instance before it is verified (holder set)", HOLDER],
+  ])("%s is healthy without a public probe", async (_name, holder) => {
+    await reconcileInstancesOnce(h.deps);
+    const envId = (await warm()).environment_id!;
+    h.envs.setStatus(envId, "READY");
+    await setCluster(envId);
+    await h.db
+      .updateTable("instances")
+      .set({ warm: false, holder_address: holder, switchover_id: "sw1" })
+      .where("id", "=", (await warm()).id)
+      .execute();
+    await monitor();
+    const row = (await listInstances(h.db, appId, "own"))[0];
+    expect(row.health).toBe("healthy");
+    expect(h.probed).toEqual([]);
+  });
+});
