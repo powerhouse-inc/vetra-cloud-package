@@ -9,6 +9,7 @@ import {
   setManagedBy,
   setOwner,
 } from "../../../document-models/vetra-cloud-environment/v1/index.js";
+import { getTenantId } from "../../../processors/vetra-cloud-environment/gitops.js";
 import type { ObservabilityDB } from "../../vetra-cloud-observability/db/schema.js";
 import { freezeAppReleases } from "../../vetra-licensing/release-service.js";
 import { createRolloutStore } from "../../vetra-licensing/rollout-db.js";
@@ -165,6 +166,8 @@ export async function flow(
     oldPod: "app-0" as string | null,
     dbReady: new Set<string>(),
     volumeBound: new Set<string>(),
+    /** Tenants whose app pod is Running and Ready. */
+    ready: new Set<string>([OLD_TENANT]),
   };
   const ports: SwitchoverPorts = {
     backups: backups.api,
@@ -175,6 +178,7 @@ export async function flow(
     },
     dataPvc: async (t) => `powerhouse-${t}-app-data`,
     runningAppPod: async (t) => (t === OLD_TENANT ? cluster.oldPod : null),
+    appPodReady: async (t) => cluster.ready.has(t),
   };
   h.deps.switchover = ports;
 
@@ -281,3 +285,46 @@ export async function flow(
   };
 }
 export type Flow = Awaited<ReturnType<typeof flow>>;
+
+const HOUR = 3_600_000;
+const TENANT_OF = async (f: Flow) => {
+  const inst = await f.instance();
+  return inst?.environment_id
+    ? getTenantId(OLD_HOST, inst.environment_id)
+    : null;
+};
+export { TENANT_OF as newTenantOf };
+
+/**
+ * Drives a switch-over through the happy path, playing the cluster (storage
+ * ready, old pod gone, counts equal, the instance healthy), until it is in
+ * `target`. Throws if it fails on the way.
+ */
+export async function drive(f: Flow, target: SwitchoverRow["state"]) {
+  for (let i = 0; i < 80; i++) {
+    const r = await f.row();
+    if (r.state === target) return r;
+    if (r.state === "FAILED")
+      throw new Error(`failed in ${r.failed_state}: ${r.error}`);
+    const tenant = await TENANT_OF(f);
+    if (tenant) {
+      f.cluster.dbReady.add(tenant);
+      f.cluster.volumeBound.add(tenant);
+      if (!f.counts.byTenant.has(tenant)) f.counts.byTenant.set(tenant, COUNTS);
+    }
+    if (r.state === "PLANNED") f.h.advance(2 * HOUR);
+    if (r.state === "PREPARED") f.h.advance(24 * HOUR);
+    if (r.state === "HOLDING_OLD") await f.setOldPod(false);
+    if (r.state === "VERIFYING") {
+      const inst = (await f.instance())!;
+      await f.updateInstance(inst.id, {
+        status: "ready",
+        running_version: inst.target_version,
+        running_digest: inst.target_digest,
+        running_degraded: false,
+      });
+      await advanceSwitchoversOnce(f.h.deps);
+    } else await f.tick();
+  }
+  throw new Error(`did not reach ${target}`);
+}

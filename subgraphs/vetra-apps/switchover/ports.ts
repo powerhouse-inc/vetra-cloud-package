@@ -17,6 +17,8 @@ export interface SwitchoverPorts {
   dataPvc(tenant: string): Promise<string | null>;
   /** A running app pod of the tenant (the same-node archive runs beside it), or null. */
   runningAppPod(tenant: string): Promise<string | null>;
+  /** The tenant's app pod is Running and Ready (a rolled-back old environment is back). */
+  appPodReady(tenant: string): Promise<boolean>;
 }
 
 /**
@@ -48,6 +50,18 @@ export function switchoverPortsOver(d: {
         .limit(1)
         .executeTakeFirst();
       return pod?.name ?? null;
+    },
+    async appPodReady(tenant) {
+      const pod = await d.observabilityDb
+        .selectFrom("environment_pods")
+        .select("id")
+        .where("tenantId", "=", tenant)
+        .where("component", "=", "app")
+        .where("phase", "=", "Running")
+        .where("ready", "=", 1)
+        .limit(1)
+        .executeTakeFirst();
+      return !!pod;
     },
   };
 }

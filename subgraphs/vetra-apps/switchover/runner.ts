@@ -17,7 +17,10 @@ import {
   updateSwitchover,
   type SwitchoverRow,
 } from "./repo.js";
+import { rollingBack } from "./rollback.js";
 import { STEPS, type StepCtx } from "./steps.js";
+
+const STEP_TABLE = { ...STEPS, ROLLING_BACK: rollingBack };
 
 /** Long hex runs (keys, fingerprints, digests of secrets) never reach a table, an audit row or a log. */
 export const scrub = (text: string): string =>
@@ -51,7 +54,7 @@ export async function advanceSwitchover(
   if (timedOut(row, now.getTime())) obs = timeoutObservation(row);
   else {
     try {
-      obs = await STEPS[row.state](ctx, row);
+      obs = await STEP_TABLE[row.state](ctx, row);
     } catch (err) {
       deps.logger.warn(
         `[vetra-apps] switch-over ${row.id} (${row.state}): ${messageOf(err)}`,

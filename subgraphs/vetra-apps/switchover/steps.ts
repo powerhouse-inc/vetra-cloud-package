@@ -46,8 +46,8 @@ export interface StepCtx {
 export type Step = (c: StepCtx, row: SwitchoverRow) => Promise<Observation>;
 
 export const wait: Observation = { kind: "wait" };
-const fail = (error: string): Observation => ({ kind: "fail", error });
-const advance = (patch?: Partial<SwitchoverRow>): Observation => ({
+export const fail = (error: string): Observation => ({ kind: "fail", error });
+export const advance = (patch?: Partial<SwitchoverRow>): Observation => ({
   kind: "advance",
   patch,
 });
@@ -90,7 +90,7 @@ async function refusals(
   return checkSwitchover(facts).filter((r) => o.frozen || r !== NOT_FROZEN);
 }
 
-async function newInstance(
+export async function newInstance(
   c: StepCtx,
   row: SwitchoverRow,
 ): Promise<InstanceRow | null> {
@@ -98,7 +98,7 @@ async function newInstance(
 }
 
 /** The new instance's tenant, from its environment's subdomain: the reconciler's own formula. */
-async function newTenant(
+export async function newTenant(
   c: StepCtx,
   inst: InstanceRow,
 ): Promise<string | null> {
