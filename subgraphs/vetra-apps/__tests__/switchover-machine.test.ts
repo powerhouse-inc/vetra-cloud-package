@@ -12,55 +12,11 @@ import {
   openSwitchoverOfEnvironment,
   SwitchoverRaceError,
   updateSwitchover,
-  type SwitchoverRow,
 } from "../switchover/repo.js";
 import { AUDIT_ACTIONS } from "../audit/repo.js";
 
 const T = "2026-11-12T00:00:00.000Z";
-export const switchoverRow = (
-  over: Partial<SwitchoverRow> = {},
-): SwitchoverRow => ({
-  id: "s1",
-  app_id: "a1",
-  environment_id: "env-1",
-  old_tenant: "fair-ibis-huk51fts-huk51fts",
-  old_host: "fair-ibis-huk51fts",
-  licence_root_id: "root-1",
-  holder_address: "0xaa",
-  kind: "sektar-cloud",
-  plan_id: "p1",
-  instance_id: null,
-  release_version: "1.1.0",
-  release_digest: "sha256:x",
-  mode: "real",
-  state: "PLANNED",
-  failed_state: null,
-  error: null,
-  window_start: null,
-  window_end: null,
-  step_started_at: null,
-  attempts: 0,
-  prepare_archive_id: null,
-  dump_id: null,
-  archive_id: null,
-  restore_db_id: null,
-  restore_data_id: null,
-  key_fingerprints: null,
-  source_counts: null,
-  copy_counts: null,
-  started_counts: null,
-  timings: null,
-  downtime_started_at: null,
-  started_at: null,
-  confirmed_at: null,
-  done_at: null,
-  hold_until: null,
-  rolled_back_at: null,
-  created_by: "0xadmin",
-  created_at: T,
-  updated_at: T,
-  ...over,
-});
+import { switchoverRow } from "./switchover-fixtures.js";
 
 async function appsDb() {
   const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
