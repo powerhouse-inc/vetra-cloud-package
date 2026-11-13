@@ -19,6 +19,7 @@ import {
   setMyInstanceSetting,
 } from "../settings/holder-service.js";
 import { deliverSettings } from "../settings/deliver.js";
+import { fileKey } from "../settings/names.js";
 import { settingsForInstance } from "../settings/resolve.js";
 import type { Caller } from "../auth.js";
 
@@ -237,5 +238,93 @@ describe("deliverSettings and Vetra's own secrets", () => {
     const store = h.secrets.store.get(t)!;
     expect(store.get("OPENROUTER_API_KEY")).toBe("broker-key");
     expect(store.has("STALE")).toBe(false);
+  });
+});
+
+describe("file settings on the instance (plan 7 Task 9)", () => {
+  const PATH = "/client_secret_sektar-web-app.json";
+  const KEY = fileKey(PATH);
+  const pubFile = (content: string) =>
+    setAppSetting(h.deps, owner, {
+      appId,
+      value: content,
+      secret: true,
+      scope: "PLAN",
+      mountPath: PATH,
+    });
+  const files = async () => {
+    const v = (await envEntry("VETRA_FILES"))?.value;
+    return v ? JSON.parse(v) : [];
+  };
+
+  it("a publisher file becomes a tenant secret and a VETRA_FILES entry, never an env var", async () => {
+    await pubFile('{"web":1}');
+    await reconcileInstancesOnce(h.deps);
+    expect(h.secrets.store.get(await tenant())!.get(KEY)).toBe('{"web":1}');
+    expect(await files()).toEqual([{ key: KEY, mountPath: PATH }]);
+    expect(await envEntry(KEY)).toBeUndefined();
+    expect(JSON.stringify(await env())).not.toContain('{"web":1}');
+  });
+
+  it("a holder file at the same path replaces the publisher's", async () => {
+    await pubFile("publisher");
+    await setMyInstanceSetting(h.deps, holder, {
+      instanceId: (await own()).id,
+      kind: "FILE",
+      value: "holder",
+      mountPath: PATH,
+    });
+    await reconcileInstancesOnce(h.deps);
+    expect(await files()).toEqual([{ key: KEY, mountPath: PATH }]);
+    expect(h.secrets.store.get(await tenant())!.get(KEY)).toBe("holder");
+  });
+
+  it("deleting the file deletes the tenant secret and the entry", async () => {
+    await setMyInstanceSetting(h.deps, holder, {
+      instanceId: (await own()).id,
+      kind: "FILE",
+      value: "x",
+      mountPath: PATH,
+    });
+    await reconcileInstancesOnce(h.deps);
+    h.envs.setStatus((await own()).environment_id!, "READY");
+    await reconcileInstancesOnce(h.deps);
+    await deleteMyInstanceSetting(h.deps, holder, (await own()).id, KEY);
+    await reconcileInstancesOnce(h.deps);
+    expect(h.secrets.store.get(await tenant())!.has(KEY)).toBe(false);
+    expect(await files()).toEqual([]);
+  });
+
+  it("refuses bad paths and at most 10 files", async () => {
+    await expect(
+      setMyInstanceSetting(h.deps, holder, {
+        instanceId: (await own()).id,
+        kind: "FILE",
+        value: "x",
+        mountPath: "/etc/passwd",
+      }),
+    ).rejects.toThrow(/cannot be mounted/);
+    for (let i = 0; i < 10; i++)
+      await setMyInstanceSetting(h.deps, holder, {
+        instanceId: (await own()).id,
+        kind: "FILE",
+        value: "x",
+        mountPath: `/f${i}.json`,
+      });
+    await expect(
+      setMyInstanceSetting(h.deps, holder, {
+        instanceId: (await own()).id,
+        kind: "FILE",
+        value: "x",
+        mountPath: "/f11.json",
+      }),
+    ).rejects.toThrow(/at most 10 files/);
+  });
+
+  it("branch instances without files render exactly as before", async () => {
+    const b = (await listInstances(h.db, appId)).find((r) => r.kind === "branch");
+    if (!b?.environment_id) return;
+    const e = (await h.envs.getState(b.environment_id))!;
+    expect(e.fusion!.env.some((x) => x.name === "VETRA_FILES")).toBe(false);
   });
 });

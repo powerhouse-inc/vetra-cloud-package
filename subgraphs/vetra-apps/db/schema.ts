@@ -234,6 +234,8 @@ export interface AppSettingsTable {
   write_id: string;
   updated_at: string;
   updated_by: string;
+  /** Files only (secret true, name FILE_<16 hex>): where the file is mounted (plan 7 H6). */
+  mount_path?: string | null;
 }
 
 export type InstanceSettingKind = "plain" | "secret" | "file";

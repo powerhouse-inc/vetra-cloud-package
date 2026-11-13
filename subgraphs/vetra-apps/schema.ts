@@ -319,6 +319,8 @@ export const schema: DocumentNode = gql`
     scope: AppSettingScope!
     secret: Boolean!
     value: String
+    "Files only: where the file is mounted (needs powerhouse-chart secretFiles)"
+    mountPath: String
     updatedAt: String!
     updatedBy: String!
   }
@@ -342,13 +344,15 @@ export const schema: DocumentNode = gql`
 
   input SetAppSettingInput {
     appId: ID!
-    "Capitals, digits and _ (e.g. SEKTAR_OAUTH_RELAY_BASE)"
-    name: String!
+    "Capitals, digits and _ (e.g. SEKTAR_OAUTH_RELAY_BASE); derived for files"
+    name: String
     value: String!
-    "Secret: stored encrypted, never shown again"
+    "Secret: stored encrypted, never shown again (files always are)"
     secret: Boolean!
     "Default ALL"
     scope: AppSettingScope
+    "A file: mounted at this absolute path from a tenant secret (at most 64 KiB, 10 per scope)"
+    mountPath: String
   }
 
   type AppDeployment {

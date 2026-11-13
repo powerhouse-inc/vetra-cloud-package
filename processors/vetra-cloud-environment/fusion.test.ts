@@ -504,3 +504,63 @@ describe("generateValuesYaml — warm environment is closed", () => {
     ).rejects.toThrow("connection reset");
   });
 });
+
+describe("generateValuesYaml — file mounts (VETRA_FILES, plan 7 Task 9)", () => {
+  const KEY = "FILE_0123456789ABCDEF";
+  const files = (value: string) =>
+    envState({
+      services: [svc("FUSION", "fusion", "sha-abc1234def56")],
+      fusion: {
+        image: FUSION_IMAGE,
+        env: [
+          { name: "PH_HOST", value: "cli", isSecret: false },
+          { name: "VETRA_FILES", value, isSecret: false },
+        ],
+        autoUpdate: false,
+        autoUpdateTagPattern: null,
+      },
+    });
+  const listed = JSON.stringify([
+    { key: KEY, mountPath: "/client_secret_sektar-web-app.json" },
+  ]);
+
+  it("renders secretFiles from the tenant secret, never VETRA_FILES as env, once the chart supports it (FUSION_SECRET_FILES)", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    const app = appBlock(await render(files(listed)));
+    expect(app).toContain(
+      `  secretFiles:\n    - name: "${KEY}"\n      secretName: ${TENANT}-secrets\n      key: "${KEY}"\n      mountPath: "/client_secret_sektar-web-app.json"`,
+    );
+    expect(app).not.toContain("VETRA_FILES");
+    expect(app).toContain("  secretEnv: []");
+  });
+
+  it("before the chart supports it: no secretFiles, VETRA_FILES dropped (nothing else changes)", async () => {
+    const app = appBlock(await render(files(listed)));
+    expect(app).not.toContain("secretFiles");
+    expect(app).not.toContain("VETRA_FILES");
+    const plain = appBlock(await render(files("[]")));
+    expect(app).toBe(plain);
+  });
+
+  it("ignores a malformed list or entry (logged), rendering no secretFiles", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    for (const bad of [
+      "not json",
+      JSON.stringify({ key: KEY }),
+      JSON.stringify([{ key: "OTHER", mountPath: "/x.json" }]),
+      JSON.stringify([{ key: KEY, mountPath: "relative.json" }]),
+      JSON.stringify([{ key: KEY, mountPath: "/etc/passwd" }]),
+      JSON.stringify([{ key: KEY, mountPath: "/a/../etc/x" }]),
+    ]) {
+      const app = appBlock(await render(files(bad)));
+      expect(app).not.toContain("secretFiles:\n    -");
+      expect(app).not.toContain("VETRA_FILES");
+    }
+  });
+
+  it("an environment without VETRA_FILES renders exactly as before (no secretFiles key)", async () => {
+    vi.stubEnv("FUSION_SECRET_FILES", "on");
+    const app = appBlock(await render(envState()));
+    expect(app).not.toContain("secretFiles");
+  });
+});

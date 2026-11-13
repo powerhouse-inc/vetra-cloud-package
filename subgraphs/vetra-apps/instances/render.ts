@@ -21,6 +21,7 @@ import { WORKFLOWS_MASTER_KEY } from "../../vetra-cloud-secrets/services/secrets
 import {
   SETTINGS_REVISION_ENV,
   VETRA_GENERATED_SECRETS,
+  VETRA_FILES_ENV,
 } from "../settings/names.js";
 import type { InstanceSettings } from "../settings/resolve.js";
 
@@ -64,6 +65,8 @@ export interface InstanceSettingsEnv {
   secretNames: string[];
   /** Secrets Vetra writes by other paths (AI key, reporting token); declared after the generated ones. */
   vetraSecretNames?: string[];
+  /** File mounts (tenant secret key + path); listed in VETRA_FILES, never as env vars. */
+  files?: Array<{ key: string; mountPath: string }>;
 }
 
 export const envSettings = (s: InstanceSettings): InstanceSettingsEnv => ({
@@ -71,6 +74,7 @@ export const envSettings = (s: InstanceSettings): InstanceSettingsEnv => ({
   plain: s.plain,
   secretNames: s.secrets.map((x) => x.name),
   vetraSecretNames: s.vetraSecrets,
+  files: s.files.map((f) => ({ key: f.key, mountPath: f.mountPath })),
 });
 
 /**
@@ -92,6 +96,19 @@ export function fusionEnv(
       value: p.value,
       isSecret: false,
     })),
+    ...((settings.files ?? []).length > 0
+      ? [
+          {
+            name: VETRA_FILES_ENV,
+            value: JSON.stringify(
+              [...(settings.files ?? [])].sort((a, b) =>
+                a.mountPath < b.mountPath ? -1 : a.mountPath > b.mountPath ? 1 : 0,
+              ),
+            ),
+            isSecret: false,
+          },
+        ]
+      : []),
     { name: SETTINGS_REVISION_ENV, value: settings.revision, isSecret: false },
     ...[
       ...VETRA_GENERATED_SECRETS,
@@ -116,6 +133,26 @@ export const declaredSecretNames = (state: VetraCloudEnvironmentState) =>
   (state.fusion?.env ?? [])
     .filter((e) => e.isSecret === true)
     .map((e) => e.name);
+
+/** Tenant secret keys of the files the environment lists in VETRA_FILES (malformed: none). */
+export const declaredFileKeys = (state: VetraCloudEnvironmentState): string[] => {
+  const raw = (state.fusion?.env ?? []).find(
+    (e) => e.name === VETRA_FILES_ENV && !e.isSecret,
+  )?.value;
+  if (!raw) return [];
+  try {
+    const list: unknown = JSON.parse(raw);
+    return Array.isArray(list)
+      ? list.flatMap((e) =>
+          typeof e?.key === "string" && /^FILE_[0-9A-F]{16}$/.test(e.key)
+            ? [e.key as string]
+            : [],
+        )
+      : [];
+  } catch {
+    return [];
+  }
+};
 
 /** The settings revision the environment asks for (what its pods should run). */
 export const settingsRevisionOf = (state: VetraCloudEnvironmentState) =>

@@ -138,6 +138,19 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppRolesTable(db);
   await ensureInstanceSettingsTable(db);
   await ensureInstanceDomainColumns(db);
+  await ensureSettingsMountPath(db);
+}
+
+/** Publisher file settings (plan 7 Task 9): where a file row is mounted. */
+export async function ensureSettingsMountPath(db: Kysely<any>): Promise<void> {
+  try {
+    await db.schema
+      .alterTable("app_settings")
+      .addColumn("mount_path", "varchar(512)", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  }
 }
 
 /** A holder's custom domain on an own instance (plan 7 Task 7), unique where set. */

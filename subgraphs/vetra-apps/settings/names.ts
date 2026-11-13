@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   KEY_PATTERN,
   WORKFLOWS_MASTER_KEY,
@@ -97,7 +98,66 @@ export const RESERVED_SETTING_NAMES: ReadonlySet<string> = new Set([
   ...VETRA_SETTINGS.map((s) => s.name),
   ...ALSO_RESERVED,
 ]);
-export const RESERVED_PREFIXES: readonly string[] = ["VETRA_", "NODE_", "PG"];
+export const RESERVED_PREFIXES: readonly string[] = [
+  "VETRA_",
+  "NODE_",
+  "PG",
+  "FILE_",
+];
+
+/** Plain FUSION env entry listing an instance's file mounts: JSON [{key, mountPath}] (the processor turns it into secretFiles). */
+export const VETRA_FILES_ENV = "VETRA_FILES";
+/** File settings per scope layer (publisher scope, or a holder's instance). */
+export const MAX_FILES = 10;
+export const MAX_FILE_BYTES = 65536;
+const MAX_MOUNT_PATH = 512;
+const FORBIDDEN_ROOTS = [
+  "/data",
+  "/app",
+  "/proc",
+  "/sys",
+  "/etc",
+  "/var",
+  "/dev",
+  "/run",
+  "/tmp",
+];
+
+/** Tenant secret key of a file: FILE_<16 hex of sha256(mountPath)>. */
+export const fileKey = (mountPath: string) =>
+  `FILE_${createHash("sha256").update(mountPath).digest("hex").slice(0, 16).toUpperCase()}`;
+
+/** Absolute, normalised (no //, ., ..), at most 512 characters of [A-Za-z0-9._/-], not "/" and not under a system directory. */
+export function checkMountPath(p: string): void {
+  if (!p.startsWith("/") || p === "/" || p.endsWith("/"))
+    throw new SettingInputError(
+      "A mount path is an absolute file path, such as /client_secret.json",
+    );
+  if (p.length > MAX_MOUNT_PATH || !/^[A-Za-z0-9._/-]+$/.test(p))
+    throw new SettingInputError(
+      `A mount path has at most ${MAX_MOUNT_PATH} letters, digits, ".", "_", "-" and "/"`,
+    );
+  if (
+    p
+      .split("/")
+      .slice(1)
+      .some((seg) => seg === "" || seg === "." || seg === "..")
+  )
+    throw new SettingInputError(
+      "A mount path cannot contain //, /./ or /../",
+    );
+  const root = FORBIDDEN_ROOTS.find((r) => p === r || p.startsWith(`${r}/`));
+  if (root)
+    throw new SettingInputError(`Files cannot be mounted under ${root}`);
+}
+
+/** Never echoes the content. */
+export function checkFileValue(value: string): void {
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes === 0) throw new SettingInputError("The file is empty");
+  if (bytes > MAX_FILE_BYTES)
+    throw new SettingInputError("A file is at most 64 KiB");
+}
 
 export const MAX_SETTINGS_PER_APP = 100;
 const MAX_NAME_LENGTH = 128;

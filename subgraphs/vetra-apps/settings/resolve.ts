@@ -109,7 +109,19 @@ export function settingsForInstance(
 
   const plain = new Map<string, string>();
   const secrets = new Map<string, ResolvedSecret>();
+  // Files by mount path: the holder's replaces the publisher's (H2).
+  const files = new Map<string, ResolvedFile>();
   for (const r of chosen.values()) {
+    if (r.secret && r.mount_path) {
+      if (r.ciphertext)
+        files.set(r.mount_path, {
+          key: r.name,
+          mountPath: r.mount_path,
+          ciphertext: r.ciphertext,
+          writeId: r.write_id,
+        });
+      continue;
+    }
     if (r.secret) {
       if (r.ciphertext)
         secrets.set(r.name, {
@@ -120,12 +132,11 @@ export function settingsForInstance(
     } else plain.set(r.name, r.value ?? "");
   }
 
-  const files: ResolvedFile[] = [];
   const holder = kind === "own" ? holderRows : [];
   for (const r of holder) {
     if (r.kind === "file") {
       if (r.ciphertext && r.mount_path)
-        files.push({
+        files.set(r.mount_path, {
           key: r.name,
           mountPath: r.mount_path,
           ciphertext: r.ciphertext,
@@ -150,7 +161,7 @@ export function settingsForInstance(
   const layers: Omit<InstanceSettings, "revision"> = {
     plain: [...plain].map(([name, value]) => ({ name, value })).sort(byName),
     secrets: [...secrets.values()].sort(byName),
-    files: files.sort(byKey),
+    files: [...files.values()].sort(byKey),
     vetraSecrets: [...new Set(vetraSecrets)].sort(),
     holderCount: holder.length,
   };

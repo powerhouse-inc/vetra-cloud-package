@@ -17,6 +17,10 @@ import {
   type InstanceSettingRow,
 } from "./holder-repo.js";
 import {
+  checkFileValue,
+  checkMountPath,
+  fileKey,
+  MAX_FILES,
   checkSettingName,
   checkSettingValue,
   RESERVED_PREFIXES,
@@ -100,13 +104,19 @@ async function prepareRow(
   if (!Object.hasOwn(TO_KIND, kindName))
     throw new SettingInputError(`Unknown setting kind ${String(kindName)}`);
   const kind = TO_KIND[kindName];
-  // Files arrive with Task 9 (mount paths, VETRA_FILES).
-  if (kind === "file")
-    throw new SettingInputError("File settings are not available yet");
-  const name = input.name ?? "";
-  if (!name) throw new SettingInputError("A setting needs a name");
-  checkSettingName(name);
-  checkSettingValue(name, input.value, kind !== "plain");
+  let name = input.name ?? "";
+  let mountPath: string | null = null;
+  if (kind === "file") {
+    // A file's name is derived from its path (H6).
+    mountPath = input.mountPath ?? "";
+    checkMountPath(mountPath);
+    checkFileValue(input.value);
+    name = fileKey(mountPath);
+  } else {
+    if (!name) throw new SettingInputError("A setting needs a name");
+    checkSettingName(name);
+    checkSettingValue(name, input.value, kind !== "plain");
+  }
   let ciphertext: string | null = null;
   if (kind !== "plain") {
     const vault = deps.holderVault;
@@ -125,7 +135,7 @@ async function prepareRow(
     instance_id: own.row.id,
     name,
     kind,
-    mount_path: null,
+    mount_path: mountPath,
     value: kind === "plain" ? input.value : null,
     ciphertext,
     write_id: deps.newId(),
@@ -149,6 +159,14 @@ async function writeUnderCap(
     (await listInstanceSettings(trx, [row.instance_id])).get(row.instance_id) ??
     [];
   const replaced = existing.some((r) => r.name === row.name);
+  if (
+    row.kind === "file" &&
+    !replaced &&
+    existing.filter((r) => r.kind === "file").length >= MAX_FILES
+  )
+    throw new SettingInputError(
+      `An instance has at most ${MAX_FILES} files; delete one first`,
+    );
   if (!replaced && existing.length >= MAX_HOLDER_SETTINGS)
     throw new SettingInputError(
       `An instance has at most ${MAX_HOLDER_SETTINGS} settings; delete one first`,

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { notConfigured } from "../errors.js";
 import type { AppsDeps } from "../service.js";
 import { VETRA_GENERATED_SECRETS } from "./names.js";
-import type { InstanceSettings, ResolvedSecret } from "./resolve.js";
+import type { InstanceSettings } from "./resolve.js";
 
 /**
  * Writes an instance's secrets to its tenant (spec 5 and 14.2): Vetra's
@@ -24,20 +24,25 @@ export async function deliverSettings(
     await secrets.ensureSecret(tenantId, key, () =>
       randomBytes(32).toString("hex"),
     );
-  if (settings.secrets.length > 0) {
-    const vaultOf = (s: ResolvedSecret) => {
+  if (settings.secrets.length > 0 || settings.files.length > 0) {
+    const vaultOf = (s: { vault?: string }) => {
       // Holder secrets are under their own transit key (instance-settings).
       const vault =
         s.vault === "holder" ? deps.holderVault : deps.settingsVault;
       if (!vault) throw notConfigured("Secret settings (OPENBAO_ADDR)");
       return vault;
     };
-    const entries = await Promise.all(
-      settings.secrets.map(async (s) => ({
+    const entries = await Promise.all([
+      ...settings.secrets.map(async (s) => ({
         key: s.name,
         value: await vaultOf(s).decrypt(s.ciphertext),
       })),
-    );
+      // Files are tenant secrets under their derived keys (never env vars).
+      ...settings.files.map(async (f) => ({
+        key: f.key,
+        value: await vaultOf(f).decrypt(f.ciphertext),
+      })),
+    ]);
     await secrets.setSecrets(tenantId, entries);
   }
   // Vetra's per-instance secrets (AI key, reporting token) are written by
@@ -46,6 +51,7 @@ export async function deliverSettings(
     ...VETRA_GENERATED_SECRETS,
     ...settings.vetraSecrets,
     ...settings.secrets.map((s) => s.name),
+    ...settings.files.map((f) => f.key),
   ]);
   for (const name of declared)
     if (!wanted.has(name)) await secrets.deleteSecret(tenantId, name);

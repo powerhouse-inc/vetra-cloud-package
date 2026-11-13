@@ -138,6 +138,33 @@ describe("publisher settings", () => {
       });
   });
 
+  it("stores a file under a derived name, always secret, never returning its content; refuses bad paths and an 11th file", async () => {
+    const out = await set({
+      name: null,
+      value: '{"web":1}',
+      secret: false,
+      scope: "PLAN",
+      mountPath: "/client_secret_sektar-web-app.json",
+    });
+    expect(out).toMatchObject({
+      name: expect.stringMatching(/^FILE_[0-9A-F]{16}$/),
+      secret: true,
+      value: null,
+      mountPath: "/client_secret_sektar-web-app.json",
+    });
+    const [row] = await listAppSettings(h.db, appId);
+    expect(row.value).toBeNull();
+    expect(row.ciphertext).not.toContain("web");
+    await expect(
+      set({ name: null, value: "x", secret: true, mountPath: "/etc/passwd" }),
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+    for (let i = 0; i < 9; i++)
+      await set({ name: null, value: "x", secret: true, scope: "PLAN", mountPath: `/f${i}.json` });
+    await expect(
+      set({ name: null, value: "x", secret: true, scope: "PLAN", mountPath: "/f9.json" }),
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+  });
+
   it("caps an App at 100 settings, replacing one is still allowed", async () => {
     for (let i = 0; i < 100; i++) await set({ name: `S${i}`, value: "v" });
     await expect(set({ name: "ONE_MORE" })).rejects.toMatchObject({

@@ -29,6 +29,7 @@ import {
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
 import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
+  declaredFileKeys,
   declaredSecretNames,
   declaresVetraSecrets,
   envSettings,
@@ -877,7 +878,7 @@ async function reconcileEnvironment(
         deps,
         tenantId,
         settings,
-        declaredSecretNames(state),
+        [...declaredSecretNames(state), ...declaredFileKeys(state)],
       );
     } catch (err) {
       // Retried each pass (no failed target); the row changes only when the reason does.

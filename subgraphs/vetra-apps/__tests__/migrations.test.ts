@@ -12,6 +12,7 @@ import {
   ensureExternalChangesColumns,
   ensureInstanceSettingsTable,
   ensureInstanceDomainColumns,
+  ensureSettingsMountPath,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
@@ -867,6 +868,41 @@ describe("instances custom domain columns (plan 7 Task 7)", () => {
       await expect(
         db.insertInto("instances").values(instance("d2", "app.acme.io")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("app_settings.mount_path (plan 7 Task 9)", () => {
+  it("is added idempotently and concurrently; old rows keep null", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await sql`ALTER TABLE "vetra-apps".app_settings DROP COLUMN mount_path`.execute(root);
+      await db
+        .insertInto("app_settings")
+        .values({
+          app_id: "a1",
+          scope: "all",
+          name: "OLD",
+          secret: false,
+          value: "v",
+          ciphertext: null,
+          write_id: "w",
+          updated_at: "2026-11-12T00:00:00.000Z",
+          updated_by: "0xaa",
+        })
+        .execute();
+      await Promise.all([1, 2, 3].map(() => ensureSettingsMountPath(db)));
+      await ensureSettingsMountPath(db);
+      const row = await db
+        .selectFrom("app_settings")
+        .select("mount_path")
+        .executeTakeFirstOrThrow();
+      expect(row.mount_path).toBeNull();
     } finally {
       await root.destroy();
     }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkMountPath,
+  fileKey,
   checkSettingName,
   checkSettingValue,
   RESERVED_SETTING_NAMES,
@@ -29,6 +31,39 @@ const row = (o: Partial<AppSettingRow>): AppSettingRow => ({
   updated_at: "2026-11-12T00:00:00.000Z",
   updated_by: "0xaa",
   ...o,
+});
+
+describe("file mount paths (plan 7 Task 9)", () => {
+  it.each(["/client_secret_sektar-web-app.json", "/config/oauth/client.json"])(
+    "accepts %s",
+    (p) => expect(() => checkMountPath(p)).not.toThrow(),
+  );
+  it.each([
+    "/data/x",
+    "/data",
+    "/etc/passwd",
+    "/tmp/a",
+    "relative",
+    "/a/../etc/passwd",
+    "/a/./b",
+    "//a",
+    "/",
+    "/a/",
+    "/a b",
+    `/${"a".repeat(512)}`,
+  ])("refuses %s", (p) =>
+    expect(() => checkMountPath(p)).toThrow(SettingInputError),
+  );
+  it("derives the tenant secret key from the path", () => {
+    expect(fileKey("/client_secret_sektar-web-app.json")).toMatch(
+      /^FILE_[0-9A-F]{16}$/,
+    );
+    expect(fileKey("/a.json")).toBe(fileKey("/a.json"));
+    expect(fileKey("/a.json")).not.toBe(fileKey("/b.json"));
+    expect(() => checkSettingName(fileKey("/a.json"))).toThrow(
+      SettingInputError,
+    );
+  });
 });
 
 describe("setting names", () => {
