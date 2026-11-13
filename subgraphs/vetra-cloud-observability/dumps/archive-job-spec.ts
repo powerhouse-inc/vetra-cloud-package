@@ -59,18 +59,21 @@ export const ARCHIVE_SCRIPT = [
 ].join("\n");
 
 /**
- * Replaces /data with an archive. The checksum is checked on a first
- * download, before anything is deleted; a mismatch leaves /data as it was.
+ * Replaces /data with an archive. The archive is downloaded once and its checksum
+ * checked before anything is deleted; a mismatch leaves /data as it was.
  * The app is stopped while this runs (backups/restore.ts).
  */
 export const DATA_RESTORE_SCRIPT = [
   "set -eu -o pipefail",
   REQUIRE_GNU_TAR,
-  'SRC="s3://$S3_BUCKET/$S3_KEY"',
-  'GOT=$(s5cmd --endpoint-url "$S3_ENDPOINT" cat "$SRC" | sha256sum | cut -d" " -f1)',
+  'FILE=/tmp/archive.tar.zst',
+  'trap \'rm -f "$FILE"\' EXIT',
+  // One download: the bytes checked are the bytes extracted.
+  's5cmd --endpoint-url "$S3_ENDPOINT" cat "s3://$S3_BUCKET/$S3_KEY" > "$FILE"',
+  'GOT=$(sha256sum "$FILE" | cut -d" " -f1)',
   'if [ "$GOT" != "$ARCHIVE_SHA256" ]; then echo "archive checksum mismatch: $GOT"; exit 1; fi',
   "find /data -mindepth 1 -maxdepth 1 ! -name lost+found -exec rm -rf {} +",
-  's5cmd --endpoint-url "$S3_ENDPOINT" cat "$SRC" | zstd -q -d | tar --no-same-owner -x -C /data -f -',
+  'zstd -q -d < "$FILE" | tar --no-same-owner -x -C /data -f -',
   'echo "data restore complete"',
 ].join("\n");
 

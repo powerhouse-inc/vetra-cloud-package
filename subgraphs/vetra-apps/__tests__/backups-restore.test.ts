@@ -206,6 +206,22 @@ describe("restoring a backup", () => {
         { purpose: "manual", thenVersion: null, who: SYSTEM_WHO },
       ),
     ).rejects.toThrow(/is pending/);
+    await expect(
+      beginRestore(
+        h.deps,
+        await inst(),
+        { ...b, environment_id: "env-o2" },
+        { purpose: "manual", thenVersion: null, who: SYSTEM_WHO },
+      ),
+    ).rejects.toThrow(/another environment/);
+    await expect(
+      beginRestore(
+        h.deps,
+        await inst(),
+        { ...b, tenant_id: "t-o2" },
+        { purpose: "manual", thenVersion: null, who: SYSTEM_WHO },
+      ),
+    ).rejects.toThrow(/another namespace/);
     await beginRestore(h.deps, await inst(), b, {
       purpose: "manual",
       thenVersion: null,

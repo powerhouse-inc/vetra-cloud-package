@@ -148,6 +148,17 @@ describe("the /data restore Job", () => {
     expect(admitted(job)).toBe(true);
   });
 
+  it("downloads the archive once and extracts the very file it verified", () => {
+    expect(DATA_RESTORE_SCRIPT.match(/s5cmd/g)).toHaveLength(1);
+    const lines = DATA_RESTORE_SCRIPT.split("\n");
+    const at = (needle: string) => lines.findIndex((l) => l.includes(needle));
+    expect(at("s5cmd")).toBeLessThan(at("sha256sum"));
+    expect(at("checksum mismatch")).toBeLessThan(at("rm -rf"));
+    expect(at("rm -rf")).toBeLessThan(at("tar --no-same-owner"));
+    expect(lines[at("zstd -q -d")]).toContain('"$FILE"');
+    expect(lines[at("sha256sum")]).toContain('"$FILE"');
+  });
+
   it("reads the checksum from the archive Job's log", () => {
     expect(
       parseArchiveSha256(

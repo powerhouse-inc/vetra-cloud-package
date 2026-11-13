@@ -70,6 +70,19 @@ export async function beginRestore(
     throw new Error(`backup ${backup.id} is not a backup of ${inst.name}`);
   if (backup.status !== "ready")
     throw new Error(`backup ${backup.id} is ${backup.status}`);
+  // The Jobs run in the backup's namespace: it must be the instance's own.
+  if (backup.environment_id !== inst.environment_id)
+    throw new Error(
+      `backup ${backup.id} was taken in another environment than ${inst.name}'s`,
+    );
+  const tenant =
+    inst.environment_id && deps.envTenant
+      ? await deps.envTenant(inst.environment_id)
+      : null;
+  if (!tenant || tenant !== backup.tenant_id)
+    throw new Error(
+      `backup ${backup.id} was taken in another namespace than ${inst.name}'s`,
+    );
   const now = deps.now();
   if (!(Date.parse(backup.expires_at) > now.getTime()))
     throw new Error(`backup ${backup.id} expired`);
@@ -440,6 +453,14 @@ async function advanceRestore(
               backup.archive_id,
             )
           : null;
+      if (archive && archive.tenantId !== r.tenant_id)
+        return finish(
+          deps,
+          r,
+          inst,
+          "the database is restored but the /data archive belongs to another namespace",
+          true,
+        );
       if (!archive?.sha256)
         return finish(
           deps,
