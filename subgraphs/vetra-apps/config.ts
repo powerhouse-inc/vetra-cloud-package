@@ -108,12 +108,36 @@ export interface PlansConfig {
    * (decision R1); a moving step still settles. Present only when on.
    */
   rolloutsHold?: boolean;
+  /** Upper bound of every plan's warm pool (slice 8); 0 turns pools off. */
+  poolMax?: number;
 }
 
-export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
+export const DEFAULT_PLANS: PlansConfig = {
+  enabled: false,
+  stopAfterDays: 14,
+  poolMax: 0,
+};
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
+
+/** A plan's effective warm pool (W2, W9): own, active, not Team, capped by VETRA_APPS_PLAN_POOL_MAX. */
+export function planPoolSize(
+  cfg: VetraAppsConfig,
+  plan: {
+    warm_pool_size?: number | null;
+    access: string;
+    status: string;
+    team?: boolean | null;
+  },
+): number {
+  if (plan.access !== "own" || plan.status !== "active" || plan.team === true)
+    return 0;
+  return Math.max(
+    0,
+    Math.min(plan.warm_pool_size ?? 0, plansConfigOf(cfg).poolMax ?? 0),
+  );
+}
 
 export interface SwitchoverConfig {
   enabled: boolean;
@@ -226,6 +250,7 @@ function plansConfig(env: Env): PlansConfig {
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
     ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
+    poolMax: intIn(env, "VETRA_APPS_PLAN_POOL_MAX", 0, 0, 10),
   };
 }
 

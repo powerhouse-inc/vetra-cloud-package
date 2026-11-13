@@ -17,6 +17,7 @@ import {
   ensureRolloutColumns,
   ensureRolloutTables,
   ensureStudioProductColumns,
+  ensureWarmPoolColumns,
   isConcurrentIndexError,
   up,
 } from "../db/migrations.js";
@@ -836,6 +837,60 @@ describe("instance_gate_tokens", () => {
       await expect(
         db.insertInto("instance_gate_tokens").values(row("i2")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("ensureWarmPoolColumns", () => {
+  it("is idempotent and race tolerant; the columns can be written and read", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await Promise.all([1, 2, 3].map(() => ensureWarmPoolColumns(db)));
+      await ensureWarmPoolColumns(db);
+      await db
+        .insertInto("plans")
+        .values({
+          id: "p1",
+          app_id: "a1",
+          slug: "pro",
+          name: "Pro",
+          kind: "pro",
+          access: "own",
+          size: "VETRA_AGENT_M",
+          policy: "manual",
+          notice_hours: 0,
+          status: "active",
+          created_by: "0x1",
+          warm_pool_size: 2,
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      await db
+        .insertInto("instances")
+        .values({
+          id: "i1",
+          app_id: "a1",
+          kind: "own",
+          name: "own-warm-x",
+          status: "pending",
+          warm: true,
+          claimed_at: "2026-11-12T01:00:00.000Z",
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      expect(
+        await db.selectFrom("plans").select("warm_pool_size").executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm_pool_size: 2 });
+      expect(
+        await db.selectFrom("instances").select(["warm", "claimed_at"]).executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm: true, claimed_at: "2026-11-12T01:00:00.000Z" });
     } finally {
       await root.destroy();
     }

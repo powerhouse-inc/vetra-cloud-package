@@ -275,6 +275,8 @@ export interface PlansTable {
   size: string;
   /** A recorded release of the App (never a build); null: no instances yet. */
   target_version: string | null;
+  /** Warm instances kept for new holders (own plans; slice 8). */
+  warm_pool_size?: number | null;
   /** manual | patches | minor | follow:<branch>. Stored; rollouts (slice 3) act on it. */
   policy: string;
   notice_hours: number;
@@ -494,6 +496,10 @@ export interface InstancesTable {
   /** The environment was put to sleep by Vetra (woken by Vetra when stop_reason clears). */
   stopped_by_vetra?: boolean | null;
   /** shared/own: the FUSION size (VetraCloudRessourceSize) of the plan. */
+  /** A warm-pool member: no holder yet, ingress closed (slice 8). */
+  warm?: boolean | null;
+  /** When a holder claimed it from the pool. */
+  claimed_at?: string | null;
   target_size?: string | null;
   /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
   pinned_version?: string | null;

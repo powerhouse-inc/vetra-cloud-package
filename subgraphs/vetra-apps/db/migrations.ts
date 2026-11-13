@@ -138,6 +138,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureAppRolesTable(db);
   await ensureEnvironmentHoldsTable(db);
   await ensureInstanceGateTokensTable(db);
+  await ensureWarmPoolColumns(db);
   await ensureRolloutTables(db);
   await ensureRolloutColumns(db);
 }
@@ -944,5 +945,44 @@ export async function ensureInstancesHealthColumns(
       if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err))
         throw err;
     }
+  }
+}
+
+/** Warm pools of own plans (releases phase 3 slice 8). Schema builder only (namespaced). */
+export async function ensureWarmPoolColumns(db: Kysely<any>): Promise<void> {
+  const tolerate = (err: unknown) => {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("warm_pool_size", "integer", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  for (const [name, type] of [
+    ["warm", "boolean"],
+    ["claimed_at", "varchar(64)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  try {
+    await db.schema
+      .createIndex("instances_warm_idx")
+      .ifNotExists()
+      .on("instances")
+      .columns(["app_id", "plan_id"])
+      .where(sql.ref("warm"), "=", true)
+      .execute();
+  } catch (err) {
+    tolerate(err);
   }
 }
