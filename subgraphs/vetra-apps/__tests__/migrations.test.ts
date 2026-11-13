@@ -10,6 +10,7 @@ import {
   ensureDeploymentTriggerColumns,
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
+  ensureInstanceGateTokensTable,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
@@ -802,6 +803,38 @@ describe("rollout tables", () => {
       await any.insertInto("rollout_steps").values(step("s2", "i2", "pending")).execute();
       await expect(
         any.insertInto("rollout_steps").values(step("s3", "i3", "reverting")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance_gate_tokens", () => {
+  it("is created idempotently and concurrently in the namespace schema; a token hash is unique", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceGateTokensTable(any)));
+      const db = any as unknown as Kysely<VetraAppsDB>;
+      const at = "2026-11-12T00:00:00.000Z";
+      const row = (id: string) => ({
+        instance_id: id,
+        app_id: "app-1",
+        token_hash: "a".repeat(64),
+        token_ciphertext: "vault:x",
+        token_id: `tid-${id}`,
+        previous_hash: null,
+        previous_until: null,
+        delivered_at: null,
+        created_at: at,
+        rotated_at: at,
+      });
+      await db.insertInto("instance_gate_tokens").values(row("i1")).execute();
+      await expect(
+        db.insertInto("instance_gate_tokens").values(row("i2")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
     } finally {
       await root.destroy();

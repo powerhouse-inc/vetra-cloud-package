@@ -1,3 +1,5 @@
+import { parseVersion } from "./releases/version.js";
+
 /**
  * vetra-apps configuration, read from the environment once at setup. Every
  * group is optional: a missing group disables only the features that need it
@@ -64,6 +66,11 @@ export interface VetraAppsConfig {
    * an own instance keeps running after its licence ended.
    */
   plans?: PlansConfig;
+  /**
+   * The licence gate of shared instances (releases phase 3 slice 5). Absent =
+   * off; see GateConfig.
+   */
+  gate?: GateConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -113,6 +120,28 @@ export const rolloutsEnabled = (cfg: VetraAppsConfig): boolean =>
 /** The brake: nothing starts while it is on. */
 export const rolloutsHeld = (cfg: VetraAppsConfig): boolean =>
   plansConfigOf(cfg).rolloutsHold === true;
+
+/**
+ * The licence gate of shared instances (releases phase 3 slice 5). Absent = off.
+ * VETRA_APPS_GATE=on gives shared instances ACCESS=licensed, VETRA_APP_ID,
+ * VETRA_GATE_URL (= VETRA_APPS_GATE_URL, no default: a staging Vetra must never
+ * point hosts at production) and a VETRA_GATE_TOKEN; VETRA_APPS_GATE_MIN_POWERHOUSE
+ * is the first Powerhouse with ACCESS=licensed (D9).
+ */
+export interface GateConfig {
+  enabled: boolean;
+  url: string | null;
+  minPowerhouse: string | null;
+}
+
+export const DEFAULT_GATE: GateConfig = {
+  enabled: false,
+  url: null,
+  minPowerhouse: null,
+};
+
+export const gateConfigOf = (cfg: VetraAppsConfig): GateConfig =>
+  cfg.gate ?? DEFAULT_GATE;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -173,6 +202,51 @@ function switchOn(env: Env, name: string): boolean {
       `${name} "${env[name]}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
     );
   return raw !== "" && INSTANCES_ON.has(raw);
+}
+
+/** Off unless VETRA_APPS_GATE is on; then the URL, the Powerhouse floor and OPENBAO_ADDR are required (startup error otherwise). */
+function gateConfig(env: Env): GateConfig {
+  const raw = (trimmed(env.VETRA_APPS_GATE) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_GATE "${env.VETRA_APPS_GATE}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  if (raw === "" || INSTANCES_OFF.has(raw)) return DEFAULT_GATE;
+  const url = trimmed(env.VETRA_APPS_GATE_URL);
+  if (!url)
+    throw new Error(
+      "VETRA_APPS_GATE=on needs VETRA_APPS_GATE_URL (the …/apps/gate/check URL hosts call)",
+    );
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`VETRA_APPS_GATE_URL "${url}" is not a URL`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.pathname.endsWith("/apps/gate/check")
+  )
+    throw new Error(
+      `VETRA_APPS_GATE_URL "${url}" must be an https URL ending in /apps/gate/check`,
+    );
+  const min = trimmed(env.VETRA_APPS_GATE_MIN_POWERHOUSE);
+  if (!min)
+    throw new Error(
+      "VETRA_APPS_GATE=on needs VETRA_APPS_GATE_MIN_POWERHOUSE (the first Powerhouse with ACCESS=licensed)",
+    );
+  if (!parseVersion(min))
+    throw new Error(
+      `VETRA_APPS_GATE_MIN_POWERHOUSE "${min}" is not a semver version`,
+    );
+  // Gate tokens are kept under the settings vault's transit key and reach
+  // tenants through the tenant secrets: both need OpenBao.
+  if (!trimmed(env.OPENBAO_ADDR))
+    throw new Error(
+      "VETRA_APPS_GATE=on needs OPENBAO_ADDR (gate tokens are kept and delivered through the settings vault)",
+    );
+  return { enabled: true, url, minPowerhouse: min };
 }
 
 function intIn(
@@ -291,6 +365,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
     instances: instancesConfig(env),
     plans: plansConfig(env),
+    gate: gateConfig(env),
   };
 }
 

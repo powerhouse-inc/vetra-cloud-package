@@ -12,7 +12,18 @@ import {
   expectOrgHandover,
   vetraServiceAddress,
 } from "../../vetra-cloud-observability/env-protection.js";
-import { instanceHealth, plansConfigOf } from "../config.js";
+import { gateConfigOf, instanceHealth, plansConfigOf } from "../config.js";
+import {
+  deleteGateToken,
+  markGateDelivered,
+  startGatePreviousGrace,
+} from "../gate/repo.js";
+import {
+  ensureGateToken,
+  GATE_PREVIOUS_GRACE_MS,
+  GATE_TOKEN_ENV,
+  withGate,
+} from "../gate/service.js";
 import { notConfigured } from "../errors.js";
 import {
   hasCiIdentity,
@@ -202,6 +213,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   await syncBranchInstances(deps, app);
   await syncPreviewInstances(deps, app);
   const plans = plansConfigOf(deps.cfg);
+  const gate = gateConfigOf(deps.cfg);
   if (plans.enabled && wantsInstances(app)) {
     try {
       await syncPlanInstances(deps, app);
@@ -227,12 +239,15 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   for (const row of rows) {
     if (isPlanKind(row.kind) && !plans.enabled) continue;
     try {
-      await reconcileInstance(
-        deps,
-        app,
-        row,
-        settingsForKind(settingRows, row.kind),
-      );
+      let settings = settingsForKind(settingRows, row.kind);
+      // The licence gate (releases phase 3 slice 5): shared instances only.
+      if (gate.enabled && gate.url && row.kind === "shared" && !row.removed_at)
+        settings = withGate(settings, {
+          appId: app.id,
+          url: gate.url,
+          token: await ensureGateToken(deps, row),
+        });
+      await reconcileInstance(deps, app, row, settings);
     } catch (err) {
       // One bad instance never stops the others.
       deps.logger.warn(
@@ -388,12 +403,17 @@ async function waitFor(
     await patch(deps, row, { status: "updating", reason });
 }
 
-/** The environment is gone or going for good: its tenant's secrets go too (the master key is kept by the purge). */
+/**
+ * The environment is gone or going for good: its tenant's secrets go too (the
+ * master key is kept by the purge), and with them a shared instance's gate
+ * token, so the next pass issues a fresh one.
+ */
 async function forgetTenant(deps: AppsDeps, row: InstanceRow): Promise<void> {
   if (!row.host || !row.environment_id || !deps.instanceSecrets) return;
   await deps.instanceSecrets.purgeTenant(
     getTenantId(row.host, row.environment_id),
   );
+  if (row.kind === "shared") await deleteGateToken(deps.db, row.id);
 }
 
 /** Rows for the wanted branch instances; targets moved; unwanted ones marked for removal. */
@@ -872,6 +892,31 @@ async function reconcileEnvironment(
       settings_delivered_at: deliveredAt,
     });
   }
+  // The gate token reached the tenant. Also on later passes, so a crash
+  // right after delivery heals (a no-op once marked). The previous token's
+  // grace starts only once the environment runs these settings (below), so
+  // a stalled rollout never locks out pods still on the old token.
+  const gateSecret = settings.secrets.find((s) => s.name === GATE_TOKEN_ENV);
+  const startGrace = async () => {
+    if (gateSecret)
+      await startGatePreviousGrace(
+        deps.db,
+        row.id,
+        gateSecret.writeId,
+        deps.now().toISOString(),
+        GATE_PREVIOUS_GRACE_MS,
+      );
+  };
+  if (gateSecret) {
+    await markGateDelivered(
+      deps.db,
+      row.id,
+      gateSecret.writeId,
+      deliveredAt ?? deps.now().toISOString(),
+    );
+    // Heals a crash between observing the rollout and starting the grace.
+    if (row.running_settings === settings.revision) await startGrace();
+  }
   // A first start waits until the controller had time to write <tenant>-secrets.
   const start =
     started ||
@@ -959,6 +1004,7 @@ async function reconcileEnvironment(
         running_settings: settings.revision,
         running_degraded: false,
       });
+    await startGrace();
     return;
   }
   if (seen.kind === "stopped" || seen.kind === "updating") {

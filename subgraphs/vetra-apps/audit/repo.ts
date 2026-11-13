@@ -30,6 +30,8 @@ export const AUDIT_ACTIONS = [
   "instance.unpinned",
   "instance.update_requested",
   "release.withdrawn",
+  "gate.token_issued",
+  "gate.token_rotated",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
