@@ -166,6 +166,7 @@ export interface VetraAppsDB {
   plans: PlansTable;
   team_release_runs: TeamReleaseRunsTable;
   environment_holds: EnvironmentHoldsTable;
+  switchovers: SwitchoversTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
   rollouts: RolloutsTable;
@@ -352,6 +353,77 @@ export interface EnvironmentHoldsTable {
   created_at: string;
 }
 
+export type SwitchoverState =
+  | "PLANNED"
+  | "PREPARING"
+  | "PREPARED"
+  | "HOLDING_OLD"
+  | "BACKING_UP"
+  | "RESTORING"
+  | "CHECKING_COPY"
+  | "STARTING"
+  | "VERIFYING"
+  | "LINKING"
+  | "AWAITING_CONFIRMATION"
+  | "DONE"
+  | "CLEANING"
+  | "CLEANED"
+  | "FAILED"
+  | "ROLLING_BACK"
+  | "ROLLED_BACK";
+export type SwitchoverMode = "real" | "dry_run";
+
+/**
+ * A licensed environment moving to an own plan instance (plan 9). Driven by
+ * the state machine in switchover/machine.ts; JSON columns are text.
+ */
+export interface SwitchoversTable {
+  id: string;
+  app_id: string;
+  environment_id: string;
+  old_tenant: string;
+  old_host: string;
+  licence_root_id: string;
+  /** Lowercased. */
+  holder_address: string;
+  kind: string;
+  plan_id: string;
+  instance_id: string | null;
+  release_version: string;
+  release_digest: string;
+  mode: SwitchoverMode;
+  state: SwitchoverState;
+  failed_state: SwitchoverState | null;
+  /** At most 500 characters, never a secret. */
+  error: string | null;
+  window_start: string | null;
+  window_end: string | null;
+  step_started_at: string | null;
+  attempts: number;
+  prepare_archive_id: string | null;
+  dump_id: string | null;
+  archive_id: string | null;
+  restore_db_id: string | null;
+  restore_data_id: string | null;
+  /** JSON { master, attachment }: sha256 hex of the two keys, never the keys. */
+  key_fingerprints: string | null;
+  /** JSON counts (documents by type, operations, workflow secrets, key check, attachments). */
+  source_counts: string | null;
+  copy_counts: string | null;
+  started_counts: string | null;
+  /** JSON seconds per step. */
+  timings: string | null;
+  downtime_started_at: string | null;
+  started_at: string | null;
+  confirmed_at: string | null;
+  done_at: string | null;
+  hold_until: string | null;
+  rolled_back_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type AuditSource = "console" | "api" | "policy" | "system" | "ci";
 
 /** One audited action on an App (spec section 10): who, what, when, from where. Kept 365 days. */
@@ -529,6 +601,8 @@ export interface InstancesTable {
   health_settings: string | null;
   /** The revision a ready host pod runs (its VETRA_SETTINGS_REVISION env). Monitor only. */
   observed_settings: string | null;
+  /** The switch-over that owns this instance until it is linked; the reconciler leaves it alone. */
+  switchover_id?: string | null;
   /** shared/own: the plan the instance serves. */
   plan_id?: string | null;
   /** own: the holder's lowercased address (ADMINS). */

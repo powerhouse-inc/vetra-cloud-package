@@ -74,6 +74,15 @@ export interface LicenseEnvironments {
    * absent on a row built in code before the column existed): the template's.
    */
   channel_override?: string | null;
+  /**
+   * Set when the chain's environment was switched over to an own plan
+   * instance (apps plan 9): licensing no longer acts on the row, which stays
+   * for display and for the processor's image-project vouching. Null or
+   * absent: a live licensed environment, as always.
+   */
+  switched_over_at?: string | null;
+  /** The own instance that replaced the environment. */
+  switched_over_instance_id?: string | null;
   /** First moment the keeper saw the chain without an ACTIVE licence. */
   ended_at: string | null;
   stopped_at: string | null;

@@ -38,6 +38,15 @@ export const AUDIT_ACTIONS = [
   "plan.team_disabled",
   "team.ran_healthy",
   "instance.admins_set",
+  "switchover.planned",
+  "switchover.state",
+  "switchover.failed",
+  "switchover.linked",
+  "switchover.confirmed",
+  "switchover.rolled_back",
+  "switchover.kind_adopted",
+  "releases.frozen",
+  "releases.unfrozen",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

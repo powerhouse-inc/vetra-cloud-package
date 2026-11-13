@@ -296,6 +296,8 @@ export async function up(db: Kysely<any>): Promise<void> {
   await addColumnIfMissing(db, "app_release_settings", "frozen_reason", "text");
   await addColumnIfMissing(db, "app_release_settings", "frozen_at", "varchar(255)");
   await addColumnIfMissing(db, "license_environments", "channel_override", "varchar(255)");
+  await addColumnIfMissing(db, "license_environments", "switched_over_at", "varchar(255)");
+  await addColumnIfMissing(db, "license_environments", "switched_over_instance_id", "varchar(255)");
   await db.schema.createTable("app_rollouts")
     .addColumn("id", "varchar(255)", (c) => c.notNull())
     .addColumn("app_id", "varchar(255)", (c) => c.notNull())

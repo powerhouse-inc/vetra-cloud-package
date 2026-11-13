@@ -340,6 +340,21 @@ describe("vetra-licensing migrations: app release rollout tables", () => {
       .toStrictEqual({ app_id: "a", policy: "AUTO", default_notice_hours: 72, updated_at: "t", frozen_reason: null, frozen_at: null });
   });
 
+  it("adds switched_over_at and switched_over_instance_id to license_environments, null on existing rows, idempotently", async () => {
+    db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
+    await up(db as Kysely<any>);
+    await db.schema.alterTable("license_environments").dropColumn("switched_over_at").execute();
+    await db.schema.alterTable("license_environments").dropColumn("switched_over_instance_id").execute();
+    await db.insertInto("license_environments").values({
+      environment_id: "e", root_license_id: "l", app_id: "a", user_did: "u", license_id: "l", template_id: null,
+      label: null, template_hash: "h", ended_at: null, stopped_at: null, delete_after: null, created_at: "t", updated_at: "t",
+    }).execute();
+    await up(db as Kysely<any>);
+    await up(db as Kysely<any>);
+    expect(await db.selectFrom("license_environments").select(["switched_over_at", "switched_over_instance_id"]).executeTakeFirstOrThrow())
+      .toStrictEqual({ switched_over_at: null, switched_over_instance_id: null });
+  });
+
   it("adds channel_override to license_environments, null on existing rows", async () => {
     db = new Kysely<VetraLicensingDB>({ dialect: new PGliteDialect(new PGlite()) });
     await up(db as Kysely<any>);
