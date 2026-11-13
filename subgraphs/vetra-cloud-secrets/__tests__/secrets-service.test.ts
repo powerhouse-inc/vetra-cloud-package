@@ -112,6 +112,18 @@ describe("setSecrets (batch)", () => {
   });
 });
 
+describe("secretFingerprint", () => {
+  it("is the sha256 of the value, null for a missing key, and never the value", async () => {
+    await service.ensureSecret("tenant-a", WORKFLOWS_MASTER_KEY, () => "k1");
+    const { createHash } = await import("node:crypto");
+    expect(await service.secretFingerprint("tenant-a", WORKFLOWS_MASTER_KEY)).toBe(
+      createHash("sha256").update("k1").digest("hex"),
+    );
+    expect(await service.secretFingerprint("tenant-a", "NOPE")).toBeNull();
+    expect(await service.secretFingerprint("tenant-b", WORKFLOWS_MASTER_KEY)).toBeNull();
+  });
+});
+
 describe("ensureSecret (managed secrets)", () => {
   async function ciphertextOf(tenantId: string, key: string) {
     const row = await db

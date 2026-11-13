@@ -25,6 +25,10 @@ export type CreateArchiveInput = {
   /** The tenant's app data PVC (`<fullname>-app-data`). */
   pvcName: string;
   now: Date;
+  /** Where the archive is stored, when not `<tenant>/data/<id>.tar.zst`. */
+  s3Key?: string;
+  /** Days the row and its file are kept; default 30. */
+  ttlDays?: number;
 };
 
 export class ArchivesRepo {
@@ -52,14 +56,17 @@ export class ArchivesRepo {
       status: "PENDING",
       pvcName: input.pvcName,
       jobName: null,
-      s3Key: null,
+      s3Key: input.s3Key ?? null,
       sizeBytes: null,
       sha256: null,
       errorMessage: null,
       requestedAt: input.now.toISOString(),
       startedAt: null,
       completedAt: null,
-      expiresAt: new Date(input.now.getTime() + TTL_MS).toISOString(),
+      expiresAt: new Date(
+        input.now.getTime() +
+          (input.ttlDays ? input.ttlDays * 24 * 3600 * 1000 : TTL_MS),
+      ).toISOString(),
     };
     await this.db.insertInto("data_archives").values(row).execute();
     return row;

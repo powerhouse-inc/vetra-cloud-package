@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import type { SecretsDB } from "../db/schema.js";
 import type { OpenBaoTransitClient } from "../openbao-transit.js";
@@ -181,6 +182,13 @@ export interface SecretsService {
     key: string,
     generate: () => string,
   ): Promise<boolean>;
+  /**
+   * sha256 (hex) of a stored secret's value, decrypted and hashed here: the
+   * value never leaves the service. Null when the tenant has no such secret.
+   * A switch-over checks that a new instance holds exactly the keys of the
+   * old environment by comparing these.
+   */
+  secretFingerprint(tenantId: string, key: string): Promise<string | null>;
   /**
    * Overwrite one rotatable managed secret (ROTATABLE_MANAGED_KEYS) of a
    * tenant, touching no other key. Notifies the controller.
@@ -426,6 +434,18 @@ export function createSecretsService({
         await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, ${tenantId})`.execute(trx);
         return true;
       });
+    },
+
+    async secretFingerprint(tenantId, key) {
+      const row = await db
+        .selectFrom("tenant_secrets")
+        .select("ciphertext")
+        .where("tenantId", "=", tenantId)
+        .where("key", "=", key)
+        .executeTakeFirst();
+      if (!row?.ciphertext) return null;
+      const value = await transit.decrypt(tenantId, row.ciphertext);
+      return createHash("sha256").update(value).digest("hex");
     },
 
     async setManagedSecret(tenantId, key, value) {

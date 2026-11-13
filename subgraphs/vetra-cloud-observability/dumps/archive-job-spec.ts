@@ -17,6 +17,8 @@ export type DataJobInput = {
   /** Inline, as for the dump Job (see buildDumpJob's note on the threat model). */
   s3AccessKey: string;
   s3SecretKey: string;
+  /** The object's key, when not `<tenantNs>/data/<archiveId>.tar.zst` (switch-overs: `switchover/…`). */
+  s3Key?: string;
 };
 export type BuildArchiveJobInput = DataJobInput & {
   archiveId: string;
@@ -179,7 +181,7 @@ export function buildArchiveJob(input: BuildArchiveJobInput): V1Job {
       "vetra.io/archive-id": input.archiveId,
     },
     script: ARCHIVE_SCRIPT,
-    env: s3Env(input, archiveKey(input.tenantNs, input.archiveId)),
+    env: s3Env(input, input.s3Key ?? archiveKey(input.tenantNs, input.archiveId)),
     readOnly: true,
     colocate: input.colocate,
   });
@@ -200,7 +202,7 @@ export function buildDataRestoreJob(input: BuildDataRestoreJobInput): V1Job {
     },
     script: DATA_RESTORE_SCRIPT,
     env: [
-      ...s3Env(input, archiveKey(input.tenantNs, input.archiveId)),
+      ...s3Env(input, input.s3Key ?? archiveKey(input.tenantNs, input.archiveId)),
       { name: "ARCHIVE_SHA256", value: input.sha256 },
     ],
     readOnly: false,

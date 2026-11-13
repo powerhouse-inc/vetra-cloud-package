@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import { S3Helper } from "../../vetra-cloud-observability/dumps/s3.js";
 import {
   createDefaultDumpsK8sClient,
@@ -21,6 +22,11 @@ export interface BackupK8s extends RestoreK8s {
   findDataPvc(namespace: string): Promise<string | null>;
   /** The container images of the Deployments matching the selector. */
   deploymentImages(namespace: string, labelSelector: string): Promise<string[]>;
+  /**
+   * The tenant's data PVC is Bound (switch-over: a new instance's storage
+   * exists before anything is restored into it). Absent: not asked.
+   */
+  dataPvcBound?(namespace: string): Promise<boolean>;
 }
 
 export interface DumpJobConfig {
@@ -38,6 +44,8 @@ export interface InstanceBackupDeps {
   /** VETRA_DATA_ARCHIVE_IMAGE: the /data Jobs' image. */
   archiveImage: string;
   deleteObject(key: string): Promise<void>;
+  /** An object's bytes as a stream (the switch-over reads two key files out of its /data archive). Absent: not configured. */
+  readObject?(key: string): Promise<Readable>;
 }
 
 /** In-cluster: observability's dump and restore clients plus PVC and Deployment reads. */
@@ -62,6 +70,17 @@ export async function createDefaultBackupK8s(): Promise<BackupK8s> {
         res.items
           .map((p) => p.metadata?.name ?? "")
           .find((n) => n.endsWith("-app-data")) ?? null
+      );
+    },
+    async dataPvcBound(namespace) {
+      const res = await core.listNamespacedPersistentVolumeClaim({
+        namespace,
+        labelSelector: APP_SELECTOR,
+      });
+      return res.items.some(
+        (p) =>
+          (p.metadata?.name ?? "").endsWith("-app-data") &&
+          p.status?.phase === "Bound",
       );
     },
     async deploymentImages(namespace, labelSelector) {
@@ -109,5 +128,6 @@ export async function instanceBackupDepsFromEnv(
     },
     archiveImage: env.VETRA_DATA_ARCHIVE_IMAGE ?? DEFAULT_ARCHIVE_IMAGE,
     deleteObject: (key) => s3.deleteObject(key),
+    readObject: (key) => s3.getObjectStream(key),
   };
 }

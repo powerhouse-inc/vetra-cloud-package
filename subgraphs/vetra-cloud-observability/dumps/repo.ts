@@ -23,6 +23,10 @@ export type CreateInput = {
   now: Date;
   /** Defaults to MANUAL (owner-requested). */
   source?: DumpSource;
+  /** Where the dump is stored, when not the default `<tenant>/<id>.dump` (switch-overs: `switchover/…`). */
+  s3Key?: string;
+  /** Days the row and its file are kept; default 30 (the bucket's lifecycle ceiling). */
+  ttlDays?: number;
 };
 
 export class DumpsRepo {
@@ -38,7 +42,10 @@ export class DumpsRepo {
     if (existing) throw new Error("DUMP_IN_PROGRESS");
 
     const id = shortId();
-    const expiresAt = new Date(input.now.getTime() + TTL_HOURS * 3600 * 1000);
+    const expiresAt = new Date(
+      input.now.getTime() +
+        (input.ttlDays ? input.ttlDays * 24 : TTL_HOURS) * 3600 * 1000,
+    );
     const row: DatabaseDumps = {
       id,
       documentId: input.documentId,
@@ -46,7 +53,7 @@ export class DumpsRepo {
       requestedBy: input.requestedBy.toLowerCase(),
       status: "PENDING",
       jobName: null,
-      s3Key: null,
+      s3Key: input.s3Key ?? null,
       sizeBytes: null,
       errorMessage: null,
       requestedAt: input.now.toISOString(),

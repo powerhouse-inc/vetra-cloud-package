@@ -19,6 +19,10 @@ export type BuildDumpJobInput = {
    */
   s3AccessKey: string;
   s3SecretKey: string;
+  /** Where the dump is written, when not `<tenantNs>/<dumpId>.dump`. */
+  s3Key?: string;
+  /** The Job's hard ceiling in seconds (default 3600; a switch-over dump of a multi-GB database takes longer). */
+  deadlineSeconds?: number;
 };
 
 const MANAGED_BY = "vetra-cloud-observability";
@@ -55,7 +59,7 @@ export function buildDumpJob(input: BuildDumpJobInput): V1Job {
     spec: {
       ttlSecondsAfterFinished: 600,
       backoffLimit: 0,
-      activeDeadlineSeconds: 3600,
+      activeDeadlineSeconds: input.deadlineSeconds ?? 3600,
       template: {
         metadata: {
           labels,
@@ -97,7 +101,7 @@ export function buildDumpJob(input: BuildDumpJobInput): V1Job {
                   },
                 },
                 { name: "S3_BUCKET", value: bucket },
-                { name: "S3_KEY", value: `${tenantNs}/${dumpId}.dump` },
+                { name: "S3_KEY", value: input.s3Key ?? `${tenantNs}/${dumpId}.dump` },
                 { name: "S3_ENDPOINT", value: s3Endpoint },
                 { name: "AWS_ACCESS_KEY_ID", value: s3AccessKey },
                 { name: "AWS_SECRET_ACCESS_KEY", value: s3SecretKey },
@@ -189,6 +193,84 @@ export function buildRestoreJob(input: BuildRestoreJobInput): V1Job {
               args: [RESTORE_SCRIPT],
               env,
               resources: dumpContainer.resources,
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+export type BuildFreshRestoreJobInput = BuildDumpJobInput & {
+  restoreId: string;
+  /** The dump's object key (a switch-over dump lives under `switchover/`, not in the target's own prefix). */
+  s3Key: string;
+  /** pg_restore -j. */
+  jobs: number;
+  /**
+   * Drop what an earlier, failed restore left in the target first. Only for a
+   * target that never started (the caller checks): the empty-target check
+   * below is the guard otherwise.
+   */
+  reset?: boolean;
+};
+
+/**
+ * The switch-over's restore (plan 9, F8): a dump made in ANOTHER tenant goes
+ * into this tenant's new, never-started, empty database. Unlike
+ * RESTORE_SCRIPT there is no `DROP OWNED` (unless `reset`) and no single
+ * transaction: pg_restore -j runs parallel, and a failure is redone from an
+ * empty database. It refuses a target that already has relations of its own
+ * (extensions' objects aside), so it can never overwrite data.
+ */
+export const FRESH_RESTORE_SCRIPT = [
+  "set -eu -o pipefail",
+  's5cmd --endpoint-url "$S3_ENDPOINT" cp "s3://$S3_BUCKET/$S3_KEY" /tmp/restore.dump',
+  'if [ "${RESET_TARGET:-}" = "1" ]; then psql -X -q -v ON_ERROR_STOP=1 -c "DROP OWNED BY CURRENT_USER CASCADE"; fi',
+  "N=$(psql -X -At -v ON_ERROR_STOP=1 -c \"select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^pg_' and c.relkind in ('r','p','v','m','S','f') and not exists (select 1 from pg_depend d where d.objid = c.oid and d.deptype = 'e')\")",
+  'if [ "$N" != "0" ]; then echo "the target database is not empty ($N relations): refusing to restore"; exit 1; fi',
+  "pg_restore -l /tmp/restore.dump | grep -v -E ' EXTENSION | COMMENT - EXTENSION ' > /tmp/restore.list",
+  'pg_restore --no-owner --no-acl --exit-on-error -j "$RESTORE_JOBS" -L /tmp/restore.list -d "$PGDATABASE" /tmp/restore.dump',
+  'echo "restore complete"',
+].join("\n");
+
+/** Labelled vetra.io/kind=restore like buildRestoreJob (never a dump id); named `pgfresh-<restoreId>`. */
+export function buildFreshRestoreJob(input: BuildFreshRestoreJobInput): V1Job {
+  const { restoreId, tenantNs } = input;
+  const base = buildRestoreJob({ ...input, dumpId: restoreId });
+  const pod = base.spec!.template.spec!;
+  const container = pod.containers[0];
+  const labels = {
+    "app.kubernetes.io/managed-by": MANAGED_BY,
+    "vetra.io/kind": "restore",
+    "vetra.io/restore-id": restoreId,
+  };
+  const env = (container.env ?? []).map((e) =>
+    e.name === "S3_KEY" ? { name: "S3_KEY", value: input.s3Key } : e,
+  );
+  env.push({ name: "RESTORE_JOBS", value: String(Math.max(1, Math.floor(input.jobs))) });
+  if (input.reset) env.push({ name: "RESET_TARGET", value: "1" });
+  return {
+    ...base,
+    metadata: { name: `pgfresh-${restoreId}`, namespace: tenantNs, labels },
+    spec: {
+      ...base.spec!,
+      // The dump of a 7 GB database restores for far longer than an hour of the 1 h ceiling the same-tenant restore keeps.
+      activeDeadlineSeconds: 4 * 3600,
+      template: {
+        metadata: { labels },
+        spec: {
+          ...pod,
+          containers: [
+            {
+              ...container,
+              env,
+              name: "pgfresh",
+              args: [FRESH_RESTORE_SCRIPT],
+              resources: {
+                requests: { cpu: "500m", memory: "512Mi", "ephemeral-storage": "20Gi" },
+                limits: { cpu: "2", memory: "2Gi", "ephemeral-storage": "30Gi" },
+              },
             },
           ],
         },

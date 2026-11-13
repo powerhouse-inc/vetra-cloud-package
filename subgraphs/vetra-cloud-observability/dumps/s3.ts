@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
+import type { Readable } from "node:stream";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const PRESIGN_TTL_SECONDS = 15 * 60;
@@ -56,6 +57,15 @@ export class S3Helper {
     } catch {
       return null;
     }
+  }
+
+  /** The object's bytes as a stream (the caller must consume or destroy it). */
+  async getObjectStream(key: string): Promise<Readable> {
+    const res = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (!res.Body) throw new Error(`object ${key} has no body`);
+    return res.Body as Readable;
   }
 
   /** Deletes one object. S3 DeleteObject is idempotent: a missing key succeeds. */

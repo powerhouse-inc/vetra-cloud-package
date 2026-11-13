@@ -81,7 +81,7 @@ export async function reconcileJob(input: ReconcileJobInput): Promise<void> {
   }
 
   if (isComplete) {
-    const s3Key = `${dump.tenantId}/${dump.id}.dump`;
+    const s3Key = dump.s3Key ?? `${dump.tenantId}/${dump.id}.dump`;
     const size = (await headSize(s3Key).catch(() => null)) ?? 0;
     await repo.markReady(dumpId, s3Key, size, now);
     return;
