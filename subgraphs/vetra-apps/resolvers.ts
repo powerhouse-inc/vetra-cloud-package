@@ -23,6 +23,19 @@ import {
   skipRolloutStep,
 } from "./rollouts/controls.js";
 import { pinInstance, unpinInstance } from "./rollouts/pins.js";
+import { rollBackSwitchover } from "./switchover/rollback.js";
+import {
+  cleanUpDryRun,
+  confirmSwitchover,
+  dryRunSwitchover,
+  freezeReleases,
+  planSwitchover,
+  resumeSwitchover,
+  switchoverChecksOf,
+  switchoverJson,
+  switchoversOfApp,
+  unfreezeReleases,
+} from "./switchover/service.js";
 import { updateInstanceNow } from "./rollouts/holder.js";
 import { appInstancesFor, instanceJsonFor } from "./instances/service.js";
 import { rotateInstanceGateToken } from "./gate/service.js";
@@ -33,6 +46,7 @@ import {
   restoreInstanceBackupFor,
 } from "./backups/api.js";
 import {
+  adoptLicensedKind,
   appPlansFor,
   createPlan,
   retirePlan,
@@ -311,6 +325,22 @@ export function createResolvers(deps: AppsDeps) {
   });
   return {
     Query: {
+      switchovers: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "switchovers", () =>
+          switchoversOfApp(deps, person(ctx), appId),
+        ),
+      switchoverChecks: (
+        _: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "switchoverChecks", () =>
+          switchoverChecksOf(deps, person(ctx), environmentId),
+        ),
       myApps: (
         _: unknown,
         {
@@ -634,6 +664,101 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "moveCustomDomainToInstance", () =>
           moveCustomDomainToInstance(deps, person(ctx), args),
         ),
+      adoptLicensedKind: (
+        _: unknown,
+        args: {
+          appId: string;
+          kind: string;
+          slug: string;
+          name: string;
+          size: string;
+          targetVersion: string;
+        },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "adoptLicensedKind", () =>
+          adoptLicensedKind(deps, person(ctx), args),
+        ),
+      freezeAppReleases: (
+        _: unknown,
+        { appId, reason }: { appId: string; reason: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "freezeAppReleases", () =>
+          freezeReleases(deps, person(ctx), appId, reason),
+        ),
+      unfreezeAppReleases: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "unfreezeAppReleases", () =>
+          unfreezeReleases(deps, person(ctx), appId),
+        ),
+      planSwitchover: (
+        _: unknown,
+        a: { environmentId: string; windowStart: string; windowEnd: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "planSwitchover", async () =>
+          switchoverJson(
+            deps,
+            await planSwitchover(deps, person(ctx), a.environmentId, a),
+          ),
+        ),
+      dryRunSwitchover: (
+        _: unknown,
+        { environmentId }: { environmentId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "dryRunSwitchover", async () =>
+          switchoverJson(
+            deps,
+            await dryRunSwitchover(deps, person(ctx), environmentId),
+          ),
+        ),
+      resumeSwitchover: (
+        _: unknown,
+        { id }: { id: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "resumeSwitchover", async () =>
+          switchoverJson(deps, await resumeSwitchover(deps, person(ctx), id)),
+        ),
+      rollBackSwitchover: (
+        _: unknown,
+        { id, acceptDataLoss }: { id: string; acceptDataLoss?: boolean | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rollBackSwitchover", async () =>
+          switchoverJson(
+            deps,
+            await rollBackSwitchover(deps, person(ctx), id, {
+              acceptDataLoss: acceptDataLoss === true,
+            }),
+          ),
+        ),
+      cleanUpDryRun: (
+        _: unknown,
+        { id }: { id: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "cleanUpDryRun", async () =>
+          switchoverJson(deps, await cleanUpDryRun(deps, person(ctx), id)),
+        ),
+      confirmSwitchover: (
+        _: unknown,
+        { id }: { id: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "confirmSwitchover", async () => {
+          const caller = person(ctx);
+          return switchoverJson(
+            deps,
+            await confirmSwitchover(deps, caller, id),
+            caller.isAdmin,
+          );
+        }),
       createPlan: (
         _: unknown,
         { input }: { input: CreatePlanInput },

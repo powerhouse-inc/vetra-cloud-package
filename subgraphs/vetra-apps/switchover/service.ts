@@ -6,8 +6,13 @@ import { appsError } from "../errors.js";
 import { appInstancesLock } from "../rollouts/repo.js";
 import type { AppsDeps } from "../service.js";
 import { withKeyLock } from "../../../shared/key-lock.js";
+import {
+  freezeAppReleases,
+  unfreezeAppReleases,
+} from "../../vetra-licensing/release-service.js";
+import { createRolloutStore } from "../../vetra-licensing/rollout-db.js";
 import { checkSwitchover, gatherSwitchoverFacts } from "./checks.js";
-import { rollbackMove, resumeMove } from "./machine.js";
+import { canRollBack, rollbackMove, resumeMove } from "./machine.js";
 import {
   CLOSED_STATES,
   getSwitchover,
@@ -352,4 +357,150 @@ export async function confirmSwitchover(
       return next;
     });
   });
+}
+
+/** Freezes the App's gated releases for the campaign (admin): no promotion or update of its remaining licensed environments. */
+export async function freezeReleases(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+  reason: string,
+): Promise<boolean> {
+  requireAdmin(caller);
+  if (!deps.licensingDb)
+    throw appsError("BAD_USER_INPUT", "Licensing is not configured");
+  const why = reason.trim();
+  if (!why)
+    throw appsError("BAD_USER_INPUT", "Say why the releases are frozen");
+  const nowIso = deps.now().toISOString();
+  await freezeAppReleases(
+    { store: createRolloutStore(deps.licensingDb), now: () => nowIso },
+    appId,
+    why.slice(0, 200),
+  );
+  await auditCaller(deps.db, caller, {
+    appId,
+    at: nowIso,
+    action: "releases.frozen",
+    subject: `app:${appId}`,
+    detail: { reason: why.slice(0, 200) },
+  });
+  return true;
+}
+
+/** Lifts the freeze (admin). Not automatic after a roll back: the campaign decides. */
+export async function unfreezeReleases(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+): Promise<boolean> {
+  requireAdmin(caller);
+  if (!deps.licensingDb)
+    throw appsError("BAD_USER_INPUT", "Licensing is not configured");
+  const nowIso = deps.now().toISOString();
+  await unfreezeAppReleases(
+    { store: createRolloutStore(deps.licensingDb), now: () => nowIso },
+    appId,
+  );
+  await auditCaller(deps.db, caller, {
+    appId,
+    at: nowIso,
+    action: "releases.unfrozen",
+    subject: `app:${appId}`,
+  });
+  return true;
+}
+
+export interface SwitchoverJson {
+  id: string;
+  appId: string;
+  environmentId: string;
+  oldHost: string;
+  kind: string;
+  planId: string;
+  instanceId: string | null;
+  mode: string;
+  state: string;
+  failedState: string | null;
+  error: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  releaseVersion: string;
+  sourceCounts: string | null;
+  copyCounts: string | null;
+  startedCounts: string | null;
+  timings: string | null;
+  downtimeStartedAt: string | null;
+  startedAt: string | null;
+  confirmedAt: string | null;
+  doneAt: string | null;
+  holdUntil: string | null;
+  canRollBack: boolean;
+  rollBackLosesWrites: boolean;
+}
+
+/**
+ * A switch-over as the API returns it. Counts per document type, seconds and
+ * errors are for platform admins only (`admin`); never a key, a fingerprint
+ * or any content.
+ */
+export function switchoverJson(
+  deps: AppsDeps,
+  r: SwitchoverRow,
+  admin = true,
+): SwitchoverJson {
+  const can = canRollBack(
+    r,
+    deps.now().getTime(),
+    switchoverConfigOf(deps.cfg).confirmHours,
+  );
+  return {
+    id: r.id,
+    appId: r.app_id,
+    environmentId: r.environment_id,
+    oldHost: r.old_host,
+    kind: r.kind,
+    planId: r.plan_id,
+    instanceId: r.instance_id,
+    mode: r.mode,
+    state: r.state,
+    failedState: admin ? r.failed_state : null,
+    error: admin ? r.error : null,
+    windowStart: r.window_start,
+    windowEnd: r.window_end,
+    releaseVersion: r.release_version,
+    sourceCounts: admin ? r.source_counts : null,
+    copyCounts: admin ? r.copy_counts : null,
+    startedCounts: admin ? r.started_counts : null,
+    timings: admin ? r.timings : null,
+    downtimeStartedAt: r.downtime_started_at,
+    startedAt: r.started_at,
+    confirmedAt: r.confirmed_at,
+    doneAt: r.done_at,
+    holdUntil: r.hold_until,
+    canRollBack: admin && can.ok,
+    rollBackLosesWrites: admin && can.ok && can.losesWrites,
+  };
+}
+
+/** The App's switch-overs, newest first (admin). */
+export async function switchoversOfApp(
+  deps: AppsDeps,
+  caller: Caller,
+  appId: string,
+): Promise<SwitchoverJson[]> {
+  requireAdmin(caller);
+  return (await listSwitchovers(deps.db, appId)).map((r) =>
+    switchoverJson(deps, r),
+  );
+}
+
+/** Why an environment cannot be switched over (empty: it can), for the console (admin). */
+export async function switchoverChecksOf(
+  deps: AppsDeps,
+  caller: Caller,
+  environmentId: string,
+): Promise<string[]> {
+  requireAdmin(caller);
+  return switchoverReasons(deps, environmentId, "real");
 }

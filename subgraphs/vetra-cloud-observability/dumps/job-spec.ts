@@ -251,24 +251,33 @@ export function buildFreshRestoreJob(input: BuildFreshRestoreJobInput): V1Job {
   env.push({ name: "RESTORE_JOBS", value: String(Math.max(1, Math.floor(input.jobs))) });
   if (input.reset) env.push({ name: "RESET_TARGET", value: "1" });
   return {
-    ...base,
+    apiVersion: "batch/v1",
+    kind: "Job",
     metadata: { name: `pgfresh-${restoreId}`, namespace: tenantNs, labels },
     spec: {
-      ...base.spec!,
-      // The dump of a 7 GB database restores for far longer than an hour of the 1 h ceiling the same-tenant restore keeps.
+      ttlSecondsAfterFinished: 24 * 3600,
+      backoffLimit: 0,
+      // A multi-GB dump restores for far longer than the hour the same-tenant restore keeps.
       activeDeadlineSeconds: 4 * 3600,
       template: {
         metadata: { labels },
         spec: {
-          ...pod,
+          restartPolicy: "Never",
+          serviceAccountName: pod.serviceAccountName,
+          imagePullSecrets: pod.imagePullSecrets,
           containers: [
             {
-              ...container,
-              env,
               name: "pgfresh",
+              image: container.image,
+              command: ["/bin/sh", "-c"],
               args: [FRESH_RESTORE_SCRIPT],
+              env,
               resources: {
-                requests: { cpu: "500m", memory: "512Mi", "ephemeral-storage": "20Gi" },
+                requests: {
+                  cpu: "500m",
+                  memory: "512Mi",
+                  "ephemeral-storage": "20Gi",
+                },
                 limits: { cpu: "2", memory: "2Gi", "ephemeral-storage": "30Gi" },
               },
             },

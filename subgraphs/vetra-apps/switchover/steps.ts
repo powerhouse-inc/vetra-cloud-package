@@ -296,12 +296,7 @@ const preparing: Step = async (c, row) => {
       await c.ports.backups.readArchiveFiles(row.prepare_archive_id, KEY_FILES),
     );
     const f = read && fingerprintsOf(read);
-    if (
-      !read ||
-      !f ||
-      f.master !== fp!.master ||
-      f.attachment !== fp!.attachment
-    )
+    if (!read || !f || f.master !== fp.master || f.attachment !== fp.attachment)
       return null;
     keys = read;
     keyCache.set(row.id, read);
