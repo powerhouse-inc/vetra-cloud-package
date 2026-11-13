@@ -1,4 +1,10 @@
 import type { Kysely } from "kysely";
+import {
+  ensureReportingTokens,
+  LICENSING_URL_ENV,
+  newReportingToken,
+  REPORTING_TOKEN_SECRET,
+} from "../../vetra-licensing/reporting.js";
 import { didForAddress } from "../../vetra-licensing/did.js";
 import type { LlmBroker } from "../../vetra-llm/broker.js";
 import type { VetraAppsDB } from "../db/schema.js";
@@ -25,13 +31,16 @@ const isPlanInstance = (row: InstanceRow) =>
  * configured. Pure; the reconciler calls it for every pass.
  */
 export function vetraSecretsOf(
-  deps: Pick<AppsDeps, "llm">,
+  deps: Pick<AppsDeps, "llm" | "licensingDb" | "cfg">,
   row: InstanceRow,
   plan: PlanRow | null,
 ): string[] {
   const out: string[] = [];
   if (deps.llm && isPlanInstance(row) && plan && (plan.ai_budget_usd ?? 0) > 0)
     out.push(AI_KEY_SECRET);
+  // H8: an own instance reports its holder's user stats; a shared one has no single holder.
+  if (row.kind === "own" && deps.cfg.licensingUrl && deps.licensingDb)
+    out.push(REPORTING_TOKEN_SECRET, LICENSING_URL_ENV);
   return out;
 }
 
@@ -49,7 +58,10 @@ export function keyOwnerDid(app: AppRow, row: InstanceRow): string {
  * the key). Throws when the broker fails, so the reconciler retries.
  */
 export async function ensureInstanceVetraSecrets(
-  deps: Pick<AppsDeps, "llm" | "logger">,
+  deps: Pick<
+    AppsDeps,
+    "llm" | "logger" | "licensingDb" | "cfg" | "instanceSecrets" | "envs" | "now"
+  >,
   app: AppRow,
   row: InstanceRow,
   plan: PlanRow | null,
@@ -69,6 +81,41 @@ export async function ensureInstanceVetraSecrets(
         `[vetra-apps] instance ${app.slug}/${row.name}: no AI key was issued (budget unavailable)`,
       );
   }
+  if (vetraSecretsOf(deps, row, plan).includes(REPORTING_TOKEN_SECRET))
+    await ensureReportingToken(deps, row, tenantId);
+}
+
+/** Plan-instance reporting token: the first token is written before the first start (asleep: free). */
+export async function ensureReportingToken(
+  deps: Pick<
+    AppsDeps,
+    "licensingDb" | "cfg" | "instanceSecrets" | "envs" | "now" | "logger"
+  >,
+  row: InstanceRow,
+  tenantId: string,
+): Promise<void> {
+  if (!row.environment_id || !deps.licensingDb) return;
+  const envId = row.environment_id;
+  await ensureReportingTokens(
+    {
+      db: deps.licensingDb,
+      secrets: deps.instanceSecrets ?? null,
+      tenantIdOf: async () => tenantId,
+      envStatus: async (id) => (await deps.envs.getState(id))?.status ?? null,
+      licensingUrl: deps.cfg.licensingUrl ?? null,
+      newToken: newReportingToken,
+      now: () => deps.now().toISOString(),
+      logger: deps.logger,
+    },
+    [envId],
+  );
+  // ensureReportingTokens logs its failures; the reconciler must retry them.
+  const recorded = await deps.licensingDb
+    .selectFrom("environment_reporting_tokens")
+    .select("environment_id")
+    .where("environment_id", "=", envId)
+    .executeTakeFirst();
+  if (!recorded) throw new Error("the reporting token was not issued");
 }
 
 /** Releases what ensureInstanceVetraSecrets made (instance destroyed): deletes the AI key. */
@@ -96,4 +143,34 @@ export const planBudgetOf =
       .where("i.removed_at", "is", null)
       .executeTakeFirst();
     return r?.ai_budget_usd ?? null;
+  };
+
+/**
+ * The licence chain of an own plan instance, for the user-stat relay (plan 7
+ * Task 11): an own, not removed instance by its environment. A shared instance
+ * has none (no single holder), so the relay refuses it.
+ */
+export const ownInstanceChain =
+  (db: Kysely<VetraAppsDB>) =>
+  async (
+    environmentId: string,
+  ): Promise<{
+    root_license_id: string;
+    app_id: string;
+    user_did: string;
+  } | null> => {
+    const r = await db
+      .selectFrom("instances")
+      .select(["licence_root_id", "app_id", "holder_address"])
+      .where("environment_id", "=", environmentId)
+      .where("kind", "=", "own")
+      .where("removed_at", "is", null)
+      .executeTakeFirst();
+    return r?.licence_root_id && r.holder_address
+      ? {
+          root_license_id: r.licence_root_id,
+          app_id: r.app_id,
+          user_did: didForAddress(r.holder_address),
+        }
+      : null;
   };

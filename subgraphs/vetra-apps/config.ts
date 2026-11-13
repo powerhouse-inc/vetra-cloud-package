@@ -46,6 +46,8 @@ export interface VetraAppsConfig {
    * Reserved: no app row is ever given it, so no app document can carry it.
    */
   studioAppSlug: string;
+  /** VETRA_LICENSING_URL: where own instances report user stats (plan 7 Task 11). */
+  licensingUrl?: string | null;
   /**
    * Releases phase 2 instances. enabled=false (VETRA_APPS_INSTANCES=off)
    * stops the reconciler. labelSuffix (VETRA_APPS_INSTANCE_LABEL_SUFFIX,
@@ -261,6 +263,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
+    licensingUrl: trimmed(env.VETRA_LICENSING_URL),
     instances: instancesConfig(env),
     plans: plansConfig(env),
   };

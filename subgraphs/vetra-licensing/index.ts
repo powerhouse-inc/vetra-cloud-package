@@ -80,6 +80,7 @@ import type { VetraLlmDB } from "../vetra-llm/db/schema.js";
 import { createProcessBroker } from "../vetra-llm/factory.js";
 import type { SecretsService } from "../vetra-cloud-secrets/services/secrets-service.js";
 import type { StudioAccessDeps } from "./studio-access.js";
+import { ownInstanceChain } from "../vetra-apps/instances/vetra-secrets.js";
 import { appBudgetForLicence } from "./invite-codes.js";
 import { appDocumentRowOwner } from "../vetra-apps/org-ownership.js";
 import { defaultRenownOrgs } from "../../shared/renown-orgs.js";
@@ -462,9 +463,14 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     // One budget per handler tick across all apps: writing a token restarts
     // a running environment once (asleep ones are free).
     const tokenIssuer = createReportingTokenIssuer(reporting, cfg.tokensPerTick);
+    const instanceChain = ownInstanceChain(appsDb as unknown as Kysely<VetraAppsDB>);
     const relayDeps: RelayDeps = {
       db,
-      envRows: chainRows,
+      // A licensed environment's chain, else an own plan instance's (plan 7).
+      envRows: {
+        byEnvironment: async (id) =>
+          (await chainRows.byEnvironment(id)) ?? (await instanceChain(id)),
+      },
       grants,
       lifecycle,
       apps: appReads,

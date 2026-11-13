@@ -1,3 +1,5 @@
+import type { Kysely } from "kysely";
+import type { VetraLicensingDB } from "../../vetra-licensing/db/schema.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   makeHarness,
@@ -19,7 +21,7 @@ import {
   deleteMyInstanceSetting,
   setMyInstanceSetting,
 } from "../settings/holder-service.js";
-import { planBudgetOf } from "../instances/vetra-secrets.js";
+import { ownInstanceChain, planBudgetOf } from "../instances/vetra-secrets.js";
 import { deliverSettings } from "../settings/deliver.js";
 import { fileKey } from "../settings/names.js";
 import { settingsForInstance } from "../settings/resolve.js";
@@ -170,5 +172,75 @@ describe("planBudgetOf", () => {
     expect(await budget(id)).toBe(25);
     await h.db.updateTable("instances").set({ stop_reason: "licence ended" }).where("id", "=", id).execute();
     expect(await budget(id)).toBeNull();
+  });
+});
+
+describe("reporting token for own instances (plan 7 Task 11)", () => {
+  beforeEach(() => {
+    h.deps.cfg = {
+      ...h.deps.cfg,
+      licensingUrl: "https://sb/graphql/vetra-licensing",
+    };
+  });
+  let seq = 0;
+  const bump = async () =>
+    // A settings change makes a new revision, so the instance is delivered again.
+    setMyInstanceSetting(h.deps, holder, {
+      instanceId: (await own()).id,
+      name: `N${++seq}`,
+      value: "1",
+      kind: "PLAIN",
+    });
+
+  it("writes the token and the URL once, records the hash, and declares both", async () => {
+    await bump();
+    await reconcileInstancesOnce(h.deps);
+    const secrets = h.secrets.store.get(await tenant())!;
+    const token = secrets.get("VETRA_REPORTING_TOKEN")!;
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(secrets.get("VETRA_LICENSING_URL")).toBe(
+      "https://sb/graphql/vetra-licensing",
+    );
+    expect(await envEntry("VETRA_REPORTING_TOKEN")).toMatchObject({
+      value: null,
+      isSecret: true,
+    });
+    expect(await envEntry("VETRA_LICENSING_URL")).toMatchObject({
+      isSecret: true,
+    });
+    expect(
+      await (h.db as unknown as Kysely<VetraLicensingDB>)
+        .selectFrom("environment_reporting_tokens")
+        .select("environment_id")
+        .execute(),
+    ).toHaveLength(1);
+    await bump();
+    await reconcileInstancesOnce(h.deps);
+    expect(
+      h.secrets.store.get(await tenant())!.get("VETRA_REPORTING_TOKEN"),
+    ).toBe(token);
+  });
+
+  it("without licensing's URL no token is declared or written", async () => {
+    h.deps.cfg = { ...h.deps.cfg, licensingUrl: null };
+    await bump();
+    await reconcileInstancesOnce(h.deps);
+    expect(await envEntry("VETRA_REPORTING_TOKEN")).toBeUndefined();
+  });
+
+  it("the relay chain of an own instance: licence root, App and holder; none once removed", async () => {
+    const r = await own();
+    expect(await ownInstanceChain(h.db)(r.environment_id!)).toEqual({
+      root_license_id: r.licence_root_id,
+      app_id: appId,
+      user_did: `did:pkh:eip155:1:${HOLDER}`,
+    });
+    expect(await ownInstanceChain(h.db)("nope")).toBeNull();
+    await h.db
+      .updateTable("instances")
+      .set({ removed_at: "2026-10-03T00:00:00.000Z" })
+      .where("id", "=", r.id)
+      .execute();
+    expect(await ownInstanceChain(h.db)(r.environment_id!)).toBeNull();
   });
 });
