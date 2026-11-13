@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   backupHarness,
   finishBackupJobs,
+  pass,
   planInstance,
   type BackupCtx,
 } from "./backups-fixtures.js";
-import { getBackup, listBackupsOfInstance } from "../backups/repo.js";
+import {
+  getBackup,
+  getRestore,
+  listBackupsOfInstance,
+} from "../backups/repo.js";
+import { beginRestore, SYSTEM_WHO } from "../backups/restore.js";
 import {
   beforePlanInstanceStop,
   startInstanceBackup,
@@ -63,6 +69,58 @@ describe("the per-App pass", () => {
     await finishBackupJobs(h, fake);
     await reconcileInstancesOnce(h.deps);
     expect((await getBackup(h.db, b.id))!.status).toBe("ready");
+  });
+});
+
+describe("restores in the per-App pass", () => {
+  it("finish even when plans are switched off mid-restore", async () => {
+    const { h, appId, fake } = ctx;
+    const inst = await planInstance(h, fake, appId, { id: "o1" });
+    const b = await startInstanceBackup(h.deps, inst, {
+      reason: "manual",
+      requestedBy: "vetra",
+    });
+    await finishBackupJobs(h, fake);
+    await pass(ctx);
+    const r = await beginRestore(h.deps, (await getInstance(h.db, "o1"))!, (await getBackup(h.db, b.id))!, {
+      purpose: "manual",
+      thenVersion: null,
+      who: SYSTEM_WHO,
+    });
+    h.deps.cfg = {
+      ...h.deps.cfg,
+      plans: { enabled: false, stopAfterDays: 14 },
+    };
+    for (let i = 0; i < 20; i++) {
+      await finishBackupJobs(h, fake);
+      fake.finish("pgrestore-");
+      fake.finish("datarestore-");
+      await reconcileInstancesOnce(h.deps);
+      if ((await getRestore(h.db, r.id))!.status === "succeeded") break;
+    }
+    expect(await getRestore(h.db, r.id)).toMatchObject({
+      status: "succeeded",
+      error: null,
+    });
+    expect((await getInstance(h.db, "o1"))!.maintenance).toBeNull();
+  });
+});
+
+describe("with the flag off", () => {
+  it("the pass does not look at backups at all", async () => {
+    const { h, appId, fake } = ctx;
+    const b = await startInstanceBackup(
+      h.deps,
+      await planInstance(h, fake, appId, { id: "o1" }),
+      { reason: "manual", requestedBy: "vetra" },
+    );
+    await finishBackupJobs(h, fake);
+    h.deps.cfg = {
+      ...h.deps.cfg,
+      backups: { enabled: false, dailyKeepDays: 14, maxInFlight: 3 },
+    };
+    await pass(ctx);
+    expect((await getBackup(h.db, b.id))!.status).toBe("pending");
   });
 });
 

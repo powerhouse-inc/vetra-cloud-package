@@ -152,7 +152,8 @@ export async function advanceBackups(
   appId: string,
 ): Promise<void> {
   const obs = deps.observabilityDb;
-  if (!obs) return;
+  // Off: no query at all (behaviour as without slice 4).
+  if (!obs || !deps.backups || !backupsConfigOf(deps.cfg).enabled) return;
   const dumps = new DumpsRepo(obs);
   const archives = new ArchivesRepo(obs);
   for (const b of await pendingBackupsOfApp(deps.db, appId)) {

@@ -212,6 +212,11 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
       );
     }
+  }
+  if (deps.backups) {
+    // Outside the plans branch: a restore that began holds its instance in
+    // maintenance, and must finish (and hand it back) even if plans were
+    // switched off meanwhile.
     try {
       // Before the rows (and slice 3's rollouts, which go after this): a
       // backup that became ready, or a restore that hands an instance back,
