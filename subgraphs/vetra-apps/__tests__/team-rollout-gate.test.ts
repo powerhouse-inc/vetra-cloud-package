@@ -5,8 +5,9 @@ import { seedTeamPlan, teamHarness } from "./team-fixtures.js";
 import { checkRolloutFor } from "../rollouts/service.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { listRollouts } from "../rollouts/repo.js";
-import { isPatchOf } from "../rollouts/check.js";
+import { isPatchOf, teamGateProblem } from "../rollouts/check.js";
 import { getApp } from "../repo.js";
+import { syncPlanInstances } from "../plans/sync.js";
 import { getPlan, insertPlan, updatePlan } from "../plans/repo.js";
 
 let h: Harness;
@@ -94,6 +95,38 @@ describe("the Team gate on customer rollouts", () => {
     );
     expect((await problems("2.0.0", ["p-pro"])).join()).toMatch(
       /has not run healthy on Team/,
+    );
+  });
+
+  it("a personal or disputed App has no Team gate", async () => {
+    await seedTeamPlan(h, appId);
+    const app = (await getApp(h.db, appId))!;
+    const plans = [{ slug: "pro", team: false, target_version: "1.0.0" }];
+    expect(await teamGateProblem(h.deps, app, "1.1.0", plans)).toMatch(/Team/);
+    expect(
+      await teamGateProblem(h.deps, { ...app, org_disputed: true }, "1.1.0", plans),
+    ).toBeNull();
+    expect(
+      await teamGateProblem(h.deps, { ...app, owner_org_id: null }, "1.1.0", plans),
+    ).toBeNull();
+  });
+
+  it("names a stopped Team instance as the cause", async () => {
+    await seedTeamPlan(h, appId);
+    await syncPlanInstances(h.deps, (await getApp(h.db, appId))!);
+    await updatePlan(
+      h.db,
+      "p-team",
+      { status: "active" },
+      "2026-10-02T00:00:00.000Z",
+    );
+    await h.db
+      .updateTable("instances")
+      .set({ stop_reason: "the licence ended" })
+      .where("plan_id", "=", "p-team")
+      .execute();
+    expect((await problems("1.1.0", ["p-pro"])).join()).toMatch(
+      /Team's instance is stopped \(the licence ended\)/,
     );
   });
 

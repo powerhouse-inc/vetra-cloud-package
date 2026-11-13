@@ -224,7 +224,7 @@ export async function rolloutProblems(
         `${p.slug} is in the rollout of ${open.version} (${open.status}); finish, cancel or roll it back first`,
       );
   }
-  const team = await teamGateProblem(deps, app.id, version, plans);
+  const team = await teamGateProblem(deps, app, version, plans);
   if (team) out.push(team);
   if (
     steps.some((s) => s.status === "pending") &&

@@ -83,6 +83,12 @@ export async function enableTeamPlan(
       "BAD_USER_INPUT",
       `${branch} is not a release branch of the App`,
     );
+  // The Team plan's first target is the newest release on its branch.
+  if (!(await newestOnBranch(deps, app.id, branch)))
+    throw appsError(
+      "BAD_USER_INPUT",
+      `${branch} has no release yet; the Team plan follows a branch's releases, so cut one first`,
+    );
   const policy = `follow:${branch}`;
   const run = () =>
     deps.db.transaction().execute(async (trx) => {
@@ -185,6 +191,14 @@ export async function syncTeamPlan(deps: AppsDeps, app: AppRow): Promise<void> {
     await recordTeamRun(deps.db, row, soakMs / 60_000, now.toISOString());
 }
 
+async function newestOnBranch(deps: AppsDeps, appId: string, branch: string) {
+  return (
+    (await listReleases(deps.db, appId, { kind: "release", limit: 200 })).find(
+      (r) => r.branch === branch && !r.withdrawn_at,
+    ) ?? null
+  );
+}
+
 async function firstTarget(
   deps: AppsDeps,
   app: AppRow,
@@ -193,9 +207,7 @@ async function firstTarget(
   if (plan.target_version) return;
   const branch = branchOf(plan);
   if (!branch) return;
-  const newest = (
-    await listReleases(deps.db, app.id, { kind: "release", limit: 200 })
-  ).find((r) => r.branch === branch && !r.withdrawn_at);
+  const newest = await newestOnBranch(deps, app.id, branch);
   if (!newest) return;
   try {
     await beginRollout(deps, app, newest.version, [plan], SYSTEM, 0);

@@ -11,6 +11,7 @@ import type { Caller } from "../auth.js";
 import { ORG_ADMIN_A, teamHarness } from "./team-fixtures.js";
 import { disableTeamPlan, enableTeamPlan } from "../plans/team.js";
 import { createPlan, retirePlan, updatePlanFor } from "../plans/service.js";
+import { digest, seedRelease } from "./instances-fixtures.js";
 import { listAudit } from "../audit/repo.js";
 import { setAppRole } from "../roles/service.js";
 
@@ -75,6 +76,13 @@ describe("enableTeamPlan / disableTeamPlan", () => {
       .set({ release_branches: '["next"]' })
       .where("id", "=", appId)
       .execute();
+    await seedRelease(h, appId, {
+      version: "1.2.0",
+      run: 110,
+      kind: "release",
+      branch: "next",
+      digest: digest("f"),
+    });
     const p = await enableTeamPlan(h.deps, owner, appId);
     await expect(retirePlan(h.deps, owner, p.id)).rejects.toThrow(
       /Disable the Team plan/,
@@ -96,6 +104,20 @@ describe("enableTeamPlan / disableTeamPlan", () => {
     );
     expect(actions.filter((a) => a === "plan.team_disabled")).toHaveLength(1);
     expect(actions.filter((a) => a === "plan.team_enabled")).toHaveLength(2);
+  });
+
+  it("refuses a follow branch with no release yet", async () => {
+    await h.db
+      .updateTable("apps")
+      .set({ release_branches: '["next"]' })
+      .where("id", "=", appId)
+      .execute();
+    await expect(enableTeamPlan(h.deps, owner, appId, "next")).rejects.toThrow(
+      /next has no release yet/,
+    );
+    expect(await h.db.selectFrom("plans").selectAll().execute()).toHaveLength(
+      0,
+    );
   });
 
   it("createPlan still refuses the slug team", async () => {

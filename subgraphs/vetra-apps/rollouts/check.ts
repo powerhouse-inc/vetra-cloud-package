@@ -1,11 +1,12 @@
 import { teamSoakMs } from "../config.js";
 import { listInstances } from "../instances/repo.js";
 import type { PlanRow } from "../plans/repo.js";
-import { activeTeamPlan } from "../plans/team-base.js";
+import { activeTeamPlan, isOrgApp } from "../plans/team-base.js";
 import { teamRunOf } from "../plans/team-runs.js";
 import { PLAN_SIZES } from "../plans/rules.js";
 import type { ReleaseRow } from "../releases/repo.js";
 import { parseVersion, versionKind } from "../releases/version.js";
+import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 
 /**
@@ -132,12 +133,15 @@ export function isPatchOf(version: string, from: string | null): boolean {
  */
 export async function teamGateProblem(
   deps: AppsDeps,
-  appId: string,
+  app: Pick<AppRow, "id" | "owner_org_id" | "org_disputed">,
   version: string,
   plans: Pick<PlanRow, "slug" | "team" | "target_version">[],
 ): Promise<string | null> {
   const customers = plans.filter((p) => p.team !== true);
   if (customers.length === 0) return null;
+  // Team is for organisation Apps; a personal (or disputed) App has no gate.
+  if (!isOrgApp(app)) return null;
+  const appId = app.id;
   const team = await activeTeamPlan(deps.db, appId);
   if (!team) return null;
   if (customers.length < plans.length)
@@ -149,5 +153,8 @@ export async function teamGateProblem(
     (r) => r.plan_id === team.id,
   );
   const soak = teamSoakMs(deps.cfg) / 60_000;
-  return `${version} has not run healthy on Team yet (${gated.map((p) => p.slug).join(", ")}); Team runs ${row?.running_version ?? "nothing"} and needs ${soak} minutes healthy on ${version}`;
+  const stopped = row?.stop_reason
+    ? `; Team's instance is stopped (${row.stop_reason}), so it cannot run ${version}`
+    : "";
+  return `${version} has not run healthy on Team yet (${gated.map((p) => p.slug).join(", ")}); Team runs ${row?.running_version ?? "nothing"} and needs ${soak} minutes healthy on ${version}${stopped}`;
 }

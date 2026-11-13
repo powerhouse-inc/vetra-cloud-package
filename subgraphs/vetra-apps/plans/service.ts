@@ -231,7 +231,7 @@ export async function createPlan(
     : null;
   // A customer plan's first target is a rollout too: Team goes first (spec 7).
   if (target) {
-    const team = await teamGateProblem(deps, app.id, target, [
+    const team = await teamGateProblem(deps, app, target, [
       { slug, team: false, target_version: null },
     ]);
     if (team) throw appsError("BAD_USER_INPUT", team);
