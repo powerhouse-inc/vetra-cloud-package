@@ -93,6 +93,15 @@ export const vetraCloudEnvironmentFactoryBuilder: ProcessorFactoryBuilder =
         isWarm,
       ),
       isWarm,
+      // Held environments (vetra-apps environment_holds): rendered with no app
+      // pod and no ingress, their database and volumes kept.
+      (documentId: string) =>
+        appsDb
+          .selectFrom("environment_holds")
+          .select("environment_id")
+          .where("environment_id", "=", documentId)
+          .executeTakeFirst()
+          .then(Boolean),
     );
 
     return [

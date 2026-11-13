@@ -27,6 +27,7 @@ import {
   reconcileInstancesOnce,
 } from "../instances/reconciler.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
+import { getHold } from "../holds/repo.js";
 
 const HOLDER = "0x1111111111111111111111111111111111111111";
 const DAY = 86_400_000;
@@ -582,7 +583,7 @@ describe("reconcileInstancesOnce — plan instances", () => {
     expect(await planRows()).toEqual([]);
   });
 
-  it("stops an ended licence's instance after the window and wakes it on renewal", async () => {
+  it("holds an ended licence's instance after the window (never sleeps it) and releases it on renewal", async () => {
     await plan();
     await seedLicence(h, {
       appId,
@@ -601,9 +602,12 @@ describe("reconcileInstancesOnce — plan instances", () => {
       .execute();
     await reconcileInstancesOnce(h.deps);
     expect((await h.envs.getState(envId))!.status).toBe("READY");
+    expect(await getHold(h.db, envId)).toBeNull();
     h.advance(15 * DAY);
     await reconcileInstancesOnce(h.deps);
-    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    expect((await h.envs.getState(envId))!.status).not.toBe("STOPPED");
+    expect(await getHold(h.db, envId)).toMatchObject({ reason: LICENCE_ENDED });
+    // no pod recorded for the tenant: nothing runs
     expect((await planRows())[0]).toMatchObject({
       status: "stopped",
       reason: LICENCE_ENDED,
@@ -617,7 +621,7 @@ describe("reconcileInstancesOnce — plan instances", () => {
       root: "l1",
     });
     await reconcileInstancesOnce(h.deps);
-    expect((await h.envs.getState(envId))!.status).not.toBe("STOPPED");
+    expect(await getHold(h.db, envId)).toBeNull();
     expect((await planRows())[0]).toMatchObject({
       status: "updating",
       stopped_by_vetra: false,
@@ -708,7 +712,7 @@ describe("reconcileInstancesOnce — plan instances", () => {
     });
   });
 
-  it("wakes on renewal even when a crash came between sleeping and recording it", async () => {
+  it("releases on renewal even when a crash came between holding and its render", async () => {
     const envId = await readyThenDue();
     const real = h.deps.envs;
     h.deps.envs = Object.assign(Object.create(real) as typeof real, {
@@ -716,17 +720,17 @@ describe("reconcileInstancesOnce — plan instances", () => {
         id: string,
         actions: Parameters<typeof real.execute>[1],
       ) => {
-        const after = await real.execute(id, actions);
-        if (actions.some((a) => a.type === "SLEEP_ENVIRONMENT"))
-          throw new Error("crashed after sleeping");
-        return after;
+        if (actions.some((a) => a.type === "SET_LABEL"))
+          throw new Error("crashed after holding");
+        return real.execute(id, actions);
       },
     });
     await reconcileInstancesOnce(h.deps);
     h.deps.envs = real;
-    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    expect(await getHold(h.db, envId)).not.toBeNull();
     await renew();
     await reconcileInstancesOnce(h.deps);
+    expect(await getHold(h.db, envId)).toBeNull();
     expect((await h.envs.getState(envId))!.status).not.toBe("STOPPED");
     expect((await planRows())[0]).toMatchObject({
       status: "updating",
@@ -742,20 +746,21 @@ describe("reconcileInstancesOnce — plan instances", () => {
     expect((await planRows())[0].stop_reason).toBe(LICENCE_ENDED);
   });
 
-  it("neither sleeps nor wakes an environment that is not a PLAN instance", async () => {
+  it("neither holds nor releases an environment that is not a PLAN instance", async () => {
     const envId = await readyThenDue();
     const state = (await h.envs.getState(envId))!;
     setGlobal(envId, { app: { ...state.app!, role: "PRODUCTION" } });
     await reconcileInstancesOnce(h.deps);
     expect((await h.envs.getState(envId))!.status).toBe("READY");
+    expect(await getHold(h.db, envId)).toBeNull();
     expect((await planRows())[0].stopped_by_vetra).not.toBe(true);
-    // A STOPPED one Vetra once slept is not woken either once it is no PLAN.
+    // One Vetra held is not released either once it is no PLAN.
     setGlobal(envId, { app: state.app!, status: "READY" });
     await reconcileInstancesOnce(h.deps);
-    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
-    setGlobal(envId, { app: { ...state.app!, role: "PRODUCTION" } });
+    expect(await getHold(h.db, envId)).not.toBeNull();
+    setGlobal(envId, { app: { ...state.app!, role: "PRODUCTION" }, status: "READY" });
     await renew();
     await reconcileInstancesOnce(h.deps);
-    expect((await h.envs.getState(envId))!.status).toBe("STOPPED");
+    expect(await getHold(h.db, envId)).not.toBeNull();
   });
 });
