@@ -92,6 +92,8 @@ export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
 export interface PlansConfig {
   enabled: boolean;
   stopAfterDays: number;
+  /** VETRA_APPS_PLANS_DESTROY: deletion of ended plan instances (default off). */
+  destroy?: boolean;
 }
 
 export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
@@ -135,6 +137,17 @@ function instancesConfig(env: Env): VetraAppsConfig["instances"] {
   };
 }
 
+/** Off unless explicitly on: destroying data needs its own switch. */
+function destroyOn(env: Env): boolean {
+  const raw = (trimmed(env.VETRA_APPS_PLANS_DESTROY) ?? "").toLowerCase();
+  if (raw === "") return false;
+  if (INSTANCES_OFF.has(raw)) return false;
+  if (INSTANCES_ON.has(raw)) return true;
+  throw new Error(
+    `VETRA_APPS_PLANS_DESTROY "${env.VETRA_APPS_PLANS_DESTROY}" is invalid: use on/off`,
+  );
+}
+
 function plansConfig(env: Env): PlansConfig {
   const raw = (trimmed(env.VETRA_APPS_PLANS) ?? "").toLowerCase();
   if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
@@ -146,6 +159,7 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+    destroy: destroyOn(env),
   };
 }
 

@@ -109,6 +109,37 @@ describe("myInstances", () => {
       expect(mine[0].url).toBe(url);
     }
   });
+  it("carries the end-of-licence notices: expiring, then the stop date once the licence ended", async () => {
+    const lic = h.db as unknown as import("kysely").Kysely<any>;
+    const soon = new Date(h.clock.now.getTime() + 3 * 86_400_000).toISOString();
+    await lic
+      .updateTable("license_lifecycle")
+      .set({ end_at: soon })
+      .where("license_id", "=", "l1")
+      .execute();
+    let mine = await myInstancesFor(h.deps, holder);
+    expect(mine[0].licenceEndsAt).toBe(soon);
+    expect(mine[0].notices.map((n) => n.kind)).toEqual(["EXPIRING"]);
+    const ended = new Date(h.clock.now.getTime() - 3 * 86_400_000).toISOString();
+    await lic
+      .updateTable("license_lifecycle")
+      .set({ status: "EXPIRED", end_at: ended })
+      .where("license_id", "=", "l1")
+      .execute();
+    await h.db
+      .updateTable("instances")
+      .set({ licence_ended_at: ended })
+      .where("kind", "=", "own")
+      .execute();
+    mine = await myInstancesFor(h.deps, holder);
+    expect(mine[0].notices.map((n) => n.kind)).toEqual(["ENDED_STOP_PENDING"]);
+    expect(mine[0].stopsAt).toBe(
+      new Date(Date.parse(ended) + 14 * 86_400_000).toISOString(),
+    );
+    expect(mine[0].deletesAt).toBeNull();
+    // The shared instance is not the holder's licence chain: no ended notice there.
+    expect(mine[1].notices).toEqual([]);
+  });
   it("lists nothing of a deleted App", async () => {
     await h.db
       .updateTable("apps")

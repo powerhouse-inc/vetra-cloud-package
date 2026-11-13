@@ -119,7 +119,12 @@ describe("plans config", () => {
     expect(loadAppsConfig({}).plans).toEqual({
       enabled: false,
       stopAfterDays: 14,
+      destroy: false,
     });
+    expect(
+      loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "on" }).plans?.destroy,
+    ).toBe(true);
+    expect(() => loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "x" })).toThrow();
     expect(DEFAULT_PLANS).toEqual({ enabled: false, stopAfterDays: 14 });
   });
   it("turns on with VETRA_APPS_PLANS=on and takes the stop window", () => {
@@ -128,7 +133,7 @@ describe("plans config", () => {
         VETRA_APPS_PLANS: " On ",
         VETRA_APPS_PLAN_STOP_AFTER_DAYS: "7",
       }).plans,
-    ).toEqual({ enabled: true, stopAfterDays: 7 });
+    ).toEqual({ enabled: true, stopAfterDays: 7, destroy: false });
   });
   it("refuses unknown values at startup", () => {
     expect(() => loadAppsConfig({ VETRA_APPS_PLANS: "maybe" })).toThrow(

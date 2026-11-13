@@ -1,4 +1,5 @@
 import { plansConfigOf } from "../config.js";
+import { DESTROY_AFTER_DAYS } from "../holders/notices.js";
 import type { Caller } from "../auth.js";
 import type { HolderDirectoryEntry } from "../directory.js";
 import { publicUrlOf } from "../instances/public-host.js";
@@ -7,7 +8,8 @@ import {
   type InstanceCustomDomainJson,
 } from "../domains/service.js";
 import type { AppsDeps } from "../service.js";
-import { liveKindsOfHolder } from "./holders.js";
+import { holderNotices, type HolderNotice } from "../holders/notices.js";
+import { liveChains, liveKindsOfHolder } from "./holders.js";
 
 export interface HolderInstanceJson {
   instanceId: string;
@@ -21,6 +23,13 @@ export interface HolderInstanceJson {
   runningVersion: string | null;
   /** own: the holder's custom domain (null: none). */
   customDomain: InstanceCustomDomainJson | null;
+  /** The live licence's end (null: open-ended or none live). */
+  licenceEndsAt: string | null;
+  /** own, licence ended: when Vetra stops the instance (null once stopped). */
+  stopsAt: string | null;
+  /** own, licence ended and deletion on: when its data is deleted. */
+  deletesAt: string | null;
+  notices: HolderNotice[];
 }
 
 /** The instances the caller holds a licence for (spec section 11: a holder's own instances under their licences). */
@@ -41,6 +50,9 @@ export async function myInstancesFor(
         "apps.name as appName",
         "plans.name as planName",
         "plans.access as access",
+        "plans.kind as planKind",
+        "instances.licence_root_id as rootId",
+        "instances.licence_ended_at as endedAt",
         "instances.host as host",
         "instances.custom_domain as custom_domain",
         "instances.custom_domain_status as custom_domain_status",
@@ -73,25 +85,75 @@ export async function myInstancesFor(
         .where("plans.kind", "=", k.kind)
         .execute()),
     );
-  return [...own, ...shared].map(
-    ({
+  const now = deps.now().toISOString();
+  const plans = plansConfigOf(deps.cfg);
+  const chains = new Map<string, Awaited<ReturnType<typeof liveChains>>>();
+  const chainsOf = async (appId: string) => {
+    let c = chains.get(appId);
+    if (!c) chains.set(appId, (c = await liveChains(deps.licensingDb!, appId, now)));
+    return c;
+  };
+  const out: HolderInstanceJson[] = [];
+  for (const {
+    host,
+    custom_domain,
+    custom_domain_status,
+    custom_domain_reason,
+    custom_domain_since,
+    planKind,
+    rootId,
+    endedAt,
+    ...r
+  } of [...own, ...shared]) {
+    const d = {
       host,
       custom_domain,
       custom_domain_status,
       custom_domain_reason,
       custom_domain_since,
-      ...r
-    }) => {
-      const d = {
-        host,
-        custom_domain,
-        custom_domain_status,
-        custom_domain_reason,
-        custom_domain_since,
-      };
-      return { ...r, url: publicUrlOf(d), customDomain: customDomainJson(d) };
-    },
-  );
+    };
+    const live = await chainsOf(r.appId);
+    // own: its chain's live head. shared: the holder's own live licence of the plan's kind.
+    const ends =
+      r.access === "own"
+        ? rootId && live.has(rootId)
+          ? [live.get(rootId)!.endAt]
+          : []
+        : [...live.values()]
+            .filter((c) => c.address === address && c.kind === planKind)
+            .map((c) => c.endAt);
+    const endAt = ends.length === 0 || ends.includes(null)
+      ? null
+      : ends.reduce((a, b) => (Date.parse(a!) >= Date.parse(b!) ? a : b));
+    const ownEnded = r.access === "own" ? (endedAt ?? null) : null;
+    const stopped = r.status === "stopped";
+    const destroy = {
+      enabled: plans.destroy === true,
+      afterDays: DESTROY_AFTER_DAYS,
+    };
+    const notices = holderNotices({
+      now,
+      endAt,
+      endedAt: ownEnded,
+      stopped,
+      stopAfterDays: plans.stopAfterDays,
+      destroy,
+    });
+    out.push({
+      ...r,
+      url: publicUrlOf(d),
+      customDomain: customDomainJson(d),
+      licenceEndsAt: endAt,
+      stopsAt: notices.find((n) => n.kind === "ENDED_STOP_PENDING")?.at ?? null,
+      deletesAt:
+        notices.find(
+          (n) =>
+            n.kind === "STOPPED_DELETE_PENDING" || n.kind === "DELETE_IMMINENT",
+        )?.at ?? null,
+      notices,
+    });
+  }
+  return out;
 }
 
 /**

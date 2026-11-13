@@ -177,6 +177,28 @@ export const schema: DocumentNode = gql`
     runningVersion: String
     "own: the custom domain the holder set"
     customDomain: InstanceCustomDomain
+    "The live licence's end; null when open-ended or none is live"
+    licenceEndsAt: String
+    "own, licence ended: when Vetra stops the instance"
+    stopsAt: String
+    "own, licence ended, deletion on: when its data is deleted"
+    deletesAt: String
+    notices: [HolderNotice!]!
+  }
+
+  enum HolderNoticeKind {
+    EXPIRING
+    ENDED_STOP_PENDING
+    STOPPED
+    STOPPED_DELETE_PENDING
+    DELETE_IMMINENT
+    APP_DISCONTINUED
+  }
+
+  type HolderNotice {
+    kind: HolderNoticeKind!
+    at: String
+    message: String!
   }
 
   "Where a holder's custom domain stands: DNS (waiting for the holder's DNS), ISSUING (applied, certificate pending), ACTIVE (served), FAILED (see reason)"
