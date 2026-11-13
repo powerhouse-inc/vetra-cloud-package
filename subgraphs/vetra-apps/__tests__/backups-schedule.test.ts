@@ -57,6 +57,25 @@ describe("daily backups (spec 7: daily, kept 14 days)", () => {
     expect((await runDailyBackupsOnce(h.deps)).started).toHaveLength(1);
   });
 
+  it("skips instances a switch-over owns (rehearsal clones, new instances before LINKING)", async () => {
+    const { h, appId, fake } = ctx;
+    await planInstance(h, fake, appId, { id: "o1" });
+    await planInstance(h, fake, appId, { id: "c1" });
+    await h.db
+      .updateTable("instances")
+      .set({ switchover_id: "sw1" })
+      .where("id", "=", "c1")
+      .execute();
+    expect((await runDailyBackupsOnce(h.deps)).started).toHaveLength(1);
+    await settle();
+    expect((await runDailyBackupsOnce(h.deps)).started).toEqual([]);
+    const rows = await h.db
+      .selectFrom("instance_backups")
+      .select("instance_id")
+      .execute();
+    expect(rows).toEqual([{ instance_id: "o1" }]);
+  });
+
   it("retries a failed daily backup after an hour", async () => {
     const { h, appId, fake } = ctx;
     await planInstance(h, fake, appId, { id: "o1" });
