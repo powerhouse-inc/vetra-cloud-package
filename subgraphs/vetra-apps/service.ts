@@ -3061,7 +3061,10 @@ async function assertNoCustomerInstances(
   let waiting = 0;
   if (count === 0 && deps.licensingDb) {
     const kinds = new Set(
-      (await listPlans(deps.db, appId)).map((p) => p.kind),
+      (await listPlans(deps.db, appId))
+        // A retired plan creates no more instances, so its holders do not wait.
+        .filter((p) => p.status === "active")
+        .map((p) => p.kind),
     );
     if (kinds.size > 0)
       for (const c of (

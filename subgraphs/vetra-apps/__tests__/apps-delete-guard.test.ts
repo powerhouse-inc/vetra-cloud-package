@@ -91,6 +91,13 @@ describe("deleteApp guard for customer instances (plan 7 Task 13)", () => {
     });
   });
 
+  it("a retired plan's waiting licence does not block deleting the App", async () => {
+    await plan();
+    await h.db.updateTable("plans").set({ status: "retired" }).execute();
+    await seedLicence(h, { appId, kind: "pro", holder: HOLDER, licenseId: "l1" });
+    expect(await deleteApp(h.deps, owner, appId, false)).toBe(true);
+  });
+
   it("deletes an App with plans but no holders, as today", async () => {
     await plan();
     expect(await deleteApp(h.deps, owner, appId, false)).toBe(true);
