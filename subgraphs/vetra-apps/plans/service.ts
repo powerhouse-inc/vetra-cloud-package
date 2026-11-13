@@ -2,6 +2,7 @@ import { withKeyLock } from "../../../shared/key-lock.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
+import { feedsLicensedHost } from "../releases/licensed-host.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf, rolloutsEnabled } from "../config.js";
@@ -177,6 +178,88 @@ export async function createPlan(
   caller: Caller,
   input: CreatePlanInput,
 ): Promise<PlanJson> {
+  return createPlanRow(deps, caller, input, null);
+}
+
+export interface AdoptLicensedKindInput {
+  appId: string;
+  kind: string;
+  slug?: string | null;
+  name?: string | null;
+  size?: string | null;
+  /** A stable release of the App (the switch-over's target). */
+  targetVersion: string;
+}
+
+/** The mode of the template the App document's term of `kind` points at; null when it does not resolve. */
+async function termModeOf(
+  deps: AppsDeps,
+  appId: string,
+  kind: string,
+): Promise<"DEDICATED" | "SHARED" | null> {
+  const state = (await deps.docs?.getState(appId)) as {
+    terms?: Array<{ kind?: unknown; templateId?: unknown }>;
+    templates?: Array<{ id?: unknown; mode?: unknown }>;
+  } | null;
+  const term = state?.terms?.find((t) => t.kind === kind);
+  const mode = state?.templates?.find((t) => t.id === term?.templateId)?.mode;
+  return mode === "DEDICATED" || mode === "SHARED" ? mode : null;
+}
+
+/**
+ * Adopts a licensing term that already has licences and licensed
+ * environments as an own plan (plan 9, the switch-over's first step). Unlike
+ * createPlan it accepts an App with licensed environments and a kind with
+ * holders: licensing leaves such a chain's licensed environment alone until
+ * its switch-over moves it (overview rule 1), and gives every chain without
+ * one an own instance at once. Platform admins only; DEDICATED terms only;
+ * the target is a stable release of the App.
+ */
+export async function adoptLicensedKind(
+  deps: AppsDeps,
+  caller: Caller,
+  input: AdoptLicensedKindInput,
+): Promise<PlanJson> {
+  if (!caller.isAdmin)
+    throw appsError("FORBIDDEN", "Only platform admins adopt a licensed kind");
+  const kind = input.kind.trim();
+  if ((await termModeOf(deps, input.appId, kind)) !== "DEDICATED")
+    throw appsError(
+      "BAD_USER_INPUT",
+      `The term ${kind} is not a DEDICATED term of the App: only dedicated licensed environments switch over to own instances`,
+    );
+  const release = await releaseByVersion(
+    deps.db,
+    input.appId,
+    input.targetVersion,
+  );
+  if (!release || !feedsLicensedHost(release))
+    throw appsError(
+      "BAD_USER_INPUT",
+      `${input.targetVersion} is not a stable release of the App`,
+    );
+  return createPlanRow(
+    deps,
+    caller,
+    {
+      appId: input.appId,
+      kind,
+      access: "own",
+      slug: input.slug,
+      name: input.name,
+      size: input.size,
+      targetVersion: input.targetVersion,
+    },
+    { adopt: true },
+  );
+}
+
+async function createPlanRow(
+  deps: AppsDeps,
+  caller: Caller,
+  input: CreatePlanInput,
+  adopt: { adopt: true } | null,
+): Promise<PlanJson> {
   if (!plansConfigOf(deps.cfg).enabled)
     throw appsError("BAD_USER_INPUT", "Plans are not enabled on this Vetra");
   const app = await loadAppForOwner(deps, caller, input.appId, {
@@ -197,7 +280,7 @@ export async function createPlan(
   const given = input.slug?.trim();
   const slug = given || slugFromKind(kind);
   checkPlanSlug(slug, app, given ? {} : { derivedFrom: kind });
-  if (await hasLicensedEnvironments(deps.licensingDb, app.id))
+  if (!adopt && (await hasLicensedEnvironments(deps.licensingDb, app.id)))
     throw appsError(
       "BAD_USER_INPUT",
       "This App's licensed environments move to plans with the switch-over (releases phase 3, slice 9); it cannot have plans before that",
@@ -220,7 +303,7 @@ export async function createPlan(
   // A plan's term must never have been issued: a kind with licences (live or
   // not) is a migration, not a new plan (slice 9). Licences of unknown kind
   // could be of any term.
-  const issued = await grantKinds(deps.licensingDb, app.id);
+  const issued = adopt ? [] : await grantKinds(deps.licensingDb, app.id);
   if (issued.includes(null) || issued.includes(kind))
     throw appsError(
       "BAD_USER_INPUT",
@@ -279,6 +362,14 @@ export async function createPlan(
           targetVersion: p.target_version,
         },
       });
+      if (adopt)
+        await auditCaller(trx, caller, {
+          appId: app.id,
+          at: nowIso,
+          action: "switchover.kind_adopted",
+          subject: `plan:${p.id}`,
+          detail: { kind: p.kind, slug: p.slug, targetVersion: p.target_version },
+        });
       return p;
     })
     .catch((err: unknown) => {
