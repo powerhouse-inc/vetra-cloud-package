@@ -67,6 +67,12 @@ export interface VetraAppsConfig {
    */
   plans?: PlansConfig;
   /**
+   * Releases phase 3 switch-over (licensed environment → own instance).
+   * Absent = off. VETRA_APPS_SWITCHOVER=on runs it (only with plans and
+   * instances on, see switchoverConfigOf).
+   */
+  switchover?: SwitchoverConfig;
+  /**
    * The licence gate of shared instances (releases phase 3 slice 5). Absent =
    * off; see GateConfig.
    */
@@ -103,6 +109,35 @@ export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
+
+export interface SwitchoverConfig {
+  enabled: boolean;
+  /** Hours before a window that the new instance is prepared. */
+  leadHours: number;
+  /** Days the old environment stays held after a switch-over is done. */
+  holdDays: number;
+  /** Hours without the holder's answer that count as confirmed. */
+  confirmHours: number;
+  /** pg_restore -j of the database copy. */
+  restoreJobs: number;
+}
+
+export const DEFAULT_SWITCHOVER: SwitchoverConfig = {
+  enabled: false,
+  leadHours: 24,
+  holdDays: 30,
+  confirmHours: 72,
+  restoreJobs: 4,
+};
+
+/** The switch-over runs only where plan instances run. */
+export const switchoverConfigOf = (cfg: VetraAppsConfig): SwitchoverConfig => {
+  const c = cfg.switchover ?? DEFAULT_SWITCHOVER;
+  return {
+    ...c,
+    enabled: c.enabled && plansConfigOf(cfg).enabled && cfg.instances.enabled,
+  };
+};
 
 /**
  * The licence gate of shared instances (releases phase 3 slice 5). Absent = off.
@@ -173,6 +208,23 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+  };
+}
+
+function switchoverConfig(env: Env): SwitchoverConfig {
+  const raw = (trimmed(env.VETRA_APPS_SWITCHOVER) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_SWITCHOVER "${env.VETRA_APPS_SWITCHOVER}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  return {
+    // Unset means off: turned on only for a campaign.
+    enabled: raw !== "" && INSTANCES_ON.has(raw),
+    leadHours: intIn(env, "VETRA_APPS_SWITCHOVER_LEAD_HOURS", 24, 1, 168),
+    holdDays: intIn(env, "VETRA_APPS_SWITCHOVER_HOLD_DAYS", 30, 1, 365),
+    confirmHours: intIn(env, "VETRA_APPS_SWITCHOVER_CONFIRM_HOURS", 72, 1, 720),
+    restoreJobs: intIn(env, "VETRA_APPS_SWITCHOVER_RESTORE_JOBS", 4, 1, 16),
   };
 }
 
@@ -337,6 +389,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
     instances: instancesConfig(env),
     plans: plansConfig(env),
+    switchover: switchoverConfig(env),
     gate: gateConfig(env),
   };
 }

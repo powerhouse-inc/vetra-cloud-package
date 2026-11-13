@@ -136,6 +136,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstancesPlanColumns(db);
   await ensureAppAuditTable(db);
   await ensureAppRolesTable(db);
+  await ensureEnvironmentHoldsTable(db);
   await ensureInstanceGateTokensTable(db);
 }
 
@@ -283,6 +284,25 @@ export async function ensureAppAuditTable(db: Kysely<any>): Promise<void> {
     } catch (err) {
       if (!isConcurrentIndexError(err)) throw err;
     }
+  }
+}
+
+/** Held environments (plan 9). Schema builder only (namespaced). */
+export async function ensureEnvironmentHoldsTable(
+  db: Kysely<any>,
+): Promise<void> {
+  try {
+    await db.schema
+      .createTable("environment_holds")
+      .ifNotExists()
+      .addColumn("environment_id", "varchar(255)", (c) => c.primaryKey())
+      .addColumn("reason", "varchar(500)", (c) => c.notNull())
+      .addColumn("switchover_id", "varchar(64)")
+      .addColumn("created_by", "varchar(255)", (c) => c.notNull())
+      .addColumn("created_at", "varchar(64)", (c) => c.notNull())
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
   }
 }
 

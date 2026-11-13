@@ -327,3 +327,85 @@ describe("instance environments", () => {
     expect(await resolve(unlinked, "instance-env")).toBeNull();
   });
 });
+
+describe("lookup failures (a render fails rather than render the app disabled)", () => {
+  // A failed render writes nothing to git: the environment keeps running on
+  // its previous values. Rendering `app.enabled: false` instead would drop
+  // its CNPG cluster, and with it the database.
+  const unlinked = {} as unknown as VetraCloudEnvironmentState;
+  /** `db`, except that reading `table` fails with a connection error. */
+  const failing = (table: string) =>
+    new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "selectFrom") return Reflect.get(target, prop, receiver);
+        return (t: string) => {
+          if (t !== table) return target.selectFrom(t as never);
+          const chain: Record<string, unknown> = {};
+          for (const m of ["select", "where"]) chain[m] = () => chain;
+          chain.executeTakeFirst = async () => {
+            throw Object.assign(new Error("connection reset"), {
+              code: "08006",
+            });
+          };
+          return chain;
+        };
+      },
+    });
+
+  it("an App-linked environment's lookup rethrows", async () => {
+    await seed();
+    await expect(
+      createAppImageProjectResolver(failing("apps"))(linked("app-1"), "prod-env"),
+    ).rejects.toThrow("connection reset");
+    await expect(
+      createAppImageProjectResolver(failing("app_previews"))(
+        linked("app-1"),
+        "preview-env",
+      ),
+    ).rejects.toThrow("connection reset");
+  });
+
+  it("a licensed environment's lookup rethrows (licensing, apps or releases)", async () => {
+    await seed();
+    await db.schema
+      .createTable("license_environments")
+      .addColumn("environment_id", "varchar(255)")
+      .addColumn("app_id", "varchar(255)")
+      .execute();
+    await db
+      .insertInto("license_environments")
+      .values({ environment_id: "licensed-env", app_id: "app-1" })
+      .execute();
+    await expect(
+      createAppImageProjectResolver(db, failing("license_environments"))(
+        unlinked,
+        "licensed-env",
+      ),
+    ).rejects.toThrow("connection reset");
+    await expect(
+      createAppImageProjectResolver(failing("apps"), db)(unlinked, "licensed-env"),
+    ).rejects.toThrow("connection reset");
+    await expect(
+      createAppImageProjectResolver(failing("releases"), db)(
+        { fusion: { image: "cr.vetra.io/ns/shop" } } as never,
+        "licensed-env",
+      ),
+    ).rejects.toThrow("connection reset");
+  });
+
+  it("a warm-pool lookup failure rethrows; its missing table (42P01) is not warm", async () => {
+    await seed();
+    const boom = async () => {
+      throw Object.assign(new Error("connection reset"), { code: "08006" });
+    };
+    await expect(
+      createAppImageProjectResolver(db, null, boom)(unlinked, "licensed-env"),
+    ).rejects.toThrow("connection reset");
+    const missing = async () => {
+      throw Object.assign(new Error("no table"), { code: "42P01" });
+    };
+    expect(
+      await createAppImageProjectResolver(db, null, missing)(unlinked, "x"),
+    ).toBeNull();
+  });
+});

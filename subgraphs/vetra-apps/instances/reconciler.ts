@@ -2,7 +2,6 @@ import type { Action } from "document-model";
 import { GraphQLError } from "graphql";
 import {
   approveChanges,
-  sleepEnvironment,
   wakeEnvironment,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
 import type { VetraCloudEnvironmentState } from "../../../document-models/vetra-cloud-environment/index.js";
@@ -38,6 +37,15 @@ import {
   type AppsDeps,
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
+import { getHold } from "../holds/repo.js";
+import {
+  appPodGone,
+  holdEnvironment,
+  releaseHold,
+  rerender,
+  workloadPodSeen,
+} from "../holds/service.js";
 import { instanceLabel, planInstanceLabel } from "./host.js";
 import {
   declaredSecretNames,
@@ -299,8 +307,32 @@ const sizeOf = (row: InstanceRow) =>
   (row.target_size ?? null) as Parameters<typeof instanceUpdateActions>[5];
 
 /**
+ * The reason a plan instance woken from a sleep gets: an earlier version
+ * stopped plan instances by sleeping them (STOPPED, global.disabled), which
+ * removes the CNPG cluster and its database.
+ */
+export const STOPPED_BY_SLEEP =
+  "stopped by sleep before holds existed: the database was re-created empty";
+
+/** The tenant (namespace) of an environment. */
+async function tenantOf(
+  deps: AppsDeps,
+  envId: string,
+  state: VetraCloudEnvironmentState,
+  row: InstanceRow,
+): Promise<string> {
+  return (
+    (deps.envTenant ? await deps.envTenant(envId) : null) ??
+    getTenantId(state.genericSubdomain ?? row.host!, envId)
+  );
+}
+
+/**
  * A plan instance Vetra wants stopped (licence ended, plan retired): its
- * environment sleeps once it is READY or failed; nothing is deleted.
+ * environment is held (no app pod, no ingress; its database, backups and
+ * /data stay) and the row is stopped once its app pod is gone. Never slept:
+ * sleeping (STOPPED) removes the CNPG cluster, and with it the holder's
+ * database. Nothing is deleted.
  */
 async function stopPlanInstance(
   deps: AppsDeps,
@@ -321,31 +353,43 @@ async function stopPlanInstance(
         await patch(deps, row, { reason: NOT_A_PLAN_ENVIRONMENT });
       return;
     }
-    if (state.status === "CHANGES_PENDING") {
-      // Changes sent but never approved (as reconcileEnvironment does); it sleeps once settled.
-      await deps.envs.execute(envId, [approveChanges({})]);
-      return;
-    }
-    if (state.status === "READY" || state.status === "DEPLOYMENt_FAILED") {
-      // Recorded before sleeping: a crash in between must not leave an
-      // environment Vetra slept that a renewal never wakes.
-      if (!row.stopped_by_vetra)
-        row = await patch(deps, row, { stopped_by_vetra: true });
-      await deps.envs.execute(envId, [sleepEnvironment({})]);
-      await patch(deps, row, { status: "stopped", reason });
-      return;
-    }
     if (state.status === "STOPPED") {
+      // Slept by an earlier version (its database is gone already): left stopped.
       if (row.status !== "stopped" || row.reason !== reason)
         await patch(deps, row, {
           status: "stopped",
           reason,
-          // Not yet recorded as stopped: Vetra stopped it (or wanted it stopped).
           ...(row.status !== "stopped" ? { stopped_by_vetra: true } : {}),
         });
       return;
     }
-    const waiting = `${reason}: stopped once the environment settles (${state.status})`;
+    // Recorded before holding: a crash in between must not leave a hold that
+    // a renewal never releases.
+    if (!row.stopped_by_vetra)
+      row = await patch(deps, row, { stopped_by_vetra: true });
+    const tenant = await tenantOf(deps, envId, state, row);
+    const { created } = await holdEnvironment(deps, {
+      environmentId: envId,
+      reason,
+      switchoverId: null,
+      by: AUDIT_SYSTEM_ACTOR,
+    });
+    if (
+      !created &&
+      state.status === "READY" &&
+      (await workloadPodSeen(deps, tenant))
+    ) {
+      // Held, deployed, and the app still runs: the held render never
+      // happened (a crash between the hold and its render).
+      await rerender(deps.envs, envId);
+      return;
+    }
+    if (await appPodGone(deps, tenant)) {
+      if (row.status !== "stopped" || row.reason !== reason)
+        await patch(deps, row, { status: "stopped", reason });
+      return;
+    }
+    const waiting = `${reason}: stopped once its app is gone (${state.status})`;
     if (row.reason !== waiting) await patch(deps, row, { reason: waiting });
   });
 }
@@ -803,20 +847,50 @@ async function reconcileEnvironment(
     await deps.envs.execute(envId, [approveChanges({})]);
     return;
   }
-  if (
-    state.status === "STOPPED" &&
-    row.stopped_by_vetra &&
-    state.app?.role === "PLAN"
-  ) {
-    // Stopped by Vetra (licence ended, plan retired) and wanted again.
-    await apply(deps, envId, [wakeEnvironment({})]);
-    await patch(deps, row, {
-      status: "updating",
-      reason: "waking up",
-      stopped_by_vetra: false,
-      update_started_at: deps.now().toISOString(),
-    });
-    return;
+  if (row.stopped_by_vetra && state.app?.role === "PLAN") {
+    // Held by Vetra (licence ended, plan retired) and wanted again. A
+    // switch-over's hold is the switch-over's to release.
+    const hold = await getHold(deps.db, envId);
+    if (hold && hold.switchover_id === null) {
+      await releaseHold(deps, envId);
+      await patch(deps, row, {
+        status: "updating",
+        reason: "starting again",
+        stopped_by_vetra: false,
+        update_started_at: deps.now().toISOString(),
+      });
+      return;
+    }
+    if (state.status === "STOPPED") {
+      // Slept by an earlier version: its database went with the sleep.
+      await apply(deps, envId, [wakeEnvironment({})]);
+      await patch(deps, row, {
+        status: "updating",
+        reason: STOPPED_BY_SLEEP,
+        stopped_by_vetra: false,
+        update_started_at: deps.now().toISOString(),
+      });
+      return;
+    }
+    if (!hold) {
+      if (
+        await appPodGone(deps, await tenantOf(deps, envId, state, row))
+      ) {
+        // The hold went but its release's re-render did not happen (it
+        // failed, or a crash in between): the held render is still in
+        // place. Re-rendered before the flag is cleared, so a failure here
+        // is retried on the next tick.
+        await rerender(deps.envs, envId);
+        await patch(deps, row, {
+          status: "updating",
+          reason: "starting again",
+          stopped_by_vetra: false,
+          update_started_at: deps.now().toISOString(),
+        });
+        return;
+      }
+      await patch(deps, row, { stopped_by_vetra: false });
+    }
   }
   const admins = adminsOf(app, row);
   const size = sizeOf(row);

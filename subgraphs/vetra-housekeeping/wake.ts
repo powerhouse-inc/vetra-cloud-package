@@ -26,11 +26,18 @@ export function createWake(deps: {
   dispatchWake(envId: string): Promise<void>;
   /** An environment stopped by licence offboarding stays stopped until re-licensed. */
   isLicenceStopped(envId: string): Promise<boolean>;
+  /**
+   * Held by housekeeping (VETRA_HOUSEKEEPING_KEEPS_DATABASE): asleep although its
+   * status reads READY; `dispatchWake` releases the hold.
+   */
+  isHeld?(envId: string): Promise<boolean>;
 }): (host: string) => Promise<StudioPowerStateResult> {
   return async (host) => {
     const row = await deps.findStudioByHost(host);
     if (!row) throw new Error("STUDIO_NOT_FOUND");
-    const current = deriveStudioPowerState(row);
+    const current = (await deps.isHeld?.(row.envId))
+      ? "SLEEPING"
+      : deriveStudioPowerState(row);
     // Idempotent: only a SLEEPING studio is woken; otherwise report state.
     if (current !== "SLEEPING") return studioPowerResult(host, row, current);
     if (await deps.isLicenceStopped(row.envId)) return studioPowerResult(host, row, "SLEEPING");

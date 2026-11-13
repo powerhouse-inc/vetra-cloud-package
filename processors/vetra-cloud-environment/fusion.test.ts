@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import type { Kysely } from "kysely";
 import { generateValuesYaml, gitopsTenantDir } from "./gitops.js";
 import type { VetraCloudEnvironmentState } from "../../document-models/vetra-cloud-environment/index.js";
@@ -470,6 +471,24 @@ describe("generateValuesYaml — warm environment is closed", () => {
     expect(block).toContain("      cert-manager.io/cluster-issuer:");
     expect(block).toContain("      enabled: true\n      secretName:");
     await expect(yaml).toMatchFileSnapshot("./__golden__/warm-values.yaml");
+  });
+
+  it("is the same golden, byte for byte, with a hold lookup that finds no hold", async () => {
+    const golden = readFileSync(
+      new URL("./__golden__/warm-values.yaml", import.meta.url),
+      "utf-8",
+    );
+    const isWarm = vi.fn(async () => ({ appId: "app-1" }));
+    const unheld = await generateValuesYaml(
+      dbStub,
+      warmState(),
+      DOC_ID,
+      null,
+      allow,
+      isWarm,
+      async () => false,
+    );
+    expect(unheld).toBe(golden);
   });
 
   it("leaves a non-warm environment untouched", async () => {
