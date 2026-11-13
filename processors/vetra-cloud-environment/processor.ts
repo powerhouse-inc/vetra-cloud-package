@@ -5,7 +5,11 @@ import { markChangesPushed, type VetraCloudEnvironmentAction, type VetraCloudEnv
 import { syncEnvironment, deleteEnvironmentFromGitops, getTenantId } from "./gitops.js";
 import { removeEnvironmentRecord, tenantIdOwner } from "./cleanup.js";
 import type { DB } from "./schema.js";
-import type { AppImageProjectResolver, WarmPoolLookup } from "./app-image-project.js";
+import type {
+  AppImageProjectResolver,
+  HoldLookup,
+  WarmPoolLookup,
+} from "./app-image-project.js";
 import { childLogger } from "document-model";
 import type { SecretsService } from "../../subgraphs/vetra-cloud-secrets/services/secrets-service.js";
 
@@ -24,6 +28,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
   private secretsService: SecretsService | null;
   private resolveAppImageProject: AppImageProjectResolver | null;
   private isWarm: WarmPoolLookup | null;
+  private isHeld: HoldLookup | null;
 
   constructor(
     relationalDb: Kysely<DB>,
@@ -32,8 +37,10 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
     secretsService: SecretsService | null = null,
     resolveAppImageProject: AppImageProjectResolver | null = null,
     isWarm: WarmPoolLookup | null = null,
+    isHeld: HoldLookup | null = null,
   ) {
     this.isWarm = isWarm;
+    this.isHeld = isHeld;
     this.resolveAppImageProject = resolveAppImageProject;
     this.relationalDb = relationalDb;
     this.dispatch = dispatch;
@@ -209,6 +216,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
             this.secretsService,
             this.resolveAppImageProject,
             this.isWarm,
+            this.isHeld,
           );
           logger.info(`Gitops sync completed for "${label}"`);
 
@@ -239,6 +247,7 @@ export class VetraCloudEnvironmentProcessor implements IProcessor {
             this.secretsService,
             this.resolveAppImageProject,
             this.isWarm,
+            this.isHeld,
           );
           logger.info(`Gitops sleep sync completed for "${label}"`);
         } catch (error) {

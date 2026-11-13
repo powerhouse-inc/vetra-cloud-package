@@ -18,6 +18,8 @@ export async function seedRelease(
     kind?: "build" | "release";
     digest?: string;
     createdAt?: string;
+    /** The Powerhouse it was built on (default 6.2.3). */
+    powerhouse?: string;
   },
 ): Promise<ReleaseRow> {
   const app = (await getApp(h.db, appId))!;
@@ -37,7 +39,7 @@ export async function seedRelease(
     packages: "[]",
     requires: "{}",
     migrates: false,
-    powerhouse_version: "6.2.3",
+    powerhouse_version: over.powerhouse ?? "6.2.3",
     base_image: "node:24@sha256:00",
     created_at: over.createdAt ?? "2026-11-11T00:00:00.000Z",
   });

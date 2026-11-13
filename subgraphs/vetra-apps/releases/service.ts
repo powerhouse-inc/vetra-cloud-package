@@ -188,6 +188,8 @@ export interface ReleaseJson {
   migrates: boolean;
   built: { powerhouse: string; baseImage: string };
   createdAt: string;
+  /** Withdrawn by the publisher (spec 14.3); null while it may be targeted. */
+  withdrawn: { at: string; by: string; reason: string | null } | null;
 }
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -210,6 +212,13 @@ export function releaseJson(r: ReleaseRow): ReleaseJson {
     migrates: r.migrates,
     built: { powerhouse: r.powerhouse_version, baseImage: r.base_image },
     createdAt: r.created_at,
+    withdrawn: r.withdrawn_at
+      ? {
+          at: r.withdrawn_at,
+          by: r.withdrawn_by ?? "",
+          reason: r.withdrawn_reason ?? null,
+        }
+      : null,
   };
 }
 

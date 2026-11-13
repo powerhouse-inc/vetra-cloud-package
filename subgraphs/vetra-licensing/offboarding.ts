@@ -5,6 +5,8 @@ import type { ChainEnvRows } from "./environments.js";
 
 export const EXPIRY_WARNING_DAYS = 7;
 export const STOP_AFTER_DAYS = 14;
+/** The reason of an offboarding hold (VETRA_OFFBOARDING_KEEPS_DATABASE). */
+export const OFFBOARDING_HOLD_REASON = "licence ended (offboarding)";
 export const FINAL_WARNING_AFTER_DAYS = 83;
 export const DESTROY_AFTER_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -108,6 +110,12 @@ export interface OffboardingDeps {
   envStatus(environmentId: string): Promise<string | null>;
   sleep(environmentId: string): Promise<void>;
   wake(environmentId: string): Promise<void>;
+  /**
+   * Held by offboarding (VETRA_OFFBOARDING_KEEPS_DATABASE: `sleep` holds a
+   * database-backed environment instead, and `wake` releases it). A held
+   * environment is not STOPPED, so resuming asks this too.
+   */
+  isHeld?(environmentId: string): Promise<boolean>;
   /** Hard delete of the environment document (gitops + namespace teardown follow). */
   destroy(environmentId: string): Promise<void>;
   /**
@@ -140,13 +148,17 @@ export async function markEnded(deps: OffboardingDeps, environmentId: string): P
 
 /**
  * Re-licensing the same chain before deletion brings the environment back.
- * Only an environment offboarding stopped (stopped_at set) is woken; one the
- * holder stopped themselves stays as they left it.
+ * Only an environment offboarding stopped (stopped_at set) is woken (or its
+ * hold released); one the holder stopped themselves stays as they left it.
  */
 export async function markResumed(deps: OffboardingDeps, environmentId: string): Promise<void> {
   const row = await deps.rows.byEnvironment(environmentId);
   if (!row) return;
-  if (row.stopped_at && (await deps.envStatus(environmentId)) === "STOPPED") {
+  if (
+    row.stopped_at &&
+    ((await deps.envStatus(environmentId)) === "STOPPED" ||
+      (await deps.isHeld?.(environmentId)))
+  ) {
     await deps.wake(environmentId);
   }
   await deps.rows.update(environmentId, {

@@ -1,4 +1,4 @@
-import type { Kysely, Selectable } from "kysely";
+import type { Insertable, Kysely, Selectable } from "kysely";
 import type { PlansTable, VetraAppsDB } from "../db/schema.js";
 
 export type PlanRow = Selectable<PlansTable>;
@@ -47,7 +47,7 @@ export async function lockPlan(
 
 export async function insertPlan(
   db: Kysely<VetraAppsDB>,
-  row: PlanRow,
+  row: Insertable<PlansTable>,
 ): Promise<PlanRow> {
   return db
     .insertInto("plans")

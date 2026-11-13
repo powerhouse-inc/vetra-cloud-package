@@ -11,9 +11,12 @@ import {
   ensureAppsReleaseBranchesColumn,
   ensureExternalChangesColumns,
   ensureInstanceBackupTables,
+  ensureInstanceGateTokensTable,
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
+  ensureRolloutColumns,
+  ensureRolloutTables,
   ensureStudioProductColumns,
   isConcurrentIndexError,
   up,
@@ -747,6 +750,93 @@ describe("app_audit and app_roles", () => {
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "user:0xaa")).toBe(false);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(true);
       expect(await deleteAppRole(db, "app-1", "0xbb", "release_manager", "org:o1")).toBe(false);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("rollout tables", () => {
+  it("are created idempotently and concurrently, with the new columns and one moving step per App", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all(
+        [1, 2, 3].flatMap(() => [ensureRolloutTables(any), ensureRolloutColumns(any)]),
+      );
+      const cols = async (t: string) =>
+        (
+          await sql<{ column_name: string }>`select column_name from information_schema.columns where table_schema = 'vetra-apps' and table_name = ${t}`.execute(
+            root,
+          )
+        ).rows.map((r) => r.column_name);
+      expect(await cols("instances")).toContain("pinned_version");
+      expect(await cols("releases")).toEqual(
+        expect.arrayContaining(["withdrawn_at", "withdrawn_by", "withdrawn_reason"]),
+      );
+      expect(await cols("plans")).toEqual(expect.arrayContaining(["update_window", "policy_note"]));
+      const step = (id: string, instance: string, status: string) => ({
+        id,
+        rollout_id: "r1",
+        app_id: "app-1",
+        plan_id: "p1",
+        instance_id: instance,
+        instance_kind: "own",
+        instance_name: instance,
+        position: 0,
+        from_version: "1.0.0",
+        to_version: "1.1.0",
+        status,
+        due_at: "2026-11-12T00:00:00.000Z",
+        requested_at: null,
+        started_at: null,
+        finished_at: null,
+        target_moved: false,
+        attempts: 0,
+        error: null,
+        note: null,
+        created_at: "2026-11-12T00:00:00.000Z",
+        updated_at: "2026-11-12T00:00:00.000Z",
+      });
+      await any.insertInto("rollout_steps").values(step("s1", "i1", "applying")).execute();
+      await any.insertInto("rollout_steps").values(step("s2", "i2", "pending")).execute();
+      await expect(
+        any.insertInto("rollout_steps").values(step("s3", "i3", "reverting")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance_gate_tokens", () => {
+  it("is created idempotently and concurrently in the namespace schema; a token hash is unique", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceGateTokensTable(any)));
+      const db = any as unknown as Kysely<VetraAppsDB>;
+      const at = "2026-11-12T00:00:00.000Z";
+      const row = (id: string) => ({
+        instance_id: id,
+        app_id: "app-1",
+        token_hash: "a".repeat(64),
+        token_ciphertext: "vault:x",
+        token_id: `tid-${id}`,
+        previous_hash: null,
+        previous_until: null,
+        delivered_at: null,
+        created_at: at,
+        rotated_at: at,
+      });
+      await db.insertInto("instance_gate_tokens").values(row("i1")).execute();
+      await expect(
+        db.insertInto("instance_gate_tokens").values(row("i2")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
     } finally {
       await root.destroy();
     }

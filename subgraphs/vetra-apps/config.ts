@@ -1,3 +1,5 @@
+import { parseVersion } from "./releases/version.js";
+
 /**
  * vetra-apps configuration, read from the environment once at setup. Every
  * group is optional: a missing group disables only the features that need it
@@ -70,6 +72,17 @@ export interface VetraAppsConfig {
    * backups and lets a rollback of a release that migrates restore.
    */
   backups?: BackupsConfig;
+  /**
+   * Releases phase 3 switch-over (licensed environment → own instance).
+   * Absent = off. VETRA_APPS_SWITCHOVER=on runs it (only with plans and
+   * instances on, see switchoverConfigOf).
+   */
+  switchover?: SwitchoverConfig;
+  /**
+   * The licence gate of shared instances (releases phase 3 slice 5). Absent =
+   * off; see GateConfig.
+   */
+  gate?: GateConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -96,6 +109,11 @@ export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
 export interface PlansConfig {
   enabled: boolean;
   stopAfterDays: number;
+  /**
+   * VETRA_APPS_ROLLOUTS_HOLD=on: no rollout step and no policy rollout starts
+   * (decision R1); a moving step still settles. Present only when on.
+   */
+  rolloutsHold?: boolean;
 }
 
 export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
@@ -113,6 +131,68 @@ export interface BackupsConfig {
 export const DEFAULT_BACKUPS: BackupsConfig = { enabled: false, dailyKeepDays: 14, maxInFlight: 3 };
 export const backupsConfigOf = (cfg: VetraAppsConfig): BackupsConfig =>
   cfg.backups ?? DEFAULT_BACKUPS;
+export interface SwitchoverConfig {
+  enabled: boolean;
+  /** Hours before a window that the new instance is prepared. */
+  leadHours: number;
+  /** Days the old environment stays held after a switch-over is done. */
+  holdDays: number;
+  /** Hours without the holder's answer that count as confirmed. */
+  confirmHours: number;
+  /** pg_restore -j of the database copy. */
+  restoreJobs: number;
+}
+
+export const DEFAULT_SWITCHOVER: SwitchoverConfig = {
+  enabled: false,
+  leadHours: 24,
+  holdDays: 30,
+  confirmHours: 72,
+  restoreJobs: 4,
+};
+
+/** The switch-over runs only where plan instances run. */
+export const switchoverConfigOf = (cfg: VetraAppsConfig): SwitchoverConfig => {
+  const c = cfg.switchover ?? DEFAULT_SWITCHOVER;
+  return {
+    ...c,
+    enabled: c.enabled && plansConfigOf(cfg).enabled && cfg.instances.enabled,
+  };
+};
+
+/**
+ * Rollouts are part of plans (releases phase 3 slice 3, decision R1): they
+ * run whenever plan instances do. There is no separate switch, because with
+ * plans on nothing else moves a shared or own instance's target.
+ */
+export const rolloutsEnabled = (cfg: VetraAppsConfig): boolean =>
+  plansConfigOf(cfg).enabled && cfg.instances.enabled;
+
+/** The brake: nothing starts while it is on. */
+export const rolloutsHeld = (cfg: VetraAppsConfig): boolean =>
+  plansConfigOf(cfg).rolloutsHold === true;
+
+/**
+ * The licence gate of shared instances (releases phase 3 slice 5). Absent = off.
+ * VETRA_APPS_GATE=on gives shared instances ACCESS=licensed, VETRA_APP_ID,
+ * VETRA_GATE_URL (= VETRA_APPS_GATE_URL, no default: a staging Vetra must never
+ * point hosts at production) and a VETRA_GATE_TOKEN; VETRA_APPS_GATE_MIN_POWERHOUSE
+ * is the first Powerhouse with ACCESS=licensed (D9).
+ */
+export interface GateConfig {
+  enabled: boolean;
+  url: string | null;
+  minPowerhouse: string | null;
+}
+
+export const DEFAULT_GATE: GateConfig = {
+  enabled: false,
+  url: null,
+  minPowerhouse: null,
+};
+
+export const gateConfigOf = (cfg: VetraAppsConfig): GateConfig =>
+  cfg.gate ?? DEFAULT_GATE;
 
 const trimmed = (v: string | undefined): string | null => {
   const t = v?.trim();
@@ -161,6 +241,7 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+    ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
   };
 }
 
@@ -177,6 +258,78 @@ function backupsConfig(env: Env): BackupsConfig {
     dailyKeepDays: intIn(env, "VETRA_APPS_BACKUP_DAILY_KEEP_DAYS", 14, 1, 30),
     maxInFlight: intIn(env, "VETRA_APPS_BACKUP_MAX_IN_FLIGHT", 3, 1, 10),
   };
+}
+
+/** An on/off switch that is off when unset; anything else refuses to boot. */
+function switchOn(env: Env, name: string): boolean {
+  const raw = (trimmed(env[name]) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw))
+    throw new Error(
+      `${name} "${env[name]}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  return raw !== "" && INSTANCES_ON.has(raw);
+}
+
+function switchoverConfig(env: Env): SwitchoverConfig {
+  const raw = (trimmed(env.VETRA_APPS_SWITCHOVER) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_SWITCHOVER "${env.VETRA_APPS_SWITCHOVER}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  return {
+    // Unset means off: turned on only for a campaign.
+    enabled: raw !== "" && INSTANCES_ON.has(raw),
+    leadHours: intIn(env, "VETRA_APPS_SWITCHOVER_LEAD_HOURS", 24, 1, 168),
+    holdDays: intIn(env, "VETRA_APPS_SWITCHOVER_HOLD_DAYS", 30, 1, 365),
+    confirmHours: intIn(env, "VETRA_APPS_SWITCHOVER_CONFIRM_HOURS", 72, 1, 720),
+    restoreJobs: intIn(env, "VETRA_APPS_SWITCHOVER_RESTORE_JOBS", 4, 1, 16),
+  };
+}
+
+/** Off unless VETRA_APPS_GATE is on; then the URL, the Powerhouse floor and OPENBAO_ADDR are required (startup error otherwise). */
+function gateConfig(env: Env): GateConfig {
+  const raw = (trimmed(env.VETRA_APPS_GATE) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_GATE "${env.VETRA_APPS_GATE}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  if (raw === "" || INSTANCES_OFF.has(raw)) return DEFAULT_GATE;
+  const url = trimmed(env.VETRA_APPS_GATE_URL);
+  if (!url)
+    throw new Error(
+      "VETRA_APPS_GATE=on needs VETRA_APPS_GATE_URL (the …/apps/gate/check URL hosts call)",
+    );
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`VETRA_APPS_GATE_URL "${url}" is not a URL`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.pathname.endsWith("/apps/gate/check")
+  )
+    throw new Error(
+      `VETRA_APPS_GATE_URL "${url}" must be an https URL ending in /apps/gate/check`,
+    );
+  const min = trimmed(env.VETRA_APPS_GATE_MIN_POWERHOUSE);
+  if (!min)
+    throw new Error(
+      "VETRA_APPS_GATE=on needs VETRA_APPS_GATE_MIN_POWERHOUSE (the first Powerhouse with ACCESS=licensed)",
+    );
+  if (!parseVersion(min))
+    throw new Error(
+      `VETRA_APPS_GATE_MIN_POWERHOUSE "${min}" is not a semver version`,
+    );
+  // Gate tokens are kept under the settings vault's transit key and reach
+  // tenants through the tenant secrets: both need OpenBao.
+  if (!trimmed(env.OPENBAO_ADDR))
+    throw new Error(
+      "VETRA_APPS_GATE=on needs OPENBAO_ADDR (gate tokens are kept and delivered through the settings vault)",
+    );
+  return { enabled: true, url, minPowerhouse: min };
 }
 
 function intIn(
@@ -296,6 +449,8 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     instances: instancesConfig(env),
     plans: plansConfig(env),
     backups: backupsConfig(env),
+    switchover: switchoverConfig(env),
+    gate: gateConfig(env),
   };
 }
 

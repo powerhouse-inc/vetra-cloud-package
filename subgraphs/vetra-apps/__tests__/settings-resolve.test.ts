@@ -49,6 +49,23 @@ describe("setting names", () => {
     expect(() => checkSettingName(name)).toThrow(SettingInputError);
   });
 
+  // The licence gate of shared instances (releases phase 3 slice 5): a
+  // publisher (or, later, holder) setting must never open or loosen it.
+  it.each([
+    "ACCESS",
+    "ACCESS_GATE_GRACE_MS",
+    "REQUIRE_AUTHENTICATED_CALLER_EXEMPT_PATHS",
+    "AUTH_ENABLED",
+    "ADMINS",
+    "VETRA_GATE_URL",
+    "VETRA_GATE_TOKEN",
+    "VETRA_GATE_ANYTHING",
+    "VETRA_APP_ID",
+  ])("refuses the gate setting %s", (name) => {
+    expect(() => checkSettingName(name)).toThrow(SettingInputError);
+    expect(() => checkSettingName(name)).toThrow(/set by Vetra/);
+  });
+
   it.each([
     "lower",
     "ph_host",

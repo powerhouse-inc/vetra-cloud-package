@@ -1,0 +1,296 @@
+# managed-by: vetra-cloud-environment
+global:
+  disabled: false
+  subdomain: "fair-ibis-huk51fts"
+  wildcardTls: true
+  imagePullSecrets:
+    enabled: true
+    name: harbor-credentials
+    useExisting: true
+database:
+  cnpg:
+    enabled: true
+    name: fair-ibis-huk51fts-8tgxdfjj-pg
+    instances: 1
+    storageClass: longhorn-studio
+    storageSize: 50Gi
+    postgresql:
+      maxConnections: "600"
+      sharedBuffers: 512MB
+      effectiveCacheSize: 2GB
+      workMem: 32MB
+    pooler:
+      enabled: true
+      instances: 1
+      poolMode: transaction
+      defaultPoolSize: 50
+      maxClientConnections: 400
+    backup:
+      enabled: true
+      destinationPath: s3://powerhouse-cnpg-backups/fair-ibis-huk51fts-8tgxdfjj/
+      endpointURL: https://hel1.your-objectstorage.com
+      credentialsSecret: s3-credentials
+      retentionPolicy: 180d
+      useExistingSecret: true
+      scheduledBackup:
+        enabled: true
+        schedule: 0 2 * * *
+        immediate: true
+    resources:
+      # Studio DBs are tiny reactor doc stores: measured p90 ~106m CPU / ~842Mi
+      # mem. The old flat 2-core / 2Gi *request* over-reserved ~20-40x and was
+      # the single biggest CPU reservation in the cluster (~60 cores across ~30
+      # studio DBs vs ~1.5 cores actually used). Cut requests to a real-usage
+      # floor; limits stay 8 cores / 8Gi so the DB still bursts freely under
+      # event load — this reclaims the idle scheduling floor only, no OOM or
+      # throttle risk. (Right-sized 2026-08-05; trimmed again 2026-08-11 to
+      # 512Mi/100m after live steady-state measured median ~161Mi/40m, p90
+      # ~178Mi over 34 DBs — 1Gi/250m was still ~5-6x over-reserved.)
+      requests:
+        memory: 512Mi
+        cpu: "100m"
+      limits:
+        memory: 8Gi
+        cpu: "8"
+    bootstrap:
+      database: fair_ibis_huk51fts_8tgxdfjj_db
+      owner: fair_ibis_huk51fts_8tgxdfjj_user
+switchboard:
+  enabled: false
+  gitops:
+    enabled: false
+  name: switchboard
+  replicaCount: 0
+  image:
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/switchboard
+    tag: dev
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+  ingress:
+    enabled: false
+    className: traefik
+    host: "fair-ibis-huk51fts-switchboard.vetra.io"
+    tls:
+      enabled: true
+      secretName: switchboard-fair-ibis-huk51fts-vetra-io-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    PORT: "3000"
+    NODE_ENV: production
+    NODE_OPTIONS: "--max-old-space-size=768"
+    PH_REGISTRY_URL: "https://registry.vetra.io"
+    PH_REGISTRY_PACKAGES: ""
+    REACTOR_LEGACY_PROCESSOR_IDS: "false"
+    OPENBAO_ADDR: https://openbao.vetra.io
+  envConfigMap:
+    TENANT_ID: fair-ibis-huk51fts-8tgxdfjj
+    TENANT_NAME: "sektar"
+  envFrom:
+    - configMapRef:
+        name: fair-ibis-huk51fts-8tgxdfjj-env
+        optional: true
+    - secretRef:
+        name: fair-ibis-huk51fts-8tgxdfjj-secrets
+        optional: true
+  # /health and /ready are registered ahead of auth, so these keep working with
+  # REQUIRE_AUTHENTICATED_CALLER=true. "exec: null" clears the chart's default
+  # exec probe: Helm merges maps, and a probe with two handler types is rejected.
+  livenessProbe:
+    enabled: true
+    exec: null
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 120
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    exec: null
+    httpGet:
+      path: /ready
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 12
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  autoscaling:
+    enabled: false
+connect:
+  enabled: false
+  name: connect
+  replicaCount: 1
+  image:
+    repository: cr.vetra.io/powerhouse-inc-powerhouse/connect
+    tag: dev
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+  ingress:
+    enabled: true
+    className: traefik
+    host: "fair-ibis-huk51fts-connect.vetra.io"
+    tls:
+      enabled: true
+      secretName: connect-fair-ibis-huk51fts-vetra-io-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    PORT: "3001"
+    NODE_ENV: production
+    NODE_OPTIONS: "--max-old-space-size=384"
+    PH_REGISTRY_URL: "https://registry.vetra.io"
+    PH_REGISTRY_PACKAGES: ""
+  envConfigMap:
+    TENANT_ID: fair-ibis-huk51fts-8tgxdfjj
+    TENANT_NAME: "sektar"
+  envFrom:
+    - configMapRef:
+        name: fair-ibis-huk51fts-8tgxdfjj-env
+        optional: true
+    - secretRef:
+        name: fair-ibis-huk51fts-8tgxdfjj-secrets
+        optional: true
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 120
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 12
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: false
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+glitchtip:
+  enabled: false
+  environment: fair-ibis-huk51fts-8tgxdfjj
+sentry:
+  enabled: true
+  environment: fair-ibis-huk51fts-8tgxdfjj
+networkPolicy:
+  enabled: false
+app:
+  enabled: true
+  name: fusion
+  replicaCount: 0
+  image:
+    repository: "cr.vetra.io/achra/host"
+    tag: "sha-d5a6f74abbf3"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 6540
+  ingress:
+    enabled: false
+    className: traefik
+    host: "fair-ibis-huk51fts.vetra.io"
+    additionalHosts: []
+    tls:
+      enabled: true
+      secretName: fusion-fair-ibis-huk51fts-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  env:
+    "NODE_ENV": "production"
+    "PUBLIC_URL": "https://fair-ibis-huk51fts.vetra.io"
+    "NODE_OPTIONS": "--max-old-space-size=768"
+    "PH_HOST": "cli"
+    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": "fair-ibis-huk51fts.vetra.io"
+  envConfigMap: {}
+  envSecret: {}
+  secretEnv: []
+  podLabels:
+    powerhouse.io/service: fusion
+  database:
+    enabled: true
+  persistence:
+    enabled: true
+    storageClass: longhorn
+    size: 10Gi
+    mountPath: /data
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 6540
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 20
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /
+      port: 6540
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  autoscaling:
+    enabled: false
+clint:
+  enabled: false
+  agents: []
+docling:
+  enabled: false
+paperless:
+  enabled: false
+speckle:
+  enabled: false

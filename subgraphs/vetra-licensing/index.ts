@@ -7,10 +7,13 @@ import { up } from "./db/migrations.js";
 import type { VetraLicensingDB } from "./db/schema.js";
 import type { VetraAppsDB } from "../vetra-apps/db/schema.js";
 import { createReactorEnvGateway } from "../vetra-apps/envs.js";
+import {
+  createEnvironmentStopper,
+  offboardingKeepsDatabase,
+} from "../vetra-apps/holds/stop.js";
 import { getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
 import { redactSecrets } from "../../shared/redact.js";
-import { sleepEnvironment, wakeEnvironment } from "document-models/vetra-cloud-environment";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
 import { loadLicensingConfig } from "./config.js";
 import { createReactorLicenseReads } from "./reads.js";
@@ -54,6 +57,7 @@ import {
   confirmedEndedRows,
   markEnded,
   markResumed,
+  OFFBOARDING_HOLD_REASON,
   tickOffboarding,
   type OffboardingDeps,
 } from "./offboarding.js";
@@ -409,15 +413,23 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
           }
         : {}),
     };
+    const offboardingStopper = createEnvironmentStopper(
+      { db: appsDb, envs, now: () => new Date() },
+      { keepsDatabase: offboardingKeepsDatabase(), reason: OFFBOARDING_HOLD_REASON },
+    );
     const offboarding: OffboardingDeps = {
       rows: chainRows,
       envStatus: async (id) => (await envs.getState(id))?.status ?? null,
+      // VETRA_OFFBOARDING_KEEPS_DATABASE (default off): a database-backed
+      // environment is held instead of slept, since a sleep deletes its
+      // database. Off, these sleep and wake exactly as before.
       sleep: async (id) => {
-        await envs.execute(id, [sleepEnvironment({})]);
+        await offboardingStopper.stop(id);
       },
       wake: async (id) => {
-        await envs.execute(id, [wakeEnvironment({})]);
+        await offboardingStopper.resume(id);
       },
+      isHeld: (id) => offboardingStopper.isStopped(id),
       destroy: (id) => envs.delete(id),
       forgetEnvironment: async (id) => {
         await deleteReportingToken(db, id);

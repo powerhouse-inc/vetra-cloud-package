@@ -88,3 +88,15 @@ export function checkPlanSlug(
   )
     throw refuse("names a release branch of the App");
 }
+
+/** The longest notice a plan or rollout gives (30 days, as licensing's MAX_NOTICE_HOURS). */
+export const MAX_NOTICE_HOURS = 24 * 30;
+
+export function checkNoticeHours(n: number): number {
+  if (!Number.isInteger(n) || n < 0 || n > MAX_NOTICE_HOURS)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `Notice is a whole number of hours from 0 to ${MAX_NOTICE_HOURS}`,
+    );
+  return n;
+}

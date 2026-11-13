@@ -409,6 +409,7 @@ describe("platform-managed keys (user-facing service)", () => {
     "VETRA_MODEL",
     "VETRA_MODEL_FALLBACKS",
     "OPENROUTER_API_KEY",
+    "VETRA_GATE_TOKEN",
     "ADMINS",
     "CI",
     "npm_config_node_linker",

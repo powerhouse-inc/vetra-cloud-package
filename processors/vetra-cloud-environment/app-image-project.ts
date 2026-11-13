@@ -27,6 +27,27 @@ export type WarmPoolLookup = (
 const UNDEFINED_TABLE = "42P01";
 
 /**
+ * A missing table (42P01: vetra-apps or vetra-licensing has not created it
+ * yet, boot order is not fixed) answers `missing`; any other failure
+ * propagates and fails the render. A failed render writes nothing to git, so
+ * a running environment keeps its previous values; answering "no project"
+ * instead would render its app disabled, which drops its CNPG cluster and
+ * with it the database.
+ */
+async function unlessMissing<T>(
+  read: () => Promise<T>,
+  missing: T,
+): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)
+      return missing;
+    throw err;
+  }
+}
+
+/**
  * One warm-pool lookup for a render. The warm-pool table missing (42P01: the
  * licensing subgraph has not created it yet, boot order is not fixed) means
  * nothing is warm; any other failure propagates, so a warm environment can
@@ -46,9 +67,33 @@ export async function lookupWarm(
 }
 
 /**
+ * Whether an environment is held (vetra-apps `environment_holds`): kept with
+ * its database, backups and data volumes while its app does not run.
+ */
+export type HoldLookup = (documentId: string) => Promise<boolean>;
+
+/**
+ * One hold lookup for a render. The holds table missing (42P01: vetra-apps
+ * has not created it yet) means nothing is held; any other failure
+ * propagates, so a held environment never starts by accident.
+ */
+export async function lookupHeld(
+  isHeld: HoldLookup,
+  documentId: string,
+): Promise<boolean> {
+  try {
+    return await isHeld(documentId);
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === UNDEFINED_TABLE)
+      return false;
+    throw err;
+  }
+}
+
+/**
  * The App named by `state.app.appId` must exist, and this document must be
  * its production env or one of its preview envs. Missing tables (vetra-apps
- * not migrated yet) or any query failure → null (no App project).
+ * not migrated yet) → null (no App project); any other failure propagates.
  */
 export function createAppImageProjectResolver(
   appsDb: Kysely<any>,
@@ -66,7 +111,7 @@ export function createAppImageProjectResolver(
         warm,
         state.fusion?.image ?? null,
       );
-    try {
+    return unlessMissing(async () => {
       const app = (await appsDb
         .selectFrom("apps")
         .select([
@@ -102,9 +147,7 @@ export function createAppImageProjectResolver(
         .where("environment_id", "=", documentId)
         .executeTakeFirst();
       return instance ? app.registry_namespace : null;
-    } catch {
-      return null;
-    }
+    }, null);
   };
 }
 
@@ -114,7 +157,8 @@ async function releasedFrom(
   appId: string,
   repository: string,
 ): Promise<boolean> {
-  try {
+  // No releases table yet: the App's Harbor project only.
+  return unlessMissing(async () => {
     const row = await appsDb
       .selectFrom("releases")
       .select("version")
@@ -122,9 +166,7 @@ async function releasedFrom(
       .where(sql<boolean>`starts_with(image_ref, ${`${repository}:`})`)
       .executeTakeFirst();
     return row !== undefined;
-  } catch {
-    return false; // no releases table yet: the App's Harbor project only
-  }
+  }, false);
 }
 
 /**
@@ -133,7 +175,7 @@ async function releasedFrom(
  * `license_environments` row (vetra-licensing tables, written by provisioning,
  * never by the document) names the App, whose Harbor project or own released
  * repository it may pull from (the document's image only picks which of the
- * two is answered). Missing tables or any failure → null.
+ * two is answered). Missing tables → null; any other failure propagates.
  */
 async function licensedImageProject(
   appsDb: Kysely<any>,
@@ -144,11 +186,15 @@ async function licensedImageProject(
   /** The document's FUSION image: which of the App's two projects to vouch for. */
   image: string | null,
 ): Promise<string | null> {
-  try {
+  return unlessMissing(async () => {
     // A warm environment has no license_environments row yet (the claim writes
     // it); the warm pool names its App. A render hands in its own lookup.
     const warm =
-      given !== undefined ? given : isWarm ? await isWarm(documentId) : null;
+      given !== undefined
+        ? given
+        : isWarm
+          ? await lookupWarm(isWarm, documentId)
+          : null;
     let appId = warm?.appId;
     if (!appId) {
       if (!licensingDb) return null;
@@ -177,7 +223,5 @@ async function licensedImageProject(
       return image.split("/")[1] ?? null;
     }
     return app.harbor_project ?? null;
-  } catch {
-    return null;
-  }
+  }, null);
 }
