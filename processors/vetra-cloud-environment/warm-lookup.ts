@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import type { VetraLicensingDB } from "../../subgraphs/vetra-licensing/db/schema.js";
 import { createWarmPoolStore } from "../../subgraphs/vetra-licensing/warm-pool-db.js";
 import { createInstancePoolLookup } from "../../subgraphs/vetra-apps/plans/pool-lookup.js";
 import { lookupWarm, type WarmPoolLookup } from "./app-image-project.js";
@@ -12,7 +13,9 @@ export function createWarmLookup(
   licensingDb: Kysely<any>,
   appsDb: Kysely<any>,
 ): WarmPoolLookup {
-  const licensing = createWarmPoolStore(licensingDb);
+  const licensing = createWarmPoolStore(
+    licensingDb as Kysely<VetraLicensingDB>,
+  );
   const instances = createInstancePoolLookup(appsDb);
   return async (documentId) =>
     (await lookupWarm((id) => licensing.isWarm(id), documentId)) ??
