@@ -30,6 +30,9 @@ export type BuildDataRestoreJobInput = DataJobInput & {
   sha256: string;
 };
 
+/** Restore Jobs: kept a day after they end (a missing Job is an unknown outcome). */
+export const RESTORE_JOB_TTL_S = 24 * 3600;
+
 /** Both scripts depend on GNU tar's exit codes and options. */
 const REQUIRE_GNU_TAR =
   'tar --version 2>/dev/null | grep -q "GNU tar" || { echo "GNU tar is required"; exit 1; }';
@@ -94,13 +97,14 @@ function dataJob(o: {
   env: V1EnvVar[];
   readOnly: boolean;
   colocate: boolean;
+  ttlSecondsAfterFinished?: number;
 }): V1Job {
   return {
     apiVersion: "batch/v1",
     kind: "Job",
     metadata: { name: o.name, namespace: o.input.tenantNs, labels: o.labels },
     spec: {
-      ttlSecondsAfterFinished: 600,
+      ttlSecondsAfterFinished: o.ttlSecondsAfterFinished ?? 600,
       backoffLimit: 0,
       activeDeadlineSeconds: 3600,
       template: {
@@ -198,5 +202,7 @@ export function buildDataRestoreJob(input: BuildDataRestoreJobInput): V1Job {
     ],
     readOnly: false,
     colocate: false,
+    // vetra-apps reads the outcome of a restore Job by name: it must outlive a missed pass (it deletes the Job itself).
+    ttlSecondsAfterFinished: RESTORE_JOB_TTL_S,
   });
 }

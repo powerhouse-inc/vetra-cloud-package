@@ -57,8 +57,17 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
 
   return {
     async createJob(namespace, job) {
-      const res = await batch.createNamespacedJob({ namespace, body: job });
-      return res.metadata?.name ?? "";
+      try {
+        const res = await batch.createNamespacedJob({ namespace, body: job });
+        return res.metadata?.name ?? "";
+      } catch (err: unknown) {
+        // Created by an earlier attempt (a crash before its state was saved): the same Job.
+        const code =
+          (err as { code?: number; statusCode?: number })?.code ??
+          (err as { code?: number; statusCode?: number })?.statusCode;
+        if (code === 409 && job.metadata?.name) return job.metadata.name;
+        throw err;
+      }
     },
     async deleteJob(namespace, name) {
       try {

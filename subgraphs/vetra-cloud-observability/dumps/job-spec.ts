@@ -171,7 +171,8 @@ export function buildRestoreJob(input: BuildRestoreJobInput): V1Job {
     kind: "Job",
     metadata: { name: `pgrestore-${restoreId}`, namespace: tenantNs, labels },
     spec: {
-      ttlSecondsAfterFinished: dumpJob.spec!.ttlSecondsAfterFinished,
+      // Kept a day: vetra-apps reads the outcome by name, and a missing Job is an unknown outcome.
+      ttlSecondsAfterFinished: 24 * 3600,
       backoffLimit: 0,
       activeDeadlineSeconds: dumpJob.spec!.activeDeadlineSeconds,
       template: {

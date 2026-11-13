@@ -220,3 +220,90 @@ describe("restoring a backup", () => {
     ).rejects.toBeInstanceOf(RestoreBusyError);
   });
 });
+
+/** Starts a rollback restore of o1 and passes until it is in `phase`. */
+async function restoreUntil(phase: "restoring_db" | "restoring_data") {
+  const { h, fake } = ctx;
+  const b = await updatedAfterBackup();
+  const r = await beginRestore(h.deps, await inst(), b, {
+    purpose: "rollback",
+    thenVersion: "1.4.0",
+    who: SYSTEM_WHO,
+  });
+  for (let i = 0; i < 20; i++) {
+    await finishBackupJobs(h, fake);
+    if (phase === "restoring_data") fake.finish("pgrestore-");
+    await pass(ctx);
+    if ((await getRestore(h.db, r.id))!.status === phase) return { r, b };
+  }
+  throw new Error(`never reached ${phase}`);
+}
+
+describe("a restore Job that is missing", () => {
+  it("holds the instance stopped when the database Job is gone: the outcome is unknown", async () => {
+    const { h, fake } = ctx;
+    const { r } = await restoreUntil("restoring_db");
+    fake.jobs.delete(`pgrestore-${r.id}`);
+    await pass(ctx);
+    expect(await getRestore(h.db, r.id)).toMatchObject({
+      status: "failed",
+      held: true,
+      error: expect.stringMatching(/outcome is unknown/),
+    });
+    expect((await inst()).maintenance).toBe(`held:${r.id}`);
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+  });
+
+  it("holds the instance stopped when the /data Job is gone", async () => {
+    const { h, fake } = ctx;
+    const { r } = await restoreUntil("restoring_data");
+    fake.jobs.delete(`datarestore-${r.id}`);
+    await pass(ctx);
+    expect(await getRestore(h.db, r.id)).toMatchObject({
+      status: "failed",
+      held: true,
+    });
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+  });
+
+  it("a database Job that timed out while running is unknown too, not 'nothing changed'", async () => {
+    const { h, fake } = ctx;
+    const { r } = await restoreUntil("restoring_db");
+    await h.db
+      .updateTable("instance_restores")
+      .set({ phase_started_at: "2020-01-01T00:00:00.000Z" })
+      .where("id", "=", r.id)
+      .execute();
+    await pass(ctx);
+    expect(await getRestore(h.db, r.id)).toMatchObject({
+      status: "failed",
+      held: true,
+    });
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+  });
+
+  it("deletes its Jobs when it finishes", async () => {
+    const { h, fake } = ctx;
+    const b = await updatedAfterBackup();
+    const r = await beginRestore(h.deps, await inst(), b, {
+      purpose: "rollback",
+      thenVersion: "1.4.0",
+      who: SYSTEM_WHO,
+    });
+    await driveRestores(ctx);
+    expect((await getRestore(h.db, r.id))!.status).toBe("succeeded");
+    expect(fake.jobs.has(`pgrestore-${r.id}`)).toBe(false);
+    expect(fake.jobs.has(`datarestore-${r.id}`)).toBe(false);
+  });
+
+  it("restore Jobs outlive their restore by a day (ttlSecondsAfterFinished)", async () => {
+    const { fake } = ctx;
+    const { r } = await restoreUntil("restoring_data");
+    expect(
+      fake.jobs.get(`pgrestore-${r.id}`)!.job.spec!.ttlSecondsAfterFinished,
+    ).toBe(86400);
+    expect(
+      fake.jobs.get(`datarestore-${r.id}`)!.job.spec!.ttlSecondsAfterFinished,
+    ).toBe(86400);
+  });
+});

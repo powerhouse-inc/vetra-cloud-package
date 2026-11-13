@@ -168,19 +168,26 @@ async function scaleAll(
     await k8s.scaleDeployment(ns, name, to ?? n);
 }
 
+type JobEnd = {
+  error: string | null;
+  /** The Job ended Failed (Kubernetes says so); otherwise the outcome is unknown (missing, or still running at the deadline). */
+  failed?: boolean;
+};
+
 /** "running", or the Job's end: error null on success. */
 async function jobOutcome(
   k8s: BackupK8s,
   ns: string,
   name: string,
   timedOut: boolean,
-): Promise<"running" | { error: string | null }> {
+): Promise<"running" | JobEnd> {
   const s = await k8s.readJobStatus(ns, name);
   if (!s) return { error: `Job ${name} no longer exists` };
   const isTrue = (t: string) =>
     s.conditions?.some((c) => c.type === t && c.status === "True") ?? false;
   if (isTrue("Failed") || (s.failed ?? 0) > 0)
     return {
+      failed: true,
       error:
         lastLine(await k8s.readPodLogsForJob(ns, name)) || "the Job failed",
     };
@@ -238,6 +245,16 @@ async function finish(
       },
     });
   });
+  // The Jobs are no longer needed (their outcome is recorded); best effort, the TTL is the backstop.
+  for (const job of [r.db_job, r.data_job])
+    if (job)
+      await deps.backups?.k8s
+        .deleteJob(r.tenant_id, job)
+        .catch((err) =>
+          deps.logger.warn(
+            `[vetra-apps] restore ${r.id}: deleting Job ${job}: ${message(err)}`,
+          ),
+        );
   if (error)
     deps.logger.warn(
       `[vetra-apps] restore ${r.id} of instance ${r.instance_id} failed: ${error}${held ? " (held)" : ""}`,
@@ -362,8 +379,18 @@ async function advanceRestore(
         over(RESTORE_JOB_TIMEOUT_MS),
       );
       if (out === "running") return;
+      if (out.error && !out.failed)
+        // A missing Job (or one still running at its deadline) says nothing
+        // about the database: fail closed, stay stopped.
+        return finish(
+          deps,
+          r,
+          inst,
+          `database restore: ${out.error}; its outcome is unknown, the database may be restored or not`,
+          true,
+        );
       if (out.error) {
-        // One transaction (RESTORE_SCRIPT): the database is as it was.
+        // The Job failed: one transaction (RESTORE_SCRIPT), the database is as it was.
         await move({
           status: "starting",
           error: `database restore failed: ${out.error}; nothing was changed`,
