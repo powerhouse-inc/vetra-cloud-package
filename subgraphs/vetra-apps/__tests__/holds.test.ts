@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { Kysely, sql } from "kysely";
 import { PGliteDialect } from "kysely-pglite-dialect";
@@ -153,6 +153,23 @@ describe("hold service", () => {
     h.envs.setStatus(id, "CHANGES_PENDING");
     await holdEnvironment(h.deps, { environmentId: id, reason: "r", switchoverId: null, by: "vetra" });
     expect(h.envs.executed).toEqual([{ id, types: ["APPROVE_CHANGES"] }]);
+  });
+
+  it("logs a hold, a release and an approval of pending changes", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const id = await deployedEnv();
+      h.envs.setStatus(id, "CHANGES_PENDING");
+      await holdEnvironment(h.deps, { environmentId: id, reason: "licence ended", switchoverId: null, by: "vetra" });
+      h.envs.setStatus(id, "READY");
+      await releaseHold(h.deps, id);
+      const lines = info.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes(`hold on ${id}: licence ended`))).toBe(true);
+      expect(lines.some((l) => l.includes(`re-render of ${id} approves its pending changes`))).toBe(true);
+      expect(lines.some((l) => l.includes(`hold on ${id} released`))).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   describe("appPodGone", () => {

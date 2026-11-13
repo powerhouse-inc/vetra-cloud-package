@@ -50,6 +50,9 @@ export async function rerender(
   const state = await envs.getState(environmentId);
   if (!state || !RERENDERABLE.has(state.status)) return;
   if (state.status === "CHANGES_PENDING") {
+    console.info(
+      `[vetra-apps] re-render of ${environmentId} approves its pending changes as they are`,
+    );
     await envs.execute(environmentId, [approveChanges({})]);
     return;
   }
@@ -80,6 +83,9 @@ export async function holdEnvironment(
     created_by: input.by.toLowerCase(),
     created_at: deps.now().toISOString(),
   });
+  console.info(
+    `[vetra-apps] hold on ${input.environmentId}: ${input.reason} (by ${hold.created_by}${input.switchoverId ? `, switch-over ${input.switchoverId}` : ""})`,
+  );
   await rerender(deps.envs, input.environmentId);
   return { hold, created: true };
 }
@@ -90,6 +96,7 @@ export async function releaseHold(
   environmentId: string,
 ): Promise<boolean> {
   if (!(await deleteHold(deps.db, environmentId))) return false;
+  console.info(`[vetra-apps] hold on ${environmentId} released`);
   await rerender(deps.envs, environmentId);
   return true;
 }
