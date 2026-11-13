@@ -139,6 +139,10 @@ export const schema: DocumentNode = gql`
     "pod | document (the environment's tag, while the pod reports no imageID)"
     observedDigestSource: String
     environmentId: String
+    "A warm-pool instance: no holder yet, closed to everyone"
+    warm: Boolean!
+    "When a holder claimed it from the warm pool"
+    claimedAt: String
     updatedAt: String!
     "shared only: the licence gate"
     gate: AppInstanceGate
@@ -180,6 +184,14 @@ export const schema: DocumentNode = gql`
     status: String!
     createdAt: String!
     updatedAt: String!
+    "Warm instances kept ready for new holders (own plans); capped by Vetra"
+    warmPoolSize: Int!
+    "What is kept: warmPoolSize capped by this Vetra's limit"
+    warmPoolEffective: Int!
+    "Monthly cost of the warm instances, in euros (estimate)"
+    warmPoolEurPerMonth: Int!
+    "Warm instances ready to be claimed now"
+    warmReady: Int!
   }
 
   "An instance the caller holds a licence for"
@@ -222,6 +234,8 @@ export const schema: DocumentNode = gql`
     updateWindow: PlanUpdateWindowInput
     "Remove the update window (any time after the notice)"
     clearUpdateWindow: Boolean
+    "Warm instances kept ready for new holders (own plans only, 0 to 10); capped by Vetra"
+    warmPoolSize: Int
   }
 
   "Weekdays 1 (Monday) to 7 (Sunday) the window starts on; local HH:MM; end <= start runs past midnight; equal: the whole day"

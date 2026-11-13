@@ -91,3 +91,29 @@ export async function claimWarmInstance(
     throw err;
   }
 }
+
+/**
+ * Claimable warm rows per plan of the App now (ready on their own target;
+ * W3 also needs the plan's current target and size, which the console reads
+ * from the plan: this counts what is ready, for display).
+ */
+export async function warmReadyCounts(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .selectFrom("instances")
+    .select(["plan_id", "target_digest", "running_digest", "target_size"])
+    .where("app_id", "=", appId)
+    .where("kind", "=", "own")
+    .where("warm", "=", true)
+    .where("removed_at", "is", null)
+    .where("stop_reason", "is", null)
+    .where("status", "=", "ready")
+    .execute();
+  const out = new Map<string, number>();
+  for (const r of rows)
+    if (r.plan_id && r.running_digest === r.target_digest)
+      out.set(r.plan_id, (out.get(r.plan_id) ?? 0) + 1);
+  return out;
+}

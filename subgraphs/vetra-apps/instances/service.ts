@@ -37,6 +37,10 @@ export interface InstanceJson {
   observedDigest: string | null;
   observedDigestSource: string | null;
   environmentId: string | null;
+  /** A warm-pool instance: no holder yet, closed to everyone. */
+  warm: boolean;
+  /** When a holder claimed it from the warm pool. */
+  claimedAt: string | null;
   updatedAt: string;
   /** shared only: the licence gate (releases phase 3 slice 5). */
   gate: InstanceGateJson | null;
@@ -69,6 +73,8 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     observedDigest: r.observed_digest,
     observedDigestSource: r.observed_digest_source,
     environmentId: r.environment_id,
+    warm: r.warm === true,
+    claimedAt: r.claimed_at ?? null,
     updatedAt: r.updated_at,
     gate: null,
   };
