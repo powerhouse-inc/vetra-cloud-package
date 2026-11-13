@@ -144,6 +144,7 @@ export function createEnvironmentStopper(
       await deps.envs.execute(id, [wakeEnvironment({})]);
       return "woken";
     },
-    isStopped: ownHold,
+    // Switch off: no hold of ours is expected, so no lookup (every tick).
+    isStopped: async (id) => (opts.keepsDatabase ? ownHold(id) : false),
   };
 }

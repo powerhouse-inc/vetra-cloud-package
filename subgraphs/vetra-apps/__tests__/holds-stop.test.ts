@@ -188,6 +188,15 @@ describe("environment stopper", () => {
     expect(await getHold(h.db, other)).toMatchObject({ switchover_id: "sw-1" });
   });
 
+  it("does not look up holds for isStopped while the switch is off", async () => {
+    const id = await switchboardEnv();
+    const s = createEnvironmentStopper(
+      { ...h.deps, db: new Proxy({}, { get() { throw new Error("db read"); } }) as never },
+      { keepsDatabase: false, reason: "licence ended" },
+    );
+    expect(await s.isStopped(id)).toBe(false);
+  });
+
   it("knows which environments carry a database", async () => {
     const sb = await switchboardEnv();
     const clint = await clintOnlyEnv();
