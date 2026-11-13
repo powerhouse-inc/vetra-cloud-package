@@ -123,7 +123,7 @@ export const rollingBack: Step = async (c, row) => {
   if (inst?.environment_id) {
     const tenant = await newTenant(c, inst);
     // A prepared instance nothing was copied into goes (the document, its row and its hold).
-    if (early(row) && !row.restore_db_id) {
+    if (early(row)) {
       const state = await c.deps.envs.getState(inst.environment_id);
       if (
         state &&
@@ -147,7 +147,7 @@ export const rollingBack: Step = async (c, row) => {
       newGone = tenant ? await appPodGone(c.deps, tenant) : false;
     }
   }
-  if (inst && !(early(row) && !row.restore_db_id)) {
+  if (inst && !early(row)) {
     // The chain is licensed again: sync must leave the stopped instance alone (switchover_id back), and it never restarts.
     if (
       inst.switchover_id !== row.id ||
