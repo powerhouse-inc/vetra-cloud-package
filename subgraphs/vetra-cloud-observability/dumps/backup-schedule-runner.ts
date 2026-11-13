@@ -47,11 +47,27 @@ export type BackupEnvRow = {
 /**
  * Maps an environments row to a scheduler snapshot, or null when the env
  * has no database to dump: not READY (stopped, deploying, deleted), no
- * tenant namespace, a PREVIEW app env (chart disables its backups), or no
+ * tenant namespace, a PREVIEW or PLAN app env (the chart disables a
+ * preview's backups; a plan instance's database and /data are backed up by
+ * vetra-apps, releases phase 3 slice 4), or no
  * enabled Switchboard (the chart's gate for the CNPG cluster).
  */
-export function toBackupEnvSnapshot(row: BackupEnvRow): BackupEnvSnapshot | null {
-  if (row.status !== "READY" || !row.tenantId || row.appRole === "PREVIEW") return null;
+export function toBackupEnvSnapshot(
+  row: BackupEnvRow,
+  /**
+   * VETRA_APPS_BACKUPS is on and backups are configured: vetra-apps backs up
+   * PLAN instances itself (database and /data, releases phase 3 slice 4).
+   * Otherwise they keep the scheduled dumps they always had.
+   */
+  opts: { appsBackups?: boolean } = {},
+): BackupEnvSnapshot | null {
+  if (
+    row.status !== "READY" ||
+    !row.tenantId ||
+    row.appRole === "PREVIEW" ||
+    (row.appRole === "PLAN" && opts.appsBackups)
+  )
+    return null;
   let services: Array<{ type?: string; enabled?: boolean }>;
   try {
     services = JSON.parse(row.services ?? "[]") as typeof services;

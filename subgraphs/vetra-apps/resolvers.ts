@@ -27,6 +27,12 @@ import { updateInstanceNow } from "./rollouts/holder.js";
 import { appInstancesFor, instanceJsonFor } from "./instances/service.js";
 import { rotateInstanceGateToken } from "./gate/service.js";
 import {
+  backUpInstanceFor,
+  instanceBackupsFor,
+  instanceRestoresFor,
+  restoreInstanceBackupFor,
+} from "./backups/api.js";
+import {
   appPlansFor,
   createPlan,
   retirePlan,
@@ -374,6 +380,10 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "appInstances", () =>
           appInstancesFor(deps, requireCaller(ctx), appId),
         ),
+      instanceBackups: (_: unknown, { instanceId, limit }: { instanceId: string; limit?: number | null }, ctx: AppsContext) =>
+        guard(deps, "instanceBackups", () => instanceBackupsFor(deps, requireCaller(ctx), instanceId, limit ?? 50)),
+      instanceRestores: (_: unknown, { instanceId }: { instanceId: string }, ctx: AppsContext) =>
+        guard(deps, "instanceRestores", () => instanceRestoresFor(deps, requireCaller(ctx), instanceId)),
       appSettings: (
         _: unknown,
         { appId }: { appId: string },
@@ -648,6 +658,13 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "setPlanTarget", () =>
           setPlanTarget(deps, person(ctx), planId, version),
         ),
+      backUpInstance: (_: unknown, { instanceId }: { instanceId: string }, ctx: AppsContext) =>
+        guard(deps, "backUpInstance", () => backUpInstanceFor(deps, person(ctx), instanceId)),
+      restoreInstanceBackup: (
+        _: unknown,
+        args: { instanceId: string; backupId: string; acceptDataLoss: boolean },
+        ctx: AppsContext,
+      ) => guard(deps, "restoreInstanceBackup", () => restoreInstanceBackupFor(deps, person(ctx), args)),
       startRollout: (
         _: unknown,
         { input }: { input: StartRolloutInput },
@@ -696,11 +713,16 @@ export function createResolvers(deps: AppsDeps) {
         ),
       rollBackRollout: (
         _: unknown,
-        { rolloutId }: { rolloutId: string },
+        {
+          rolloutId,
+          acceptDataLoss,
+        }: { rolloutId: string; acceptDataLoss?: boolean | null },
         ctx: AppsContext,
       ) =>
         guard(deps, "rollBackRollout", () =>
-          rollBackRollout(deps, person(ctx), rolloutId),
+          rollBackRollout(deps, person(ctx), rolloutId, {
+            acceptDataLoss: acceptDataLoss === true,
+          }),
         ),
       pinInstance: (
         _: unknown,

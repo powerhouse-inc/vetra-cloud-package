@@ -1,4 +1,4 @@
-import type { Kysely, Selectable } from "kysely";
+import type { Insertable, Kysely, Selectable } from "kysely";
 import type {
   RolloutPlansTable,
   RolloutStepStatus,
@@ -22,8 +22,8 @@ export type StepPatch = Partial<
 
 /** Rollouts that still decide something. */
 export const OPEN_ROLLOUT = ["active", "paused"] as const;
-/** Steps that move an instance now: at most one per App (rollout_steps_moving_uq). */
-export const MOVING = ["applying", "reverting"] as const;
+/** Steps that move an instance now: at most one per App (rollout_steps_moving_v2_uq). */
+export const MOVING = ["backing_up", "applying", "restoring", "reverting"] as const;
 
 /**
  * The lock every writer of an App's plan-instance targets takes: the
@@ -153,7 +153,7 @@ export async function rolloutPlans(
 
 export async function insertSteps(
   db: Kysely<VetraAppsDB>,
-  rows: RolloutStepRow[],
+  rows: Insertable<RolloutStepsTable>[],
 ): Promise<void> {
   if (rows.length > 0)
     await db.insertInto("rollout_steps").values(rows).execute();

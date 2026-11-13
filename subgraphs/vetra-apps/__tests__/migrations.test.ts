@@ -21,6 +21,9 @@ import {
   ensureTeamPlanSchema,
   ensureRolloutTables,
   ensureStudioProductColumns,
+  ensureInstanceBackupTables,
+  ensureRolloutBackupColumns,
+  ensureWarmPoolColumns,
   isConcurrentIndexError,
   up,
 } from "../db/migrations.js";
@@ -853,6 +856,60 @@ describe("instance_gate_tokens", () => {
   });
 });
 
+describe("ensureWarmPoolColumns", () => {
+  it("is idempotent and race tolerant; the columns can be written and read", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const db = root.withSchema("vetra-apps");
+      await up(db);
+      await Promise.all([1, 2, 3].map(() => ensureWarmPoolColumns(db)));
+      await ensureWarmPoolColumns(db);
+      await db
+        .insertInto("plans")
+        .values({
+          id: "p1",
+          app_id: "a1",
+          slug: "pro",
+          name: "Pro",
+          kind: "pro",
+          access: "own",
+          size: "VETRA_AGENT_M",
+          policy: "manual",
+          notice_hours: 0,
+          status: "active",
+          created_by: "0x1",
+          warm_pool_size: 2,
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      await db
+        .insertInto("instances")
+        .values({
+          id: "i1",
+          app_id: "a1",
+          kind: "own",
+          name: "own-warm-x",
+          status: "pending",
+          warm: true,
+          claimed_at: "2026-11-12T01:00:00.000Z",
+          created_at: "2026-11-12T00:00:00.000Z",
+          updated_at: "2026-11-12T00:00:00.000Z",
+        })
+        .execute();
+      expect(
+        await db.selectFrom("plans").select("warm_pool_size").executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm_pool_size: 2 });
+      expect(
+        await db.selectFrom("instances").select(["warm", "claimed_at"]).executeTakeFirstOrThrow(),
+      ).toStrictEqual({ warm: true, claimed_at: "2026-11-12T01:00:00.000Z" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
 describe("instance_settings (holder settings, plan 7)", () => {
   it("are created idempotently and concurrently in the namespace schema with their index; one row per instance and name", async () => {
     const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
@@ -1052,6 +1109,101 @@ describe("Team plan schema", () => {
         .updateTable("instances")
         .set({ admins_override: "0xaa", admins_checked_at: "t" })
         .execute();
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("instance backup tables", () => {
+  it("are created idempotently and concurrently, with instances.maintenance and one active restore per instance", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureInstanceBackupTables(any)));
+      const cols = (
+        await sql<{ column_name: string }>`select column_name from information_schema.columns where table_schema = 'vetra-apps' and table_name = 'instances'`.execute(root)
+      ).rows.map((r) => r.column_name);
+      expect(cols).toContain("maintenance");
+      const at = "2026-11-12T00:00:00.000Z";
+      const restore = (id: string, status: string) => ({
+        id,
+        app_id: "app-1",
+        instance_id: "i-1",
+        environment_id: "env-1",
+        tenant_id: "t-1",
+        backup_id: "b-1",
+        safety_backup_id: null,
+        purpose: "manual",
+        then_version: null,
+        data: true,
+        status,
+        phase_started_at: at,
+        db_job: null,
+        data_job: null,
+        replicas: null,
+        target_set: false,
+        was_held: false,
+        error: null,
+        held: false,
+        requested_by: "vetra",
+        rollout_step_id: null,
+        created_at: at,
+        updated_at: at,
+        finished_at: null,
+      });
+      await any.insertInto("instance_restores").values(restore("r0", "failed")).execute();
+      await any.insertInto("instance_restores").values(restore("r1", "stopping")).execute();
+      await expect(
+        any.insertInto("instance_restores").values(restore("r2", "safety_backup")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("rollout steps that back up", () => {
+  it("get backup_id and restore_id, and one moving step per App counts backing_up and restoring", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureRolloutBackupColumns(any)));
+      const step = (id: string, instance: string, status: string) => ({
+        id,
+        rollout_id: "r1",
+        app_id: "app-1",
+        plan_id: "p1",
+        instance_id: instance,
+        instance_kind: "own",
+        instance_name: instance,
+        position: 0,
+        from_version: "1.0.0",
+        to_version: "1.1.0",
+        status,
+        due_at: "2026-11-12T00:00:00.000Z",
+        requested_at: null,
+        started_at: null,
+        finished_at: null,
+        target_moved: false,
+        attempts: 0,
+        error: null,
+        note: null,
+        backup_id: "b-1",
+        restore_id: null,
+        created_at: "2026-11-12T00:00:00.000Z",
+        updated_at: "2026-11-12T00:00:00.000Z",
+      });
+      await any.insertInto("rollout_steps").values(step("s1", "i1", "backing_up")).execute();
+      await expect(
+        any.insertInto("rollout_steps").values(step("s2", "i2", "restoring")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+      const idx = await sql<{ indexname: string }>`select indexname from pg_indexes where schemaname = 'vetra-apps' and tablename = 'rollout_steps'`.execute(root);
+      expect(idx.rows.map((r) => r.indexname)).not.toContain("rollout_steps_moving_uq");
     } finally {
       await root.destroy();
     }

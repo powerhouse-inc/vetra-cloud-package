@@ -64,6 +64,8 @@ export interface RolloutStepJson {
   attempts: number;
   error: string | null;
   note: string | null;
+  backupId: string | null;
+  restoreId: string | null;
 }
 
 export interface RolloutJson {
@@ -102,6 +104,8 @@ export const stepJson = (s: RolloutStepRow): RolloutStepJson => ({
   attempts: s.attempts,
   error: s.error,
   note: s.note,
+  backupId: s.backup_id ?? null,
+  restoreId: s.restore_id ?? null,
 });
 
 export async function rolloutJson(
@@ -171,6 +175,8 @@ export async function plannedSteps(
       !!r.plan_id &&
       byId.has(r.plan_id) &&
       !r.removed_at &&
+      // A warm-pool row has no holder: the keeper replaces it, rollouts never step it.
+      !r.warm &&
       r.status !== "removed" &&
       r.target_version !== version,
   );

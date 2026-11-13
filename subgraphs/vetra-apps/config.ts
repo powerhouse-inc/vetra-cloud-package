@@ -69,6 +69,12 @@ export interface VetraAppsConfig {
    */
   plans?: PlansConfig;
   /**
+   * Releases phase 3 slice 4: instance backups. Absent = off.
+   * VETRA_APPS_BACKUPS=on backs up before every rollout step, runs daily
+   * backups and lets a rollback of a release that migrates restore.
+   */
+  backups?: BackupsConfig;
+  /**
    * Releases phase 3 switch-over (licensed environment → own instance).
    * Absent = off. VETRA_APPS_SWITCHOVER=on runs it (only with plans and
    * instances on, see switchoverConfigOf).
@@ -112,14 +118,48 @@ export interface PlansConfig {
    * (decision R1); a moving step still settles. Present only when on.
    */
   rolloutsHold?: boolean;
+  /** Upper bound of every plan's warm pool (slice 8); 0 turns pools off. */
+  poolMax?: number;
   /** Minutes a release must run healthy on Team before customers get it (slice 6). Default 30. */
   teamSoakMinutes?: number;
 }
 
-export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
+export const DEFAULT_PLANS: PlansConfig = {
+  enabled: false,
+  stopAfterDays: 14,
+  poolMax: 0,
+};
 
 export const plansConfigOf = (cfg: VetraAppsConfig): PlansConfig =>
   cfg.plans ?? DEFAULT_PLANS;
+
+export interface BackupsConfig {
+  enabled: boolean;
+  /** VETRA_APPS_BACKUP_DAILY_KEEP_DAYS (1-30, default 14): the dumps bucket deletes everything after 30. */
+  dailyKeepDays: number;
+  /** VETRA_APPS_BACKUP_MAX_IN_FLIGHT (1-10, default 3): instance backups running at once, cluster-wide. */
+  maxInFlight: number;
+}
+export const DEFAULT_BACKUPS: BackupsConfig = { enabled: false, dailyKeepDays: 14, maxInFlight: 3 };
+export const backupsConfigOf = (cfg: VetraAppsConfig): BackupsConfig =>
+  cfg.backups ?? DEFAULT_BACKUPS;
+/** A plan's effective warm pool (W2, W9): own, active, not Team, capped by VETRA_APPS_PLAN_POOL_MAX. */
+export function planPoolSize(
+  cfg: VetraAppsConfig,
+  plan: {
+    warm_pool_size?: number | null;
+    access: string;
+    status: string;
+    team?: boolean | null;
+  },
+): number {
+  if (plan.access !== "own" || plan.status !== "active" || plan.team === true)
+    return 0;
+  return Math.max(
+    0,
+    Math.min(plan.warm_pool_size ?? 0, plansConfigOf(cfg).poolMax ?? 0),
+  );
+}
 
 export interface SwitchoverConfig {
   enabled: boolean;
@@ -248,11 +288,27 @@ function plansConfig(env: Env): PlansConfig {
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
     destroy: destroyOn(env),
     ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
+    poolMax: intIn(env, "VETRA_APPS_PLAN_POOL_MAX", 0, 0, 10),
     ...(trimmed(env.VETRA_APPS_TEAM_SOAK_MINUTES) !== null
       ? {
           teamSoakMinutes: intIn(env, "VETRA_APPS_TEAM_SOAK_MINUTES", 30, 0, 1440),
         }
       : {}),
+  };
+}
+
+function backupsConfig(env: Env): BackupsConfig {
+  const raw = (trimmed(env.VETRA_APPS_BACKUPS) ?? "").toLowerCase();
+  if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
+    throw new Error(
+      `VETRA_APPS_BACKUPS "${env.VETRA_APPS_BACKUPS}" is invalid: use on/off (also true/false, 1/0, yes/no)`,
+    );
+  }
+  return {
+    // Unset means off, as for plans.
+    enabled: raw !== "" && INSTANCES_ON.has(raw),
+    dailyKeepDays: intIn(env, "VETRA_APPS_BACKUP_DAILY_KEEP_DAYS", 14, 1, 30),
+    maxInFlight: intIn(env, "VETRA_APPS_BACKUP_MAX_IN_FLIGHT", 3, 1, 10),
   };
 }
 
@@ -445,6 +501,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     licensingUrl: trimmed(env.VETRA_LICENSING_URL),
     instances: instancesConfig(env),
     plans: plansConfig(env),
+    backups: backupsConfig(env),
     switchover: switchoverConfig(env),
     gate: gateConfig(env),
   };

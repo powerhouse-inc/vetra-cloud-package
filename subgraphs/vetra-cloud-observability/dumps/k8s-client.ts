@@ -33,9 +33,9 @@ export interface DumpsK8sClient {
   ): Promise<string | null>;
   /** Returns the pod's full log output. Empty string on error. */
   readPodLogsForJob(namespace: string, jobName: string): Promise<string>;
-  /** Lists all dumps Jobs across the cluster (label-selected). */
+  /** Lists all dump and /data archive Jobs across the cluster (label-selected). */
   listManagedJobs(): Promise<
-    Array<{ namespace: string; name: string; dumpId: string }>
+    Array<{ namespace: string; name: string; dumpId: string | null; archiveId: string | null }>
   >;
 }
 
@@ -57,8 +57,17 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
 
   return {
     async createJob(namespace, job) {
-      const res = await batch.createNamespacedJob({ namespace, body: job });
-      return res.metadata?.name ?? "";
+      try {
+        const res = await batch.createNamespacedJob({ namespace, body: job });
+        return res.metadata?.name ?? "";
+      } catch (err: unknown) {
+        // Created by an earlier attempt (a crash before its state was saved): the same Job.
+        const code =
+          (err as { code?: number; statusCode?: number })?.code ??
+          (err as { code?: number; statusCode?: number })?.statusCode;
+        if (code === 409 && job.metadata?.name) return job.metadata.name;
+        throw err;
+      }
     },
     async deleteJob(namespace, name) {
       try {
@@ -142,9 +151,10 @@ export async function createDefaultDumpsK8sClient(): Promise<DumpsK8sClient> {
         .map((j) => ({
           namespace: j.metadata?.namespace ?? "",
           name: j.metadata?.name ?? "",
-          dumpId: j.metadata?.labels?.["vetra.io/dump-id"] ?? "",
+          dumpId: j.metadata?.labels?.["vetra.io/dump-id"] ?? null,
+          archiveId: j.metadata?.labels?.["vetra.io/archive-id"] ?? null,
         }))
-        .filter((j) => j.name && j.dumpId);
+        .filter((j) => j.name && (j.dumpId || j.archiveId));
     },
   };
 }

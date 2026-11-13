@@ -5,7 +5,15 @@ import { auditCaller } from "../audit/service.js";
 import { feedsLicensedHost } from "../releases/licensed-host.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { plansConfigOf, rolloutsEnabled } from "../config.js";
+import {
+  planPoolSize,
+  plansConfigOf,
+  rolloutsEnabled,
+  type VetraAppsConfig,
+} from "../config.js";
+import { estimateEnvironmentEurPerMonth } from "../../vetra-licensing/warm-cost.js";
+import { MAX_WARM_POOL_SIZE } from "./pool.js";
+import { warmReadyCounts } from "./pool-repo.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
 import { releaseProblem, teamGateProblem } from "../rollouts/check.js";
 import { appInstancesLock } from "../rollouts/repo.js";
@@ -63,28 +71,47 @@ export interface PlanJson {
   status: string;
   createdAt: string;
   updatedAt: string;
+  /** Warm instances kept ready for new holders (own plans); capped by Vetra. */
+  warmPoolSize: number;
+  /** What is kept: warmPoolSize capped by the environment's VETRA_APPS_PLAN_POOL_MAX. */
+  warmPoolEffective: number;
+  /** Monthly cost of the warm instances, in euros (estimate). */
+  warmPoolEurPerMonth: number;
+  /** Warm instances ready to be claimed now. */
+  warmReady: number;
 }
 
-export const planJson = (p: PlanRow): PlanJson => ({
-  id: p.id,
-  appId: p.app_id,
-  slug: p.slug,
-  name: p.name,
-  kind: p.kind,
-  team: p.team === true,
-  access: p.access,
-  size: p.size,
-  aiBudgetUsd: p.ai_budget_usd ?? null,
-  targetVersion: p.target_version,
-  policy: p.policy,
-  noticeHours: p.notice_hours,
-  // A stored window that does not parse reads as one that is never open.
-  updateWindow: parseWindow(p.update_window),
-  policyNote: p.policy_note ?? null,
-  status: p.status,
-  createdAt: p.created_at,
-  updatedAt: p.updated_at,
-});
+export const planJson = (
+  p: PlanRow,
+  cfg?: VetraAppsConfig,
+  warmReady = 0,
+): PlanJson => {
+  const effective = cfg ? planPoolSize(cfg, p) : 0;
+  return {
+    id: p.id,
+    appId: p.app_id,
+    slug: p.slug,
+    name: p.name,
+    kind: p.kind,
+    team: p.team === true,
+    access: p.access,
+    size: p.size,
+    aiBudgetUsd: p.ai_budget_usd ?? null,
+    targetVersion: p.target_version,
+    policy: p.policy,
+    noticeHours: p.notice_hours,
+    // A stored window that does not parse reads as one that is never open.
+    updateWindow: parseWindow(p.update_window),
+    policyNote: p.policy_note ?? null,
+    status: p.status,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+    warmPoolSize: p.warm_pool_size ?? 0,
+    warmPoolEffective: effective,
+    warmPoolEurPerMonth: estimateEnvironmentEurPerMonth(p.size) * effective,
+    warmReady,
+  };
+};
 
 export interface CreatePlanInput {
   appId: string;
@@ -126,6 +153,19 @@ export interface UpdatePlanInput {
   updateWindow?: UpdateWindow | null;
   /** Removes the window: updates any time after the notice. */
   clearUpdateWindow?: boolean | null;
+  /** Warm instances kept for new holders (own plans only; 0 to MAX_WARM_POOL_SIZE). */
+  warmPoolSize?: number | null;
+}
+
+function checkPoolSize(plan: { access: string }, n: number): number {
+  if (!Number.isInteger(n) || n < 0 || n > MAX_WARM_POOL_SIZE)
+    throw appsError(
+      "BAD_USER_INPUT",
+      `The warm pool is 0 to ${MAX_WARM_POOL_SIZE} instances`,
+    );
+  if (plan.access !== "own")
+    throw appsError("BAD_USER_INPUT", "Only own plans keep warm instances");
+  return n;
 }
 
 /**
@@ -170,7 +210,10 @@ export async function appPlansFor(
   appId: string,
 ): Promise<PlanJson[]> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
-  return (await listPlans(deps.db, app.id)).map(planJson);
+  const ready = await warmReadyCounts(deps.db, app.id);
+  return (await listPlans(deps.db, app.id)).map((p) =>
+    planJson(p, deps.cfg, ready.get(p.id) ?? 0),
+  );
 }
 
 export async function createPlan(
@@ -381,7 +424,7 @@ async function createPlanRow(
         );
       throw err;
     });
-  return planJson(row);
+  return planJson(row, deps.cfg);
 }
 
 export async function updatePlanFor(
@@ -439,41 +482,45 @@ export async function updatePlanFor(
       ? { notice_hours: checkNoticeHours(input.noticeHours) }
       : {}),
     ...(window !== undefined ? { update_window: window } : {}),
+    ...(input.warmPoolSize != null
+      ? { warm_pool_size: checkPoolSize(plan, input.warmPoolSize) }
+      : {}),
   };
   const nowIso = deps.now().toISOString();
-  return planJson(
-    await deps.db.transaction().execute(async (trx) => {
-      // Re-read under lock: a concurrent change is audited once, from what is stored.
-      const cur = await lockPlan(trx, plan.id);
-      const changes: Record<string, { from: unknown; to: unknown }> = {};
-      const note = (key: string, from: unknown, to: unknown) => {
-        if (to !== undefined && to !== from) changes[key] = { from, to };
-      };
-      note("name", cur.name, patch.name);
-      note("size", cur.size, patch.size);
-      note("aiBudgetUsd", cur.ai_budget_usd ?? null, patch.ai_budget_usd);
-      note("policy", cur.policy, patch.policy);
-      note("noticeHours", cur.notice_hours, patch.notice_hours);
-      // The window audits its stored JSON text, from and to.
-      note("updateWindow", cur.update_window ?? null, patch.update_window);
-      const p = await updatePlan(
-        trx,
-        plan.id,
-        // A new policy starts over: its last refusal no longer applies.
-        changes.policy ? { ...patch, policy_note: null } : patch,
-        nowIso,
-      );
-      if (Object.keys(changes).length > 0)
-        await auditCaller(trx, caller, {
-          appId: plan.app_id,
-          at: nowIso,
-          action: "plan.updated",
-          subject: `plan:${plan.id}`,
-          detail: { slug: plan.slug, changes },
-        });
-      return p;
-    }),
-  );
+  const updated = await deps.db.transaction().execute(async (trx) => {
+    // Re-read under lock: a concurrent change is audited once, from what is stored.
+    const cur = await lockPlan(trx, plan.id);
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    const note = (key: string, from: unknown, to: unknown) => {
+      if (to !== undefined && to !== from) changes[key] = { from, to };
+    };
+    note("name", cur.name, patch.name);
+    note("size", cur.size, patch.size);
+    note("aiBudgetUsd", cur.ai_budget_usd ?? null, patch.ai_budget_usd);
+    note("policy", cur.policy, patch.policy);
+    note("noticeHours", cur.notice_hours, patch.notice_hours);
+    // The window audits its stored JSON text, from and to.
+    note("updateWindow", cur.update_window ?? null, patch.update_window);
+    note("warmPoolSize", cur.warm_pool_size ?? 0, patch.warm_pool_size);
+    const p = await updatePlan(
+      trx,
+      plan.id,
+      // A new policy starts over: its last refusal no longer applies.
+      changes.policy ? { ...patch, policy_note: null } : patch,
+      nowIso,
+    );
+    if (Object.keys(changes).length > 0)
+      await auditCaller(trx, caller, {
+        appId: plan.app_id,
+        at: nowIso,
+        action: "plan.updated",
+        subject: `plan:${plan.id}`,
+        detail: { slug: plan.slug, changes },
+      });
+    return p;
+  });
+  const ready = await warmReadyCounts(deps.db, plan.app_id);
+  return planJson(updated, deps.cfg, ready.get(plan.id) ?? 0);
 }
 
 /**
@@ -510,7 +557,7 @@ export async function setPlanTarget(
       return;
     await beginRollout(deps, app, target, [cur], callerActor(caller), null);
   });
-  return planJson((await getPlan(deps.db, plan.id))!);
+  return planJson((await getPlan(deps.db, plan.id))!, deps.cfg);
 }
 
 /** No new licences should be issued for it (retire the term too); existing holders keep their instances. */
@@ -525,7 +572,7 @@ export async function retirePlan(
       "BAD_USER_INPUT",
       "Disable the Team plan instead (owner and organisation admins)",
     );
-  if (plan.status === "retired") return planJson(plan);
+  if (plan.status === "retired") return planJson(plan, deps.cfg);
   const nowIso = deps.now().toISOString();
   return planJson(
     await deps.db.transaction().execute(async (trx) => {
@@ -541,5 +588,6 @@ export async function retirePlan(
       });
       return p;
     }),
+    deps.cfg,
   );
 }

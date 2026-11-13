@@ -36,7 +36,10 @@ import {
   PREVIEWS_FROM_INSTANCES,
   type AppsDeps,
 } from "../service.js";
+import { syncPlanPools, WARM_LABEL } from "../plans/pool.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { advanceRestores } from "../backups/restore.js";
+import { advanceBackups, preStopGate } from "../backups/service.js";
 import { syncTeamPlan } from "../plans/team.js";
 import { teamPlanOf, validTeamAdmins } from "../plans/team-base.js";
 import { advanceRollouts } from "../rollouts/runner.js";
@@ -255,11 +258,35 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
         `[vetra-apps] plan instances of ${app.slug}: ${message(err)}`,
       );
     }
+  }
+  if (deps.backups) {
+    // Outside the plans branch: a restore that began holds its instance in
+    // maintenance, and must finish (and hand it back) even if plans were
+    // switched off meanwhile.
+    try {
+      // Before the rows (and slice 3's rollouts, which go after this): a
+      // backup that became ready, or a restore that hands an instance back,
+      // is seen in this pass.
+      await advanceBackups(deps, app.id);
+      await advanceRestores(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] backups of ${app.slug}: ${message(err)}`);
+    }
+  }
+  if (plans.enabled && wantsInstances(app)) {
     try {
       // Before the rows are read: a target a step moves is applied in this pass.
       await advanceRollouts(deps, app);
     } catch (err) {
       deps.logger.warn(`[vetra-apps] rollouts of ${app.slug}: ${message(err)}`);
+    }
+  }
+  if (plans.enabled) {
+    try {
+      // After syncPlanInstances: a new holder claims before the pool refills.
+      await syncPlanPools(deps, app);
+    } catch (err) {
+      deps.logger.warn(`[vetra-apps] warm pool of ${app.slug}: ${message(err)}`);
     }
   }
   // Read once per pass: every instance of a kind gets the same App layers;
@@ -321,7 +348,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   }
 }
 
-function wantsInstances(app: AppRow): boolean {
+export function wantsInstances(app: AppRow): boolean {
   return (
     Boolean(app.instances_enabled) &&
     app.status !== "DELETED" &&
@@ -358,6 +385,8 @@ export function adminsOf(
   row: InstanceRow,
   opts: { team?: boolean; now?: Date } = {},
 ): string {
+  // A warm-pool instance serves nobody until claimed (slice 8).
+  if (row.warm) return "";
   if (opts.team) return validTeamAdmins(app, row, opts.now ?? new Date()) ?? "";
   if (row.admins_override) return row.admins_override;
   return row.kind === "own" && row.holder_address
@@ -399,6 +428,16 @@ async function tenantOf(
   );
 }
 
+async function heldAlready(deps: AppsDeps, envId: string): Promise<boolean> {
+  try {
+    return !!(await getHold(deps.db, envId));
+  } catch (err) {
+    // The holds table does not exist yet (vetra-apps creates it): nothing is held.
+    if ((err as { code?: unknown } | null)?.code === "42P01") return false;
+    throw err;
+  }
+}
+
 /**
  * A plan instance Vetra wants stopped (licence ended, plan retired): its
  * environment is held (no app pod, no ingress; its database, backups and
@@ -431,6 +470,15 @@ async function stopPlanInstance(
       if (row.status !== "stopped" || row.reason !== reason)
         await patch(deps, row, { status: "stopped", reason });
       return;
+    }
+    // Decision B9: a final backup before the first hold (while the app still
+    // runs; once held it only waits for its pod to go).
+    if (state.status === "READY" && !(await heldAlready(deps, envId))) {
+      if ((await preStopGate(deps, row)) === "wait") {
+        const waiting = `${reason}: taking a final backup before it stops`;
+        if (row.reason !== waiting) await patch(deps, row, { reason: waiting });
+        return;
+      }
     }
     // Recorded before holding: a crash in between must not leave a hold that
     // a renewal never releases.
@@ -817,6 +865,8 @@ export async function reconcileInstance(
     return row.environment_id
       ? withEnvLock(row.environment_id, () => removeInstance(deps, row))
       : removeInstance(deps, row);
+  // A restore owns it (backups/restore.ts): it hands the instance back itself.
+  if (row.maintenance) return;
   if (row.stop_reason) return stopPlanInstance(deps, row);
   if (!row.target_digest) return;
   if (row.target_settings !== settings.revision) {
@@ -963,6 +1013,12 @@ async function reconcileEnvironment(
   }
   const admins = await adminsFor(deps, app, row);
   const size = sizeOf(row);
+  // The claim's update relabels the environment in the same batch as ADMINS.
+  // Only rows that came from the pool: any other own row keeps its label.
+  const label =
+    row.kind === "own" && !row.warm && row.claimed_at
+      ? `${app.name} · ${row.name}`
+      : null;
 
   if (!declaresVetraSecrets(state) && isPlanKind(row.kind)) {
     // Never deleted: a plan instance's data is the holder's.
@@ -1096,6 +1152,7 @@ async function reconcileEnvironment(
         want,
         true,
         size,
+        label,
       );
       if (revert.length > 0) await apply(deps, envId, revert);
     }
@@ -1110,6 +1167,7 @@ async function reconcileEnvironment(
     want,
     start,
     size,
+    label,
   );
   const updates = [...domain, ...imageUpdates];
   if (
@@ -1219,7 +1277,15 @@ async function reconcileEnvironment(
     ...failure(row, settings),
   });
   if (back) {
-    const revert = instanceUpdateActions(state, back, admins, want, true, size);
+    const revert = instanceUpdateActions(
+      state,
+      back,
+      admins,
+      want,
+      true,
+      size,
+      label,
+    );
     if (revert.length > 0) await apply(deps, envId, revert);
   }
 }
@@ -1330,7 +1396,7 @@ async function initEnvironment(
       deps,
       envId,
       instanceCreateActions({
-        label: `${app.name} · ${row.name}`,
+        label: `${app.name} · ${row.warm ? WARM_LABEL : row.name}`,
         host,
         baseDomain: INSTANCE_BASE_DOMAIN,
         registry: isPlanKind(row.kind)
@@ -1377,7 +1443,14 @@ async function initEnvironment(
 }
 
 async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
-  if (isPlanKind(row.kind))
+  // Only an unclaimed warm-pool row is ever removed (slice 8); re-read, so a
+  // claim since this pass read the row is never undone.
+  const warmRemovable =
+    row.kind === "own" &&
+    row.warm === true &&
+    !row.holder_address &&
+    (await getInstance(deps.db, row.id))?.warm === true;
+  if (isPlanKind(row.kind) && !warmRemovable)
     throw new Error(
       "plan instances are never removed by the reconciler (releases phase 3: stopped, not deleted)",
     );
@@ -1392,6 +1465,7 @@ async function removeInstance(deps: AppsDeps, row: InstanceRow): Promise<void> {
       !GOING.has(state.status) &&
       state.status !== "DESTROYED" &&
       ((ours(state, row) && state.app?.role === "PREVIEW") ||
+        (warmRemovable && ours(state, row) && state.app?.role === "PLAN") ||
         ownDraft(state, row))
     ) {
       await deps.envs.delete(envId);

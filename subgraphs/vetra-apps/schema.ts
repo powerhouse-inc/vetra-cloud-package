@@ -141,6 +141,12 @@ export const schema: DocumentNode = gql`
     "pod | document (the environment's tag, while the pod reports no imageID)"
     observedDigestSource: String
     environmentId: String
+    "restore:<id> while a backup is restored into it; held:<id> after a failed restore (stays stopped until a restore succeeds)"
+    maintenance: String
+    "A warm-pool instance: no holder yet, closed to everyone"
+    warm: Boolean!
+    "When a holder claimed it from the warm pool"
+    claimedAt: String
     "own: how many settings its holder set (their names stay the holder's)"
     holderSettingsCount: Int!
     "own: the holder's custom domain"
@@ -161,6 +167,43 @@ export const schema: DocumentNode = gql`
     tokenRotatedAt: String
     "False until the current token reached the instance's secrets"
     tokenDelivered: Boolean!
+  }
+
+  "A backup of a shared or own instance: its database and /data, taken together (releases phase 3 slice 4)"
+  type InstanceBackup {
+    id: ID!
+    instanceId: ID!
+    "pre_update | daily | manual | pre_restore | pre_stop"
+    reason: String!
+    "pending | ready | failed"
+    status: String!
+    "The release the instance ran when it was taken"
+    version: String
+    sizeBytes: Float
+    error: String
+    requestedBy: String!
+    createdAt: String!
+    finishedAt: String
+    expiresAt: String!
+    rolloutStepId: ID
+  }
+
+  type InstanceRestore {
+    id: ID!
+    instanceId: ID!
+    backupId: ID!
+    "rollback | failed_update | manual"
+    purpose: String!
+    "safety_backup | stopping | restoring_db | restoring_data | starting | succeeded | failed"
+    status: String!
+    "The release the instance runs afterwards (null: unchanged)"
+    thenVersion: String
+    error: String
+    "Failed with /data possibly half restored: the instance stays stopped"
+    held: Boolean!
+    requestedBy: String!
+    createdAt: String!
+    finishedAt: String
   }
 
   "What holders of one licensing term get (spec: releases and instances, section 7). The plan adopted the term by its kind."
@@ -191,6 +234,14 @@ export const schema: DocumentNode = gql`
     status: String!
     createdAt: String!
     updatedAt: String!
+    "Warm instances kept ready for new holders (own plans); capped by Vetra"
+    warmPoolSize: Int!
+    "What is kept: warmPoolSize capped by this Vetra's limit"
+    warmPoolEffective: Int!
+    "Monthly cost of the warm instances, in euros (estimate)"
+    warmPoolEurPerMonth: Int!
+    "Warm instances ready to be claimed now"
+    warmReady: Int!
   }
 
   "An instance the caller holds a licence for"
@@ -324,6 +375,8 @@ export const schema: DocumentNode = gql`
     updateWindow: PlanUpdateWindowInput
     "Remove the update window (any time after the notice)"
     clearUpdateWindow: Boolean
+    "Warm instances kept ready for new holders (own plans only, 0 to 10); capped by Vetra"
+    warmPoolSize: Int
   }
 
   "Weekdays 1 (Monday) to 7 (Sunday) the window starts on; local HH:MM; end <= start runs past midnight; equal: the whole day"
@@ -384,7 +437,7 @@ export const schema: DocumentNode = gql`
     position: Int!
     fromVersion: String
     toVersion: String!
-    "pending | applying | succeeded | failed | skipped | revert_pending | reverting | revert_failed | rolled_back"
+    "pending | backing_up | applying | restoring | succeeded | failed | skipped | revert_pending | reverting | revert_failed | rolled_back"
     status: String!
     "Not before (the notice); the plan's window applies after it"
     dueAt: String!
@@ -396,6 +449,10 @@ export const schema: DocumentNode = gql`
     error: String
     "pinned at 1.4.2, stopped: updated when it wakes, …"
     note: String
+    "The backup taken before this step moved its instance (releases phase 3 slice 4)"
+    backupId: ID
+    "The restore this step runs (rollback of a release that migrates, or a failed update of one)"
+    restoreId: ID
   }
 
   "What startRollout would do"
@@ -448,7 +505,7 @@ export const schema: DocumentNode = gql`
     actor: String!
     "console | api | policy | system | ci"
     source: String!
-    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded | gate.token_issued | gate.token_rotated"
+    "plan.created | plan.updated | plan.target_set | plan.retired | setting.set | setting.deleted | role.granted | role.removed | instance.status | release.recorded | build.recorded | gate.token_issued | gate.token_rotated | backup.requested | backup.failed | restore.started | restore.finished"
     action: String!
     "plan:<id> | setting:<SCOPE>/<NAME> | role:<address> | instance:<id> | release:<version>"
     subject: String!
@@ -707,6 +764,10 @@ export const schema: DocumentNode = gql`
     appDeployments(appId: ID!, limit: Int): [AppDeployment!]!
     appReleases(appId: ID!, kind: String, limit: Int): [AppRelease!]!
     appInstances(appId: ID!): [AppInstance!]!
+    "An instance's backups, newest first (shared and own instances; metadata only)"
+    instanceBackups(instanceId: ID!, limit: Int): [InstanceBackup!]!
+    "An instance's restores, newest first"
+    instanceRestores(instanceId: ID!): [InstanceRestore!]!
     "The App's settings and the ones Vetra sets (operators)"
     appSettings(appId: ID!): AppSettings!
     appPlans(appId: ID!): [AppPlan!]!
@@ -773,8 +834,8 @@ export const schema: DocumentNode = gql`
     cancelRollout(rolloutId: ID!): AppRollout!
     retryRolloutStep(stepId: ID!): AppRollout!
     skipRolloutStep(stepId: ID!): AppRollout!
-    "Plans back to their previous release; instances back one at a time (image only)"
-    rollBackRollout(rolloutId: ID!): AppRollout!
+    "Plans back to their previous release; instances back one at a time (image only). A release that migrates restores each instance's backup from before its update: acceptDataLoss must be true, data written since is lost"
+    rollBackRollout(rolloutId: ID!, acceptDataLoss: Boolean): AppRollout!
     "Own instances: rollouts skip it; another release is applied at once"
     pinInstance(instanceId: ID!, version: String!): AppInstance!
     unpinInstance(instanceId: ID!): AppInstance!
@@ -783,6 +844,10 @@ export const schema: DocumentNode = gql`
     "A holder's own instance: its waiting update starts now, outside the notice and window"
     updateInstanceNow(instanceId: ID!): HolderUpdate!
     retirePlan(planId: ID!): AppPlan!
+    "Back up a shared or own instance now (database and /data)"
+    backUpInstance(instanceId: ID!): InstanceBackup!
+    "Restore one of the instance's backups into it; acceptDataLoss must be true (data written since is lost)"
+    restoreInstanceBackup(instanceId: ID!, backupId: ID!, acceptDataLoss: Boolean!): InstanceRestore!
     "Owner and organisation admins: turn on the Team plan (organisation Apps), following a release branch (default: the production branch)"
     enableTeamPlan(appId: ID!, followBranch: String): AppPlan!
     "Owner and organisation admins: turn the Team plan off (its instance stops; data kept)"

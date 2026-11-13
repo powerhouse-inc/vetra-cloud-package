@@ -4,6 +4,7 @@ import {
   DEFAULT_PLANS,
   gateConfigOf,
   loadAppsConfig,
+  planPoolSize,
   plansConfigOf,
   rolloutsEnabled,
   rolloutsHeld,
@@ -124,13 +125,18 @@ describe("plans config", () => {
     expect(loadAppsConfig({}).plans).toEqual({
       enabled: false,
       stopAfterDays: 14,
+      poolMax: 0,
       destroy: false,
     });
     expect(
       loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "on" }).plans?.destroy,
     ).toBe(true);
     expect(() => loadAppsConfig({ VETRA_APPS_PLANS_DESTROY: "x" })).toThrow();
-    expect(DEFAULT_PLANS).toEqual({ enabled: false, stopAfterDays: 14 });
+    expect(DEFAULT_PLANS).toEqual({
+      enabled: false,
+      stopAfterDays: 14,
+      poolMax: 0,
+    });
   });
   it("turns on with VETRA_APPS_PLANS=on and takes the stop window", () => {
     expect(
@@ -138,7 +144,27 @@ describe("plans config", () => {
         VETRA_APPS_PLANS: " On ",
         VETRA_APPS_PLAN_STOP_AFTER_DAYS: "7",
       }).plans,
-    ).toEqual({ enabled: true, stopAfterDays: 7, destroy: false });
+    ).toEqual({ enabled: true, stopAfterDays: 7, destroy: false, poolMax: 0 });
+  });
+  it("reads VETRA_APPS_PLAN_POOL_MAX (0-10, default 0) and caps a plan's pool with it", () => {
+    expect(loadAppsConfig({}).plans?.poolMax).toBe(0);
+    const cfg = loadAppsConfig({
+      VETRA_APPS_PLANS: "on",
+      VETRA_APPS_PLAN_POOL_MAX: "2",
+    });
+    const plan = {
+      warm_pool_size: 5,
+      access: "own",
+      status: "active",
+      team: null,
+    } as const;
+    expect(planPoolSize(cfg, plan)).toBe(2);
+    expect(planPoolSize(cfg, { ...plan, warm_pool_size: 1 })).toBe(1);
+    expect(planPoolSize(cfg, { ...plan, access: "shared" })).toBe(0);
+    expect(planPoolSize(cfg, { ...plan, status: "retired" })).toBe(0);
+    expect(planPoolSize(cfg, { ...plan, team: true })).toBe(0);
+    expect(planPoolSize(loadAppsConfig({}), plan)).toBe(0);
+    expect(() => loadAppsConfig({ VETRA_APPS_PLAN_POOL_MAX: "11" })).toThrow();
   });
   it("refuses unknown values at startup", () => {
     expect(() => loadAppsConfig({ VETRA_APPS_PLANS: "maybe" })).toThrow(
@@ -159,7 +185,12 @@ describe("plans config", () => {
     const on = loadAppsConfig({ VETRA_APPS_PLANS: "on" });
     expect(rolloutsEnabled(on)).toBe(true);
     expect(rolloutsHeld(on)).toBe(false);
-    expect(on.plans).toEqual({ enabled: true, stopAfterDays: 14, destroy: false });
+    expect(on.plans).toEqual({
+      enabled: true,
+      stopAfterDays: 14,
+      destroy: false,
+      poolMax: 0,
+    });
     expect(
       rolloutsEnabled(
         loadAppsConfig({ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "off" }),
@@ -173,6 +204,7 @@ describe("plans config", () => {
     expect(held.plans).toEqual({
       enabled: true,
       stopAfterDays: 14,
+      poolMax: 0,
       destroy: false,
       rolloutsHold: true,
     });
@@ -320,5 +352,32 @@ describe("team soak", () => {
       loadAppsConfig({ VETRA_APPS_TEAM_SOAK_MINUTES: "1441" }),
     ).toThrow();
     expect(teamSoakMs(loadAppsConfig({}))).toBe(30 * 60_000);
+  });
+});
+
+describe("backups config (releases phase 3 slice 4)", () => {
+  it("is off by default and validated", () => {
+    expect(loadAppsConfig({}).backups).toEqual({
+      enabled: false,
+      dailyKeepDays: 14,
+      maxInFlight: 3,
+    });
+    expect(
+      loadAppsConfig({
+        VETRA_APPS_BACKUPS: "on",
+        VETRA_APPS_BACKUP_DAILY_KEEP_DAYS: "7",
+        VETRA_APPS_BACKUP_MAX_IN_FLIGHT: "5",
+      }).backups,
+    ).toEqual({ enabled: true, dailyKeepDays: 7, maxInFlight: 5 });
+    expect(() => loadAppsConfig({ VETRA_APPS_BACKUPS: "maybe" })).toThrow(
+      /VETRA_APPS_BACKUPS/,
+    );
+    // The dumps bucket deletes everything after 30 days.
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_BACKUP_DAILY_KEEP_DAYS: "31" }),
+    ).toThrow(/KEEP_DAYS/);
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_BACKUP_MAX_IN_FLIGHT: "0" }),
+    ).toThrow(/MAX_IN_FLIGHT/);
   });
 });

@@ -253,9 +253,37 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("computedAt", "varchar(64)", (c) => c.notNull())
     .ifNotExists()
     .execute();
+
+  // /data archives of vetra-apps instances (releases phase 3 slice 4).
+  await db.schema
+    .createTable("data_archives")
+    .addColumn("id", "varchar(64)", (col) => col.primaryKey())
+    .addColumn("documentId", "varchar(255)", (col) => col.notNull())
+    .addColumn("tenantId", "varchar(255)", (col) => col.notNull())
+    .addColumn("requestedBy", "varchar(255)", (col) => col.notNull())
+    .addColumn("status", "varchar(32)", (col) => col.notNull())
+    .addColumn("pvcName", "varchar(255)", (col) => col.notNull())
+    .addColumn("jobName", "varchar(255)")
+    .addColumn("s3Key", "varchar(512)")
+    .addColumn("sizeBytes", "bigint")
+    .addColumn("sha256", "varchar(64)")
+    .addColumn("errorMessage", "text")
+    .addColumn("requestedAt", "varchar(64)", (col) => col.notNull())
+    .addColumn("startedAt", "varchar(64)")
+    .addColumn("completedAt", "varchar(64)")
+    .addColumn("expiresAt", "varchar(64)", (col) => col.notNull())
+    .ifNotExists()
+    .execute();
+  await db.schema
+    .createIndex("data_archives_tenant_idx")
+    .ifNotExists()
+    .on("data_archives")
+    .columns(["tenantId", "requestedAt"])
+    .execute();
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
+  await db.schema.dropTable("data_archives").ifExists().execute();
   await db.schema.dropTable("org_env_operators").ifExists().execute();
   await db.schema.dropTable("org_expected_handovers").ifExists().execute();
   await db.schema.dropTable("org_document_protection").ifExists().execute();
