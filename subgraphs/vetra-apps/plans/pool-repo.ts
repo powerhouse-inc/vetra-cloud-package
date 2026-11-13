@@ -122,3 +122,25 @@ export async function warmReadyCounts(
       out.set(r.plan_id, (out.get(r.plan_id) ?? 0) + 1);
   return out;
 }
+
+/**
+ * Marks an unclaimed warm row removed, guarded in the UPDATE itself (warm and
+ * no holder): a claim that landed after the caller read the row wins, and the
+ * row is left alone. False when nothing matched.
+ */
+export async function removeUnclaimedWarm(
+  db: Kysely<VetraAppsDB>,
+  id: string,
+  reason: string,
+  nowIso: string,
+): Promise<boolean> {
+  const row = await db
+    .updateTable("instances")
+    .set({ removed_at: nowIso, removed_reason: reason, updated_at: nowIso })
+    .where("id", "=", id)
+    .where("warm", "=", true)
+    .where("holder_address", "is", null)
+    .returning("id")
+    .executeTakeFirst();
+  return row !== undefined;
+}

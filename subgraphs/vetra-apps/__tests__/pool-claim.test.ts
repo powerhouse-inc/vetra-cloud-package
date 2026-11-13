@@ -3,7 +3,7 @@ import type { Harness } from "./harness.js";
 import { digest } from "./instances-fixtures.js";
 import { HOLDER, poolHarness, seedWarm } from "./pool-fixtures.js";
 import { listAudit } from "../audit/repo.js";
-import { claimWarmInstance } from "../plans/pool-repo.js";
+import { claimWarmInstance, removeUnclaimedWarm } from "../plans/pool-repo.js";
 import { ownInstanceName } from "../plans/sync.js";
 
 let h: Harness;
@@ -105,5 +105,33 @@ describe("claimWarmInstance", () => {
       }),
     ]);
     expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+});
+
+describe("removeUnclaimedWarm", () => {
+  const NOW = "2026-11-13T00:00:00.000Z";
+  it("marks an unclaimed warm row removed", async () => {
+    const w = await seedWarm(h, appId);
+    expect(await removeUnclaimedWarm(h.db, w.id, "why", NOW)).toBe(true);
+    const row = await h.db
+      .selectFrom("instances")
+      .selectAll()
+      .where("id", "=", w.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ removed_at: NOW, removed_reason: "why" });
+  });
+
+  it("never touches a row claimed after it was read as warm", async () => {
+    const w = await seedWarm(h, appId, {
+      warm: false,
+      holder_address: HOLDER,
+    });
+    expect(await removeUnclaimedWarm(h.db, w.id, "why", NOW)).toBe(false);
+    const row = await h.db
+      .selectFrom("instances")
+      .selectAll()
+      .where("id", "=", w.id)
+      .executeTakeFirstOrThrow();
+    expect(row.removed_at).toBeNull();
   });
 });

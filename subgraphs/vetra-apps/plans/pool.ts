@@ -3,7 +3,6 @@ import { planPoolSize, plansConfigOf } from "../config.js";
 import {
   insertInstance,
   listInstances,
-  updateInstance,
   type InstanceRow,
   type NewInstance,
 } from "../instances/repo.js";
@@ -12,6 +11,7 @@ import { wantsInstances } from "../instances/reconciler.js";
 import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 import { listPlans, type PlanRow } from "./repo.js";
+import { removeUnclaimedWarm } from "./pool-repo.js";
 import { planTarget } from "./sync.js";
 
 /** The environment label's name part while warm: `<App> · own (warm)`. */
@@ -112,12 +112,7 @@ export async function syncPlanPools(
   const byPlan = new Map(plans.map((p) => [p.id, p]));
   // Rows of a plan that is gone, or of an App without pools, drain.
   for (const r of warm.filter((r) => !byPlan.has(r.plan_id ?? "")))
-    await updateInstance(
-      deps.db,
-      r.id,
-      { removed_at: nowIso, removed_reason: POOL_OFF },
-      nowIso,
-    );
+    await removeUnclaimedWarm(deps.db, r.id, POOL_OFF, nowIso);
   for (const plan of plans) {
     const rows = warm.filter((r) => r.plan_id === plan.id);
     const size = planPoolSize(deps.cfg, plan);
@@ -129,12 +124,7 @@ export async function syncPlanPools(
       targetSize: plan.size,
     });
     for (const r of p.remove)
-      await updateInstance(
-        deps.db,
-        r.id,
-        { removed_at: nowIso, removed_reason: r.reason },
-        nowIso,
-      );
+      await removeUnclaimedWarm(deps.db, r.id, r.reason, nowIso);
     if (p.create && target)
       await insertInstance(deps.db, warmRow(deps, app, plan, target, nowIso));
   }
