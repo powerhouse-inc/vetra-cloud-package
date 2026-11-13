@@ -75,7 +75,16 @@ export function createUpdateGate(deps: {
           // APPLYING" and then writes, so two admissions of one app (the keeper
           // on one chain, the machine API on another) must not interleave.
           await q.lockApp(row.app_id);
-          const policy = (await q.settings(row.app_id)).policy;
+          const settings = await q.settings(row.app_id);
+          // A switch-over campaign froze the App: no environment's version
+          // moves and no update is recorded (null reason: the normal path).
+          if (settings.frozenReason !== null)
+            return {
+              version: "hold" as const,
+              updateId: null,
+              reason: `releases are frozen: ${settings.frozenReason}`,
+            };
+          const policy = settings.policy;
           const canary = (row.channel_override ?? null) !== null;
           const rolledOut = policy === "GATED" && !canary;
           const rollout =

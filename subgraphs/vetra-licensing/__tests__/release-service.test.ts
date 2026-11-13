@@ -198,7 +198,7 @@ describe("setReleasePolicy", () => {
         policy: "GATED",
         defaultNoticeHours: 24,
       }),
-    ).toStrictEqual({ appId: "a", policy: "GATED", defaultNoticeHours: 24 });
+    ).toStrictEqual({ appId: "a", policy: "GATED", defaultNoticeHours: 24, frozenReason: null });
     // The mark already brought STAGING up to LATEST.
     expect(written).toStrictEqual([]);
     point("STAGING", "1.1.0");
@@ -723,7 +723,7 @@ describe("leaving gating", () => {
         policy: "AUTO",
         defaultNoticeHours: 12,
       }),
-    ).toStrictEqual({ appId: "a", policy: "AUTO", defaultNoticeHours: 12 });
+    ).toStrictEqual({ appId: "a", policy: "AUTO", defaultNoticeHours: 12, frozenReason: null });
     expect(await canaryOf("mine")).toBe("STAGING");
     expect(written).toStrictEqual([]);
   });

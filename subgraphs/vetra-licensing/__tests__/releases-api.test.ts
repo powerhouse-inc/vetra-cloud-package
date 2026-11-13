@@ -204,6 +204,7 @@ describe("vetraReleases app fields: the app's owner only", () => {
       appId: "a",
       policy: "AUTO",
       defaultNoticeHours: 72,
+      frozenReason: null,
     });
     expect(await codeOf(q("releaseSettings", { appId: "a" }, STRANGER))).toBe(
       "NOT_FOUND",

@@ -229,6 +229,14 @@ export interface AppReleaseSettings {
   policy: ReleasePolicy;
   default_notice_hours: number;
   updated_at: string;
+  /**
+   * Why the App's gated releases are frozen (a switch-over campaign is on);
+   * null: not frozen, the normal state. Set and cleared only by
+   * freezeAppReleases / unfreezeAppReleases.
+   */
+  frozen_reason: string | null;
+  /** When the freeze began; kept when the freeze is set again. */
+  frozen_at: string | null;
 }
 
 /** A promotion of one FUSION artifact version to the app's customers (spec 4.3). */

@@ -172,6 +172,47 @@ const kick = (deps: ReleaseServiceDeps) => {
   }
 };
 
+/** The error text of a refused release action while the App's releases are frozen. */
+export const frozenMessage = (reason: string): string =>
+  `releases of this app are frozen: ${reason}`;
+
+/** Throws OperationRejectedError naming the reason when the App's releases are frozen. */
+async function assertNotFrozen(
+  deps: Pick<ReleaseServiceDeps, "store">,
+  appId: string,
+): Promise<void> {
+  const { frozenReason } = await deps.store.settings(appId);
+  if (frozenReason !== null)
+    throw new OperationRejectedError(frozenMessage(frozenReason));
+}
+
+/**
+ * Freezes the App's gated releases (a switch-over campaign): no promotion, no
+ * resume, no force, no "update now", and the update gate holds every
+ * environment where it is. Freezing again keeps the first reason and time.
+ * Off by default: an App with no freeze behaves exactly as before.
+ */
+export async function freezeAppReleases(
+  deps: Pick<ReleaseServiceDeps, "store" | "now">,
+  appId: string,
+  reason: string,
+): Promise<void> {
+  await withAppRelease(appId, () =>
+    deps.store.setFrozen(appId, reason, deps.now()),
+  );
+}
+
+/** Lifts the freeze; the held environments move again on the next keeper pass. */
+export async function unfreezeAppReleases(
+  deps: Pick<ReleaseServiceDeps, "store" | "now" | "kick">,
+  appId: string,
+): Promise<void> {
+  await withAppRelease(appId, () =>
+    deps.store.setFrozen(appId, null, deps.now()),
+  );
+  kick(deps as ReleaseServiceDeps);
+}
+
 export const releaseSettings = (
   deps: ReleaseServiceDeps,
   appId: string,
@@ -205,6 +246,7 @@ export async function setReleasePolicy(
       appId: input.appId,
       policy,
       defaultNoticeHours: hours ?? current.defaultNoticeHours,
+      frozenReason: current.frozenReason,
     };
     const leaving = policy === "AUTO" && current.policy === "GATED";
     if (policy === "GATED") {
@@ -324,6 +366,8 @@ export async function promoteRelease(
   // the LATEST this one set before it checks its own version against it.
   const rollout = await withAppRelease(input.appId, async () => {
     const settings = await deps.store.settings(input.appId);
+    if (settings.frozenReason !== null)
+      throw new OperationRejectedError(frozenMessage(settings.frozenReason));
     if (settings.policy !== "GATED") {
       throw new OperationRejectedError(
         "releases of this app are not gated: CI moves LATEST itself",
@@ -399,6 +443,7 @@ export async function resumeRollout(
   const rollout = await deps.store.rollout(input.rolloutId);
   if (!rollout || rollout.app_id !== input.appId)
     throw new UnknownRolloutError();
+  await assertNotFrozen(deps, input.appId);
   if (!(await deps.store.resume(rollout.id))) {
     throw new OperationRejectedError(
       `rollout ${rollout.id} is ${rollout.status}, not PAUSED`,
@@ -419,6 +464,7 @@ export async function forceEnvironmentUpdate(
   input: { appId: string; environmentId: string },
 ): Promise<boolean> {
   const row = await envOf(deps, input.appId, input.environmentId);
+  await assertNotFrozen(deps, input.appId);
   const update = await deps.store.latest(row.environment_id);
   if (!update || (update.status !== "PENDING" && update.status !== "FAILED")) {
     throw new OperationRejectedError(
@@ -454,6 +500,7 @@ export async function requestUpdateNow(
   deps: ReleaseServiceDeps,
   row: LicenseEnvironments,
 ): Promise<boolean> {
+  await assertNotFrozen(deps, row.app_id);
   const update = await deps.store.latest(row.environment_id);
   if (update?.status !== "PENDING")
     throw new OperationRejectedError(

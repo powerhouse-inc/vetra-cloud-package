@@ -337,7 +337,7 @@ describe("vetra-licensing migrations: app release rollout tables", () => {
     await up(db as Kysely<any>);
     await (db as Kysely<any>).insertInto("app_release_settings").values({ app_id: "a", updated_at: "t" }).execute();
     expect(await db.selectFrom("app_release_settings").selectAll().executeTakeFirstOrThrow())
-      .toStrictEqual({ app_id: "a", policy: "AUTO", default_notice_hours: 72, updated_at: "t" });
+      .toStrictEqual({ app_id: "a", policy: "AUTO", default_notice_hours: 72, updated_at: "t", frozen_reason: null, frozen_at: null });
   });
 
   it("adds channel_override to license_environments, null on existing rows", async () => {
