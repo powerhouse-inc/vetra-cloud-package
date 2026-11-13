@@ -652,11 +652,16 @@ export function createResolvers(deps: AppsDeps) {
         ),
       rollBackRollout: (
         _: unknown,
-        { rolloutId }: { rolloutId: string },
+        {
+          rolloutId,
+          acceptDataLoss,
+        }: { rolloutId: string; acceptDataLoss?: boolean | null },
         ctx: AppsContext,
       ) =>
         guard(deps, "rollBackRollout", () =>
-          rollBackRollout(deps, person(ctx), rolloutId),
+          rollBackRollout(deps, person(ctx), rolloutId, {
+            acceptDataLoss: acceptDataLoss === true,
+          }),
         ),
       pinInstance: (
         _: unknown,

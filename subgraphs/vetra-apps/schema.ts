@@ -321,7 +321,7 @@ export const schema: DocumentNode = gql`
     position: Int!
     fromVersion: String
     toVersion: String!
-    "pending | applying | succeeded | failed | skipped | revert_pending | reverting | revert_failed | rolled_back"
+    "pending | backing_up | applying | restoring | succeeded | failed | skipped | revert_pending | reverting | revert_failed | rolled_back"
     status: String!
     "Not before (the notice); the plan's window applies after it"
     dueAt: String!
@@ -333,6 +333,10 @@ export const schema: DocumentNode = gql`
     error: String
     "pinned at 1.4.2, stopped: updated when it wakes, …"
     note: String
+    "The backup taken before this step moved its instance (releases phase 3 slice 4)"
+    backupId: ID
+    "The restore this step runs (rollback of a release that migrates, or a failed update of one)"
+    restoreId: ID
   }
 
   "What startRollout would do"
@@ -696,8 +700,8 @@ export const schema: DocumentNode = gql`
     cancelRollout(rolloutId: ID!): AppRollout!
     retryRolloutStep(stepId: ID!): AppRollout!
     skipRolloutStep(stepId: ID!): AppRollout!
-    "Plans back to their previous release; instances back one at a time (image only)"
-    rollBackRollout(rolloutId: ID!): AppRollout!
+    "Plans back to their previous release; instances back one at a time (image only). A release that migrates restores each instance's backup from before its update: acceptDataLoss must be true, data written since is lost"
+    rollBackRollout(rolloutId: ID!, acceptDataLoss: Boolean): AppRollout!
     "Own instances: rollouts skip it; another release is applied at once"
     pinInstance(instanceId: ID!, version: String!): AppInstance!
     unpinInstance(instanceId: ID!): AppInstance!

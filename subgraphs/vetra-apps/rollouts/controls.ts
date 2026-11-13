@@ -2,6 +2,7 @@ import type { Kysely } from "kysely";
 import { withKeyLock } from "../../../shared/key-lock.js";
 import type { Caller } from "../auth.js";
 import { recordAudit } from "../audit/repo.js";
+import { backupsOn } from "../backups/rollout.js";
 import type { RolloutStepStatus, VetraAppsDB } from "../db/schema.js";
 import { appsError } from "../errors.js";
 import { getInstance, listInstances } from "../instances/repo.js";
@@ -332,15 +333,24 @@ export async function rollBackRollout(
   deps: AppsDeps,
   caller: Caller,
   rolloutId: string,
+  opts: { acceptDataLoss?: boolean } = {},
 ): Promise<RolloutJson> {
   const { r, app } = await loadRollout(deps, caller, rolloutId, "release");
   const who = callerActor(caller);
   const release = await releaseByVersion(deps.db, app.id, r.version);
-  if (release?.migrates)
-    throw appsError(
-      "BAD_USER_INPUT",
-      `${r.version} migrates its database; rolling it back needs the backup restore (releases phase 3 slice 4)`,
-    );
+  const restores = !!release?.migrates;
+  if (restores) {
+    if (!backupsOn(deps))
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${r.version} migrates its database; rolling it back needs instance backups (VETRA_APPS_BACKUPS)`,
+      );
+    if (opts.acceptDataLoss !== true)
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${r.version} migrates its database: rolling back restores each instance's backup from before its update, and data written since is lost. Confirm with acceptDataLoss: true`,
+      );
+  }
   return underLock(deps, app.id, r.id, async (trx, cur, nowIso) => {
     if (cur.direction === "back")
       throw appsError(
@@ -395,6 +405,36 @@ export async function rollBackRollout(
           },
           nowIso,
         );
+      } else if (s.status === "backing_up") {
+        // Nothing moved yet: it never starts (its backup is left to expire).
+        await transitionStep(
+          trx,
+          s.id,
+          ["backing_up"],
+          {
+            status: "skipped",
+            note: "rolled back before its turn",
+            finished_at: nowIso,
+          },
+          nowIso,
+        );
+      } else if (s.status === "applying" && restores) {
+        // A release that migrates goes back by restore, never by image alone:
+        // it waits as revert_pending until its update settled (one moving
+        // step per App), then startRevert restores the backup.
+        await transitionStep(
+          trx,
+          s.id,
+          ["applying"],
+          {
+            status: "revert_pending",
+            requested_at: null,
+            error: null,
+            finished_at: null,
+          },
+          nowIso,
+        );
+        queued++;
       } else if (s.status === "applying" && s.from_version) {
         // It moves now: it turns round at once and stays the App's one
         // moving step (never revert_pending while its update runs).
@@ -502,7 +542,11 @@ export async function rollBackRollout(
       at: nowIso,
       action: "rollout.rolling_back",
       subject: `rollout:${cur.id}`,
-      detail: { version: cur.version, steps: queued },
+      detail: {
+        version: cur.version,
+        steps: queued,
+        acceptDataLoss: opts.acceptDataLoss === true,
+      },
     });
   });
 }

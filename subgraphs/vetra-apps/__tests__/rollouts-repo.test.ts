@@ -61,6 +61,8 @@ const step = (over: Partial<RolloutStepRow>): RolloutStepRow => ({
   attempts: 0,
   error: null,
   note: null,
+  backup_id: null,
+  restore_id: null,
   created_at: T,
   updated_at: T,
   ...over,

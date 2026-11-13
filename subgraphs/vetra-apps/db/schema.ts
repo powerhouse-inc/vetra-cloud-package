@@ -380,7 +380,9 @@ export interface RolloutPlansTable {
 
 export type RolloutStepStatus =
   | "pending"
+  | "backing_up"
   | "applying"
+  | "restoring"
   | "succeeded"
   | "failed"
   | "skipped"
@@ -416,6 +418,10 @@ export interface RolloutStepsTable {
   error: string | null;
   /** "pinned at 1.4.2", "stopped: updated when it wakes", … */
   note: string | null;
+  /** The pre_update backup taken before this step moved its instance (slice 4). */
+  backup_id?: string | null;
+  /** The restore this step runs: a rollback, or a failed update of a release that migrates (slice 4). */
+  restore_id?: string | null;
   created_at: string;
   updated_at: string;
 }

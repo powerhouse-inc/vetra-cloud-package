@@ -141,6 +141,7 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstanceGateTokensTable(db);
   await ensureRolloutTables(db);
   await ensureRolloutColumns(db);
+  await ensureRolloutBackupColumns(db);
 }
 
 /** Rollouts (releases phase 3 slice 3, spec section 7). Schema builder only (namespaced). */
@@ -252,6 +253,40 @@ export async function ensureRolloutColumns(db: Kysely<any>): Promise<void> {
     } catch (err) {
       if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
     }
+  }
+}
+
+/** Rollout steps that back up first and restore (releases phase 3 slice 4). */
+export async function ensureRolloutBackupColumns(db: Kysely<any>): Promise<void> {
+  for (const name of ["backup_id", "restore_id"]) {
+    try {
+      await db.schema
+        .alterTable("rollout_steps")
+        .addColumn(name, "varchar(64)", (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+    }
+  }
+  try {
+    // One moving instance per App, now counting backups and restores.
+    await db.schema
+      .createIndex("rollout_steps_moving_v2_uq")
+      .ifNotExists()
+      .unique()
+      .on("rollout_steps")
+      .column("app_id")
+      .where(
+        sql<boolean>`status in ('backing_up', 'applying', 'restoring', 'reverting')`,
+      )
+      .execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
+  }
+  try {
+    await db.schema.dropIndex("rollout_steps_moving_uq").ifExists().execute();
+  } catch (err) {
+    if (!isConcurrentIndexError(err)) throw err;
   }
 }
 

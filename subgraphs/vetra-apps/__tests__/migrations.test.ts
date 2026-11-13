@@ -15,6 +15,7 @@ import {
   ensureInstancesPlanColumns,
   ensurePlansTable,
   ensureStudioLaunchSecretsTable,
+  ensureRolloutBackupColumns,
   ensureRolloutColumns,
   ensureRolloutTables,
   ensureStudioProductColumns,
@@ -887,6 +888,51 @@ describe("instance backup tables", () => {
       await expect(
         any.insertInto("instance_restores").values(restore("r2", "safety_backup")).execute(),
       ).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("rollout steps that back up", () => {
+  it("get backup_id and restore_id, and one moving step per App counts backing_up and restoring", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-apps"`.execute(root);
+      const any = root.withSchema("vetra-apps");
+      await up(any);
+      await Promise.all([1, 2, 3].map(() => ensureRolloutBackupColumns(any)));
+      const step = (id: string, instance: string, status: string) => ({
+        id,
+        rollout_id: "r1",
+        app_id: "app-1",
+        plan_id: "p1",
+        instance_id: instance,
+        instance_kind: "own",
+        instance_name: instance,
+        position: 0,
+        from_version: "1.0.0",
+        to_version: "1.1.0",
+        status,
+        due_at: "2026-11-12T00:00:00.000Z",
+        requested_at: null,
+        started_at: null,
+        finished_at: null,
+        target_moved: false,
+        attempts: 0,
+        error: null,
+        note: null,
+        backup_id: "b-1",
+        restore_id: null,
+        created_at: "2026-11-12T00:00:00.000Z",
+        updated_at: "2026-11-12T00:00:00.000Z",
+      });
+      await any.insertInto("rollout_steps").values(step("s1", "i1", "backing_up")).execute();
+      await expect(
+        any.insertInto("rollout_steps").values(step("s2", "i2", "restoring")).execute(),
+      ).rejects.toMatchObject({ code: "23505" });
+      const idx = await sql<{ indexname: string }>`select indexname from pg_indexes where schemaname = 'vetra-apps' and tablename = 'rollout_steps'`.execute(root);
+      expect(idx.rows.map((r) => r.indexname)).not.toContain("rollout_steps_moving_uq");
     } finally {
       await root.destroy();
     }
