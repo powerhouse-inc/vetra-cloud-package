@@ -1294,6 +1294,13 @@ export function generateFusionBlock(
     if (publicHost) env.set(VITE_ALLOWED_HOST, publicHost);
   }
 
+  // A PLAN instance with no ADMINS yet is not claimed by anyone: closed, even
+  // when the pool lookup does not say warm (an unclaimed row is never open).
+  const closed =
+    !opts.held &&
+    (opts.warm === true ||
+      (state.app?.role === "PLAN" && !(env.get("ADMINS") ?? "").trim()));
+
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
     .join("\n");
@@ -1322,7 +1329,7 @@ export function generateFusionBlock(
     targetPort: ${port}
   ingress:
     enabled: ${!opts.held}
-    className: traefik${opts.warm && !opts.held ? "\n    closed: true" : ""}
+    className: traefik${closed ? "\n    closed: true" : ""}
     host: ${yamlQuote(host)}
     additionalHosts: []
     tls:
