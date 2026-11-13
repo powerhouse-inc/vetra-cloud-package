@@ -171,3 +171,44 @@ export const rollingBack: Step = async (c, row) => {
   if (wasHeld && state?.status !== "READY") return wait;
   return advance();
 };
+
+/**
+ * CLEANING (a dry run's end): deletes the clone's environment document, its
+ * hold and its instance row (spec 14.12), nothing else. Only ever what this
+ * dry run created: the instance belongs to it (switchover_id), has no holder
+ * and a rehearsal host, and the document is an unlicensed PLAN environment of
+ * the App. The processor removes the clone's namespace (database, volume)
+ * with its document. The dump and archive stay under switchover/ (180 days).
+ */
+export const cleaning: Step = async (c, row) => {
+  if (row.mode !== "dry_run")
+    return fail("only a dry run's clone is cleaned up");
+  const inst = await newInstance(c, row);
+  if (!inst) return advance();
+  if (
+    inst.switchover_id !== row.id ||
+    inst.holder_address !== null ||
+    !inst.host?.startsWith("rehearsal-")
+  )
+    return fail("the instance is not this dry run's clone; left alone");
+  if (inst.environment_id) {
+    const state = await c.deps.envs.getState(inst.environment_id);
+    if (state) {
+      if (
+        state.managedBy ||
+        state.app?.appId !== row.app_id ||
+        state.app.role !== "PLAN"
+      )
+        return fail(
+          "the clone's environment is not a plan environment of this App; left alone",
+        );
+      const tenant = await newTenant(c, inst);
+      await c.deps.envs.delete(inst.environment_id);
+      if (tenant && c.deps.instanceSecrets)
+        await c.deps.instanceSecrets.purgeTenant(tenant);
+    }
+    await deleteHold(c.deps.db, inst.environment_id);
+  }
+  await deleteInstance(c.deps.db, inst.id);
+  return advance();
+};

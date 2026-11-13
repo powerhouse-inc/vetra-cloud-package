@@ -289,8 +289,8 @@ export type Flow = Awaited<ReturnType<typeof flow>>;
 const HOUR = 3_600_000;
 const TENANT_OF = async (f: Flow) => {
   const inst = await f.instance();
-  return inst?.environment_id
-    ? getTenantId(OLD_HOST, inst.environment_id)
+  return inst?.environment_id && inst.host
+    ? getTenantId(inst.host, inst.environment_id)
     : null;
 };
 export { TENANT_OF as newTenantOf };

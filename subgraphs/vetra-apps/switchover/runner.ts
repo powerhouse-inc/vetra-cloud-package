@@ -1,5 +1,6 @@
 import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
 import { switchoverConfigOf } from "../config.js";
+import { holdEnvironment } from "../holds/service.js";
 import { appInstancesLock } from "../rollouts/repo.js";
 import type { AppsDeps } from "../service.js";
 import { withKeyLock } from "../../../shared/key-lock.js";
@@ -12,15 +13,16 @@ import {
 import {
   CLOSED_STATES,
   getSwitchover,
+  instanceOfSwitchover,
   listActiveSwitchovers,
   SwitchoverRaceError,
   updateSwitchover,
   type SwitchoverRow,
 } from "./repo.js";
-import { rollingBack } from "./rollback.js";
+import { cleaning, rollingBack } from "./rollback.js";
 import { STEPS, type StepCtx } from "./steps.js";
 
-const STEP_TABLE = { ...STEPS, ROLLING_BACK: rollingBack };
+const STEP_TABLE = { ...STEPS, ROLLING_BACK: rollingBack, CLEANING: cleaning };
 
 /** Long hex runs (keys, fingerprints, digests of secrets) never reach a table, an audit row or a log. */
 export const scrub = (text: string): string =>
@@ -80,7 +82,7 @@ export async function advanceSwitchover(
       });
   }
   try {
-    return await deps.db.transaction().execute(async (trx) => {
+    const stored = await deps.db.transaction().execute(async (trx) => {
       const next = await updateSwitchover(
         trx,
         current.id,
@@ -105,10 +107,29 @@ export async function advanceSwitchover(
       });
       return next;
     });
+    // A failed dry run leaves its clone for inspection, but not serving: held until cleanUpDryRun.
+    if (move.state === "FAILED" && current.mode === "dry_run")
+      await holdClone(deps, current).catch((err: unknown) =>
+        deps.logger.warn(
+          `[vetra-apps] dry run ${current.id}: holding its clone: ${messageOf(err)}`,
+        ),
+      );
+    return stored;
   } catch (err) {
     if (err instanceof SwitchoverRaceError) return current;
     throw err;
   }
+}
+
+async function holdClone(deps: AppsDeps, row: SwitchoverRow): Promise<void> {
+  const inst = await instanceOfSwitchover(deps.db, row);
+  if (inst?.environment_id)
+    await holdEnvironment(deps, {
+      environmentId: inst.environment_id,
+      reason: `dry run ${row.id} failed`,
+      switchoverId: row.id,
+      by: AUDIT_SYSTEM_ACTOR,
+    });
 }
 
 /**
