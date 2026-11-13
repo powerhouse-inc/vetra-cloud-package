@@ -3,12 +3,13 @@ import { adminsOf } from "../instances/reconciler.js";
 import { getInstance } from "../instances/repo.js";
 import { liveLicenceOf } from "../plans/holders.js";
 import { getPlan } from "../plans/repo.js";
+import { teamGateAnswer } from "../plans/team-gate.js";
 import { getApp } from "../repo.js";
 import type { AppsDeps } from "../service.js";
 import { findByTokenHash } from "./repo.js";
 import { hashGateToken, isGateTokenShape, sameGateHash } from "./token.js";
 
-/** member is reserved for the Team instance (slice 6). */
+/** member: the Team instance admits its organisation's members (slice 6). */
 export type GateReason = "admin" | "licence" | "member" | "none";
 export interface GateAnswer {
   allowed: boolean;
@@ -59,7 +60,10 @@ export async function checkGate(
   ]);
   if (!plan || !app || plan.app_id !== app.id) return null;
   const who = address.toLowerCase();
-  const admins = adminsOf(app, row)
+  const admins = adminsOf(app, row, {
+    team: plan.team === true,
+    now: deps.now(),
+  })
     .split(",")
     .map((a) => a.trim().toLowerCase());
   if (admins.includes(who))
@@ -70,6 +74,29 @@ export async function checkGate(
         reason: "admin",
         until: null,
         ttlSeconds: GATE_TTL_SECONDS,
+      },
+    };
+  // The Team plan (slice 6, D8): the owning organisation's members, per address.
+  if (plan.team === true) {
+    const a = await teamGateAnswer(deps, app, who);
+    return {
+      instanceId: row.id,
+      answer: {
+        ...a,
+        until: null,
+        ttlSeconds: a.allowed ? GATE_TTL_SECONDS : GATE_DENIED_TTL_SECONDS,
+      },
+    };
+  }
+  // Only the Team plan has no kind (and was answered above).
+  if (plan.kind === null)
+    return {
+      instanceId: row.id,
+      answer: {
+        allowed: false,
+        reason: "none",
+        until: null,
+        ttlSeconds: GATE_DENIED_TTL_SECONDS,
       },
     };
   if (!deps.licensingDb) throw notConfigured("The licensing tables");

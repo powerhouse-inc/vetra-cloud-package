@@ -108,6 +108,8 @@ export interface PlansConfig {
    * (decision R1); a moving step still settles. Present only when on.
    */
   rolloutsHold?: boolean;
+  /** Minutes a release must run healthy on Team before customers get it (slice 6). Default 30. */
+  teamSoakMinutes?: number;
 }
 
 export const DEFAULT_PLANS: PlansConfig = { enabled: false, stopAfterDays: 14 };
@@ -151,6 +153,10 @@ export const switchoverConfigOf = (cfg: VetraAppsConfig): SwitchoverConfig => {
  */
 export const rolloutsEnabled = (cfg: VetraAppsConfig): boolean =>
   plansConfigOf(cfg).enabled && cfg.instances.enabled;
+
+/** How long a release runs healthy on the Team instance before customers get it. */
+export const teamSoakMs = (cfg: VetraAppsConfig): number =>
+  (plansConfigOf(cfg).teamSoakMinutes ?? 30) * 60_000;
 
 /** The brake: nothing starts while it is on. */
 export const rolloutsHeld = (cfg: VetraAppsConfig): boolean =>
@@ -226,6 +232,11 @@ function plansConfig(env: Env): PlansConfig {
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
     ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
+    ...(trimmed(env.VETRA_APPS_TEAM_SOAK_MINUTES) !== null
+      ? {
+          teamSoakMinutes: intIn(env, "VETRA_APPS_TEAM_SOAK_MINUTES", 30, 0, 1440),
+        }
+      : {}),
   };
 }
 

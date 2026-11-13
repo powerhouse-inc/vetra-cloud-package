@@ -1,4 +1,5 @@
 import { GraphQLError } from "graphql";
+import { disableTeamPlan, enableTeamPlan } from "./plans/team.js";
 import { appReleasesFor, type ReleaseJson } from "./releases/service.js";
 import { withdrawRelease } from "./releases/withdraw.js";
 import {
@@ -279,6 +280,7 @@ const releaseOut = (r: ReleaseJson) => ({
   withdrawnAt: r.withdrawn?.at ?? null,
   withdrawnBy: r.withdrawn?.by ?? null,
   withdrawnReason: r.withdrawn?.reason ?? null,
+  teamHealthyAt: r.teamHealthyAt,
 });
 
 export function createResolvers(deps: AppsDeps) {
@@ -678,6 +680,22 @@ export function createResolvers(deps: AppsDeps) {
       ) =>
         guard(deps, "updateInstanceNow", () =>
           updateInstanceNow(deps, person(ctx), instanceId),
+        ),
+      enableTeamPlan: (
+        _: unknown,
+        { appId, followBranch }: { appId: string; followBranch?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "enableTeamPlan", () =>
+          enableTeamPlan(deps, person(ctx), appId, followBranch),
+        ),
+      disableTeamPlan: (
+        _: unknown,
+        { appId }: { appId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "disableTeamPlan", () =>
+          disableTeamPlan(deps, person(ctx), appId),
         ),
       retirePlan: (
         _: unknown,

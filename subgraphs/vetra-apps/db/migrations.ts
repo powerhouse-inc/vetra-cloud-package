@@ -140,6 +140,72 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureInstanceGateTokensTable(db);
   await ensureRolloutTables(db);
   await ensureRolloutColumns(db);
+  await ensureTeamPlanSchema(db);
+}
+
+/** The Team plan (releases phase 3 slice 6). Schema builder only (namespaced). */
+export async function ensureTeamPlanSchema(db: Kysely<any>): Promise<void> {
+  const tolerate = (err: unknown) => {
+    if (!isConcurrentIndexError(err) && !isDuplicateColumnError(err)) throw err;
+  };
+  try {
+    await db.schema
+      .alterTable("plans")
+      .addColumn("team", "boolean", (c) => c.ifNotExists())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  // A kind-less plan; DROP NOT NULL on a nullable column is a no-op.
+  try {
+    await db.schema
+      .alterTable("plans")
+      .alterColumn("kind", (c) => c.dropNotNull())
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  try {
+    await db.schema
+      .createIndex("plans_app_team_uq")
+      .ifNotExists()
+      .unique()
+      .on("plans")
+      .column("app_id")
+      .where(sql.ref("team"), "=", true)
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
+  for (const [name, type] of [
+    ["admins_override", "text"],
+    ["admins_checked_at", "varchar(64)"],
+    ["admins_override_org", "varchar(255)"],
+  ] as const) {
+    try {
+      await db.schema
+        .alterTable("instances")
+        .addColumn(name, type, (c) => c.ifNotExists())
+        .execute();
+    } catch (err) {
+      tolerate(err);
+    }
+  }
+  try {
+    await db.schema
+      .createTable("team_release_runs")
+      .ifNotExists()
+      .addColumn("app_id", "varchar(255)", (c) => c.notNull())
+      .addColumn("version", "varchar(255)", (c) => c.notNull())
+      .addColumn("digest", "varchar(128)", (c) => c.notNull())
+      .addColumn("instance_id", "varchar(64)", (c) => c.notNull())
+      .addColumn("healthy_since", "varchar(64)", (c) => c.notNull())
+      .addColumn("recorded_at", "varchar(64)", (c) => c.notNull())
+      .addPrimaryKeyConstraint("team_release_runs_pk", ["app_id", "version"])
+      .execute();
+  } catch (err) {
+    tolerate(err);
+  }
 }
 
 /** Rollouts (releases phase 3 slice 3, spec section 7). Schema builder only (namespaced). */

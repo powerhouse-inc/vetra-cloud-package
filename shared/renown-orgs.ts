@@ -37,6 +37,13 @@ export interface RenownOrgs {
   orgHandle(orgId: string): Promise<string | null>;
   /** The person's Renown handle; null without a profile or handle. */
   personHandle(address: string): Promise<string | null>;
+  /**
+   * The org's public ACTIVE OWNER/ADMIN addresses (lowercased, sorted); null
+   * when the org is unknown, archived, taken down or keeps its members
+   * private. Public read: hidden members are never listed (releases phase 3
+   * slice 6, Team instance ADMINS). Optional: test fakes may leave it out.
+   */
+  orgAdmins?(orgId: string): Promise<string[] | null>;
 }
 
 export interface RenownOrgsConfig {
@@ -92,6 +99,11 @@ const PERSON_APPS = `query VetraPersonApps($publisherDid: String!) {
 
 const ORG_HANDLE = `query VetraOrgHandle($id: String!) { organization(id: $id) { handle } }`;
 const PERSON_HANDLE = `query VetraPersonHandle($input: RenownUsersInput!) { renownUsers(input: $input) { handle } }`;
+
+const ORG_ADMINS = `query VetraOrgAdmins($id: String!) {
+  organization(id: $id) { membersPublic archived takenDown }
+  organizationMembers(orgId: $id) { address role status }
+}`;
 
 /** At most this many app DIDs are taken from one person's profile list. */
 export const MAX_PERSON_APPS = 100;
@@ -224,6 +236,21 @@ export function createRenownOrgs(cfg: RenownOrgsConfig): RenownOrgs {
           { id: orgId },
         );
         return data.organization?.handle ?? null;
+      });
+    },
+    orgAdmins(orgId) {
+      return cached(`oa|${orgId}`, async () => {
+        const data = await post<{
+          organization: { membersPublic: boolean; archived: boolean; takenDown: boolean } | null;
+          organizationMembers: { address: string; role: OrgRole; status: string }[] | null;
+        }>(cfg.orgsEndpoint, ORG_ADMINS, { id: orgId });
+        const org = data.organization;
+        if (!org || org.archived || org.takenDown || !org.membersPublic) return null;
+        const out = new Set<string>();
+        for (const m of data.organizationMembers ?? [])
+          if (m.status === "ACTIVE" && (m.role === "OWNER" || m.role === "ADMIN"))
+            out.add(m.address.toLowerCase());
+        return [...out].sort();
       });
     },
     personHandle(address) {

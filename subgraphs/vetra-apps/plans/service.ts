@@ -6,7 +6,7 @@ import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf, rolloutsEnabled } from "../config.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
-import { releaseProblem } from "../rollouts/check.js";
+import { releaseProblem, teamGateProblem } from "../rollouts/check.js";
 import { appInstancesLock } from "../rollouts/repo.js";
 import {
   beginRollout,
@@ -37,13 +37,17 @@ import {
   parseSize,
   slugFromKind,
 } from "./rules.js";
+import { isTeamPlan } from "./team-base.js";
 
 export interface PlanJson {
   id: string;
   appId: string;
   slug: string;
   name: string;
-  kind: string;
+  /** The licensing term adopted; null for the Team plan. */
+  kind: string | null;
+  /** The App's Team plan (organisation members; follows a branch). */
+  team: boolean;
   access: string;
   size: string;
   targetVersion: string | null;
@@ -64,6 +68,7 @@ export const planJson = (p: PlanRow): PlanJson => ({
   slug: p.slug,
   name: p.name,
   kind: p.kind,
+  team: p.team === true,
   access: p.access,
   size: p.size,
   targetVersion: p.target_version,
@@ -224,6 +229,13 @@ export async function createPlan(
   const target = input.targetVersion
     ? await checkTarget(deps, app.id, input.targetVersion, access)
     : null;
+  // A customer plan's first target is a rollout too: Team goes first (spec 7).
+  if (target) {
+    const team = await teamGateProblem(deps, app, target, [
+      { slug, team: false, target_version: null },
+    ]);
+    if (team) throw appsError("BAD_USER_INPUT", team);
+  }
   const row = await deps.db
     .transaction()
     .execute(async (trx) => {
@@ -277,6 +289,11 @@ export async function updatePlanFor(
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
   const { plan, app } = await loadPlan(deps, caller, input.planId);
+  if (isTeamPlan(plan) && input.policy != null)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "The Team plan follows its branch; change it with enableTeamPlan",
+    );
   const name = input.name == null ? undefined : input.name.trim();
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
@@ -395,6 +412,11 @@ export async function retirePlan(
   planId: string,
 ): Promise<PlanJson> {
   const { plan } = await loadPlan(deps, caller, planId);
+  if (isTeamPlan(plan))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Disable the Team plan instead (owner and organisation admins)",
+    );
   if (plan.status === "retired") return planJson(plan);
   const nowIso = deps.now().toISOString();
   return planJson(
