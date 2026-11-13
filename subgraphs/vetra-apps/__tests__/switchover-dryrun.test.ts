@@ -195,6 +195,20 @@ describe("a dry run end to end", () => {
     );
   });
 
+  it("a copy with equal counts but other operation content fails CHECKING_COPY", async () => {
+    f = await flow({ mode: "dry_run", frozen: false });
+    await drive(f, "CHECKING_COPY");
+    const inst = (await f.instance())!;
+    const tenant = getTenantId(inst.host!, inst.environment_id!);
+    f.counts.byTenant.set(tenant, { ...COUNTS, contentFingerprint: "swapped" });
+    await f.tick();
+    expect(await f.row()).toMatchObject({
+      state: "FAILED",
+      failed_state: "CHECKING_COPY",
+      error: "the copy differs from the source in the operation log's content",
+    });
+  });
+
   it("cleaning never deletes an instance that is not the dry run's clone", async () => {
     f = await flow({ mode: "dry_run", frozen: false });
     await drive(f, "CLEANING");

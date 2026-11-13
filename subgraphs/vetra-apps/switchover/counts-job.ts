@@ -8,6 +8,12 @@ export interface Counts {
   workflowSecrets: number;
   /** A fingerprint of the workflow secrets' key check, null when the tenant has none. */
   keyCheck: string | null;
+  /**
+   * A fingerprint of the operation log's content: md5 over the ordered
+   * operation ids plus the highest index of every document stream. Equal
+   * counts with other content (a swapped or partial copy) still differ.
+   */
+  contentFingerprint: string | null;
 }
 
 /**
@@ -33,6 +39,17 @@ select json_build_object(
     ) d
   ),
   'operations', (select count(*) from reactor."Operation"),
+  'contentFingerprint', md5(
+    coalesce((select string_agg(id::text, ',' order by id) from reactor."Operation"), '')
+    || '|' ||
+    coalesce((
+      select string_agg(format('%s/%s/%s:%s', "documentId", scope, branch, m), ',' order by "documentId", scope, branch)
+      from (
+        select "documentId", scope, branch, max("index") m
+        from reactor."Operation" group by 1, 2, 3
+      ) x
+    ), '')
+  ),
   'attachments', case when to_regclass('attachments.attachment') is null then 0
     else pg_temp.vetra_count('select count(*) from attachments.attachment') end,
   'workflowSecrets', coalesce((
@@ -154,6 +171,8 @@ export function parseCounts(log: string): Counts {
     operations: num(o.operations, "operations"),
     attachments: num(o.attachments, "attachments"),
     workflowSecrets: num(o.workflowSecrets, "workflowSecrets"),
+    contentFingerprint:
+      typeof o.contentFingerprint === "string" ? o.contentFingerprint : null,
     keyCheck:
       o.keyCheck === null || o.keyCheck === undefined
         ? null
@@ -180,6 +199,13 @@ export function firstCountDifference(
       return `documents of type ${t}`;
   if (o.operations !== false && a.operations !== b.operations)
     return "operations";
+  // With `operations: false` (migrations may append some) the content is only
+  // comparable while the log has the same length.
+  if (
+    a.operations === b.operations &&
+    a.contentFingerprint !== b.contentFingerprint
+  )
+    return "the operation log's content";
   if (a.attachments !== b.attachments) return "attachments";
   if (a.workflowSecrets !== b.workflowSecrets) return "workflow secrets";
   if (a.keyCheck !== b.keyCheck) return "the workflow secrets' key check";

@@ -203,6 +203,7 @@ export const COUNTS: Counts = {
   attachments: 3,
   workflowSecrets: 2,
   keyCheck: "kc-1",
+  contentFingerprint: "cf-1",
 };
 
 /** CountsRunner with programmable counts per tenant; a run is READY once its tenant has counts (or at once with `auto`). */

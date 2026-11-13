@@ -546,6 +546,7 @@ const GOOD = JSON.stringify({
   attachments: 0,
   workflowSecrets: 3,
   keyCheck: "abc",
+  contentFingerprint: "cf",
 });
 
 describe("parseCounts", () => {
@@ -556,6 +557,7 @@ describe("parseCounts", () => {
       attachments: 0,
       workflowSecrets: 3,
       keyCheck: "abc",
+      contentFingerprint: "cf",
     });
     expect(parseCounts(GOOD.replace('"abc"', "null")).keyCheck).toBeNull();
   });
@@ -584,6 +586,24 @@ describe("parseCounts", () => {
         documentsByType: { ...a.documentsByType, "a/type": 5 },
       }),
     ).toBe("documents of type a/type");
+    expect(firstCountDifference(a, { ...a, contentFingerprint: "other" })).toBe(
+      "the operation log's content",
+    );
+    expect(
+      firstCountDifference(
+        a,
+        { ...a, contentFingerprint: "other" },
+        { operations: false },
+      ),
+    ).toBe("the operation log's content");
+    // A migration appended operations: the fingerprints cannot match, and that is fine.
+    expect(
+      firstCountDifference(
+        a,
+        { ...a, operations: 12, contentFingerprint: "other" },
+        { operations: false },
+      ),
+    ).toBeNull();
     expect(firstCountDifference(a, { ...a, keyCheck: "zzz" })).toBe(
       "the workflow secrets' key check",
     );
@@ -686,8 +706,8 @@ describe("the counts script on a database", () => {
     insert into reactor."DocumentSnapshot" values
       ('a/type','global',false),('a/type','global',false),('b/type','global',false),
       ('b/type','global',true),('a/type','local',false);
-    create table reactor."Operation" (id int);
-    insert into reactor."Operation" select generate_series(1, 7);`;
+    create table reactor."Operation" (id int, "documentId" text, scope text, branch text, "index" int);
+    insert into reactor."Operation" select g, 'd' || (g % 2), 'global', 'main', g / 2 from generate_series(1, 7) g;`;
 
   it("a fresh tenant: documents and operations only; the optional tables count 0", async () => {
     expect(await run(REACTOR)).toEqual({
@@ -696,7 +716,26 @@ describe("the counts script on a database", () => {
       attachments: 0,
       workflowSecrets: 0,
       keyCheck: null,
+      contentFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+  });
+
+  it("the content fingerprint tells equal counts with other content apart, and is stable", async () => {
+    const fp = async (setup: string) =>
+      (
+        (await run(setup)) as { contentFingerprint: string; operations: number }
+      ).contentFingerprint;
+    const base = await fp(REACTOR);
+    expect(await fp(REACTOR)).toBe(base);
+    // Same number of operations, one other id (a partial or swapped copy).
+    expect(
+      await fp(`${REACTOR} update reactor."Operation" set id = 99 where id = 7;`),
+    ).not.toBe(base);
+    // Same ids, a document stream one index further.
+    expect(
+      await fp(`${REACTOR} update reactor."Operation" set "index" = 50 where id = 7;`),
+    ).not.toBe(base);
+    expect(await fp(`${REACTOR} insert into reactor."Operation" values (8,'d0','global','main',4);`)).not.toBe(base);
   });
 
   it("finds the workflow secret tables in whatever schema holds secret_key_check", async () => {
