@@ -416,10 +416,12 @@ export async function appBudgetForLicence(
 ): Promise<number | null> {
   const chain = await db
     .selectFrom("license_environments")
-    .select(["license_id", "ended_at"])
+    .select(["license_id", "ended_at", "switched_over_at"])
     .where("root_license_id", "=", rootLicenseId)
     .executeTakeFirst();
-  if (!chain || chain.ended_at !== null) return null;
+  // A switched-over chain's budget is its plan instance's, not licensing's.
+  if (!chain || chain.ended_at !== null || chain.switched_over_at != null)
+    return null;
   for (const licenseId of new Set([chain.license_id, rootLicenseId])) {
     const code = await redeemedCodeOf(db, licenseId, userDid);
     const budget = code ? await llmBudgetForCode(db, code) : null;

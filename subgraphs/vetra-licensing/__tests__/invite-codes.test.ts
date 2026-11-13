@@ -285,6 +285,10 @@ describe("invite codes", () => {
     await d.updateTable("license_environments").set({ ended_at: NOW }).execute();
     expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
     await d.updateTable("license_environments").set({ ended_at: null }).execute();
+    // Switched over to an own instance: its budget is the plan instance's.
+    await d.updateTable("license_environments").set({ switched_over_at: NOW }).execute();
+    expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
+    await d.updateTable("license_environments").set({ switched_over_at: null }).execute();
     await setInviteCodeLlmBudget(d, "app-1", "code-eee", null);
     expect(await appBudgetForLicence(d, "root", "did:a")).toBeNull();
     // The current licence's own code wins over the root's.

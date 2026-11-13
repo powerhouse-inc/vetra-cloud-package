@@ -364,6 +364,8 @@ export function createPublisherResolvers(deps: PublisherDeps): Record<string, un
           templateHash: e.template_hash,
           stoppedAt: e.stopped_at,
           deleteAfter: e.delete_after,
+          switchedOverAt: e.switched_over_at ?? null,
+          switchedOverInstanceId: e.switched_over_instance_id ?? null,
         }));
       }),
 

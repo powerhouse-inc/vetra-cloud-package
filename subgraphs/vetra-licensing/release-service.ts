@@ -10,7 +10,7 @@ import type {
   ReleasePolicy,
   UpdateStatus,
 } from "./db/schema.js";
-import type { ChainEnvRows } from "./environments.js";
+import { isSwitchedOver, type ChainEnvRows } from "./environments.js";
 import { keyedMutex } from "./keyed-mutex.js";
 import type { AppLicensingWriter } from "./licensing-ledger.js";
 import { UnknownAppError } from "./publisher-auth.js";
@@ -150,7 +150,7 @@ const liveCanaries = async (
   appId: string,
 ): Promise<LicenseEnvironments[]> =>
   (await deps.envRows.forApp(appId)).filter(
-    (r) => isCanary(r) && r.ended_at === null,
+    (r) => isCanary(r) && r.ended_at === null && !isSwitchedOver(r),
   );
 
 /** The app's environment, or UnknownEnvironmentError: another app's fails like a missing one. */

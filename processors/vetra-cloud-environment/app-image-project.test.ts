@@ -328,6 +328,30 @@ describe("instance environments", () => {
   });
 });
 
+describe("a switched-over licensed environment (apps plan 9)", () => {
+  it("is still vouched for: the held old environment keeps its image project", async () => {
+    await seed();
+    await db.schema
+      .createTable("license_environments")
+      .addColumn("environment_id", "varchar(255)")
+      .addColumn("app_id", "varchar(255)")
+      .addColumn("switched_over_at", "varchar(255)")
+      .execute();
+    await db
+      .insertInto("license_environments")
+      .values({
+        environment_id: "licensed-env",
+        app_id: "app-1",
+        switched_over_at: "2026-11-13T00:00:00.000Z",
+      })
+      .execute();
+    const resolve = createAppImageProjectResolver(db, db);
+    expect(
+      await resolve({} as unknown as VetraCloudEnvironmentState, "licensed-env"),
+    ).toBe("app-shop");
+  });
+});
+
 describe("lookup failures (a render fails rather than render the app disabled)", () => {
   // A failed render writes nothing to git: the environment keeps running on
   // its previous values. Rendering `app.enabled: false` instead would drop

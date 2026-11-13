@@ -207,7 +207,7 @@ describe("vetraPublisher end to end", () => {
     }).execute();
     expect(await q("environments", { appId: APP })).toStrictEqual([{
       environmentId: "env-1", user: HOLDER_DID, licenseId, rootLicenseId: licenseId,
-      label: "Vault", templateHash: "h1", stoppedAt: null, deleteAfter: null,
+      label: "Vault", templateHash: "h1", stoppedAt: null, deleteAfter: null, switchedOverAt: null, switchedOverInstanceId: null,
     }]);
     expect(((await q("templates", { appId: APP })) as TemplateOut[])[0]!.environmentCount).toBe(1);
   });

@@ -132,6 +132,88 @@ describe("syncPlanInstances", () => {
     expect(await rows()).toEqual([]);
   });
 
+  describe("switched-over chains (plan 9)", () => {
+    const licence = () =>
+      seedLicence(h, { appId, kind: "pro", holder: HOLDER, licenseId: "l1" });
+
+    it("gives a chain whose licensed environment was switched over its own instance", async () => {
+      await plan();
+      await licence();
+      await seedLicensedEnvironment(h, {
+        appId,
+        root: "l1",
+        switchedOverAt: "2026-11-01T00:00:00.000Z",
+      });
+      await sync();
+      expect(await rows()).toEqual([
+        expect.objectContaining({ kind: "own", licence_root_id: "l1" }),
+      ]);
+    });
+
+    it("leaves a row a switch-over still owns alone, even when its licence ended", async () => {
+      await plan();
+      await licence();
+      await sync();
+      const [row] = await rows();
+      await h.db
+        .updateTable("instances")
+        .set({ switchover_id: "s1", plan_id: "stale" })
+        .where("id", "=", row.id)
+        .execute();
+      await h.deps
+        .licensingDb!.updateTable("license_lifecycle")
+        .set({ status: "EXPIRED" })
+        .where("license_id", "=", "l1")
+        .execute();
+      h.advance(30 * DAY);
+      await sync();
+      expect((await rows())[0]).toMatchObject({
+        plan_id: "stale",
+        stop_reason: null,
+        licence_ended_at: null,
+      });
+    });
+
+    it("stops the own instance stopAfterDays after the licence ended; the old environment is not the new one's business", async () => {
+      await plan();
+      await licence();
+      await seedLicensedEnvironment(h, {
+        appId,
+        root: "l1",
+        switchedOverAt: "2026-11-01T00:00:00.000Z",
+      });
+      await sync();
+      await h.deps
+        .licensingDb!.updateTable("license_lifecycle")
+        .set({ status: "EXPIRED" })
+        .where("license_id", "=", "l1")
+        .execute();
+      await sync();
+      h.advance(15 * DAY);
+      await sync();
+      expect((await rows())[0].stop_reason).toBe(LICENCE_ENDED);
+      expect((await rows())[0].stop_reason).not.toBe(LICENSED_ENVIRONMENT);
+    });
+
+    it("the reconciler skips an instance a switch-over owns", async () => {
+      await plan();
+      await licence();
+      await sync();
+      const [row] = await rows();
+      await h.db
+        .updateTable("instances")
+        .set({ switchover_id: "s1" })
+        .where("id", "=", row.id)
+        .execute();
+      h.envs.executed.length = 0;
+      await reconcileInstancesOnce(h.deps);
+      // The App's branch instance is reconciled as ever; the own row is not.
+      const own = (await rows()).find((r) => r.kind === "own")!;
+      expect(own.environment_id).toBeNull();
+      expect(own.status).toBe("pending");
+    });
+  });
+
   it("marks an own row to stop stopAfterDays after its licence ended, and clears it when live again", async () => {
     await plan();
     await seedLicence(h, {

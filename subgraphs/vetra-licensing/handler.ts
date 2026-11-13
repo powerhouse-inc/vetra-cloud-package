@@ -17,7 +17,7 @@ import {
 } from "./environments.js";
 import type { GrantProvenance } from "./grants.js";
 import type { LifecycleRecord } from "./lifecycle.js";
-import { UNAPPLIED_TEMPLATE_HASH } from "./environments.js";
+import { isSwitchedOver, UNAPPLIED_TEMPLATE_HASH } from "./environments.js";
 import type { LicenceRecord } from "./reads.js";
 import { leaveToInstances } from "./plan-kinds.js";
 
@@ -405,7 +405,7 @@ export class AppLicenseHandler {
 
   private async reconcileApp(
     appId: string,
-    licences: PlanLicence[],
+    allLicences: PlanLicence[],
     heldRoots: Map<string, string>,
   ): Promise<void> {
     const app = await this.timed(this.d.app(appId), `read of app ${appId}`);
@@ -424,7 +424,17 @@ export class AppLicenseHandler {
         `[licensing] app ${appId} is TAMPERED (${app.tamperReason ?? "unknown"}); holding all its licences and environments`,
       );
     }
-    const environments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+    const allEnvironments = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+    // A switched-over environment belongs to the instances model (apps plan 9):
+    // its chain is neither provisioned, staged nor ended here.
+    const switchedRoots = new Set(
+      allEnvironments.filter(isSwitchedOver).map((e) => e.root_license_id),
+    );
+    const environments = allEnvironments.filter((e) => !isSwitchedOver(e));
+    const licences =
+      switchedRoots.size === 0
+        ? allLicences
+        : allLicences.filter((l) => !switchedRoots.has(l.root));
     const planKinds = this.d.planKinds
       ? await this.timed(this.d.planKinds(appId), `plan kinds of app ${appId}`)
       : new Set<string>();
@@ -503,7 +513,9 @@ export class AppLicenseHandler {
         confirmedEnded.add(root);
     }
     if (!held) {
-      const after = await this.timed(this.d.environments(appId), `environments of app ${appId}`);
+      const after = (
+        await this.timed(this.d.environments(appId), `environments of app ${appId}`)
+      ).filter((e) => !isSwitchedOver(e));
       for (const row of after) {
         if (row.ended_at === null || confirmedEnded.has(row.root_license_id)) continue;
         this.notices.note(

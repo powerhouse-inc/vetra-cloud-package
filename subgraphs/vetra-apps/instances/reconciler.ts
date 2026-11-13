@@ -278,6 +278,9 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   rows.sort((a, b) => Number(!a.removed_at) - Number(!b.removed_at));
   for (const row of rows) {
     if (isPlanKind(row.kind) && !plans.enabled) continue;
+    // A switch-over owns the instance until it links it (plan 9): it creates,
+    // starts, holds and stops its environment itself.
+    if (row.switchover_id) continue;
     try {
       let settings = settingsForInstance(
         settingRows,
