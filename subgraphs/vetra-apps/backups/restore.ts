@@ -323,9 +323,14 @@ async function advanceRestore(
         return untouched(
           "no app Deployment in the namespace; nothing was changed",
         );
-      // A held instance is at 0 already: after a good restore it runs one replica.
+      // A held instance is at 0 already: after a good restore it runs one
+      // replica. Anything else is handed back as it was (a stopped one is
+      // never started by a restore).
       const keep = Object.fromEntries(
-        Object.entries(found).map(([n, c]) => [n, Math.max(c, 1)]),
+        Object.entries(found).map(([n, c]) => [
+          n,
+          r.was_held ? Math.max(c, 1) : c,
+        ]),
       );
       // Recorded before scaling: a crash in between can always scale back.
       await move({ status: "stopping", replicas: JSON.stringify(keep) });

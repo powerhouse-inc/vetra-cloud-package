@@ -117,3 +117,42 @@ describe("instance backups API (spec 7: restored from the console)", () => {
     });
   });
 });
+
+describe("restore preconditions", () => {
+  async function backedUp() {
+    const { h, appId, fake } = ctx;
+    await planInstance(h, fake, appId, { id: "o1" });
+    const b = await backUpInstanceFor(h.deps, owner, "o1");
+    await finishBackupJobs(h, fake);
+    await advanceBackups(h.deps, appId);
+    return b;
+  }
+  const restore = (backupId: string) =>
+    restoreInstanceBackupFor(ctx.h.deps, owner, {
+      instanceId: "o1",
+      backupId,
+      acceptDataLoss: true,
+    });
+
+  it("refuses a stopped instance: a restore would start it", async () => {
+    const b = await backedUp();
+    await updateInstance(
+      ctx.h.db,
+      "o1",
+      { stop_reason: "unpaid", status: "stopped" },
+      "2026-10-02T13:00:00.000Z",
+    );
+    await expect(restore(b.id)).rejects.toThrow(/stopped/);
+  });
+
+  it("refuses while an update to the backup's release is still running another release", async () => {
+    const b = await backedUp();
+    await updateInstance(
+      ctx.h.db,
+      "o1",
+      { status: "updating", running_version: "1.5.0" },
+      "2026-10-02T13:00:00.000Z",
+    );
+    await expect(restore(b.id)).rejects.toThrow(/updating/);
+  });
+});

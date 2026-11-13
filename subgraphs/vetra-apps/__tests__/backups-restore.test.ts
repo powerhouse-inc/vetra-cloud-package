@@ -307,3 +307,19 @@ describe("a restore Job that is missing", () => {
     ).toBe(86400);
   });
 });
+
+describe("handing back", () => {
+  it("never starts an instance that was stopped (not held) when the restore began", async () => {
+    const { h, fake } = ctx;
+    const b = await updatedAfterBackup();
+    fake.deployments.set("t-o1", app0);
+    const r = await beginRestore(h.deps, await inst(), b, {
+      purpose: "manual",
+      thenVersion: null,
+      who: SYSTEM_WHO,
+    });
+    await driveRestores(ctx);
+    expect((await getRestore(h.db, r.id))!.status).toBe("succeeded");
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+  });
+});

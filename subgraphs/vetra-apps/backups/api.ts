@@ -227,7 +227,22 @@ export async function restoreInstanceBackupFor(
       );
     if (cur.maintenance && !isHeld(cur.maintenance))
       throw appsError("BAD_USER_INPUT", `${cur.name} is being restored`);
+    // A restore hands the instance back running: never start one Vetra stopped.
+    if (cur.stop_reason)
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${cur.name} is stopped (${cur.stop_reason}); it can be restored once it runs again`,
+      );
     const held = isHeld(cur.maintenance);
+    if (
+      !held &&
+      cur.status === "updating" &&
+      cur.running_version !== backup.version
+    )
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${cur.name} is updating from ${cur.running_version ?? "an unknown release"}; wait for it to settle`,
+      );
     if (!held && backup.version !== cur.target_version)
       throw appsError(
         "BAD_USER_INPUT",
