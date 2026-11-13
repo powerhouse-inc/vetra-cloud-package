@@ -48,6 +48,8 @@ export interface VetraAppsConfig {
    * Reserved: no app row is ever given it, so no app document can carry it.
    */
   studioAppSlug: string;
+  /** VETRA_LICENSING_URL: where own instances report user stats (plan 7 Task 11). */
+  licensingUrl?: string | null;
   /**
    * Releases phase 2 instances. enabled=false (VETRA_APPS_INSTANCES=off)
    * stops the reconciler. labelSuffix (VETRA_APPS_INSTANCE_LABEL_SUFFIX,
@@ -103,6 +105,8 @@ export const instanceHealth = (cfg: VetraAppsConfig): InstanceHealthConfig =>
 export interface PlansConfig {
   enabled: boolean;
   stopAfterDays: number;
+  /** VETRA_APPS_PLANS_DESTROY: deletion of ended plan instances (default off). */
+  destroy?: boolean;
   /**
    * VETRA_APPS_ROLLOUTS_HOLD=on: no rollout step and no policy rollout starts
    * (decision R1); a moving step still settles. Present only when on.
@@ -220,6 +224,17 @@ function instancesConfig(env: Env): VetraAppsConfig["instances"] {
   };
 }
 
+/** Off unless explicitly on: destroying data needs its own switch. */
+function destroyOn(env: Env): boolean {
+  const raw = (trimmed(env.VETRA_APPS_PLANS_DESTROY) ?? "").toLowerCase();
+  if (raw === "") return false;
+  if (INSTANCES_OFF.has(raw)) return false;
+  if (INSTANCES_ON.has(raw)) return true;
+  throw new Error(
+    `VETRA_APPS_PLANS_DESTROY "${env.VETRA_APPS_PLANS_DESTROY}" is invalid: use on/off`,
+  );
+}
+
 function plansConfig(env: Env): PlansConfig {
   const raw = (trimmed(env.VETRA_APPS_PLANS) ?? "").toLowerCase();
   if (!INSTANCES_OFF.has(raw) && !INSTANCES_ON.has(raw)) {
@@ -231,6 +246,7 @@ function plansConfig(env: Env): PlansConfig {
     // Unset means off: plans are opted into per environment.
     enabled: raw !== "" && INSTANCES_ON.has(raw),
     stopAfterDays: intIn(env, "VETRA_APPS_PLAN_STOP_AFTER_DAYS", 14, 1, 90),
+    destroy: destroyOn(env),
     ...(switchOn(env, "VETRA_APPS_ROLLOUTS_HOLD") ? { rolloutsHold: true } : {}),
     ...(trimmed(env.VETRA_APPS_TEAM_SOAK_MINUTES) !== null
       ? {
@@ -426,6 +442,7 @@ export function loadAppsConfig(env: Env = process.env): VetraAppsConfig {
     productionRegistry: "https://registry.vetra.io",
     previewRegistry: "https://registry.dev.vetra.io",
     studioAppSlug: trimmed(env.VETRA_STUDIO_APP_SLUG) ?? "vetra-studio",
+    licensingUrl: trimmed(env.VETRA_LICENSING_URL),
     instances: instancesConfig(env),
     plans: plansConfig(env),
     switchover: switchoverConfig(env),

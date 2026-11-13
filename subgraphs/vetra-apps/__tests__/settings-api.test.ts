@@ -35,6 +35,9 @@ const set = (o: Partial<Parameters<typeof setAppSetting>[2]> = {}) =>
     ...o,
   });
 
+// File settings need the chart support flag (E1).
+process.env.FUSION_SECRET_FILES = "on";
+
 describe("publisher settings", () => {
   it("stores a plain setting and shows its value", async () => {
     expect(await set()).toMatchObject({
@@ -99,6 +102,32 @@ describe("publisher settings", () => {
     );
   });
 
+  it("scope PLAN is stored as plan, listed as PLAN, deleted on its own and audited", async () => {
+    await set({ value: "all" });
+    expect(await set({ scope: "PLAN", value: "p" })).toMatchObject({
+      scope: "PLAN",
+    });
+    expect(
+      (await listAppSettings(h.db, appId)).map((r) => [r.scope, r.value]),
+    ).toEqual([
+      ["all", "all"],
+      ["plan", "p"],
+    ]);
+    expect(
+      (await appSettingsFor(h.deps, owner, appId)).settings.map((s) => s.scope),
+    ).toEqual(["ALL", "PLAN"]);
+    expect(await deleteAppSetting(h.deps, owner, appId, "FOO", "PLAN")).toBe(
+      true,
+    );
+    expect((await listAppSettings(h.db, appId)).map((r) => r.scope)).toEqual([
+      "all",
+    ]);
+    const subjects = (
+      await h.db.selectFrom("app_audit").select("subject").execute()
+    ).map((r) => r.subject);
+    expect(subjects.filter((s) => s === "setting:PLAN/FOO")).toHaveLength(2);
+  });
+
   it("refuses names Vetra sets, malformed names and bad values (BAD_USER_INPUT)", async () => {
     for (const o of [
       { name: "ADMINS" },
@@ -110,6 +139,33 @@ describe("publisher settings", () => {
       await expect(set(o)).rejects.toMatchObject({
         extensions: { code: "BAD_USER_INPUT" },
       });
+  });
+
+  it("stores a file under a derived name, always secret, never returning its content; refuses bad paths and an 11th file", async () => {
+    const out = await set({
+      name: null,
+      value: '{"web":1}',
+      secret: false,
+      scope: "PLAN",
+      mountPath: "/client_secret_sektar-web-app.json",
+    });
+    expect(out).toMatchObject({
+      name: expect.stringMatching(/^FILE_[0-9A-F]{16}$/),
+      secret: true,
+      value: null,
+      mountPath: "/client_secret_sektar-web-app.json",
+    });
+    const [row] = await listAppSettings(h.db, appId);
+    expect(row.value).toBeNull();
+    expect(row.ciphertext).not.toContain("web");
+    await expect(
+      set({ name: null, value: "x", secret: true, mountPath: "/etc/passwd" }),
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+    for (let i = 0; i < 9; i++)
+      await set({ name: null, value: "x", secret: true, scope: "PLAN", mountPath: `/f${i}.json` });
+    await expect(
+      set({ name: null, value: "x", secret: true, scope: "PLAN", mountPath: "/f9.json" }),
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
   });
 
   it("caps an App at 100 settings, replacing one is still allowed", async () => {

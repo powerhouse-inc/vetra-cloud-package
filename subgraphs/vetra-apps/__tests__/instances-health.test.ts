@@ -179,6 +179,43 @@ describe("monitorInstancesOnce", () => {
     expect(h.probed).toEqual([await url("/ready"), await url("/")]);
   });
 
+  it("probes the custom domain once active; while issuing it skips the probes and says why", async () => {
+    const envId = await created();
+    await setCluster(envId, [{ digest: digest("a") }]);
+    await h.db
+      .updateTable("instances")
+      .set({ custom_domain: "app.acme.io", custom_domain_status: "issuing" })
+      .where("id", "=", (await one()).id)
+      .execute();
+    await monitor();
+    expect(h.probed).toEqual([]);
+    expect(await one()).toMatchObject({
+      health: "healthy",
+      health_reason: "certificate being issued for app.acme.io",
+    });
+    await h.db
+      .updateTable("instances")
+      .set({ custom_domain_status: "failed" })
+      .where("id", "=", (await one()).id)
+      .execute();
+    h.probed.length = 0;
+    await monitor();
+    expect(h.probed).toEqual([]);
+    expect((await one()).health_reason).toBe(
+      "certificate failed for app.acme.io",
+    );
+    await h.db
+      .updateTable("instances")
+      .set({ custom_domain_status: "active" })
+      .where("id", "=", (await one()).id)
+      .execute();
+    await monitor();
+    expect(h.probed).toEqual([
+      "https://app.acme.io/ready",
+      "https://app.acme.io/",
+    ]);
+  });
+
   it("calls a crash loop unhealthy without probing the host", async () => {
     const envId = await created();
     await setCluster(envId, [

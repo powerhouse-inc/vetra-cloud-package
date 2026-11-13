@@ -29,6 +29,8 @@ async function setup(
     budgets?: Record<string, StudioLlmBudget>;
     /** App licence budgets by root licence id (absent: null). */
     appBudgets?: Record<string, number | null>;
+    /** Plan instance budgets by instance id (absent: null). */
+    planBudgets?: Record<string, number | null>;
     workspaceId?: string | null;
   } = {},
 ) {
@@ -51,6 +53,7 @@ async function setup(
     appBudget: vi.fn(
       async (root: string, _did: string) => opts.appBudgets?.[root] ?? null,
     ),
+    planBudget: vi.fn(async (id: string) => opts.planBudgets?.[id] ?? null),
     envOf: async (id) =>
       opts.envs && id in opts.envs
         ? opts.envs[id]
@@ -66,7 +69,11 @@ async function setup(
   /** A Studio row whose key exists on the fake (in the workspace). */
   const held = async (env: string, over: Partial<StudioLlmKeys> = {}) => {
     const hash = fake.seed({
-      name: over.root_license_id ? `app:${env}` : `studio:${env}`,
+      name: over.instance_id
+        ? `instance:${over.instance_id}`
+        : over.root_license_id
+          ? `app:${env}`
+          : `studio:${env}`,
       createdAt: ago(60 * 60_000),
       workspaceId: "ws-1",
     });
@@ -245,6 +252,59 @@ describe("runLlmSweepOnce: app licence keys", () => {
     const s = await setup();
     const old = s.fake.seed({
       name: "app:lost",
+      createdAt: ago(ORPHAN_GRACE_MS + 60_000),
+      workspaceId: "ws-1",
+    });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ orphans: 1 });
+    expect(s.fake.keys.has(old)).toBe(false);
+  });
+});
+
+describe("runLlmSweepOnce: plan instance keys", () => {
+  it("keeps an instance: key ACTIVE at its plan budget, never asking the Studio licence", async () => {
+    const s = await setup({ planBudgets: { i1: 25 } });
+    const hash = await s.held("env-i1", { instance_id: "i1", limit_usd: 25 });
+    s.fake.keys.get(hash)!.limit = 25;
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({
+      disabled: 0,
+      limited: 0,
+      failed: 0,
+    });
+    expect(await s.store.get("env-i1")).toMatchObject({ status: "ACTIVE" });
+    expect(s.deps.planBudget).toHaveBeenCalledWith("i1");
+    expect(s.deps.budgetForDid).not.toHaveBeenCalled();
+  });
+
+  it("sets a changed budget, disables (secret kept) at null, re-enables later", async () => {
+    const budgets: Record<string, number | null> = { i1: 40 };
+    const s = await setup({ planBudgets: budgets });
+    const hash = await s.held("env-i1", { instance_id: "i1", limit_usd: 25 });
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ limited: 1 });
+    expect(s.fake.keys.get(hash)!.limit).toBe(40);
+    budgets.i1 = null;
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ disabled: 1 });
+    expect(s.fake.keys.get(hash)!.disabled).toBe(true);
+    expect(s.secrets.deleteSecret).not.toHaveBeenCalled();
+    budgets.i1 = 40;
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ enabled: 1 });
+    expect(s.fake.keys.get(hash)!.disabled).toBe(false);
+    expect(s.secrets.setSecret).not.toHaveBeenCalled();
+  });
+
+  it("leaves instance keys alone without a planBudget callback, and never disables a Studio key because of them", async () => {
+    const s = await setup();
+    delete (s.deps as { planBudget?: unknown }).planBudget;
+    const hash = await s.held("env-i1", { instance_id: "i1" });
+    const studio = await s.held("studio-1");
+    expect(await runLlmSweepOnce(s.deps)).toMatchObject({ disabled: 0 });
+    expect(s.fake.keys.get(hash)!.disabled).toBe(false);
+    expect(s.fake.keys.get(studio)!.disabled).toBe(false);
+  });
+
+  it("deletes old instance: orphans", async () => {
+    const s = await setup();
+    const old = s.fake.seed({
+      name: "instance:lost",
       createdAt: ago(ORPHAN_GRACE_MS + 60_000),
       workspaceId: "ws-1",
     });

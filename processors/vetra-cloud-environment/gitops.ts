@@ -1185,6 +1185,53 @@ function hostBlock(preview: boolean): string {
     mountPath: /data`;
 }
 
+/** The plain FUSION env entry Vetra Apps lists file mounts in: JSON [{key, mountPath}]. */
+export const VETRA_FILES_ENV = "VETRA_FILES";
+const FILE_KEY = /^FILE_[0-9A-F]{16}$/;
+const FILE_FORBIDDEN_ROOTS = ["/data", "/app", "/proc", "/sys", "/etc", "/var", "/dev", "/run", "/tmp", "/usr", "/bin", "/lib", "/root", "/home", "/opt"];
+
+/** Whether the chart renders `app.secretFiles` (powerhouse-chart E1 deployed). */
+const secretFilesSupported = () =>
+  ["on", "true", "1", "yes"].includes((process.env.FUSION_SECRET_FILES ?? "").trim().toLowerCase());
+
+function mountPathOk(p: unknown): p is string {
+  if (typeof p !== "string" || p.length > 512 || p === "/" || !p.startsWith("/")) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(p) || p.endsWith("/")) return false;
+  if (p.split("/").slice(1).some((seg) => seg === "" || seg === "." || seg === "..")) return false;
+  return !FILE_FORBIDDEN_ROOTS.some((r) => p === r || p.startsWith(`${r}/`));
+}
+
+/** VETRA_FILES → mounts; a malformed list or entry is logged and dropped (never rendered half-checked). */
+export function parseSecretFiles(
+  raw: string,
+  tenantId: string,
+): Array<{ key: string; mountPath: string }> {
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    logger.warn(`tenant ${tenantId}: ${VETRA_FILES_ENV} is not JSON; no files mounted`);
+    return [];
+  }
+  if (!Array.isArray(list)) {
+    logger.warn(`tenant ${tenantId}: ${VETRA_FILES_ENV} is not a list; no files mounted`);
+    return [];
+  }
+  const out: Array<{ key: string; mountPath: string }> = [];
+  const seen = new Set<string>();
+  for (const e of list as Array<{ key?: unknown; mountPath?: unknown }>) {
+    const key = e?.key;
+    const mountPath = e?.mountPath;
+    if (typeof key !== "string" || !FILE_KEY.test(key) || !mountPathOk(mountPath) || seen.has(mountPath)) {
+      logger.warn(`tenant ${tenantId}: a ${VETRA_FILES_ENV} entry is malformed; it is not mounted`);
+      continue;
+    }
+    seen.add(mountPath);
+    out.push({ key, mountPath });
+  }
+  return out;
+}
+
 export function generateFusionBlock(
   state: VetraCloudEnvironmentState,
   opts: {
@@ -1279,8 +1326,14 @@ export function generateFusionBlock(
     env.set("NEXT_PUBLIC_BASE_URL", `https://${host}`);
   }
   const secretNames: string[] = [];
+  let fileList: string | null = null;
   for (const e of state.fusion?.env ?? []) {
     if (!ENV_NAME.test(e.name)) continue; // names become YAML keys
+    // The list of files to mount (Vetra Apps): never an env var.
+    if (e.name === VETRA_FILES_ENV && classifyEnv(e) !== "secret") {
+      fileList = e.value ?? null;
+      continue;
+    }
     if (classifyEnv(e) === "secret") {
       secretNames.push(e.name); // never inline — referenced by key below
       continue;
@@ -1308,6 +1361,23 @@ export function generateFusionBlock(
           )
           .join("\n")}`
       : `  secretEnv: []`;
+  // File mounts from the tenant secret (powerhouse-chart secretFiles, E1).
+  // Rendered only once the chart supports them (FUSION_SECRET_FILES=on), and
+  // only when the env lists files: everything else renders as before.
+  const mounts = fileList === null ? [] : parseSecretFiles(fileList, opts.tenantId);
+  const secretFilesBlock =
+    mounts.length > 0 && secretFilesSupported()
+      ? `\n  secretFiles:\n${mounts
+          .map(
+            (f) =>
+              `    - name: ${yamlQuote(f.key)}\n      secretName: ${opts.tenantId}-secrets\n      key: ${yamlQuote(f.key)}\n      mountPath: ${yamlQuote(f.mountPath)}`,
+          )
+          .join("\n")}`
+      : "";
+  if (mounts.length > 0 && !secretFilesSupported())
+    logger.warn(
+      `tenant ${opts.tenantId}: ${mounts.length} file mount(s) not rendered: the chart's secretFiles is not enabled (FUSION_SECRET_FILES)`,
+    );
   return `app:
   enabled: true
   name: fusion
@@ -1334,7 +1404,7 @@ export function generateFusionBlock(
 ${envLines}
   envConfigMap: {}
   envSecret: {}
-${secretEnvBlock}
+${secretEnvBlock}${secretFilesBlock}
   podLabels:
     powerhouse.io/service: fusion
 ${hostMode ? hostBlock(isPreviewEnv(state)) : NEXT_STATIC_CACHE}

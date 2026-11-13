@@ -12,6 +12,7 @@ import {
   subdomainsCollide,
   subdomainTakenIn,
   subdomainUsedIn,
+  customDomainUsedIn,
 } from "../envs.js";
 import { FakeReactorClient } from "./fake-reactor.js";
 
@@ -97,6 +98,34 @@ describe("product subdomains", () => {
       expect(await used("rapid-fox")).toBe(true);
       expect(await used("shop-main-ab12cd")).toBe(false);
       expect(await used("rapid")).toBe(false);
+    } finally {
+      await root.destroy();
+    }
+  });
+});
+
+describe("customDomainUsedIn (plan 7 Task 7)", () => {
+  it("counts live environments holding the domain, except the one named", async () => {
+    const root = new Kysely<any>({ dialect: new PGliteDialect(new PGlite()) });
+    try {
+      await sql`CREATE SCHEMA "vetra-cloud-environments"`.execute(root);
+      await sql`CREATE TABLE "vetra-cloud-environments".environments (id text PRIMARY KEY, "customDomain" text, status text)`.execute(root);
+      const db = root.withSchema("vetra-cloud-environments");
+      await db
+        .insertInto("environments")
+        .values([
+          { id: "1", customDomain: "live.acme.io", status: "READY" },
+          { id: "2", customDomain: "gone.acme.io", status: "DESTROYED" },
+          { id: "3", customDomain: "draft.acme.io", status: null },
+        ])
+        .execute();
+      const used = customDomainUsedIn(db);
+      expect(await used("live.acme.io", null)).toBe(true);
+      expect(await used("LIVE.acme.io", null)).toBe(true);
+      expect(await used("live.acme.io", "1")).toBe(false);
+      expect(await used("gone.acme.io", null)).toBe(false);
+      expect(await used("draft.acme.io", null)).toBe(true);
+      expect(await used("free.acme.io", null)).toBe(false);
     } finally {
       await root.destroy();
     }

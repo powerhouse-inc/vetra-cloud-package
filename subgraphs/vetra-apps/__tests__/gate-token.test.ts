@@ -159,6 +159,9 @@ describe("withGate", () => {
       {
         revision: "r",
         plain: names.map((name) => ({ name, value: "open" })),
+        files: [],
+        vetraSecrets: [],
+        holderCount: 0,
         secrets: [
           { name: "VETRA_GATE_TOKEN", ciphertext: "vault:old", writeId: "w" },
           { name: "AUTH_ENABLED", ciphertext: "vault:x", writeId: "w" },

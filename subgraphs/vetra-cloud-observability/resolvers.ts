@@ -62,6 +62,11 @@ export interface ResolverConfig {
   orgSync?: OrgSyncDeps;
   /** Minimum gap between two syncs by `syncEnvironmentOrg` for one caller and env (default 10 s). */
   orgSyncMinIntervalMs?: number;
+  /**
+   * Whether a Vetra Apps instance holds this custom domain (holders' own
+   * instances, vetra-apps `instances.custom_domain`). Absent: not checked.
+   */
+  instanceDomainUsed?: (domain: string) => Promise<boolean>;
 }
 
 /**
@@ -858,6 +863,9 @@ export function createResolvers(
             (row) => !row.status || !RELEASED_STATUSES.has(row.status),
           );
           if (live.length > 0) {
+            throw new Error("DOMAIN_TAKEN");
+          }
+          if (config.instanceDomainUsed && (await config.instanceDomainUsed(domain))) {
             throw new Error("DOMAIN_TAKEN");
           }
         }

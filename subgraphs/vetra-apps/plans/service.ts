@@ -34,6 +34,7 @@ import {
   checkNoticeHours,
   checkPlanSlug,
   parseAccess,
+  parseAiBudget,
   parseSize,
   slugFromKind,
 } from "./rules.js";
@@ -50,6 +51,7 @@ export interface PlanJson {
   team: boolean;
   access: string;
   size: string;
+  aiBudgetUsd: number | null;
   targetVersion: string | null;
   policy: string;
   noticeHours: number;
@@ -71,6 +73,7 @@ export const planJson = (p: PlanRow): PlanJson => ({
   team: p.team === true,
   access: p.access,
   size: p.size,
+  aiBudgetUsd: p.ai_budget_usd ?? null,
   targetVersion: p.target_version,
   policy: p.policy,
   noticeHours: p.notice_hours,
@@ -89,6 +92,7 @@ export interface CreatePlanInput {
   slug?: string | null;
   name?: string | null;
   size?: string | null;
+  aiBudgetUsd?: number | null;
   targetVersion?: string | null;
 }
 
@@ -111,6 +115,8 @@ export interface UpdatePlanInput {
   planId: string;
   name?: string | null;
   size?: string | null;
+  /** null clears; absent leaves it */
+  aiBudgetUsd?: number | null;
   /** manual | patches | minor | follow:<branch> (a release branch of the App). */
   policy?: string | null;
   /** Hours between a rollout's start and the plan's updates (0-720). */
@@ -186,6 +192,8 @@ export async function createPlan(
   const name = checkText("name", input.name?.trim() || kind);
   const access = parseAccess(input.access);
   const size = parseSize(input.size);
+  const aiBudget =
+    input.aiBudgetUsd == null ? null : parseAiBudget(input.aiBudgetUsd);
   const given = input.slug?.trim();
   const slug = given || slugFromKind(kind);
   checkPlanSlug(slug, app, given ? {} : { derivedFrom: kind });
@@ -247,6 +255,7 @@ export async function createPlan(
         kind,
         access,
         size,
+        ai_budget_usd: aiBudget,
         target_version: target,
         policy: "manual",
         notice_hours: 72,
@@ -266,6 +275,7 @@ export async function createPlan(
           kind: p.kind,
           access: p.access,
           size: p.size,
+          ...(p.ai_budget_usd ? { aiBudgetUsd: p.ai_budget_usd } : {}),
           targetVersion: p.target_version,
         },
       });
@@ -327,6 +337,12 @@ export async function updatePlanFor(
   const patch = {
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
+    ...(input.aiBudgetUsd === undefined
+      ? {}
+      : {
+          ai_budget_usd:
+            input.aiBudgetUsd === null ? null : parseAiBudget(input.aiBudgetUsd),
+        }),
     ...(policy !== undefined ? { policy } : {}),
     ...(input.noticeHours != null
       ? { notice_hours: checkNoticeHours(input.noticeHours) }
@@ -344,6 +360,7 @@ export async function updatePlanFor(
       };
       note("name", cur.name, patch.name);
       note("size", cur.size, patch.size);
+      note("aiBudgetUsd", cur.ai_budget_usd ?? null, patch.ai_budget_usd);
       note("policy", cur.policy, patch.policy);
       note("noticeHours", cur.notice_hours, patch.notice_hours);
       // The window audits its stored JSON text, from and to.

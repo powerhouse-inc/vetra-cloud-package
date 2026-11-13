@@ -1,3 +1,4 @@
+import { publicHostOf } from "./public-host.js";
 import { instanceHealth } from "../config.js";
 import type { AppsDeps } from "../service.js";
 import { readCluster } from "./cluster.js";
@@ -14,7 +15,7 @@ import {
   type ProbeResult,
 } from "./health.js";
 import type { HttpProbe } from "./probe.js";
-import { INSTANCE_BASE_DOMAIN, ours } from "./reconciler.js";
+import { ours } from "./reconciler.js";
 import { settingsRevisionOf } from "./render.js";
 import { listDueForHealth, recordHealth, type InstanceRow } from "./repo.js";
 
@@ -221,10 +222,25 @@ async function checkInstance(
         wantedSettings,
       );
       if (fromCluster) verdict = fromCluster;
+      else if (
+        row.custom_domain_status === "issuing" ||
+        row.custom_domain_status === "failed"
+      )
+        // The host moved to the custom domain and its certificate is not
+        // there (issuing, or failed late): neither host would answer, so the
+        // cluster decides.
+        verdict = {
+          health: "healthy",
+          check: null,
+          reason:
+            row.custom_domain_status === "failed"
+              ? `certificate failed for ${row.custom_domain}`
+              : `certificate being issued for ${row.custom_domain}`,
+        };
       else if (deps.probe) {
         const p = await probeHost(
           safely(deps.probe),
-          `https://${row.host}.${INSTANCE_BASE_DOMAIN}`,
+          `https://${publicHostOf(row)}`,
         );
         verdict = judgeProbes(p.ready, p.connect);
       } else verdict = { ...NO_DATA, reason: "host probes are not configured" };

@@ -6,7 +6,8 @@ import type { InstanceSettings } from "./resolve.js";
 
 /**
  * Writes an instance's secrets to its tenant (spec 5 and 14.2): Vetra's
- * generated keys once (never replaced), the publisher's secrets in one batch,
+ * generated keys once (never replaced), the publisher's and the holder's
+ * secrets in one batch,
  * secrets the environment declared but no longer wants deleted, then a notify
  * so the controller materializes <tenant>-secrets now (its namespace may only
  * now exist). Values exist in plaintext only in this call.
@@ -23,20 +24,34 @@ export async function deliverSettings(
     await secrets.ensureSecret(tenantId, key, () =>
       randomBytes(32).toString("hex"),
     );
-  if (settings.secrets.length > 0) {
-    const vault = deps.settingsVault;
-    if (!vault) throw notConfigured("Secret settings (OPENBAO_ADDR)");
-    const entries = await Promise.all(
-      settings.secrets.map(async (s) => ({
+  if (settings.secrets.length > 0 || settings.files.length > 0) {
+    const vaultOf = (s: { vault?: string }) => {
+      // Holder secrets are under their own transit key (instance-settings).
+      const vault =
+        s.vault === "holder" ? deps.holderVault : deps.settingsVault;
+      if (!vault) throw notConfigured("Secret settings (OPENBAO_ADDR)");
+      return vault;
+    };
+    const entries = await Promise.all([
+      ...settings.secrets.map(async (s) => ({
         key: s.name,
-        value: await vault.decrypt(s.ciphertext),
+        value: await vaultOf(s).decrypt(s.ciphertext),
       })),
-    );
+      // Files are tenant secrets under their derived keys (never env vars).
+      ...settings.files.map(async (f) => ({
+        key: f.key,
+        value: await vaultOf(f).decrypt(f.ciphertext),
+      })),
+    ]);
     await secrets.setSecrets(tenantId, entries);
   }
+  // Vetra's per-instance secrets (AI key, reporting token) are written by
+  // their own paths: never written or deleted here.
   const wanted = new Set([
     ...VETRA_GENERATED_SECRETS,
+    ...settings.vetraSecrets,
     ...settings.secrets.map((s) => s.name),
+    ...settings.files.map((f) => f.key),
   ]);
   for (const name of declared)
     if (!wanted.has(name)) await secrets.deleteSecret(tenantId, name);

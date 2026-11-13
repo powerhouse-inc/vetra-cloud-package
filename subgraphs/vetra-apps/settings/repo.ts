@@ -5,7 +5,10 @@ import type {
   VetraAppsDB,
 } from "../db/schema.js";
 
-export type AppSettingRow = Selectable<AppSettingsTable>;
+/** mount_path stays optional: rows built by hand (and older code paths) leave it out (not a file). */
+export type AppSettingRow = Omit<Selectable<AppSettingsTable>, "mount_path"> & {
+  mount_path?: string | null;
+};
 
 export async function listAppSettings(
   db: Kysely<VetraAppsDB>,
@@ -35,6 +38,7 @@ export async function upsertAppSetting(
         write_id: row.write_id,
         updated_at: row.updated_at,
         updated_by: row.updated_by,
+        mount_path: row.mount_path ?? null,
       }),
     )
     .execute();
