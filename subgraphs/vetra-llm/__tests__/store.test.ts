@@ -19,6 +19,7 @@ const row = (over: Partial<StudioLlmKeys> = {}): StudioLlmKeys => ({
   model: "anthropic/claude-sonnet-4.6",
   owner_did: "did:pkh:eip155:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   root_license_id: null,
+  instance_id: null,
   status: "ACTIVE",
   created_at: "2026-10-15T10:00:00.000Z",
   updated_at: "2026-10-15T10:00:00.000Z",

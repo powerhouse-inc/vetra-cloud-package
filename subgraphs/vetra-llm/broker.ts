@@ -21,6 +21,8 @@ export const MODEL_FALLBACKS_VAR = "VETRA_MODEL_FALLBACKS";
 export const KEY_NAME_PREFIX = "studio:";
 /** An app licence environment's key (spec 3.11). */
 export const APP_KEY_NAME_PREFIX = "app:";
+/** A plan instance's key (releases phase 3): its plan's fixed monthly budget. */
+export const INSTANCE_KEY_NAME_PREFIX = "instance:";
 /** Verified enum (daily | weekly | monthly | null) in https://openrouter.ai/openapi.yaml. */
 export const LIMIT_RESET = "monthly" as const;
 export const USAGE_CACHE_MS = 60_000;
@@ -29,8 +31,11 @@ export const USAGE_CACHE_MS = 60_000;
 export const keyName = (
   environmentId: string,
   rootLicenseId?: string | null,
+  instanceId?: string | null,
 ): string =>
-  `${rootLicenseId ? APP_KEY_NAME_PREFIX : KEY_NAME_PREFIX}${environmentId}`;
+  instanceId
+    ? `${INSTANCE_KEY_NAME_PREFIX}${instanceId}`
+    : `${rootLicenseId ? APP_KEY_NAME_PREFIX : KEY_NAME_PREFIX}${environmentId}`;
 /** The per-env lock every key mutation (broker and sweeper) takes. */
 export const llmLockKey = (environmentId: string): string =>
   `llm:${environmentId}`;
@@ -89,6 +94,12 @@ export interface BrokerDeps {
    * app environment gets a key.
    */
   appBudget?(rootLicenseId: string, ownerDid: string): Promise<number | null>;
+  /**
+   * A plan instance's AI budget (USD/month) while the instance runs under a
+   * plan that has one; null otherwise (the key is disabled, secret kept).
+   * Absent: the input's fixedBudgetUsd answers.
+   */
+  planBudget?(instanceId: string): Promise<number | null>;
   cfg: Pick<LlmConfig, "defaultModel" | "workspaceId" | "fallbackModels">;
   now(): Date;
   logger: Pick<Console, "info" | "warn" | "error">;
@@ -99,6 +110,10 @@ export interface VetraKeyInput {
   ownerDid: string;
   /** Set for an app licence environment: the chain root whose code budgets the key. */
   rootLicenseId?: string;
+  /** Set for a plan instance's key (`instance:<id>`); never the Studio licence. */
+  instanceId?: string;
+  /** The plan's monthly budget, used when the broker has no planBudget callback. */
+  fixedBudgetUsd?: number;
 }
 
 export interface LlmBroker {
@@ -160,11 +175,25 @@ export async function studioBudget(
  * (no Studio licence gate, no admin override).
  */
 export async function keyBudget(
-  d: Pick<BrokerDeps, "budgetForDid" | "budgetOverride" | "appBudget">,
+  d: Pick<
+    BrokerDeps,
+    "budgetForDid" | "budgetOverride" | "appBudget" | "planBudget"
+  >,
   did: string,
   environmentId: string,
   rootLicenseId: string | null | undefined,
+  instanceId?: string | null,
+  fixedBudgetUsd?: number,
 ): Promise<StudioLlmBudget> {
+  if (instanceId) {
+    // A plan instance's key answers to its plan alone: no Studio licence.
+    const usd = d.planBudget
+      ? await d.planBudget(instanceId)
+      : (fixedBudgetUsd ?? null);
+    return usd === null || usd <= 0
+      ? { allowed: false, budgetUsd: 0 }
+      : { allowed: true, budgetUsd: usd };
+  }
   if (!rootLicenseId) return studioBudget(d, did, environmentId);
   const usd = d.appBudget ? await d.appBudget(rootLicenseId, did) : null;
   return usd === null
@@ -241,7 +270,14 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     const { openrouter, keyVault } = configured();
     const env = input.environmentId;
     usageCache.delete(env);
-    const budget = await keyBudget(d, input.ownerDid, env, input.rootLicenseId);
+    const budget = await keyBudget(
+      d,
+      input.ownerDid,
+      env,
+      input.rootLicenseId,
+      input.instanceId,
+      input.fixedBudgetUsd,
+    );
     const row = await d.store.get(env);
     const now = d.now().toISOString();
     const held = heldRow(row);
@@ -306,7 +342,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
     }
 
     const created = await openrouter.createKey({
-      name: keyName(env, input.rootLicenseId),
+      name: keyName(env, input.rootLicenseId, input.instanceId),
       limitUsd: budget.budgetUsd,
       limitReset: LIMIT_RESET,
       workspaceId: d.cfg.workspaceId,
@@ -324,6 +360,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
         model,
         owner_did: input.ownerDid,
         root_license_id: input.rootLicenseId ?? null,
+        instance_id: input.instanceId ?? null,
         status: "ACTIVE",
         created_at: row?.created_at ?? now,
         updated_at: now,
@@ -402,7 +439,7 @@ export function createLlmBroker(d: BrokerDeps): LlmBroker {
       withKeyLock(llmLockKey(input.environmentId), async () => {
         if (!d.secrets) throw notConfigured("tenant secrets (OPENBAO_ADDR)");
         const env = input.environmentId;
-        const app = Boolean(input.rootLicenseId);
+        const app = Boolean(input.rootLicenseId || input.instanceId);
         const grant = await ensureLocked(input);
         if (!grant) {
           // An app's FUSION service mounts the secret by key: removing it
