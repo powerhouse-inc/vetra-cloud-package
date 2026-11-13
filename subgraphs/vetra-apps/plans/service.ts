@@ -222,7 +222,7 @@ export async function createPlan(
           kind: p.kind,
           access: p.access,
           size: p.size,
-          aiBudgetUsd: p.ai_budget_usd ?? null,
+          ...(p.ai_budget_usd ? { aiBudgetUsd: p.ai_budget_usd } : {}),
           targetVersion: p.target_version,
         },
       });
