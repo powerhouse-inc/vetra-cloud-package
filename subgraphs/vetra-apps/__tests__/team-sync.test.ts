@@ -3,7 +3,7 @@ import type { Harness } from "./harness.js";
 import { seedLicence } from "./instances-fixtures.js";
 import { seedTeamPlan, teamHarness, teamRow } from "./team-fixtures.js";
 import { syncPlanInstances, PLAN_RETIRED } from "../plans/sync.js";
-import { TEAM_NOT_ORG } from "../plans/team.js";
+import { TEAM_NOT_ORG } from "../plans/team-base.js";
 import { adminsOf } from "../instances/reconciler.js";
 import { getApp } from "../repo.js";
 import { updatePlan } from "../plans/repo.js";

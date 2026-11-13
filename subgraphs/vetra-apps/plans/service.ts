@@ -37,7 +37,7 @@ import {
   parseSize,
   slugFromKind,
 } from "./rules.js";
-import { isTeamPlan } from "./team.js";
+import { isTeamPlan } from "./team-base.js";
 
 export interface PlanJson {
   id: string;

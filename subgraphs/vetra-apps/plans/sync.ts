@@ -20,7 +20,7 @@ import {
   type ChainHead,
 } from "./holders.js";
 import { listPlans, type PlanRow } from "./repo.js";
-import { isOrgApp, isTeamPlan, TEAM_NOT_ORG } from "./team.js";
+import { isOrgApp, isTeamPlan, TEAM_NOT_ORG } from "./team-base.js";
 
 export const LICENCE_ENDED = "the licence ended";
 export const PLAN_RETIRED = "the plan is retired and has no live licences";

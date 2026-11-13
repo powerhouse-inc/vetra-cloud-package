@@ -1,7 +1,7 @@
 import { teamSoakMs } from "../config.js";
 import { listInstances } from "../instances/repo.js";
 import type { PlanRow } from "../plans/repo.js";
-import { activeTeamPlan } from "../plans/team.js";
+import { activeTeamPlan } from "../plans/team-base.js";
 import { teamRunOf } from "../plans/team-runs.js";
 import { PLAN_SIZES } from "../plans/rules.js";
 import type { ReleaseRow } from "../releases/repo.js";

@@ -1,7 +1,7 @@
 import { RenownOrgsUnavailableError } from "../../../shared/renown-orgs.js";
 import type { AppRow } from "../repo.js";
 import type { AppsDeps } from "../service.js";
-import { isOrgApp } from "./team.js";
+import { isOrgApp } from "./team-base.js";
 
 /**
  * The licence gate's answer for the Team instance (decision D8): the owning
