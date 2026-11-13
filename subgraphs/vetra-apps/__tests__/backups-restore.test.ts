@@ -22,6 +22,7 @@ import {
   SYSTEM_WHO,
 } from "../backups/restore.js";
 import { startInstanceBackup } from "../backups/service.js";
+import { getHold } from "../holds/repo.js";
 import { getInstance, updateInstance } from "../instances/repo.js";
 
 let ctx: BackupCtx;
@@ -171,6 +172,8 @@ describe("restoring a backup", () => {
       ),
     });
     expect(fake.deployments.get("t-o1")).toEqual(app0);
+    // The environment is held: no app pod is rendered.
+    expect(await getHold(h.db, "env-o1")).toMatchObject({ reason: "restore failed", created_by: "vetra" });
     const again = await beginRestore(h.deps, await inst(), b, {
       purpose: "manual",
       thenVersion: "1.4.0",
@@ -185,6 +188,16 @@ describe("restoring a backup", () => {
     });
     expect((await inst()).maintenance).toBe(`held:${again.id}`);
     expect(fake.deployments.get("t-o1")).toEqual(app0);
+    expect(await getHold(h.db, "env-o1")).not.toBeNull();
+    // A good restore hands back and releases the hold.
+    const good = await beginRestore(h.deps, await inst(), b, {
+      purpose: "manual",
+      thenVersion: "1.4.0",
+      who: SYSTEM_WHO,
+    });
+    await driveRestores(ctx);
+    expect((await getRestore(h.db, good.id))!.status).toBe("succeeded");
+    expect(await getHold(h.db, "env-o1")).toBeNull();
   });
 
   it("refuses another instance's backup, a backup that is not ready, and a second restore", async () => {

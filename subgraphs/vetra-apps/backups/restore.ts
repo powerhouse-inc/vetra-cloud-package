@@ -2,6 +2,8 @@ import { ArchivesRepo } from "../../vetra-cloud-observability/dumps/archive-repo
 import { buildDataRestoreJob } from "../../vetra-cloud-observability/dumps/archive-job-spec.js";
 import { buildRestoreJob } from "../../vetra-cloud-observability/dumps/job-spec.js";
 import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
+import { getHold } from "../holds/repo.js";
+import { holdEnvironment, releaseHold } from "../holds/service.js";
 import type { AuditSource, RestorePurpose } from "../db/schema.js";
 import {
   getInstance,
@@ -32,6 +34,7 @@ export const RESTORE_START_TIMEOUT_MS = 20 * 60_000;
 /** How long a restore waits for a running backup of the instance before its safety backup can start. */
 export const SAFETY_START_TIMEOUT_MS = 30 * 60_000;
 
+const RESTORE_HOLD_REASON = "restore failed";
 export const activeMark = (restoreId: string) => `restore:${restoreId}`;
 export const heldMark = (restoreId: string) => `held:${restoreId}`;
 /** Held: a restore failed with /data possibly half restored; the instance stays stopped. */
@@ -258,6 +261,27 @@ async function finish(
       },
     });
   });
+  // A held instance renders no app pod at all (else the chart would start one again); a good restore releases that hold.
+  if (inst?.environment_id) {
+    try {
+      if (held)
+        await holdEnvironment(deps, {
+          environmentId: inst.environment_id,
+          reason: RESTORE_HOLD_REASON,
+          switchoverId: null,
+          by: AUDIT_SYSTEM_ACTOR,
+        });
+      else if (!error && r.was_held) {
+        const hold = await getHold(deps.db, inst.environment_id);
+        if (hold?.reason === RESTORE_HOLD_REASON)
+          await releaseHold(deps, inst.environment_id);
+      }
+    } catch (err) {
+      deps.logger.warn(
+        `[vetra-apps] restore ${r.id}: environment hold: ${message(err)}`,
+      );
+    }
+  }
   // The Jobs are no longer needed (their outcome is recorded); best effort, the TTL is the backstop.
   for (const job of [r.db_job, r.data_job])
     if (job)
