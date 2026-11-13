@@ -8,6 +8,7 @@ import {
 import {
   BACKUP_TIMEOUT_MS,
   BackupBusyError,
+  RestoreBusyError,
   backupBeforeUpdate,
   backupProgress,
   backupsOn,
@@ -579,6 +580,8 @@ async function recover(
       stepId: step.id,
     });
   } catch (err) {
+    // Another restore of the instance runs: try again on a later pass.
+    if (err instanceof RestoreBusyError) return;
     await failStep(
       deps,
       app,

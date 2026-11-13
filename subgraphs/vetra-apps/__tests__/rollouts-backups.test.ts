@@ -279,6 +279,22 @@ describe("rollouts with backups: pausing, rolling back mid-update, ordering", ()
     expect(rows).toHaveLength(1);
   });
 
+  it("a failed update whose instance is being restored meanwhile waits instead of failing the step", async () => {
+    await migrates();
+    const r = await start();
+    await pass();
+    await finishBackupJobs(h, fake);
+    await pass();
+    await runsTarget("o1");
+    await failUpdate(h, "o1");
+    await h.db.updateTable("instances").set({ maintenance: "restore:other" }).where("id", "=", "o1").execute();
+    await pass();
+    expect(await statuses(r.id)).toEqual(["o1:applying"]);
+    await h.db.updateTable("instances").set({ maintenance: null }).where("id", "=", "o1").execute();
+    await pass();
+    expect(await statuses(r.id)).toEqual(["o1:restoring"]);
+  });
+
   it("a held instance (failed restore) fails the step instead of updating it", async () => {
     await h.db
       .updateTable("instances")
