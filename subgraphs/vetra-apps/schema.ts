@@ -442,7 +442,7 @@ export const schema: DocumentNode = gql`
   }
 
   "A move of one or more plans to a release, one instance at a time (spec: releases and instances, section 7)"
-  type AppRollout {
+  type PlanRollout {
     id: ID!
     appId: ID!
     version: String!
@@ -832,8 +832,8 @@ export const schema: DocumentNode = gql`
     "The settings the caller set on their own instance (holder only)"
     myInstanceSettings(instanceId: ID!): HolderSettings!
     "The App's rollouts, newest first (default 20, at most 100)"
-    appRollouts(appId: ID!, limit: Int): [AppRollout!]!
-    rollout(id: ID!): AppRollout
+    appRollouts(appId: ID!, limit: Int): [PlanRollout!]!
+    rollout(id: ID!): PlanRollout
     "What a rollout would move, and why it cannot start (noticeHours: as startRollout's)"
     checkRollout(appId: ID!, version: String!, planIds: [ID!]!, noticeHours: Int): AppRolloutCheck!
     appDeployment(id: ID!): AppDeployment
@@ -900,16 +900,16 @@ export const schema: DocumentNode = gql`
     "Start a rollout of this plan to a release (the plan's notice; instances one at a time)"
     setPlanTarget(planId: ID!, version: String!): AppPlan!
     "Start a rollout of plans to a release (operators and release managers)"
-    startRollout(input: StartRolloutInput!): AppRollout!
-    pauseRollout(rolloutId: ID!, reason: String): AppRollout!
+    startRollout(input: StartRolloutInput!): PlanRollout!
+    pauseRollout(rolloutId: ID!, reason: String): PlanRollout!
     "Refused while a step is failed (retry or skip it)"
-    resumeRollout(rolloutId: ID!): AppRollout!
+    resumeRollout(rolloutId: ID!): PlanRollout!
     "Skip what waits; moved instances stay; plans keep the new target"
-    cancelRollout(rolloutId: ID!): AppRollout!
-    retryRolloutStep(stepId: ID!): AppRollout!
-    skipRolloutStep(stepId: ID!): AppRollout!
+    cancelRollout(rolloutId: ID!): PlanRollout!
+    retryRolloutStep(stepId: ID!): PlanRollout!
+    skipRolloutStep(stepId: ID!): PlanRollout!
     "Plans back to their previous release; instances back one at a time (image only). A release that migrates restores each instance's backup from before its update: acceptDataLoss must be true, data written since is lost"
-    rollBackRollout(rolloutId: ID!, acceptDataLoss: Boolean): AppRollout!
+    rollBackRollout(rolloutId: ID!, acceptDataLoss: Boolean): PlanRollout!
     "Own instances: rollouts skip it; another release is applied at once"
     pinInstance(instanceId: ID!, version: String!): AppInstance!
     unpinInstance(instanceId: ID!): AppInstance!
