@@ -241,3 +241,63 @@ describe("hold lookup failures", () => {
     expect(isHeld).toHaveBeenCalledWith(DOC_ID);
   });
 });
+
+describe("an unclaimed PLAN instance (a dry-run clone: no ADMINS) has no public ingress", () => {
+  const plan = (
+    over: Partial<VetraCloudEnvironmentState> = {},
+  ): VetraCloudEnvironmentState =>
+    envState({
+      app: { role: "PLAN", appId: "app-1" } as unknown as VetraCloudEnvironmentState["app"],
+      ...over,
+    });
+  const noPublicIngress = (yaml: string) => {
+    // Every ingress block is either closed (fusion app) or disabled.
+    for (const m of yaml.matchAll(/^ {2}ingress:\n( {4}.*\n)+/gm)) {
+      expect(m[0]).toMatch(/enabled: false|closed: true/);
+    }
+    expect(yaml).not.toContain("additionalIngress");
+    expect(yaml).not.toMatch(/ingress:\n {4}enabled: true\n {4}className: traefik\n {4}host: [^\n]*\n(?! {4}closed)/);
+  };
+
+  it("a FUSION host renders its app ingress closed", async () => {
+    const yaml = await render(plan(), false);
+    expect(block(yaml, "app")).toMatch(/  ingress:\n    enabled: true\n    className: traefik\n    closed: true/);
+    await expect(yaml).toMatchFileSnapshot("./__golden__/plan-clone-values.yaml");
+  });
+
+  it("switchboard and Connect ingresses (and custom-domain ones) are off too", async () => {
+    const yaml = await render(
+      plan({
+        services: [
+          svc("SWITCHBOARD", "switchboard"),
+          svc("CONNECT", "connect"),
+        ],
+        fusion: null,
+        customDomain: { enabled: true, domain: "holder.example", dnsRecords: [] },
+      }),
+      false,
+    );
+    expect(block(yaml, "switchboard")).toMatch(/  ingress:\n    enabled: false/);
+    expect(block(yaml, "connect")).toMatch(/  ingress:\n    enabled: false/);
+    expect(yaml).not.toContain("holder.example");
+    noPublicIngress(yaml);
+  });
+
+  it("a claimed PLAN instance (ADMINS set) keeps its ingress open", async () => {
+    const yaml = await render(
+      plan({
+        fusion: {
+          image: "cr.vetra.io/achra/host",
+          env: [
+            { name: "PH_HOST", value: "cli", isSecret: false },
+            { name: "ADMINS", value: "0xabc", isSecret: false },
+          ],
+          autoUpdate: false,
+          autoUpdateTagPattern: null,
+        },
+      }),
+      false,
+    );
+    expect(block(yaml, "app")).not.toContain("closed:");
+  });
+});

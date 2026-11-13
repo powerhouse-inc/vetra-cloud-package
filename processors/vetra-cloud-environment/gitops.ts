@@ -1071,6 +1071,17 @@ const HOST_DEFAULT_PORT = 6540;
  * entrypoint reads to pick the host. It gets the tenant database, a data
  * volume, `PUBLIC_URL` and the Connect port instead of the NEXT_PUBLIC_* set.
  */
+/**
+ * A PLAN instance nobody claimed (no ADMINS): a dry-run clone or a prepared
+ * switch-over instance. It is never publicly reachable: every ingress of its
+ * environment (app, switchboard, Connect, custom domains) stays closed.
+ */
+export function isUnclaimedPlan(state: VetraCloudEnvironmentState): boolean {
+  if (state.app?.role !== "PLAN") return false;
+  const admins = (state.fusion?.env ?? []).find((e) => e.name === "ADMINS");
+  return !(admins?.value ?? "").trim();
+}
+
 export function isFusionHost(state: VetraCloudEnvironmentState): boolean {
   const service = (state.services ?? []).find(
     (s) => s.type === "FUSION" && s.enabled,
@@ -1350,9 +1361,7 @@ export function generateFusionBlock(
   // A PLAN instance with no ADMINS yet is not claimed by anyone: closed, even
   // when the pool lookup does not say warm (an unclaimed row is never open).
   const closed =
-    !opts.held &&
-    (opts.warm === true ||
-      (state.app?.role === "PLAN" && !(env.get("ADMINS") ?? "").trim()));
+    !opts.held && (opts.warm === true || isUnclaimedPlan(state));
 
   const envLines = [...env.entries()]
     .map(([k, v]) => `    ${yamlQuote(k)}: ${yamlQuote(v)}`)
@@ -1566,12 +1575,13 @@ export async function generateValuesYaml(
     customDomain && apexService === "CONNECT" && connectEnabled
       ? customDomain
       : null;
+  const unclaimedPlan = isUnclaimedPlan(state);
   const switchboardCustomIngress =
-    customDomain && switchboardEnabled && !switchboardApexDomain
+    !unclaimedPlan && customDomain && switchboardEnabled && !switchboardApexDomain
       ? generateCustomDomainIngress("switchboard", customDomain)
       : "";
   const connectCustomIngress =
-    customDomain && connectEnabled && !connectApexDomain
+    !unclaimedPlan && customDomain && connectEnabled && !connectApexDomain
       ? generateCustomDomainIngress("connect", customDomain)
       : "";
   // Generic (non-customDomain-apex) services get an explicit flattened host so
@@ -1796,7 +1806,7 @@ switchboard:
     port: 80
     targetPort: 3000
   ingress:
-    enabled: ${!held}
+    enabled: ${!held && !unclaimedPlan}
     className: traefik${switchboardHostLine}
     tls:
       enabled: true
@@ -1870,7 +1880,7 @@ connect:
     port: 80
     targetPort: 3001
   ingress:
-    enabled: true
+    enabled: ${!unclaimedPlan}
     className: traefik${connectHostLine}
     tls:
       enabled: true
