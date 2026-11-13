@@ -323,3 +323,31 @@ describe("handing back", () => {
     expect(fake.deployments.get("t-o1")).toEqual(app0);
   });
 });
+
+describe("the app must stay stopped while /data is replaced", () => {
+  it("does not start the /data Job while pods run: it scales to 0 again and waits", async () => {
+    const { h, fake } = ctx;
+    const { r } = await restoreUntil("restoring_db");
+    fake.finish("pgrestore-");
+    fake.deployments.set("t-o1", app1); // something scaled it up
+    await pass(ctx);
+    expect(fake.jobs.has(`datarestore-${r.id}`)).toBe(false);
+    expect((await getRestore(h.db, r.id))!.status).toBe("restoring_db");
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+    await pass(ctx);
+    expect((await getRestore(h.db, r.id))!.status).toBe("restoring_data");
+    expect(fake.jobs.has(`datarestore-${r.id}`)).toBe(true);
+  });
+
+  it("scales to 0 again on a /data pass that finds pods, and does not take the Job's end until none run", async () => {
+    const { h, fake } = ctx;
+    const { r } = await restoreUntil("restoring_data");
+    fake.deployments.set("t-o1", app1);
+    fake.finish("datarestore-");
+    await pass(ctx);
+    expect(fake.deployments.get("t-o1")).toEqual(app0);
+    expect((await getRestore(h.db, r.id))!.status).toBe("restoring_data");
+    await pass(ctx);
+    expect((await getRestore(h.db, r.id))!.status).toBe("starting");
+  });
+});

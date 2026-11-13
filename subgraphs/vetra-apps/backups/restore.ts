@@ -261,6 +261,32 @@ async function finish(
     );
 }
 
+/**
+ * True when pods of the app run while /data is being replaced: scaled to 0
+ * again, and the phase waits (past the Jobs' deadline it fails held).
+ */
+async function mustStayStopped(
+  deps: AppsDeps,
+  k8s: BackupK8s,
+  r: InstanceRestoreRow,
+  inst: InstanceRow,
+  ns: string,
+  replicas: Record<string, number>,
+  over: (ms: number) => boolean,
+): Promise<boolean> {
+  if ((await k8s.countPods(ns, APP_SELECTOR)) === 0) return false;
+  await scaleAll(k8s, ns, replicas, 0);
+  if (over(RESTORE_JOB_TIMEOUT_MS))
+    await finish(
+      deps,
+      r,
+      inst,
+      "the app kept running while /data was being restored; /data may be half restored",
+      true,
+    );
+  return true;
+}
+
 async function advanceRestore(
   deps: AppsDeps,
   k8s: BackupK8s,
@@ -422,6 +448,10 @@ async function advanceRestore(
           "the database is restored but the /data archive is gone",
           true,
         );
+      // /data is replaced under a stopped app only: pods back (Argo, a person)
+      // are scaled down again and the Job waits.
+      if (await mustStayStopped(deps, k8s, r, inst, ns, replicas, over))
+        return;
       const name = await k8s.createJob(
         ns,
         buildDataRestoreJob({
@@ -445,6 +475,8 @@ async function advanceRestore(
     }
 
     case "restoring_data": {
+      if (await mustStayStopped(deps, k8s, r, inst, ns, replicas, over))
+        return;
       const out = await jobOutcome(
         k8s,
         ns,
