@@ -6,6 +6,7 @@ import {
   judgeCluster,
   judgedPods,
   judgeProbes,
+  HEALTHY,
   NO_DATA,
   observedDigest,
   observedSettings,
@@ -221,6 +222,8 @@ async function checkInstance(
         wantedSettings,
       );
       if (fromCluster) verdict = fromCluster;
+      // A warm row's ingress is closed until claimed (W7): the cluster decides.
+      else if (row.warm === true) verdict = HEALTHY;
       else if (deps.probe) {
         const p = await probeHost(
           safely(deps.probe),
