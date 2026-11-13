@@ -84,6 +84,8 @@ describe("plans: release managers and the audit log", () => {
       slug: "pro",
       from: "1.4.0",
       to: "1.5.0",
+      // setPlanTarget starts a rollout (releases phase 3 slice 3).
+      rolloutId: expect.any(String),
     });
     expect(JSON.parse(rows[2].detail)).toEqual({
       slug: "pro",

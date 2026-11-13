@@ -11,6 +11,7 @@ export type AppsErrorCode =
   | "SERVICE_NOT_CONFIGURED"
   | "VERSION_CONFLICT"
   | "SERVICE_UNAVAILABLE"
+  | "RATE_LIMITED"
   | StudioLaunchErrorCode
   | GithubSetupErrorCode;
 

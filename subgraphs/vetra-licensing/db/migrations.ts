@@ -333,6 +333,23 @@ export async function up(db: Kysely<any>): Promise<void> {
     .columns(["environment_id", "created_at"]).ifNotExists().execute();
   await db.schema.createIndex("environment_updates_app_status_idx").on("environment_updates")
     .columns(["app_id", "status"]).ifNotExists().execute();
+  // The licence gate asks per (App, holder) on every check (releases phase 3 slice 5),
+  // matching user_address exactly (lowercase) so this index serves it. Grants are
+  // written lowercase (addressOfDid); rows backfilled from app_user_environments
+  // kept whatever case that table had, so lowercase them (idempotent, a no-op once done).
+  await db
+    .updateTable("app_license_grants")
+    .set((eb) => ({ user_address: eb.fn("lower", [eb.ref("user_address")]) }))
+    .where((eb) => eb(eb.ref("user_address"), "<>", eb.fn("lower", [eb.ref("user_address")])))
+    .execute();
+  try {
+    await db.schema.createIndex("app_license_grants_app_user_idx").on("app_license_grants")
+      .columns(["app_id", "user_address"]).ifNotExists().execute();
+  } catch (error) {
+    // Another replica booting at the same time created it first.
+    const code = (error as { code?: string } | null)?.code;
+    if (code !== "42P07" && code !== "23505") throw error;
+  }
 }
 
 export async function down(db: Kysely<any>): Promise<void> {

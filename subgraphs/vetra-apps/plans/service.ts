@@ -1,9 +1,26 @@
+import { withKeyLock } from "../../../shared/key-lock.js";
 import type { Caller } from "../auth.js";
 import { appsError, notConfigured } from "../errors.js";
 import { auditCaller } from "../audit/service.js";
 import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
-import { plansConfigOf } from "../config.js";
+import { plansConfigOf, rolloutsEnabled } from "../config.js";
+import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
+import { releaseProblem } from "../rollouts/check.js";
+import { appInstancesLock } from "../rollouts/repo.js";
+import {
+  beginRollout,
+  callerActor,
+  plannedSteps,
+} from "../rollouts/service.js";
+import { parsePolicy, policyText } from "../rollouts/policy.js";
+import {
+  checkWindow,
+  parseWindow,
+  type UpdateWindow,
+} from "../rollouts/window.js";
+import type { PlanAccess } from "../db/schema.js";
+import { gateFloorError } from "../gate/service.js";
 import { grantKinds, hasLicensedEnvironments } from "./holders.js";
 import {
   getPlan,
@@ -14,6 +31,7 @@ import {
   type PlanRow,
 } from "./repo.js";
 import {
+  checkNoticeHours,
   checkPlanSlug,
   parseAccess,
   parseAiBudget,
@@ -33,6 +51,10 @@ export interface PlanJson {
   targetVersion: string | null;
   policy: string;
   noticeHours: number;
+  /** When the plan's instances may be updated; null: any time after the notice. */
+  updateWindow: UpdateWindow | null;
+  /** "<version>: <reason>" of the policy's last refused rollout. */
+  policyNote: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -50,6 +72,9 @@ export const planJson = (p: PlanRow): PlanJson => ({
   targetVersion: p.target_version,
   policy: p.policy,
   noticeHours: p.notice_hours,
+  // A stored window that does not parse reads as one that is never open.
+  updateWindow: parseWindow(p.update_window),
+  policyNote: p.policy_note ?? null,
   status: p.status,
   createdAt: p.created_at,
   updatedAt: p.updated_at,
@@ -87,23 +112,39 @@ export interface UpdatePlanInput {
   size?: string | null;
   /** null clears; absent leaves it */
   aiBudgetUsd?: number | null;
+  /** manual | patches | minor | follow:<branch> (a release branch of the App). */
+  policy?: string | null;
+  /** Hours between a rollout's start and the plan's updates (0-720). */
+  noticeHours?: number | null;
+  /** When the plan's instances may be updated (spec 14.8). */
+  updateWindow?: UpdateWindow | null;
+  /** Removes the window: updates any time after the notice. */
+  clearUpdateWindow?: boolean | null;
 }
 
-/** A plan's target is a recorded release of its App, never a build (spec section 2). */
+/**
+ * A plan's target is a recorded, unwithdrawn release of its App (spec section 2,
+ * 14.3); a shared plan's is built on a Powerhouse with the licence gate while
+ * the gate is on (D9).
+ */
 async function checkTarget(
   deps: AppsDeps,
   appId: string,
   version: string,
+  access: PlanAccess,
 ): Promise<string> {
   const r = await releaseByVersion(deps.db, appId, version);
-  if (!r)
-    throw appsError("BAD_USER_INPUT", `The App has no release ${version}`);
-  if (r.kind !== "release")
+  const problem = releaseProblem(version, r);
+  if (problem)
     throw appsError(
       "BAD_USER_INPUT",
-      `${version} is a build; a plan targets releases only`,
+      problem.charAt(0).toUpperCase() + problem.slice(1),
     );
-  return r.version;
+  if (access === "shared") {
+    const floor = gateFloorError(deps.cfg, r!);
+    if (floor) throw appsError("BAD_USER_INPUT", floor);
+  }
+  return r!.version;
 }
 
 async function loadPlan(deps: AppsDeps, caller: Caller, planId: string) {
@@ -189,7 +230,7 @@ export async function createPlan(
     );
   const nowIso = deps.now().toISOString();
   const target = input.targetVersion
-    ? await checkTarget(deps, app.id, input.targetVersion)
+    ? await checkTarget(deps, app.id, input.targetVersion, access)
     : null;
   const row = await deps.db
     .transaction()
@@ -245,11 +286,37 @@ export async function updatePlanFor(
   caller: Caller,
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
-  const { plan } = await loadPlan(deps, caller, input.planId);
+  const { plan, app } = await loadPlan(deps, caller, input.planId);
   const name = input.name == null ? undefined : input.name.trim();
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
   if (name !== undefined) checkText("name", name);
+  const policy =
+    input.policy == null ? undefined : policyText(parsePolicy(input.policy));
+  if (policy?.startsWith("follow:")) {
+    const branch = policy.slice("follow:".length);
+    if (
+      !isReleaseBranch(
+        branch,
+        app.production_branch,
+        parseReleaseBranches(app.release_branches),
+      )
+    )
+      throw appsError(
+        "BAD_USER_INPUT",
+        `${branch} is not a release branch of the App`,
+      );
+  }
+  if (input.updateWindow && input.clearUpdateWindow)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Give an update window or clear it, not both",
+    );
+  const window = input.clearUpdateWindow
+    ? null
+    : input.updateWindow
+      ? JSON.stringify(checkWindow(input.updateWindow))
+      : undefined;
   const patch = {
     ...(name ? { name } : {}),
     ...(input.size ? { size: parseSize(input.size) } : {}),
@@ -259,6 +326,11 @@ export async function updatePlanFor(
           ai_budget_usd:
             input.aiBudgetUsd === null ? null : parseAiBudget(input.aiBudgetUsd),
         }),
+    ...(policy !== undefined ? { policy } : {}),
+    ...(input.noticeHours != null
+      ? { notice_hours: checkNoticeHours(input.noticeHours) }
+      : {}),
+    ...(window !== undefined ? { update_window: window } : {}),
   };
   const nowIso = deps.now().toISOString();
   return planJson(
@@ -266,19 +338,23 @@ export async function updatePlanFor(
       // Re-read under lock: a concurrent change is audited once, from what is stored.
       const cur = await lockPlan(trx, plan.id);
       const changes: Record<string, { from: unknown; to: unknown }> = {};
-      if (patch.name !== undefined && patch.name !== cur.name)
-        changes.name = { from: cur.name, to: patch.name };
-      if (patch.size !== undefined && patch.size !== cur.size)
-        changes.size = { from: cur.size, to: patch.size };
-      if (
-        patch.ai_budget_usd !== undefined &&
-        patch.ai_budget_usd !== (cur.ai_budget_usd ?? null)
-      )
-        changes.aiBudgetUsd = {
-          from: cur.ai_budget_usd ?? null,
-          to: patch.ai_budget_usd,
-        };
-      const p = await updatePlan(trx, plan.id, patch, nowIso);
+      const note = (key: string, from: unknown, to: unknown) => {
+        if (to !== undefined && to !== from) changes[key] = { from, to };
+      };
+      note("name", cur.name, patch.name);
+      note("size", cur.size, patch.size);
+      note("aiBudgetUsd", cur.ai_budget_usd ?? null, patch.ai_budget_usd);
+      note("policy", cur.policy, patch.policy);
+      note("noticeHours", cur.notice_hours, patch.notice_hours);
+      // The window audits its stored JSON text, from and to.
+      note("updateWindow", cur.update_window ?? null, patch.update_window);
+      const p = await updatePlan(
+        trx,
+        plan.id,
+        // A new policy starts over: its last refusal no longer applies.
+        changes.policy ? { ...patch, policy_note: null } : patch,
+        nowIso,
+      );
       if (Object.keys(changes).length > 0)
         await auditCaller(trx, caller, {
           appId: plan.app_id,
@@ -293,8 +369,9 @@ export async function updatePlanFor(
 }
 
 /**
- * Moves the plan's instances to `version` on the next reconciler pass, without
- * notice. The stand-in for rollouts (releases phase 3 slice 3), which replace it.
+ * Starts a rollout of this one plan to `version` (spec section 7), with the
+ * plan's notice. A no-op when the plan already targets it and no instance is
+ * behind. Its instances move one at a time through the rollout runner.
  */
 export async function setPlanTarget(
   deps: AppsDeps,
@@ -302,33 +379,30 @@ export async function setPlanTarget(
   planId: string,
   version: string,
 ): Promise<PlanJson> {
-  const { plan } = await loadPlan(deps, caller, planId);
+  const { plan, app } = await loadPlan(deps, caller, planId);
+  // It starts a rollout: refused whenever startRollout is.
+  if (!rolloutsEnabled(deps.cfg))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Plans and rollouts are not enabled on this Vetra",
+    );
   if (plan.status === "retired")
     throw appsError("BAD_USER_INPUT", "The plan is retired");
-  const target = await checkTarget(deps, plan.app_id, version);
-  const nowIso = deps.now().toISOString();
-  return planJson(
-    await deps.db.transaction().execute(async (trx) => {
-      const cur = await lockPlan(trx, plan.id);
-      if (cur.status === "retired")
-        throw appsError("BAD_USER_INPUT", "The plan is retired");
-      if (cur.target_version === target) return cur;
-      const p = await updatePlan(
-        trx,
-        plan.id,
-        { target_version: target },
-        nowIso,
-      );
-      await auditCaller(trx, caller, {
-        appId: plan.app_id,
-        at: nowIso,
-        action: "plan.target_set",
-        subject: `plan:${plan.id}`,
-        detail: { slug: plan.slug, from: cur.target_version, to: target },
-      });
-      return p;
-    }),
-  );
+  const target = await checkTarget(deps, plan.app_id, version, plan.access);
+  await withKeyLock(appInstancesLock(app.id), async () => {
+    const cur = (await getPlan(deps.db, plan.id))!;
+    if (cur.status === "retired")
+      throw appsError("BAD_USER_INPUT", "The plan is retired");
+    if (
+      cur.target_version === target &&
+      (await plannedSteps(deps, app.id, [cur], target)).every(
+        (s) => s.status !== "pending",
+      )
+    )
+      return;
+    await beginRollout(deps, app, target, [cur], callerActor(caller), null);
+  });
+  return planJson((await getPlan(deps.db, plan.id))!);
 }
 
 /** No new licences should be issued for it (retire the term too); existing holders keep their instances. */

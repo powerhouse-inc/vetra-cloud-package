@@ -1,11 +1,15 @@
 import type { Caller } from "../auth.js";
+import { appsError } from "../errors.js";
+import { getGateToken } from "../gate/repo.js";
+import { instanceGateJson, type InstanceGateJson } from "../gate/service.js";
+import { releaseByVersion, type ReleaseRow } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { publicUrlOf } from "./public-host.js";
 import {
   customDomainJson,
   type InstanceCustomDomainJson,
 } from "../domains/service.js";
-import { listInstances, type InstanceRow } from "./repo.js";
+import { getInstance, listInstances, type InstanceRow } from "./repo.js";
 
 export interface InstanceJson {
   id: string;
@@ -14,6 +18,8 @@ export interface InstanceJson {
   planId: string | null;
   /** own: the holder's address. */
   holder: string | null;
+  /** own: the release the publisher pinned it to; rollouts skip it. */
+  pinnedVersion: string | null;
   name: string;
   branch: string | null;
   pr: number | null;
@@ -39,15 +45,18 @@ export interface InstanceJson {
   holderSettingsCount: number;
   customDomain: InstanceCustomDomainJson | null;
   updatedAt: string;
+  /** shared only: the licence gate (releases phase 3 slice 5). */
+  gate: InstanceGateJson | null;
 }
 
-/** holderSettingsCount is 0 here; appInstancesFor fills it in. */
+/** Without the gate (null) and holderSettingsCount 0; appInstances adds them. */
 export function instanceJson(r: InstanceRow): InstanceJson {
   return {
     id: r.id,
     kind: r.kind,
     planId: r.plan_id ?? null,
     holder: r.holder_address ?? null,
+    pinnedVersion: r.pinned_version ?? null,
     name: r.name,
     branch: r.branch,
     pr: r.pr,
@@ -70,7 +79,35 @@ export function instanceJson(r: InstanceRow): InstanceJson {
     holderSettingsCount: 0,
     customDomain: customDomainJson(r),
     updatedAt: r.updated_at,
+    gate: null,
   };
+}
+
+/** Releases by version, each read once per call (instances of a plan share one). */
+function releaseReader(deps: AppsDeps, appId: string) {
+  const seen = new Map<string, Promise<ReleaseRow | null>>();
+  return (version: string | null) => {
+    if (!version) return Promise.resolve(null);
+    let r = seen.get(version);
+    if (!r) {
+      r = releaseByVersion(deps.db, appId, version).then((x) => x ?? null);
+      seen.set(version, r);
+    }
+    return r;
+  };
+}
+
+async function withGateJson(
+  deps: AppsDeps,
+  r: InstanceRow,
+  release: ReturnType<typeof releaseReader>,
+): Promise<InstanceJson> {
+  if (r.kind !== "shared") return instanceJson(r);
+  const [token, rel] = await Promise.all([
+    getGateToken(deps.db, r.id),
+    release(r.running_version ?? r.target_version),
+  ]);
+  return { ...instanceJson(r), gate: instanceGateJson(deps, token, rel) };
 }
 
 /** The App's instances (spec section 11, App page → Instances); tombstones are not shown. */
@@ -80,10 +117,27 @@ export async function appInstancesFor(
   appId: string,
 ): Promise<InstanceJson[]> {
   const app = await loadAppForOwner(deps, caller, appId, { need: "view" });
+  const release = releaseReader(deps, app.id);
   const rows = (await listInstances(deps.db, app.id)).filter(
     (r) => r.status !== "removed",
   );
-  const own = rows.filter((r) => r.kind === "own").map((r) => r.id);
+  const counts = await holderSettingCounts(
+    deps,
+    rows.filter((r) => r.kind === "own").map((r) => r.id),
+  );
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...(await withGateJson(deps, r, release)),
+      holderSettingsCount: counts.get(r.id) ?? 0,
+    })),
+  );
+}
+
+/** How many settings each own instance's holder set (never their names, H2). */
+async function holderSettingCounts(
+  deps: AppsDeps,
+  own: string[],
+): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   if (own.length > 0)
     for (const c of await deps.db
@@ -93,8 +147,21 @@ export async function appInstancesFor(
       .groupBy("instance_id")
       .execute())
       counts.set(c.instance_id, Number(c.n));
-  return rows.map((r) => ({
-    ...instanceJson(r),
+  return counts;
+}
+
+/** One instance as appInstances shows it. */
+export async function instanceJsonFor(
+  deps: AppsDeps,
+  caller: Caller,
+  instanceId: string,
+): Promise<InstanceJson> {
+  const r = await getInstance(deps.db, instanceId);
+  if (!r) throw appsError("NOT_FOUND", "Instance not found");
+  await loadAppForOwner(deps, caller, r.app_id, { need: "view" });
+  const counts = await holderSettingCounts(deps, r.kind === "own" ? [r.id] : []);
+  return {
+    ...(await withGateJson(deps, r, releaseReader(deps, r.app_id))),
     holderSettingsCount: counts.get(r.id) ?? 0,
-  }));
+  };
 }

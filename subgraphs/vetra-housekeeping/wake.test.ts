@@ -31,3 +31,29 @@ describe("housekeeping wake (other states)", () => {
     expect(dispatchWake).not.toHaveBeenCalled();
   });
 });
+
+describe("housekeeping wake of a held studio (VETRA_HOUSEKEEPING_KEEPS_DATABASE)", () => {
+  const held = { ...row, status: "READY", poolState: "CLAIMED" };
+  it("resumes a studio housekeeping held, though its status reads READY", async () => {
+    const dispatchWake = vi.fn(async () => {});
+    const wake = createWake({
+      findStudioByHost: async () => held,
+      dispatchWake,
+      isLicenceStopped: async () => false,
+      isHeld: async () => true,
+    });
+    expect((await wake("s.vetra.io")).status).toBe("WAKING");
+    expect(dispatchWake).toHaveBeenCalledWith("e1");
+  });
+  it("keeps a held studio licensing stopped", async () => {
+    const dispatchWake = vi.fn(async () => {});
+    const wake = createWake({
+      findStudioByHost: async () => held,
+      dispatchWake,
+      isLicenceStopped: async () => true,
+      isHeld: async () => true,
+    });
+    expect((await wake("s.vetra.io")).status).toBe("SLEEPING");
+    expect(dispatchWake).not.toHaveBeenCalled();
+  });
+});

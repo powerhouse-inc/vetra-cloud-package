@@ -215,3 +215,47 @@ export async function liveKindsOfHolder(
   }
   return out;
 }
+
+/**
+ * Whether `address` holds a live licence of `kind` for the App (the licence
+ * gate, releases phase 3 slice 5), and until when: null when any live licence
+ * is open-ended, else the latest end_at. One range read of
+ * app_license_grants_app_user_idx: user_address is compared exactly, not
+ * lower(user_address), because every grant is stored lowercase (written
+ * through addressOfDid; older backfilled rows are lowercased by the
+ * vetra-licensing migration), which keeps the index usable.
+ */
+export async function liveLicenceOf(
+  db: Kysely<VetraLicensingDB>,
+  appId: string,
+  kind: string,
+  address: string,
+  nowIso: string,
+): Promise<{ until: string | null } | null> {
+  const rows = await db
+    .selectFrom("app_license_grants as g")
+    .innerJoin("license_lifecycle as l", "l.license_id", "g.license_id")
+    .select(["l.status as status", "l.end_at as endAt"])
+    .where("g.app_id", "=", appId)
+    .where("g.user_address", "=", address.toLowerCase())
+    .where("g.kind", "=", kind)
+    // isLiveEntry decides; this only spares reading every ended licence.
+    .where("l.status", "=", "ACTIVE")
+    .execute();
+  let live = false;
+  let until: number | null = null;
+  let open = false;
+  for (const r of rows) {
+    if (!isLiveEntry({ status: r.status, endAt: r.endAt }, nowIso)) continue;
+    live = true;
+    if (r.endAt === null) open = true;
+    else {
+      const end = Date.parse(r.endAt);
+      if (until === null || end > until) until = end;
+    }
+  }
+  if (!live) return null;
+  return {
+    until: open || until === null ? null : new Date(until).toISOString(),
+  };
+}

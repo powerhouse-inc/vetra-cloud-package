@@ -83,6 +83,7 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
         { auth: "public", maxBodyBytes: 256 * 1024 },
       ],
       ["GET", "apps/ci/deployments/:id", { auth: "public" }],
+      ["POST", "apps/gate/check", { auth: "public", maxBodyBytes: 1024 }],
       ["GET", "apps/directory/v1/environments", { auth: "renown" }],
     ]);
     const res = await routes[0].handler(
@@ -107,6 +108,18 @@ describe("VetraAppsSubgraph boot (Review Focus 4)", () => {
     );
     expect(ciRes.status).toBe(401);
     expect(await ciRes.json()).toMatchObject({ error: "UNAUTHENTICATED" });
+    // The licence gate route is registered whatever VETRA_APPS_GATE says, and
+    // refuses an unknown token.
+    const gateRoute = routes.find((r) => r.path === "apps/gate/check")!;
+    const gateRes = await gateRoute.handler(
+      new Request("https://x/api/pkg/apps/gate/check", {
+        method: "POST",
+        headers: { authorization: `Bearer vgt_${"0".repeat(64)}` },
+        body: JSON.stringify({ address: `0x${"1".repeat(40)}` }),
+      }),
+      {},
+    );
+    expect(gateRes.status).toBe(401);
 
     const resolvers = subgraph.resolvers as {
       Mutation: Record<string, (...a: unknown[]) => Promise<unknown>>;

@@ -141,11 +141,35 @@ export interface StudioLaunchSecretsTable {
   rotated_at: string;
 }
 
+/** One gate token per shared instance (releases phase 3 slice 5). Plaintext is never stored. */
+export interface InstanceGateTokensTable {
+  instance_id: string;
+  app_id: string;
+  /** sha256 hex of the current token: what apps/gate/check verifies. */
+  token_hash: string;
+  /** The current token under the app-settings transit key: what delivery decrypts (G1). */
+  token_ciphertext: string;
+  /** Changes with every token: the ResolvedSecret writeId, so the settings revision moves. */
+  token_id: string;
+  /** The token before the last rotation, accepted while previous_until is null (new one not observed running yet) or in the future. */
+  previous_hash: string | null;
+  previous_until: string | null;
+  /** When the current token reached the tenant; null until then. */
+  delivered_at: string | null;
+  created_at: string;
+  rotated_at: string;
+}
+
 export interface VetraAppsDB {
   instances: InstancesTable;
+  instance_gate_tokens: InstanceGateTokensTable;
   plans: PlansTable;
+  environment_holds: EnvironmentHoldsTable;
   app_audit: AppAuditTable;
   app_roles: AppRolesTable;
+  rollouts: RolloutsTable;
+  rollout_plans: RolloutPlansTable;
+  rollout_steps: RolloutStepsTable;
   app_settings: AppSettingsTable;
   instance_settings: InstanceSettingsTable;
   apps: AppsTable;
@@ -181,6 +205,10 @@ export interface ReleasesTable {
   powerhouse_version: string;
   base_image: string;
   created_at: string;
+  /** Withdrawn by the publisher (spec 14.3): no plan may target it. Never un-withdrawn. */
+  withdrawn_at?: string | null;
+  withdrawn_by?: string | null;
+  withdrawn_reason?: string | null;
 }
 
 export interface NamespacePushRobotsTable {
@@ -284,6 +312,10 @@ export interface PlansTable {
   /** manual | patches | minor | follow:<branch>. Stored; rollouts (slice 3) act on it. */
   policy: string;
   notice_hours: number;
+  /** JSON rollouts/window.ts UpdateWindow; null: any time (spec 14.8). */
+  update_window?: string | null;
+  /** "<version>: <reason>" of the last policy rollout the check refused; null when none. */
+  policy_note?: string | null;
   status: PlanStatus;
   created_by: string;
   created_at: string;
@@ -291,6 +323,21 @@ export interface PlansTable {
 }
 
 /** Where an audited action came from (spec section 10). */
+/**
+ * An environment kept with its data while its app does not run (releases
+ * phase 3 plan 9). The processor renders a held environment with no app pod
+ * and no ingress, keeping its CNPG database, backups and data volumes;
+ * sleeping (STOPPED) instead deletes the database.
+ */
+export interface EnvironmentHoldsTable {
+  environment_id: string;
+  reason: string;
+  switchover_id: string | null;
+  /** Lowercased address, or "vetra". */
+  created_by: string;
+  created_at: string;
+}
+
 export type AuditSource = "console" | "api" | "policy" | "system" | "ci";
 
 /** One audited action on an App (spec section 10): who, what, when, from where. Kept 365 days. */
@@ -321,6 +368,88 @@ export interface AppRolesTable {
   owner_scope: string;
   granted_by: string;
   granted_at: string;
+}
+
+/** Releases phase 3 slice 3 (spec section 7). Lowercase like every vetra-apps status. */
+export type RolloutStatus =
+  | "active"
+  | "paused"
+  | "complete"
+  | "cancelled"
+  | "rolled_back";
+/** forward: towards the version; back: rollBackRollout returns instances to where they came from. */
+export type RolloutDirection = "forward" | "back";
+export type RolloutSource = "console" | "api" | "policy";
+
+/** One move of one or more plans to a release. */
+export interface RolloutsTable {
+  id: string;
+  app_id: string;
+  version: string;
+  status: RolloutStatus;
+  direction: RolloutDirection;
+  source: RolloutSource;
+  /** Lowercased address, or "vetra" (a policy). */
+  started_by: string;
+  started_at: string;
+  /** What holders see: the release's customer notes (else its notes) at the start. */
+  notes: string | null;
+  paused_at: string | null;
+  paused_reason: string | null;
+  finished_at: string | null;
+  rolled_back_by: string | null;
+  rolled_back_at: string | null;
+  updated_at: string;
+}
+
+export interface RolloutPlansTable {
+  rollout_id: string;
+  plan_id: string;
+  /** The plan's target before (null: none); rollBackRollout sets it back. */
+  from_version: string | null;
+  notice_hours: number;
+}
+
+export type RolloutStepStatus =
+  | "pending"
+  | "applying"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "revert_pending"
+  | "reverting"
+  | "revert_failed"
+  | "rolled_back";
+
+/** One instance's move within a rollout. */
+export interface RolloutStepsTable {
+  id: string;
+  rollout_id: string;
+  app_id: string;
+  plan_id: string;
+  instance_id: string;
+  instance_kind: "shared" | "own";
+  instance_name: string;
+  /** Shared instances first, then own by age (spec 7 step 4). */
+  position: number;
+  /** The instance's target when the rollout started: where a revert goes. */
+  from_version: string | null;
+  to_version: string;
+  status: RolloutStepStatus;
+  /** Start + notice; the plan's window applies after it. */
+  due_at: string;
+  /** The holder's "update now" or the publisher's retry: due at once, outside the window. */
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The runner set the instance's target for this step; a rollback sets it back. */
+  target_moved: boolean;
+  attempts: number;
+  error: string | null;
+  /** "pinned at 1.4.2", "stopped: updated when it wakes", … */
+  note: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** One running environment of an App (spec section 5). */
@@ -414,6 +543,8 @@ export interface InstancesTable {
   custom_domain_failures?: number | null;
   /** dns: the per-instance token the holder publishes at _vetra-verify.<domain> (TXT). */
   custom_domain_token?: string | null;
+  /** own: the release the publisher pinned it to (spec section 7); rollouts skip it. */
+  pinned_version?: string | null;
   created_at: string;
   updated_at: string;
 }

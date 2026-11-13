@@ -68,6 +68,7 @@ import {
 } from "./instances/reconciler.js";
 import { handleGithubWebhook } from "./webhook.js";
 import { createCiRoutes, createRenownCiVerifier } from "./ci.js";
+import { createGateRoutes } from "./gate/routes.js";
 import { appMarksIn, candidatesIn, listDirectory } from "./directory.js";
 import { holderInstancesFor } from "./plans/holder-view.js";
 import { OpenBaoTransitClient } from "../vetra-cloud-secrets/openbao-transit.js";
@@ -411,6 +412,26 @@ export class VetraAppsSubgraph extends BaseSubgraph {
       console.warn(`[vetra-apps] CI routes not registered: ${String(err)}`);
     }
 
+    // Licence gate of shared instances (releases phase 3 slice 5): hosts with
+    // ACCESS=licensed ask here with their instance's VETRA_GATE_TOKEN. Always
+    // registered: a host still running with the gate env is never refused only
+    // because VETRA_APPS_GATE was switched off.
+    // /api/@powerhousedao/vetra-cloud-package/apps/gate/check
+    let gate: ReturnType<typeof createGateRoutes> | null = null;
+    try {
+      const g = createGateRoutes(deps);
+      gate = g;
+      this.routeHandles.push(
+        this.http.post(
+          "apps/gate/check",
+          { auth: "public", maxBodyBytes: 1024 },
+          (request) => g.check(request),
+        ),
+      );
+    } catch (err) {
+      console.warn(`[vetra-apps] gate route not registered: ${String(err)}`);
+    }
+
     // Directory for an App's own site ("where does my <App> run?"): the
     // signed-in caller's environments running the App, never anyone else's.
     // /api/@powerhousedao/vetra-cloud-package/apps/directory/v1/environments?app=<id>
@@ -496,6 +517,13 @@ export class VetraAppsSubgraph extends BaseSubgraph {
     });
 
     every(5 * 60 * 1000, "push robot sweep", () => sweepPushRobots(deps));
+
+    // Gate counters (G7): one line per 5 minutes when anything happened.
+    every(5 * 60 * 1000, "gate counters", () => {
+      const line = gate?.counters.flush();
+      if (line) console.info(`[vetra-apps] gate: ${line}`);
+      return Promise.resolve();
+    });
 
     // The audit log keeps one year (spec section 10); bounded batches per pass.
     every(SWEEP_INTERVAL_MS, "audit retention", () => sweepAuditOnce(deps));

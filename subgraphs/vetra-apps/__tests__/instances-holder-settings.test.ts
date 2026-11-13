@@ -178,6 +178,12 @@ describe("holder settings on the instance", () => {
       { target_version: "1.4.1" },
       "2026-10-04T00:00:00.000Z",
     );
+    // An existing instance moves with its rollout step, not with the plan's target.
+    await h.db
+      .updateTable("instances")
+      .set({ target_version: "1.4.1", target_digest: digest("c") })
+      .where("id", "=", (await own()).id)
+      .execute();
     await reconcileInstancesOnce(h.deps);
     expect(
       (await env()).services.find((s) => s.type === "FUSION")!.version,

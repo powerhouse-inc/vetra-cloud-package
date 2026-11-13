@@ -86,6 +86,18 @@ describe("vetra-licensing migrations (real PGlite)", () => {
     expect(row).toMatchObject({ license_id: "l1", kind: null, user_did: null });
   });
 
+  it("lowercases grant addresses (old backfilled rows), so the licence gate's exact match on its index finds them", async () => {
+    const d = await open();
+    const mixed = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
+    await d.insertInto("app_license_grants").values({
+      license_id: "l1", app_id: "a", license_type_id: "", user_address: mixed,
+      issued_by: "backfill", created_at: "2026-01-01T00:00:00.000Z", kind: "starter", user_did: null,
+    }).execute();
+    await up(d as Kysely<any>);
+    const row = await d.selectFrom("app_license_grants").selectAll().executeTakeFirstOrThrow();
+    expect(row.user_address).toBe(mixed.toLowerCase());
+  });
+
   it("issues no ALTER TABLE when the columns already exist", async () => {
     const pg = new PGlite();
     const executed: string[] = [];

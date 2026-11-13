@@ -4,8 +4,27 @@ import {
   setMyInstanceCustomDomain,
 } from "./domains/service.js";
 import { GraphQLError } from "graphql";
-import { appReleasesFor } from "./releases/service.js";
-import { appInstancesFor } from "./instances/service.js";
+import { appReleasesFor, type ReleaseJson } from "./releases/service.js";
+import { withdrawRelease } from "./releases/withdraw.js";
+import {
+  appRolloutsFor,
+  checkRolloutFor,
+  rolloutFor,
+  startRollout,
+  type StartRolloutInput,
+} from "./rollouts/service.js";
+import {
+  cancelRollout,
+  pauseRollout,
+  resumeRollout,
+  retryRolloutStep,
+  rollBackRollout,
+  skipRolloutStep,
+} from "./rollouts/controls.js";
+import { pinInstance, unpinInstance } from "./rollouts/pins.js";
+import { updateInstanceNow } from "./rollouts/holder.js";
+import { appInstancesFor, instanceJsonFor } from "./instances/service.js";
+import { rotateInstanceGateToken } from "./gate/service.js";
 import {
   appPlansFor,
   createPlan,
@@ -253,6 +272,26 @@ function mapApp(deps: AppsDeps, app: AppRow) {
   };
 }
 
+const releaseOut = (r: ReleaseJson) => ({
+  version: r.version,
+  kind: r.kind,
+  branch: r.branch,
+  pr: r.pr,
+  commit: r.commit,
+  notes: r.notes,
+  customerNotes: r.customerNotes,
+  imageRef: r.image.ref,
+  imageDigest: r.image.digest,
+  host: r.image.host,
+  packages: r.packages,
+  migrates: r.migrates,
+  powerhouseVersion: r.built.powerhouse,
+  createdAt: r.createdAt,
+  withdrawnAt: r.withdrawn?.at ?? null,
+  withdrawnBy: r.withdrawn?.by ?? null,
+  withdrawnReason: r.withdrawn?.reason ?? null,
+});
+
 export function createResolvers(deps: AppsDeps) {
   /**
    * A person for an audited mutation: their source (console by Origin, else
@@ -389,22 +428,42 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "appReleases", async () =>
           (
             await appReleasesFor(deps, requireCaller(ctx), appId, kind, limit)
-          ).map((r) => ({
-            version: r.version,
-            kind: r.kind,
-            branch: r.branch,
-            pr: r.pr,
-            commit: r.commit,
-            notes: r.notes,
-            customerNotes: r.customerNotes,
-            imageRef: r.image.ref,
-            imageDigest: r.image.digest,
-            host: r.image.host,
-            packages: r.packages,
-            migrates: r.migrates,
-            powerhouseVersion: r.built.powerhouse,
-            createdAt: r.createdAt,
-          })),
+          ).map(releaseOut),
+        ),
+      appRollouts: (
+        _: unknown,
+        { appId, limit }: { appId: string; limit?: number | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "appRollouts", () =>
+          appRolloutsFor(deps, requireCaller(ctx), appId, limit),
+        ),
+      rollout: (_: unknown, { id }: { id: string }, ctx: AppsContext) =>
+        guard(deps, "rollout", () => rolloutFor(deps, requireCaller(ctx), id)),
+      checkRollout: (
+        _: unknown,
+        {
+          appId,
+          version,
+          planIds,
+          noticeHours,
+        }: {
+          appId: string;
+          version: string;
+          planIds: string[];
+          noticeHours?: number | null;
+        },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "checkRollout", () =>
+          checkRolloutFor(
+            deps,
+            requireCaller(ctx),
+            appId,
+            version,
+            planIds,
+            noticeHours,
+          ),
         ),
       appDeployment: (_: unknown, { id }: { id: string }, ctx: AppsContext) =>
         guard(deps, "appDeployment", async () => {
@@ -587,6 +646,98 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "setPlanTarget", () =>
           setPlanTarget(deps, person(ctx), planId, version),
         ),
+      startRollout: (
+        _: unknown,
+        { input }: { input: StartRolloutInput },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "startRollout", () => startRollout(deps, person(ctx), input)),
+      pauseRollout: (
+        _: unknown,
+        { rolloutId, reason }: { rolloutId: string; reason?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "pauseRollout", () =>
+          pauseRollout(deps, person(ctx), rolloutId, reason),
+        ),
+      resumeRollout: (
+        _: unknown,
+        { rolloutId }: { rolloutId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "resumeRollout", () =>
+          resumeRollout(deps, person(ctx), rolloutId),
+        ),
+      cancelRollout: (
+        _: unknown,
+        { rolloutId }: { rolloutId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "cancelRollout", () =>
+          cancelRollout(deps, person(ctx), rolloutId),
+        ),
+      retryRolloutStep: (
+        _: unknown,
+        { stepId }: { stepId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "retryRolloutStep", () =>
+          retryRolloutStep(deps, person(ctx), stepId),
+        ),
+      skipRolloutStep: (
+        _: unknown,
+        { stepId }: { stepId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "skipRolloutStep", () =>
+          skipRolloutStep(deps, person(ctx), stepId),
+        ),
+      rollBackRollout: (
+        _: unknown,
+        { rolloutId }: { rolloutId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rollBackRollout", () =>
+          rollBackRollout(deps, person(ctx), rolloutId),
+        ),
+      pinInstance: (
+        _: unknown,
+        { instanceId, version }: { instanceId: string; version: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "pinInstance", () =>
+          pinInstance(deps, person(ctx), instanceId, version),
+        ),
+      unpinInstance: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "unpinInstance", () =>
+          unpinInstance(deps, person(ctx), instanceId),
+        ),
+      withdrawRelease: (
+        _: unknown,
+        {
+          appId,
+          version,
+          reason,
+        }: { appId: string; version: string; reason?: string | null },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "withdrawRelease", async () =>
+          releaseOut(
+            await withdrawRelease(deps, person(ctx), appId, version, reason),
+          ),
+        ),
+      updateInstanceNow: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "updateInstanceNow", () =>
+          updateInstanceNow(deps, person(ctx), instanceId),
+        ),
       retirePlan: (
         _: unknown,
         { planId }: { planId: string },
@@ -619,6 +770,16 @@ export function createResolvers(deps: AppsDeps) {
         guard(deps, "removeAppRole", () =>
           removeAppRole(deps, person(ctx), appId, address, role),
         ),
+      rotateInstanceGateToken: (
+        _: unknown,
+        { instanceId }: { instanceId: string },
+        ctx: AppsContext,
+      ) =>
+        guard(deps, "rotateInstanceGateToken", async () => {
+          const caller = person(ctx);
+          await rotateInstanceGateToken(deps, caller, instanceId);
+          return instanceJsonFor(deps, caller, instanceId);
+        }),
       deleteApp: (
         _: unknown,
         {

@@ -58,7 +58,7 @@ export function settingsRevision(
  * The revision of every layer. Without holder rows, files or Vetra secrets it
  * is the v1 revision, so branch and preview instances keep theirs (no mass roll).
  */
-function instanceRevision(s: Omit<InstanceSettings, "revision">): string {
+export function instanceRevision(s: Omit<InstanceSettings, "revision">): string {
   if (
     s.holderCount === 0 &&
     s.files.length === 0 &&

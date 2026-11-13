@@ -177,6 +177,7 @@ const STATUS: Record<string, number> = {
   VERSION_CONFLICT: 409,
   SERVICE_NOT_CONFIGURED: 503,
   SERVICE_UNAVAILABLE: 503,
+  RATE_LIMITED: 429,
 };
 
 const errorResponse = (

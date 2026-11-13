@@ -7,6 +7,7 @@ import {
   customDomainJson,
   type InstanceCustomDomainJson,
 } from "../domains/service.js";
+import { holderUpdateOf, type HolderUpdateJson } from "../rollouts/holder.js";
 import type { AppsDeps } from "../service.js";
 import { holderNotices, type HolderNotice } from "../holders/notices.js";
 import { liveChains, liveKindsOfHolder } from "./holders.js";
@@ -30,6 +31,8 @@ export interface HolderInstanceJson {
   /** own, licence ended and deletion on: when its data is deleted. */
   deletesAt: string | null;
   notices: HolderNotice[];
+  /** A coming update of this instance (spec 7 step 3); null when none. */
+  update: HolderUpdateJson | null;
 }
 
 /** The instances the caller holds a licence for (spec section 11: a holder's own instances under their licences). */
@@ -62,6 +65,7 @@ export async function myInstancesFor(
         "instances.status as status",
         "instances.reason as reason",
         "instances.running_version as runningVersion",
+        "instances.kind as kind",
       ])
       .where("instances.status", "!=", "removed")
       // A soft-deleted App is gone for everyone but an admin.
@@ -105,6 +109,7 @@ export async function myInstancesFor(
     planKind,
     rootId,
     endedAt,
+    kind,
     ...r
   } of [...own, ...shared]) {
     const d = {
@@ -154,6 +159,7 @@ export async function myInstancesFor(
             n.kind === "STOPPED_DELETE_PENDING" || n.kind === "DELETE_IMMINENT",
         )?.at ?? null,
       notices,
+      update: await holderUpdateOf(deps, r.instanceId, kind),
     });
   }
   return out;

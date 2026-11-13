@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_INSTANCE_HEALTH,
   DEFAULT_PLANS,
+  gateConfigOf,
   loadAppsConfig,
   plansConfigOf,
+  rolloutsEnabled,
+  rolloutsHeld,
+  switchoverConfigOf,
 } from "../config.js";
 
 describe("Studio Apps config", () => {
@@ -148,5 +152,157 @@ describe("plans config", () => {
       VETRA_APPS_PLANS: "on",
     });
     expect(plansConfigOf(rest)).toEqual(DEFAULT_PLANS);
+  });
+  it("runs rollouts with plans, and holds them with VETRA_APPS_ROLLOUTS_HOLD", () => {
+    expect(rolloutsEnabled(loadAppsConfig({}))).toBe(false);
+    const on = loadAppsConfig({ VETRA_APPS_PLANS: "on" });
+    expect(rolloutsEnabled(on)).toBe(true);
+    expect(rolloutsHeld(on)).toBe(false);
+    expect(on.plans).toEqual({ enabled: true, stopAfterDays: 14, destroy: false });
+    expect(
+      rolloutsEnabled(
+        loadAppsConfig({ VETRA_APPS_PLANS: "on", VETRA_APPS_INSTANCES: "off" }),
+      ),
+    ).toBe(false);
+    const held = loadAppsConfig({
+      VETRA_APPS_PLANS: "on",
+      VETRA_APPS_ROLLOUTS_HOLD: " Yes ",
+    });
+    expect(rolloutsHeld(held)).toBe(true);
+    expect(held.plans).toEqual({
+      enabled: true,
+      stopAfterDays: 14,
+      destroy: false,
+      rolloutsHold: true,
+    });
+    expect(() => loadAppsConfig({ VETRA_APPS_ROLLOUTS_HOLD: "later" })).toThrow(
+      /VETRA_APPS_ROLLOUTS_HOLD.*later/,
+    );
+  });
+});
+
+describe("switch-over config", () => {
+  it("is off by default, with the plan's defaults", () => {
+    expect(loadAppsConfig({}).switchover).toStrictEqual({
+      enabled: false,
+      leadHours: 24,
+      holdDays: 30,
+      confirmHours: 72,
+      restoreJobs: 4,
+    });
+  });
+  it("reads the switch and the numbers", () => {
+    const c = loadAppsConfig({
+      VETRA_APPS_SWITCHOVER: "on",
+      VETRA_APPS_SWITCHOVER_LEAD_HOURS: "6",
+      VETRA_APPS_SWITCHOVER_HOLD_DAYS: "45",
+      VETRA_APPS_SWITCHOVER_CONFIRM_HOURS: "48",
+      VETRA_APPS_SWITCHOVER_RESTORE_JOBS: "2",
+    }).switchover;
+    expect(c).toStrictEqual({
+      enabled: true,
+      leadHours: 6,
+      holdDays: 45,
+      confirmHours: 48,
+      restoreJobs: 2,
+    });
+  });
+  it("refuses a bad switch value and non-positive numbers", () => {
+    expect(() => loadAppsConfig({ VETRA_APPS_SWITCHOVER: "maybe" })).toThrow(
+      /VETRA_APPS_SWITCHOVER/,
+    );
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_SWITCHOVER_HOLD_DAYS: "0" }),
+    ).toThrow(/HOLD_DAYS/);
+  });
+  it("is off whenever plans are off", () => {
+    expect(
+      switchoverConfigOf(loadAppsConfig({ VETRA_APPS_SWITCHOVER: "on" })).enabled,
+    ).toBe(false);
+    expect(
+      switchoverConfigOf(
+        loadAppsConfig({ VETRA_APPS_SWITCHOVER: "on", VETRA_APPS_PLANS: "on" }),
+      ).enabled,
+    ).toBe(true);
+  });
+  it("reads a config without a switch-over block as off", () => {
+    const { switchover: _drop, ...rest } = loadAppsConfig({
+      VETRA_APPS_SWITCHOVER: "on",
+      VETRA_APPS_PLANS: "on",
+    });
+    expect(switchoverConfigOf(rest).enabled).toBe(false);
+  });
+});
+
+describe("gate config", () => {
+  const base = {
+    VETRA_APPS_GATE_URL:
+      "https://switchboard.staging.vetra.io/api/@powerhousedao/vetra-cloud-package/apps/gate/check",
+    VETRA_APPS_GATE_MIN_POWERHOUSE: "6.2.3-dev.102",
+    OPENBAO_ADDR: "http://openbao:8200",
+  };
+  it("is off by default and needs nothing then", () => {
+    expect(gateConfigOf(loadAppsConfig({}))).toEqual({
+      enabled: false,
+      url: null,
+      minPowerhouse: null,
+    });
+    expect(
+      gateConfigOf(loadAppsConfig({ VETRA_APPS_GATE: "off", ...base })),
+    ).toEqual({ enabled: false, url: null, minPowerhouse: null });
+  });
+  it("reads the URL and the Powerhouse floor when on", () => {
+    expect(loadAppsConfig({ VETRA_APPS_GATE: "on", ...base }).gate).toEqual({
+      enabled: true,
+      url: base.VETRA_APPS_GATE_URL,
+      minPowerhouse: "6.2.3-dev.102",
+    });
+  });
+  it("refuses to start when on without the settings vault (OPENBAO_ADDR)", () => {
+    const { OPENBAO_ADDR: _drop, ...noVault } = base;
+    expect(() => loadAppsConfig({ VETRA_APPS_GATE: "on", ...noVault })).toThrow(
+      /OPENBAO_ADDR/,
+    );
+    expect(() =>
+      loadAppsConfig({ VETRA_APPS_GATE: "on", ...noVault, OPENBAO_ADDR: " " }),
+    ).toThrow(/OPENBAO_ADDR/);
+    expect(
+      gateConfigOf(loadAppsConfig({ VETRA_APPS_GATE: "off", ...noVault })),
+    ).toEqual({ enabled: false, url: null, minPowerhouse: null });
+  });
+  it("refuses to start when on without a URL or floor, or with bad values", () => {
+    expect(() => loadAppsConfig({ VETRA_APPS_GATE: "on" })).toThrow(
+      /VETRA_APPS_GATE_URL/,
+    );
+    expect(() =>
+      loadAppsConfig({
+        VETRA_APPS_GATE: "on",
+        VETRA_APPS_GATE_URL: base.VETRA_APPS_GATE_URL,
+      }),
+    ).toThrow(/VETRA_APPS_GATE_MIN_POWERHOUSE/);
+    expect(() =>
+      loadAppsConfig({
+        VETRA_APPS_GATE: "on",
+        ...base,
+        VETRA_APPS_GATE_URL: "http://x/gate/check",
+      }),
+    ).toThrow(/https/);
+    expect(() =>
+      loadAppsConfig({
+        VETRA_APPS_GATE: "on",
+        ...base,
+        VETRA_APPS_GATE_URL: "https://x/somewhere/else",
+      }),
+    ).toThrow(/apps\/gate\/check/);
+    expect(() =>
+      loadAppsConfig({
+        VETRA_APPS_GATE: "on",
+        ...base,
+        VETRA_APPS_GATE_MIN_POWERHOUSE: "six",
+      }),
+    ).toThrow(/semver/);
+    expect(() => loadAppsConfig({ VETRA_APPS_GATE: "maybe" })).toThrow(
+      /on\/off/,
+    );
   });
 });

@@ -74,7 +74,50 @@ export const VETRA_SETTINGS: VetraSetting[] = [
   },
 ];
 
-/** Set by the processor or the chart, or planned (ACCESS, phase 3): refused, not listed as set. */
+/**
+ * What Vetra also sets on shared instances while the licence gate is on
+ * (releases phase 3 slice 5; gate/service.ts GATE_*). Shown read-only.
+ */
+export const VETRA_SHARED_SETTINGS: VetraSetting[] = [
+  {
+    name: "ACCESS",
+    secret: false,
+    value: "licensed (shared instances only)",
+  },
+  {
+    name: "VETRA_APP_ID",
+    secret: false,
+    value: "the App's id (shared instances only)",
+  },
+  {
+    name: "VETRA_GATE_URL",
+    secret: false,
+    value: "Vetra's licence check URL (shared instances only)",
+  },
+  {
+    name: "VETRA_GATE_TOKEN",
+    secret: true,
+    value:
+      "the instance's licence gate token, kept in OpenBao (shared instances only)",
+  },
+];
+
+/**
+ * Settings a host reads to open or loosen the licence gate of a shared
+ * instance (releases phase 3 slice 5). Never set by a publisher or holder
+ * setting, whatever the instance: ACCESS itself, the grace a host gives when
+ * Vetra is down, the paths exempt from authentication, and auth itself.
+ * ADMINS (always in) is a Vetra setting already; VETRA_GATE_* fall under the
+ * VETRA_ prefix.
+ */
+export const GATE_LOOSENING_NAMES: readonly string[] = [
+  "ACCESS",
+  "ACCESS_GATE_GRACE_MS",
+  "REQUIRE_AUTHENTICATED_CALLER_EXEMPT_PATHS",
+  "AUTH_ENABLED",
+];
+
+/** Set by the processor or the chart, or guarding the licence gate (GATE_LOOSENING_NAMES): refused, not listed as set. */
 const ALSO_RESERVED = [
   "PH_HOST_PORT",
   "PH_USER_DATA_DIR",
@@ -91,7 +134,7 @@ const ALSO_RESERVED = [
   "OPENPANEL_CLIENT_ID",
   "OPENPANEL_API_URL",
   "OPENPANEL_ENV",
-  "ACCESS",
+  ...GATE_LOOSENING_NAMES,
 ];
 
 export const RESERVED_SETTING_NAMES: ReadonlySet<string> = new Set([
