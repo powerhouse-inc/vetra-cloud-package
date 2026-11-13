@@ -12,6 +12,7 @@ import {
   testConfig,
   type Harness,
 } from "./harness.js";
+import { listAudit } from "../audit/repo.js";
 import { appForOwner } from "../service.js";
 import { getApp } from "../repo.js";
 import {
@@ -375,5 +376,87 @@ describe("plans API", () => {
     await expect(
       setPlanTarget(h.deps, owner, "no-such-plan", "1.4.0"),
     ).rejects.toMatchObject(code("NOT_FOUND"));
+  });
+
+  it("sets a plan's policy, notice and update window, audited; refuses bad ones", async () => {
+    const p = await createPlan(h.deps, owner, {
+      appId,
+      kind: "pro",
+      access: "own",
+    });
+    const w = {
+      days: [6, 7],
+      start: "22:00",
+      end: "06:00",
+      timeZone: "Europe/Berlin",
+    };
+    expect(
+      await updatePlanFor(h.deps, owner, {
+        planId: p.id,
+        policy: "patches",
+        noticeHours: 24,
+        updateWindow: w,
+      }),
+    ).toMatchObject({
+      policy: "patches",
+      noticeHours: 24,
+      updateWindow: w,
+      policyNote: null,
+    });
+    expect(
+      (
+        await updatePlanFor(h.deps, owner, {
+          planId: p.id,
+          clearUpdateWindow: true,
+        })
+      ).updateWindow,
+    ).toBeNull();
+    await expect(
+      updatePlanFor(h.deps, owner, {
+        planId: p.id,
+        policy: "follow:feature-x",
+      }),
+    ).rejects.toThrow(/not a release branch/);
+    expect(
+      (
+        await updatePlanFor(h.deps, owner, {
+          planId: p.id,
+          policy: "follow:main",
+        })
+      ).policy,
+    ).toBe("follow:main");
+    await expect(
+      updatePlanFor(h.deps, owner, { planId: p.id, noticeHours: 721 }),
+    ).rejects.toMatchObject(code("BAD_USER_INPUT"));
+    await expect(
+      updatePlanFor(h.deps, owner, {
+        planId: p.id,
+        updateWindow: { ...w, timeZone: "Nowhere/Land" },
+      }),
+    ).rejects.toMatchObject(code("BAD_USER_INPUT"));
+    const updates = (await listAudit(h.db, appId, { limit: 50 })).filter(
+      (r) => r.action === "plan.updated",
+    );
+    expect(JSON.parse(updates.at(-1)!.detail).changes).toMatchObject({
+      policy: { from: "manual", to: "patches" },
+      noticeHours: { from: 72, to: 24 },
+    });
+  });
+
+  it("refuses a withdrawn release as a target", async () => {
+    await h.db
+      .updateTable("releases")
+      .set({ withdrawn_at: "2026-10-02T00:00:00.000Z" })
+      .where("app_id", "=", appId)
+      .where("version", "=", "1.4.0")
+      .execute();
+    await expect(
+      createPlan(h.deps, owner, {
+        appId,
+        kind: "pro",
+        access: "own",
+        targetVersion: "1.4.0",
+      }),
+    ).rejects.toThrow(/withdrawn/);
   });
 });

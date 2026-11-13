@@ -91,6 +91,10 @@ export const schema: DocumentNode = gql`
     "The project's Powerhouse version the image was built with."
     powerhouseVersion: String!
     createdAt: String!
+    "Withdrawn by the publisher (spec 14.3): no plan may target it"
+    withdrawnAt: String
+    withdrawnBy: String
+    withdrawnReason: String
   }
 
   type AppReleasePackage {
@@ -107,6 +111,8 @@ export const schema: DocumentNode = gql`
     planId: String
     "own: the holder's address"
     holder: String
+    "own: the release the publisher pinned it to; rollouts skip it"
+    pinnedVersion: String
     name: String!
     branch: String
     pr: Int
@@ -163,9 +169,13 @@ export const schema: DocumentNode = gql`
     "VETRA_AGENT_S … VETRA_AGENT_XXL"
     size: String!
     targetVersion: String
-    "manual (rollouts arrive later)"
+    "manual | patches | minor | follow:<branch>: whether new releases roll out by themselves (stable only; in 0.x minor takes patches only; in 0.0.x patches and minor take nothing)"
     policy: String!
     noticeHours: Int!
+    "When the plan's instances may be updated; null: any time after the notice"
+    updateWindow: PlanUpdateWindow
+    "The last release the policy could not roll out, and why"
+    policyNote: String
     "active | retired"
     status: String!
     createdAt: String!
@@ -184,6 +194,8 @@ export const schema: DocumentNode = gql`
     status: String!
     reason: String
     runningVersion: String
+    "A coming update of this instance; null when none"
+    update: HolderUpdate
   }
 
   input CreatePlanInput {
@@ -203,6 +215,126 @@ export const schema: DocumentNode = gql`
     planId: ID!
     name: String
     size: String
+    "manual | patches | minor | follow:<branch>"
+    policy: String
+    "Hours holders are told before an update"
+    noticeHours: Int
+    updateWindow: PlanUpdateWindowInput
+    "Remove the update window (any time after the notice)"
+    clearUpdateWindow: Boolean
+  }
+
+  "Weekdays 1 (Monday) to 7 (Sunday) the window starts on; local HH:MM; end <= start runs past midnight; equal: the whole day"
+  type PlanUpdateWindow {
+    days: [Int!]!
+    start: String!
+    end: String!
+    "IANA time zone, e.g. Europe/Berlin"
+    timeZone: String!
+  }
+
+  input PlanUpdateWindowInput {
+    days: [Int!]!
+    start: String!
+    end: String!
+    timeZone: String!
+  }
+
+  "A move of one or more plans to a release, one instance at a time (spec: releases and instances, section 7)"
+  type AppRollout {
+    id: ID!
+    appId: ID!
+    version: String!
+    "active | paused | complete | cancelled | rolled_back"
+    status: String!
+    "forward | back (a rollback)"
+    direction: String!
+    "console | api | policy"
+    source: String!
+    "An address, or vetra (a policy)"
+    startedBy: String!
+    startedAt: String!
+    "What holders are told: the release's customer notes when it started"
+    notes: String
+    pausedAt: String
+    pausedReason: String
+    finishedAt: String
+    rolledBackBy: String
+    rolledBackAt: String
+    plans: [AppRolloutPlan!]!
+    steps: [AppRolloutStep!]!
+  }
+
+  type AppRolloutPlan {
+    planId: ID!
+    "The plan's target before the rollout"
+    fromVersion: String
+    noticeHours: Int!
+  }
+
+  type AppRolloutStep {
+    id: ID!
+    instanceId: ID!
+    instanceName: String!
+    "shared | own"
+    instanceKind: String!
+    planId: ID!
+    position: Int!
+    fromVersion: String
+    toVersion: String!
+    "pending | applying | succeeded | failed | skipped | revert_pending | reverting | revert_failed | rolled_back"
+    status: String!
+    "Not before (the notice); the plan's window applies after it"
+    dueAt: String!
+    "Update now (holder) or retry (publisher)"
+    requestedAt: String
+    startedAt: String
+    finishedAt: String
+    attempts: Int!
+    error: String
+    "pinned at 1.4.2, stopped: updated when it wakes, …"
+    note: String
+  }
+
+  "What startRollout would do"
+  type AppRolloutCheck {
+    version: String!
+    ok: Boolean!
+    problems: [String!]!
+    steps: [AppRolloutStepPreview!]!
+  }
+
+  type AppRolloutStepPreview {
+    instanceId: ID!
+    instanceName: String!
+    instanceKind: String!
+    planId: ID!
+    fromVersion: String
+    "pending | skipped"
+    status: String!
+    note: String
+    "Start plus the notice (the plan's window applies after it)"
+    dueAt: String!
+  }
+
+  "A coming update a holder is told about (in-app)"
+  type HolderUpdate {
+    rolloutId: ID!
+    version: String!
+    "When it is expected; null: never as things stand (the plan's update window never opens)"
+    dueAt: String
+    notes: String
+    paused: Boolean!
+    canUpdateNow: Boolean!
+  }
+
+  input StartRolloutInput {
+    appId: ID!
+    "A release of the App"
+    version: String!
+    planIds: [ID!]!
+    "Hours before instances are updated; default each plan's notice"
+    noticeHours: Int
   }
 
   "Who did what to an App, when and from where (spec: releases and instances, section 10). Kept one year."
@@ -478,6 +610,11 @@ export const schema: DocumentNode = gql`
     appAccess(appId: ID!): AppAccess!
     "Instances of the plans the caller holds licences of"
     myInstances: [HolderInstance!]!
+    "The App's rollouts, newest first (default 20, at most 100)"
+    appRollouts(appId: ID!, limit: Int): [AppRollout!]!
+    rollout(id: ID!): AppRollout
+    "What a rollout would move, and why it cannot start (noticeHours: as startRollout's)"
+    checkRollout(appId: ID!, version: String!, planIds: [ID!]!, noticeHours: Int): AppRolloutCheck!
     appDeployment(id: ID!): AppDeployment
     "A deployment of the Studio's own product (its agent, with the launch secret header)"
     studioDeployment(id: ID!): AppDeployment
@@ -505,8 +642,26 @@ export const schema: DocumentNode = gql`
     "Turn a licensing term into a plan (shared or own instances)"
     createPlan(input: CreatePlanInput!): AppPlan!
     updatePlan(input: UpdatePlanInput!): AppPlan!
-    "Move the plan's instances to a release at once (no notice; replaced by rollouts)"
+    "Start a rollout of this plan to a release (the plan's notice; instances one at a time)"
     setPlanTarget(planId: ID!, version: String!): AppPlan!
+    "Start a rollout of plans to a release (operators and release managers)"
+    startRollout(input: StartRolloutInput!): AppRollout!
+    pauseRollout(rolloutId: ID!, reason: String): AppRollout!
+    "Refused while a step is failed (retry or skip it)"
+    resumeRollout(rolloutId: ID!): AppRollout!
+    "Skip what waits; moved instances stay; plans keep the new target"
+    cancelRollout(rolloutId: ID!): AppRollout!
+    retryRolloutStep(stepId: ID!): AppRollout!
+    skipRolloutStep(stepId: ID!): AppRollout!
+    "Plans back to their previous release; instances back one at a time (image only)"
+    rollBackRollout(rolloutId: ID!): AppRollout!
+    "Own instances: rollouts skip it; another release is applied at once"
+    pinInstance(instanceId: ID!, version: String!): AppInstance!
+    unpinInstance(instanceId: ID!): AppInstance!
+    "No plan may target it any more (spec 14.3)"
+    withdrawRelease(appId: ID!, version: String!, reason: String): AppRelease!
+    "A holder's own instance: its waiting update starts now, outside the notice and window"
+    updateInstanceNow(instanceId: ID!): HolderUpdate!
     retirePlan(planId: ID!): AppPlan!
     "Name a release manager (owner or org OWNER/ADMIN; role default release_manager)"
     setAppRole(appId: ID!, address: String!, role: String): AppRole!

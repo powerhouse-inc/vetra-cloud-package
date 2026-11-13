@@ -1,5 +1,6 @@
 import type { Caller } from "../auth.js";
 import { INSTANCE_BASE_DOMAIN } from "../instances/reconciler.js";
+import { holderUpdateOf, type HolderUpdateJson } from "../rollouts/holder.js";
 import type { AppsDeps } from "../service.js";
 import { liveKindsOfHolder } from "./holders.js";
 
@@ -13,6 +14,8 @@ export interface HolderInstanceJson {
   status: string;
   reason: string | null;
   runningVersion: string | null;
+  /** A coming update of this instance (spec 7 step 3); null when none. */
+  update: HolderUpdateJson | null;
 }
 
 /** The instances the caller holds a licence for (spec section 11: a holder's own instances under their licences). */
@@ -37,6 +40,7 @@ export async function myInstancesFor(
         "instances.status as status",
         "instances.reason as reason",
         "instances.running_version as runningVersion",
+        "instances.kind as kind",
       ])
       .where("instances.status", "!=", "removed")
       // A soft-deleted App is gone for everyone but an admin.
@@ -61,8 +65,11 @@ export async function myInstancesFor(
         .where("plans.kind", "=", k.kind)
         .execute()),
     );
-  return [...own, ...shared].map(({ host, ...r }) => ({
-    ...r,
-    url: host ? `https://${host}.${INSTANCE_BASE_DOMAIN}` : null,
-  }));
+  return Promise.all(
+    [...own, ...shared].map(async ({ host, kind, ...r }) => ({
+      ...r,
+      url: host ? `https://${host}.${INSTANCE_BASE_DOMAIN}` : null,
+      update: await holderUpdateOf(deps, r.instanceId, kind),
+    })),
+  );
 }
