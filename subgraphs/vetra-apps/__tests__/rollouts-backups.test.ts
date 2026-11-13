@@ -192,6 +192,58 @@ describe("rollouts with backups: pausing, rolling back mid-update, ordering", ()
     expect(await statuses(r.id)).toEqual(["o1:reverting"]);
   });
 
+  /** A rollout of 1.4.1 whose o1 applies (updating), rolled back; returns it. */
+  async function rolledBackWhileUpdating() {
+    await migrates();
+    const r = await start();
+    await pass();
+    await finishBackupJobs(h, fake);
+    await pass();
+    expect(await statuses(r.id)).toEqual(["o1:applying"]);
+    // The reconciler applies the target: the instance is updating.
+    await h.db.updateTable("instances").set({ status: "updating" }).where("id", "=", "o1").execute();
+    return r;
+  }
+
+  it("a rollback while applying: a joined instance does not move before the applying one settled", async () => {
+    const r = await rolledBackWhileUpdating();
+    await readyInstance(h, appId, { id: "o3", planId: "p-pro", kind: "own", holder: HOLDER_A, version: "1.4.1" });
+    await inCluster("o3");
+    await rollBackRollout(h.deps, owner, r.id, { acceptDataLoss: true });
+    expect(await statuses(r.id)).toEqual(["o1:revert_pending", "o3:revert_pending"]);
+    await pass();
+    expect(await statuses(r.id)).toEqual(["o1:revert_pending", "o3:revert_pending"]);
+    expect((await instance(h, "o3")).target_version).toBe("1.4.1");
+    expect(await activeRestoresOfApp(h.db, appId)).toHaveLength(0);
+    await becomeReady(h, "o1");
+    await pass();
+    // The joined instance (higher position) goes back first, image only; then o1 restores.
+    expect(await statuses(r.id)).toEqual(["o1:revert_pending", "o3:reverting"]);
+    await becomeReady(h, "o3");
+    await pass();
+    expect(await statuses(r.id)).toEqual(["o1:restoring", "o3:rolled_back"]);
+    expect(await activeRestoresOfApp(h.db, appId)).toHaveLength(1);
+  });
+
+  it("a rollback while applying: an older forward rollout of another plan does not start meanwhile", async () => {
+    await seedPlan(h, appId, { id: "p-b", slug: "b", access: "own" });
+    await readyInstance(h, appId, { id: "o2", planId: "p-b", kind: "own", holder: HOLDER_A });
+    await inCluster("o2");
+    // Older, waiting on its notice.
+    const older = await startRollout(h.deps, owner, { appId, version: "1.5.0", planIds: ["p-b"], noticeHours: 48 });
+    const r = await rolledBackWhileUpdating();
+    await rollBackRollout(h.deps, owner, r.id, { acceptDataLoss: true });
+    h.clock.now = new Date(h.clock.now.getTime() + 72 * 3600_000);
+    await pass();
+    expect(await statuses(older.id)).toEqual(["o2:pending"]);
+    expect(await statuses(r.id)).toEqual(["o1:revert_pending"]);
+    expect(await activeRestoresOfApp(h.db, appId)).toHaveLength(0);
+    await becomeReady(h, "o1");
+    await pass();
+    // The older rollout is due and goes first; once it is done the restore starts.
+    expect(await statuses(older.id)).toEqual(["o2:backing_up"]);
+  });
+
   it("a held instance (failed restore) fails the step instead of updating it", async () => {
     await h.db
       .updateTable("instances")

@@ -730,6 +730,8 @@ async function startRevert(
       );
       return false;
     }
+    // Its update has not settled: wait (never restore under a moving update).
+    if (inst.status === "updating") return true;
     if (
       s.backup_id &&
       (await backupProgress(deps, s.backup_id)).state === "ready"
@@ -1003,6 +1005,25 @@ async function lastStillUpdating(
 }
 
 /**
+ * Whether a revert_pending step waits for its instance to settle an update
+ * (a rollback while applying): that instance is the App's moving step.
+ */
+async function revertAwaitsUpdate(
+  deps: AppsDeps,
+  app: AppRow,
+): Promise<boolean> {
+  return !!(await deps.db
+    .selectFrom("rollout_steps")
+    .innerJoin("instances", "instances.id", "rollout_steps.instance_id")
+    .select("rollout_steps.id")
+    .where("rollout_steps.app_id", "=", app.id)
+    .where("rollout_steps.status", "=", "revert_pending")
+    .where("instances.status", "=", "updating")
+    .where("instances.removed_at", "is", null)
+    .executeTakeFirst());
+}
+
+/**
  * One pass of the App's rollouts (spec section 7). Runs inside the
  * reconciler's per-App pass, under appInstancesLock (never taken here):
  * settles the moving step from the instance row, starts the next due step
@@ -1036,7 +1057,8 @@ export async function advanceRollouts(
   if (
     !stillMoving &&
     !rolloutsHeld(deps.cfg) &&
-    !(await lastStillUpdating(deps, app))
+    !(await lastStillUpdating(deps, app)) &&
+    !(await revertAwaitsUpdate(deps, app))
   )
     await startNext(deps, app);
   await finishDone(deps, app);
