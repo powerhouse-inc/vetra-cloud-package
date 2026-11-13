@@ -31,6 +31,7 @@ import {
   setCustomDomain,
   setOwner,
 } from "../../../document-models/vetra-cloud-environment/v1/gen/creators.js";
+import { createInstanceDomainUsed } from "../../vetra-cloud-observability/instance-domain.js";
 import type { Caller } from "../auth.js";
 
 const HOLDER = "0x1111111111111111111111111111111111111111";
@@ -48,8 +49,12 @@ let h: Harness;
 let appId: string;
 const dns = new Map<string, string[]>();
 const tls = new Map<string, boolean>();
+const txt = new Map<string, string[]>();
+const aaaa = new Map<string, string[]>();
 const probe: DomainProbe = {
   a: async (host) => dns.get(host) ?? [],
+  aaaa: async (host) => aaaa.get(host) ?? [],
+  txt: async (host) => txt.get(host) ?? [],
   tls: async (host) => ({ valid: tls.get(host) ?? false, expiresAt: null }),
 };
 const envDomains = new Map<string, string>();
@@ -74,6 +79,8 @@ const plan = (id: string, kind: string, access: "own" | "shared") => ({
 beforeEach(async () => {
   dns.clear();
   tls.clear();
+  txt.clear();
+  aaaa.clear();
   envDomains.clear();
   h = await makeHarness(
     testConfig({ plans: { enabled: true, stopAfterDays: 14 } }),
@@ -125,6 +132,11 @@ const executedOn = async () => {
   const id = (await own()).environment_id!;
   return h.envs.executed.filter((e) => e.id === id).flatMap((e) => e.types);
 };
+/** The holder creates the TXT record the set-domain result asked for. */
+const verify = async (domain: string) => {
+  const row = await own();
+  txt.set(`_vetra-verify.${domain}`, [row.custom_domain_token!]);
+};
 /** A reconcile pass, then the environment settles READY. */
 const settle = async () => {
   await reconcileInstancesOnce(h.deps);
@@ -142,11 +154,15 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       "App.Acme.io.",
     );
     expect(out).toMatchObject({ domain: "app.acme.io", status: "DNS" });
+    const token = (await own()).custom_domain_token!;
+    expect(token).toMatch(/^[0-9a-f]{32}$/);
     expect(out.records).toEqual([
       { type: "A", host: "app.acme.io", value: INGRESS_IP },
+      { type: "TXT", host: "_vetra-verify.app.acme.io", value: token },
     ]);
     expect(out.alternative).toMatchObject({ type: "CNAME" });
 
+    await verify("app.acme.io");
     dns.set("app.acme.io", ["9.9.9.9"]);
     await checkDomainsOnce(h.deps);
     expect(await own()).toMatchObject({ custom_domain_status: "dns" });
@@ -155,6 +171,7 @@ describe("holder custom domains (plan 7 Task 8)", () => {
     await reconcileInstancesOnce(h.deps);
     expect((await env()).customDomain?.enabled ?? false).toBe(false);
 
+    await verify("app.acme.io");
     dns.set("app.acme.io", [INGRESS_IP]);
     await checkDomainsOnce(h.deps);
     expect((await own()).custom_domain_status).toBe("issuing");
@@ -187,6 +204,71 @@ describe("holder custom domains (plan 7 Task 8)", () => {
     expect(steps.sort()).toEqual(["active", "applied", "requested"]);
   });
 
+  it("a pending (dns/failed) claim does not block another holder; an issuing one does", async () => {
+    await setMyInstanceCustomDomain(
+      h.deps,
+      holder,
+      (await own()).id,
+      "app.acme.io",
+    );
+    // dns: not taken.
+    await setMyInstanceCustomDomain(
+      h.deps,
+      as(OTHER),
+      (await own(OTHER)).id,
+      "app.acme.io",
+    ).catch(() => undefined);
+    await verify("app.acme.io");
+    dns.set("app.acme.io", [INGRESS_IP]);
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("issuing");
+    await expect(
+      setMyInstanceCustomDomain(
+        h.deps,
+        as(OTHER),
+        (await own(OTHER)).id,
+        "app.acme.io",
+      ),
+    ).rejects.toMatchObject({ extensions: { code: "BAD_USER_INPUT" } });
+  });
+
+  it("stays in dns until the _vetra-verify TXT holds the token; a wrong token does not count", async () => {
+    await setMyInstanceCustomDomain(
+      h.deps,
+      holder,
+      (await own()).id,
+      "app.acme.io",
+    );
+    dns.set("app.acme.io", [INGRESS_IP]);
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("dns");
+    expect((await own()).custom_domain_reason).toContain("_vetra-verify");
+    txt.set("_vetra-verify.app.acme.io", ["nope"]);
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("dns");
+    await verify("app.acme.io");
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("issuing");
+  });
+
+  it("refuses a domain with AAAA records that are not Vetra's", async () => {
+    await setMyInstanceCustomDomain(
+      h.deps,
+      holder,
+      (await own()).id,
+      "app.acme.io",
+    );
+    await verify("app.acme.io");
+    dns.set("app.acme.io", [INGRESS_IP]);
+    aaaa.set("app.acme.io", ["2001:db8::1"]);
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("dns");
+    expect((await own()).custom_domain_reason).toContain("AAAA");
+    aaaa.clear();
+    await checkDomainsOnce(h.deps);
+    expect((await own()).custom_domain_status).toBe("issuing");
+  });
+
   it("refuses a domain another instance or an environment holds, and Vetra's own", async () => {
     await setMyInstanceCustomDomain(
       h.deps,
@@ -194,6 +276,9 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       (await own()).id,
       "app.acme.io",
     );
+    await verify("app.acme.io");
+    dns.set("app.acme.io", [INGRESS_IP]);
+    await checkDomainsOnce(h.deps);
     await expect(
       setMyInstanceCustomDomain(
         h.deps,
@@ -254,6 +339,7 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       (await own()).id,
       "app.acme.io",
     );
+    await verify("app.acme.io");
     dns.set("app.acme.io", [INGRESS_IP]);
     await checkDomainsOnce(h.deps);
     await settle();
@@ -276,6 +362,7 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       (await own()).id,
       "app.acme.io",
     );
+    await verify("app.acme.io");
     dns.set("app.acme.io", [INGRESS_IP]);
     await checkDomainsOnce(h.deps);
     await settle();
@@ -297,6 +384,7 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       (await own()).id,
       "app.acme.io",
     );
+    await verify("app.acme.io");
     dns.set("app.acme.io", [INGRESS_IP]);
     await checkDomainsOnce(h.deps);
     h.advance(ISSUING_WAIT_MS + 1000);
@@ -321,13 +409,15 @@ describe("holder custom domains (plan 7 Task 8)", () => {
     );
     h.advance(DNS_WAIT_MS + 1000);
     await checkDomainsOnce(h.deps);
+    // The claim is released, not parked as failed.
     expect(await own()).toMatchObject({
-      custom_domain_status: "failed",
-      custom_domain_reason: DNS_NEVER_POINTED,
+      custom_domain: null,
+      custom_domain_status: null,
     });
+    expect(DNS_NEVER_POINTED).toBeTruthy();
     tls.set("app.acme.io", true);
     await checkDomainsOnce(h.deps);
-    expect((await own()).custom_domain_status).toBe("failed");
+    expect((await own()).custom_domain).toBeNull();
     await reconcileInstancesOnce(h.deps);
     expect((await env()).customDomain?.enabled ?? false).toBe(false);
   });
@@ -339,6 +429,7 @@ describe("holder custom domains (plan 7 Task 8)", () => {
       (await own()).id,
       "app.acme.io",
     );
+    await verify("app.acme.io");
     dns.set("app.acme.io", [INGRESS_IP]);
     tls.set("app.acme.io", true);
     await checkDomainsOnce(h.deps);
@@ -403,5 +494,29 @@ describe("domainActions", () => {
       ),
     ).toThrow(/not a plan instance/);
     expect(domainActions(state, null)).toEqual([]);
+  });
+});
+
+describe("instanceDomainUsed (observability)", () => {
+  it("counts issuing/active only, ignores removed instances, fails closed", async () => {
+    const used = createInstanceDomainUsed(h.db);
+    await setMyInstanceCustomDomain(h.deps, holder, (await own()).id, "app.acme.io");
+    expect(await used("app.acme.io")).toBe(false); // dns
+    await verify("app.acme.io");
+    dns.set("app.acme.io", [INGRESS_IP]);
+    await checkDomainsOnce(h.deps);
+    expect(await used("app.acme.io")).toBe(true); // issuing
+    await h.db
+      .updateTable("instances")
+      .set({ status: "removed" })
+      .where("id", "=", (await own()).id)
+      .execute();
+    expect(await used("app.acme.io")).toBe(false);
+    const broken = createInstanceDomainUsed({
+      selectFrom: () => {
+        throw new Error("db down");
+      },
+    } as never);
+    expect(await broken("app.acme.io")).toBe(true);
   });
 });

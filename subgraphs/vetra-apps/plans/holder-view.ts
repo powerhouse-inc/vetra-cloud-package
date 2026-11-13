@@ -58,6 +58,7 @@ export async function myInstancesFor(
         "instances.custom_domain_status as custom_domain_status",
         "instances.custom_domain_reason as custom_domain_reason",
         "instances.custom_domain_since as custom_domain_since",
+        "instances.custom_domain_token as custom_domain_token",
         "instances.status as status",
         "instances.reason as reason",
         "instances.running_version as runningVersion",
@@ -100,6 +101,7 @@ export async function myInstancesFor(
     custom_domain_status,
     custom_domain_reason,
     custom_domain_since,
+    custom_domain_token,
     planKind,
     rootId,
     endedAt,
@@ -111,6 +113,7 @@ export async function myInstancesFor(
       custom_domain_status,
       custom_domain_reason,
       custom_domain_since,
+      custom_domain_token,
     };
     const live = await chainsOf(r.appId);
     // own: its chain's live head. shared: the holder's own live licence of the plan's kind.

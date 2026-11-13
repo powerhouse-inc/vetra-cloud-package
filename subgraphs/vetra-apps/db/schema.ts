@@ -412,6 +412,8 @@ export interface InstancesTable {
   custom_domain_checked_at?: string | null;
   /** active: failed daily TLS checks in a row. */
   custom_domain_failures?: number | null;
+  /** dns: the per-instance token the holder publishes at _vetra-verify.<domain> (TXT). */
+  custom_domain_token?: string | null;
   created_at: string;
   updated_at: string;
 }

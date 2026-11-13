@@ -1,3 +1,4 @@
+import { createInstanceDomainUsed } from "./instance-domain.js";
 import { resolve4 } from "node:dns/promises";
 import { BaseSubgraph } from "@powerhousedao/reactor-api";
 import type { DocumentNode } from "graphql";
@@ -178,13 +179,7 @@ export class VetraCloudObservabilitySubgraph extends BaseSubgraph {
         access,
         orgSync,
         // Holders' own instances hold custom domains too (vetra-apps, plan 7).
-        instanceDomainUsed: async (domain) =>
-          !!(await appsDb
-            .selectFrom("instances")
-            .select("id")
-            .where("custom_domain", "=", domain)
-            .executeTakeFirst()
-            .catch(() => undefined)),
+        instanceDomainUsed: createInstanceDomainUsed(appsDb),
       }),
     );
 

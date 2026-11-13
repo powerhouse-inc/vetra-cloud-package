@@ -177,6 +177,7 @@ export async function ensureInstanceDomainColumns(
     ["custom_domain_since", "varchar(64)"],
     ["custom_domain_checked_at", "varchar(64)"],
     ["custom_domain_failures", "integer"],
+    ["custom_domain_token", "varchar(64)"],
   ] as const) {
     try {
       await db.schema

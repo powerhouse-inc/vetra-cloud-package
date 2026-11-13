@@ -19,6 +19,7 @@ import {
   type InstanceRow,
 } from "../instances/repo.js";
 import type { AppsDeps } from "../service.js";
+import { randomBytes } from "node:crypto";
 import { dnsReady } from "./dns.js";
 import { validateDomain } from "./validate.js";
 
@@ -42,6 +43,8 @@ export interface DnsRecordHint {
   host: string;
   value: string;
 }
+
+export const VERIFY_PREFIX = "_vetra-verify.";
 
 export interface InstanceCustomDomainJson {
   domain: string;
@@ -73,11 +76,26 @@ export function appliedDomainOf(
 
 /** What the holder puts in their DNS: an A record at the ingress, or a CNAME at the generated host (not at an apex). */
 export function customDomainInstructions(
-  row: Pick<InstanceRow, "host" | "custom_domain">,
+  row: Pick<InstanceRow, "host" | "custom_domain"> & {
+    custom_domain_token?: string | null;
+    custom_domain_status?: CustomDomainStatus | null;
+  },
 ): { records: DnsRecordHint[]; alternative: DnsRecordHint | null } {
   const domain = row.custom_domain ?? "";
   return {
-    records: [{ type: "A", host: domain, value: INGRESS_IP }],
+    records: [
+      { type: "A", host: domain, value: INGRESS_IP },
+      // Proof of control, asked until the domain leaves `dns`.
+      ...(row.custom_domain_token && row.custom_domain_status === "dns"
+        ? [
+            {
+              type: "TXT",
+              host: `${VERIFY_PREFIX}${domain}`,
+              value: row.custom_domain_token,
+            },
+          ]
+        : []),
+    ],
     alternative: row.host
       ? {
           type: "CNAME",
@@ -99,7 +117,7 @@ export function customDomainJson(
     | "custom_domain_status"
     | "custom_domain_reason"
     | "custom_domain_since"
-  >,
+  > & { custom_domain_token?: string | null },
 ): InstanceCustomDomainJson | null {
   if (!row.custom_domain || !row.custom_domain_status) return null;
   return {
@@ -123,6 +141,7 @@ const CLEARED: InstancePatch = {
   custom_domain_since: null,
   custom_domain_checked_at: null,
   custom_domain_failures: null,
+  custom_domain_token: null,
 };
 
 async function assertFree(
@@ -134,6 +153,8 @@ async function assertFree(
     .selectFrom("instances")
     .select("id")
     .where("custom_domain", "=", domain)
+    // dns/failed claims proved nothing; only a domain being served is taken.
+    .where("custom_domain_status", "in", ["issuing", "active"])
     .where("id", "!=", row.id)
     .executeTakeFirst();
   if (other) throw appsError("BAD_USER_INPUT", TAKEN);
@@ -186,6 +207,7 @@ export async function setMyInstanceCustomDomain(
     custom_domain_status: "dns",
     custom_domain_reason: waitingForDns(own.row),
     custom_domain_since: at,
+    custom_domain_token: randomBytes(16).toString("hex"),
   });
   // The domain is the holder's public name, so the audit row carries it.
   await auditCaller(deps.db, caller, {
@@ -339,10 +361,31 @@ async function checkOne(deps: AppsDeps, row: InstanceRow): Promise<void> {
   const domain = row.custom_domain!;
   const status = row.custom_domain_status;
   if (status === "dns") {
-    const dns = dnsReady(await probe.a(domain), INGRESS_IP);
+    if (elapsed(deps, row.custom_domain_since) > DNS_WAIT_MS) {
+      // Release the claim; a stale never-verified name must not sit on the domain.
+      await updateInstance(
+        deps.db,
+        row.id,
+        CLEARED,
+        deps.now().toISOString(),
+      );
+      deps.logger.info(
+        `[vetra-apps] instance ${row.id}: ${DNS_NEVER_POINTED} (${domain}); claim released`,
+      );
+      return;
+    }
+    const owned =
+      !!row.custom_domain_token &&
+      (await probe.txt(`${VERIFY_PREFIX}${domain}`)).includes(
+        row.custom_domain_token,
+      );
+    const dns = owned
+      ? dnsReady(await probe.a(domain), INGRESS_IP, await probe.aaaa(domain))
+      : {
+          ready: false,
+          reason: `add a TXT record ${VERIFY_PREFIX}${domain} with the value ${row.custom_domain_token ?? "(set the domain again)"}`,
+        };
     if (dns.ready) return moveTo(deps, row, "issuing", null);
-    if (elapsed(deps, row.custom_domain_since) > DNS_WAIT_MS)
-      return moveTo(deps, row, "failed", DNS_NEVER_POINTED);
     const reason = dns.reason ?? waitingForDns(row);
     if (reason !== row.custom_domain_reason)
       await updateInstance(
