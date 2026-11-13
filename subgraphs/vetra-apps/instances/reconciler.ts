@@ -37,6 +37,7 @@ import {
   type AppsDeps,
 } from "../service.js";
 import { isPlanKind, syncPlanInstances } from "../plans/sync.js";
+import { syncTeamPlan } from "../plans/team.js";
 import { advanceRollouts } from "../rollouts/runner.js";
 import { AUDIT_SYSTEM_ACTOR } from "../audit/repo.js";
 import { getHold } from "../holds/repo.js";
@@ -225,6 +226,7 @@ async function reconcileApp(deps: AppsDeps, app: AppRow): Promise<void> {
   if (plans.enabled && wantsInstances(app)) {
     try {
       await syncPlanInstances(deps, app);
+      await syncTeamPlan(deps, app);
     } catch (err) {
       // Licensing's tables may not exist yet (boot order); branch and preview instances go on.
       deps.logger.warn(

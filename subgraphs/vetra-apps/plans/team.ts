@@ -1,16 +1,26 @@
 import type { Kysely } from "kysely";
+import { GraphQLError } from "graphql";
 import type { VetraAppsDB } from "../db/schema.js";
 import { withKeyLock } from "../../../shared/key-lock.js";
+import { AUDIT_SYSTEM_ACTOR, recordAudit } from "../audit/repo.js";
 import { auditCaller } from "../audit/service.js";
 import type { Caller } from "../auth.js";
-import { plansConfigOf } from "../config.js";
+import { plansConfigOf, teamSoakMs } from "../config.js";
 import { appsError } from "../errors.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
 import type { AppRow } from "../repo.js";
+import {
+  listInstances,
+  updateInstance,
+  type InstanceRow,
+} from "../instances/repo.js";
+import { listReleases } from "../releases/repo.js";
 import { appInstancesLock } from "../rollouts/repo.js";
+import { beginRollout } from "../rollouts/service.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { insertPlan, updatePlan, type PlanRow } from "./repo.js";
 import { planJson, type PlanJson } from "./service.js";
+import { qualifiesAsRun, recordTeamRun } from "./team-runs.js";
 
 /** The Team plan (spec section 5): slug and name; `team` is reserved for it (checkPlanSlug). */
 export const TEAM_SLUG = "team";
@@ -182,4 +192,106 @@ export async function disableTeamPlan(
       }),
     ),
   );
+}
+
+const SYSTEM = { actor: AUDIT_SYSTEM_ACTOR, source: "policy" as const };
+
+/**
+ * Per reconciler pass, under the App's lock (reconcileApp): the active Team
+ * plan's first target, its instance's ADMINS, and its ran-healthy records.
+ */
+export async function syncTeamPlan(deps: AppsDeps, app: AppRow): Promise<void> {
+  const plan = await activeTeamPlan(deps.db, app.id);
+  if (!plan) return;
+  await firstTarget(deps, app, plan);
+  const row = (await listInstances(deps.db, app.id, "shared")).find(
+    (r) => r.plan_id === plan.id && !r.removed_at,
+  );
+  if (!row) return;
+  if (isOrgApp(app)) await refreshAdmins(deps, app, row);
+  const now = deps.now();
+  const soakMs = teamSoakMs(deps.cfg);
+  if (qualifiesAsRun(row, soakMs, now))
+    await recordTeamRun(deps.db, row, soakMs / 60_000, now.toISOString());
+}
+
+async function firstTarget(
+  deps: AppsDeps,
+  app: AppRow,
+  plan: PlanRow,
+): Promise<void> {
+  if (plan.target_version) return;
+  const branch = branchOf(plan);
+  if (!branch) return;
+  const newest = (
+    await listReleases(deps.db, app.id, { kind: "release", limit: 200 })
+  ).find((r) => r.branch === branch && !r.withdrawn_at);
+  if (!newest) return;
+  try {
+    await beginRollout(deps, app, newest.version, [plan], SYSTEM, 0);
+  } catch (err) {
+    if (!(err instanceof GraphQLError)) throw err;
+    const note = `${newest.version}: ${err.message}`.slice(0, 500);
+    if (plan.policy_note === note) return;
+    deps.logger.warn(`[vetra-apps] Team plan of ${app.slug}: ${note}`);
+    await updatePlan(
+      deps.db,
+      plan.id,
+      { policy_note: note },
+      deps.now().toISOString(),
+    );
+  }
+}
+
+async function refreshAdmins(
+  deps: AppsDeps,
+  app: AppRow,
+  row: InstanceRow,
+): Promise<void> {
+  const read = deps.orgs?.orgAdmins;
+  if (!read || !app.owner_org_id) return;
+  const checked = Date.parse(row.admins_checked_at ?? "");
+  if (
+    Number.isFinite(checked) &&
+    deps.now().getTime() - checked < TEAM_ADMINS_REFRESH_MS
+  )
+    return;
+  let list: string[] | null;
+  try {
+    list = await read.call(deps.orgs, app.owner_org_id);
+  } catch {
+    return; // Renown down: keep the last list, ask again next pass.
+  }
+  const nowIso = deps.now().toISOString();
+  const override =
+    list && list.length > 0 ? list.slice(0, TEAM_ADMINS_MAX).join(",") : null;
+  if ((row.admins_override ?? null) === override) {
+    await updateInstance(
+      deps.db,
+      row.id,
+      { admins_checked_at: nowIso },
+      nowIso,
+    );
+    return;
+  }
+  await deps.db.transaction().execute(async (trx) => {
+    await updateInstance(
+      trx,
+      row.id,
+      { admins_override: override, admins_checked_at: nowIso },
+      nowIso,
+    );
+    await recordAudit(trx, {
+      appId: app.id,
+      at: nowIso,
+      actor: AUDIT_SYSTEM_ACTOR,
+      source: "system",
+      action: "instance.admins_set",
+      subject: `instance:${row.id}`,
+      detail: {
+        count: override ? override.split(",").length : 1,
+        fallback: override === null,
+      },
+    });
+  });
 }
