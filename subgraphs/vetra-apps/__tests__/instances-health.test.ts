@@ -195,6 +195,17 @@ describe("monitorInstancesOnce", () => {
     });
     await h.db
       .updateTable("instances")
+      .set({ custom_domain_status: "failed" })
+      .where("id", "=", (await one()).id)
+      .execute();
+    h.probed.length = 0;
+    await monitor();
+    expect(h.probed).toEqual([]);
+    expect((await one()).health_reason).toBe(
+      "certificate failed for app.acme.io",
+    );
+    await h.db
+      .updateTable("instances")
       .set({ custom_domain_status: "active" })
       .where("id", "=", (await one()).id)
       .execute();

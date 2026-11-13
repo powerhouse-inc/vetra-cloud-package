@@ -222,13 +222,20 @@ async function checkInstance(
         wantedSettings,
       );
       if (fromCluster) verdict = fromCluster;
-      else if (row.custom_domain_status === "issuing")
+      else if (
+        row.custom_domain_status === "issuing" ||
+        row.custom_domain_status === "failed"
+      )
         // The host moved to the custom domain and its certificate is not
-        // there yet: neither host would answer, so the cluster decides.
+        // there (issuing, or failed late): neither host would answer, so the
+        // cluster decides.
         verdict = {
           health: "healthy",
           check: null,
-          reason: `certificate being issued for ${row.custom_domain}`,
+          reason:
+            row.custom_domain_status === "failed"
+              ? `certificate failed for ${row.custom_domain}`
+              : `certificate being issued for ${row.custom_domain}`,
         };
       else if (deps.probe) {
         const p = await probeHost(
