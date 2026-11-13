@@ -913,8 +913,11 @@ async function reconcileEnvironment(
   const admins = adminsOf(app, row);
   const size = sizeOf(row);
   // The claim's update relabels the environment in the same batch as ADMINS.
+  // Only rows that came from the pool: any other own row keeps its label.
   const label =
-    row.kind === "own" && !row.warm ? `${app.name} · ${row.name}` : null;
+    row.kind === "own" && !row.warm && row.claimed_at
+      ? `${app.name} · ${row.name}`
+      : null;
 
   if (!declaresVetraSecrets(state) && isPlanKind(row.kind)) {
     // Never deleted: a plan instance's data is the holder's.

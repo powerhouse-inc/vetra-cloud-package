@@ -183,4 +183,33 @@ describe("warm pool: reconciler", () => {
     await pass();
     expect(h.envs.docs.has(warm.environment_id!)).toBe(true);
   });
+
+  it("a cold own row (never from the pool) keeps its environment's label", async () => {
+    await h.db
+      .updateTable("plans")
+      .set({ warm_pool_size: 0 })
+      .where("id", "=", "p-pro")
+      .execute();
+    await seedLicence(h, {
+      appId,
+      kind: "pro",
+      holder: HOLDER,
+      licenseId: "l1",
+    });
+    await settle();
+    const [cold] = await own();
+    expect(cold.warm).toBeFalsy();
+    expect(cold.claimed_at ?? null).toBeNull();
+    const doc = h.envs.docs.get(cold.environment_id!)!;
+    h.envs.docs.set(cold.environment_id!, {
+      ...doc,
+      state: { ...doc.state, global: { ...doc.state.global, label: "Renamed" } },
+    });
+    h.envs.executed.length = 0;
+    await pass();
+    expect(h.envs.executed.flatMap((e) => e.types)).not.toContain("SET_LABEL");
+    expect((await h.envs.getState(cold.environment_id!))!.label).toBe(
+      "Renamed",
+    );
+  });
 });
