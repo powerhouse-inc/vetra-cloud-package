@@ -37,6 +37,7 @@ import {
   parseSize,
   slugFromKind,
 } from "./rules.js";
+import { isTeamPlan } from "./team.js";
 
 export interface PlanJson {
   id: string;
@@ -281,6 +282,11 @@ export async function updatePlanFor(
   input: UpdatePlanInput,
 ): Promise<PlanJson> {
   const { plan, app } = await loadPlan(deps, caller, input.planId);
+  if (isTeamPlan(plan) && input.policy != null)
+    throw appsError(
+      "BAD_USER_INPUT",
+      "The Team plan follows its branch; change it with enableTeamPlan",
+    );
   const name = input.name == null ? undefined : input.name.trim();
   if (name === "")
     throw appsError("BAD_USER_INPUT", "A plan's name cannot be blank");
@@ -399,6 +405,11 @@ export async function retirePlan(
   planId: string,
 ): Promise<PlanJson> {
   const { plan } = await loadPlan(deps, caller, planId);
+  if (isTeamPlan(plan))
+    throw appsError(
+      "BAD_USER_INPUT",
+      "Disable the Team plan instead (owner and organisation admins)",
+    );
   if (plan.status === "retired") return planJson(plan);
   const nowIso = deps.now().toISOString();
   return planJson(
