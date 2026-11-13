@@ -6,7 +6,7 @@ import { releaseByVersion } from "../releases/repo.js";
 import { loadAppForOwner, type AppsDeps } from "../service.js";
 import { plansConfigOf, rolloutsEnabled } from "../config.js";
 import { isReleaseBranch, parseReleaseBranches } from "../releases/branches.js";
-import { releaseProblem } from "../rollouts/check.js";
+import { releaseProblem, teamGateProblem } from "../rollouts/check.js";
 import { appInstancesLock } from "../rollouts/repo.js";
 import {
   beginRollout,
@@ -229,6 +229,13 @@ export async function createPlan(
   const target = input.targetVersion
     ? await checkTarget(deps, app.id, input.targetVersion, access)
     : null;
+  // A customer plan's first target is a rollout too: Team goes first (spec 7).
+  if (target) {
+    const team = await teamGateProblem(deps, app.id, target, [
+      { slug, team: false, target_version: null },
+    ]);
+    if (team) throw appsError("BAD_USER_INPUT", team);
+  }
   const row = await deps.db
     .transaction()
     .execute(async (trx) => {
