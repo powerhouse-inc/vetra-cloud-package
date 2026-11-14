@@ -519,9 +519,17 @@ describe("workflow template", () => {
     expect(t).not.toContain("cache: bun");
   });
 
+  it.each(["pnpm", "npm", "yarn", "bun"] as const)(
+    "asks setup-node for no cache (%s): a run that publishes nothing has no cache folder",
+    (packageManager) => {
+      const t = workflowTemplate("app-1", "main", { packageManager });
+      expect(t).not.toContain("cache:");
+    },
+  );
+
   it("sets up npm and its commands for an npm repository", () => {
     const t = workflowTemplate("app-1", "main", { packageManager: "npm" });
-    expect(t).toContain("cache: npm");
+    expect(t).toContain("actions/setup-node@v4");
     expect(t).not.toContain("pnpm");
     expect(t).toContain('install-command: "npm ci"');
   });
