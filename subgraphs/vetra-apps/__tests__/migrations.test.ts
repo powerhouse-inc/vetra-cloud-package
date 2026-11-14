@@ -1209,3 +1209,30 @@ describe("rollout steps that back up", () => {
     }
   });
 });
+
+describe("apps.production_environment_id", () => {
+  it("accepts null (publish-only apps) and the migration runs twice", async () => {
+    const { makeHarness, seedActiveApp } = await import("./harness.js");
+    const { ensureAppsProductionEnvNullable } = await import(
+      "../db/migrations.js"
+    );
+    const h = await makeHarness();
+    try {
+      const app = await seedActiveApp(h);
+      await h.db
+        .updateTable("apps")
+        .set({ production_environment_id: null as never })
+        .where("id", "=", app.id)
+        .execute();
+      const row = await h.db
+        .selectFrom("apps")
+        .select("production_environment_id")
+        .where("id", "=", app.id)
+        .executeTakeFirstOrThrow();
+      expect(row.production_environment_id).toBeNull();
+      await ensureAppsProductionEnvNullable(h.db as never);
+    } finally {
+      await h.close();
+    }
+  });
+});
