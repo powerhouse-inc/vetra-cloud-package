@@ -3102,10 +3102,10 @@ export async function deleteApp(
   const app = await loadAppForOwner(deps, caller, appId);
   await assertNoCustomerInstances(deps, app.id);
   await deletePreviewsOfApp(deps, app, "app deleted", { strict: true });
-  if (deleteEnvironments) {
-    const prod = await deps.envs.getState(app.production_environment_id);
-    if (prod?.app?.appId === app.id)
-      await deps.envs.delete(app.production_environment_id);
+  if (deleteEnvironments && app.production_environment_id !== null) {
+    const prodId = app.production_environment_id;
+    const prod = await deps.envs.getState(prodId);
+    if (prod?.app?.appId === app.id) await deps.envs.delete(prodId);
   }
   if (app.harbor_robot_id !== null) {
     if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
@@ -3565,6 +3565,7 @@ async function deployChecked(
   }
   if (app.status !== "ACTIVE")
     throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
+  const envId = deployEnvOf(app);
   if (!actor.gitRef) throw appsError("BAD_USER_INPUT", "gitRef is required");
   if (typeof input.sha !== "string" || !SHA.test(input.sha)) {
     throw appsError("BAD_USER_INPUT", "sha must be a git commit sha");
@@ -3610,9 +3611,7 @@ async function deployChecked(
       onBehalfOf: actor.onBehalfOf,
     });
   }
-  const productionState = await deps.envs.getState(
-    app.production_environment_id,
-  );
+  const productionState = await deps.envs.getState(envId);
   const image = resolveImage(app, input.imageTag, productionState);
   // A PR's CI run can finish after the PR was merged/closed (and after the
   // pull_request.closed webhook removed its preview): never (re)create or
@@ -3710,9 +3709,7 @@ export async function rollbackApp(
     if (!preview)
       throw appsError("BAD_USER_INPUT", "That preview no longer exists");
   }
-  const productionState = await deps.envs.getState(
-    app.production_environment_id,
-  );
+  const productionState = await deps.envs.getState(deployEnvOf(app));
   return performDeploy(deps, app, productionState, {
     kind: source.kind,
     prNumber: source.pr_number,
@@ -3937,6 +3934,18 @@ interface DeployTarget {
  * adopt refused those, or marked after): only the keeper's release gate
  * moves that one's version (spec 4.3).
  */
+export const NO_DEPLOY_ENV =
+  "This app publishes releases; it has no deploy environment";
+
+/** The App's production env id. A publish-only App (no production env) refuses every deploy. */
+export function deployEnvOf(
+  app: Pick<AppRow, "production_environment_id">,
+): string {
+  if (app.production_environment_id === null)
+    throw appsError("BAD_USER_INPUT", NO_DEPLOY_ENV);
+  return app.production_environment_id;
+}
+
 function assertProductionEnv(
   app: AppRow,
   state: VetraCloudEnvironmentState | null,
@@ -4089,7 +4098,7 @@ async function performDeploy(
   let target: DeployTarget;
   if (req.kind === "PRODUCTION") {
     target = {
-      envId: app.production_environment_id,
+      envId: deployEnvOf(app),
       state: assertProductionEnv(app, productionState),
       createActions: [],
       fusionEnvTemplate: [],
@@ -4187,7 +4196,7 @@ async function studioProductionEnv(
     throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
   const state = assertProductionEnv(
     app,
-    await deps.envs.getState(app.production_environment_id),
+    await deps.envs.getState(deployEnvOf(app)),
   );
   if (RELEASED_STATUSES.has(state.status))
     throw appsError("BAD_USER_INPUT", `The live app is ${state.status}`);
@@ -4247,7 +4256,7 @@ async function queueStudioDeployment(
 ): Promise<DeploymentRow> {
   const nowIso = deps.now().toISOString();
   const id = deps.newId();
-  const envId = app.production_environment_id;
+  const envId = deployEnvOf(app);
   const superseded = await deps.db.transaction().execute(async (trx) => {
     if (req.trigger === "STUDIO_LAUNCH") {
       const live = await trx
@@ -4455,7 +4464,7 @@ async function pointConnectAtDrive(
   app: AppRow,
   driveId: string,
 ): Promise<void> {
-  const envId = app.production_environment_id;
+  const envId = deployEnvOf(app);
   await withEnvLock(envId, async () => {
     const state = await studioProductionEnv(deps, app);
     const switchboard = envUrls(state).switchboard;

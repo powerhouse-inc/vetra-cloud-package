@@ -274,7 +274,7 @@ async function reconcileAppOrg(
     if (!rowChanges && reconciledRecently(deps, row.id)) return row;
 
     const envIds = [
-      row.production_environment_id,
+      ...(row.production_environment_id ? [row.production_environment_id] : []),
       ...(await listPreviews(deps.db, row.id)).map((p) => p.environment_id),
     ];
     for (const envId of envIds) {

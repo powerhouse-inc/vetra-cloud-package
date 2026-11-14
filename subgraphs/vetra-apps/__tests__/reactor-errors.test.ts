@@ -54,7 +54,7 @@ const code = (p: Promise<unknown>) =>
 
 describe("I3: reducer rejections fail the deployment immediately, before APPROVE", () => {
   it("marks FAILED with the reducer message and never appends APPROVE_CHANGES", async () => {
-    const envId = app.production_environment_id;
+    const envId = app.production_environment_id!;
     const approvesBefore = client
       .opTypes(envId)
       .filter((t) => t === "APPROVE_CHANGES").length;

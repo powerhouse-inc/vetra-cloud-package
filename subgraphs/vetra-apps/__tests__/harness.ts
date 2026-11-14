@@ -27,6 +27,7 @@ import {
   type OrgMembership,
 } from "../../../shared/renown-orgs.js";
 import type { VetraAppsDB } from "../db/schema.js";
+import type { AppRow } from "../repo.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
 import {
@@ -839,7 +840,10 @@ export async function seedActiveApp(
     productionEnvironmentId,
   });
   h.renown.delegation = { expiresAt: "2027-10-02T12:00:00.000Z" };
-  return confirmAppIdentity(h.deps, owner, app.id);
+  // Seeded on the old deploy path: always with a production env.
+  return (await confirmAppIdentity(h.deps, owner, app.id)) as AppRow & {
+    production_environment_id: string;
+  };
 }
 
 /**

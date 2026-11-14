@@ -88,7 +88,7 @@ async function seedProductOnGithub(by: Caller = agent, name = "My Shop"): Promis
     { studioEnvironmentId: studioId, name },
     { kind: "agent", secret },
   );
-  h.envs.setStatus(made.production_environment_id, "READY");
+  h.envs.setStatus(made.production_environment_id!, "READY");
   await connectGithubDeploy(h.deps, owner, "code");
   const app = await attachStudioRepository(h.deps, owner, {
     appId: made.id,

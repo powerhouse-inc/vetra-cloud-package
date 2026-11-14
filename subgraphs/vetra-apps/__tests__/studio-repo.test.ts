@@ -120,7 +120,7 @@ async function seedProduct(name = "My Shop", by: Caller = agent): Promise<Produc
     { studioEnvironmentId: studioId, name },
     { kind: "agent", secret },
   );
-  h.envs.setStatus(app.production_environment_id, "READY");
+  h.envs.setStatus(app.production_environment_id!, "READY");
   return { app, studioId, secret };
 }
 
@@ -631,7 +631,7 @@ describe("a Studio product on GitHub never deploys through CI", () => {
     });
     const active = await confirmAppIdentity(h.deps, owner, legacy.id);
     expect(active.status).toBe("ACTIVE");
-    h.envs.setStatus(active.production_environment_id, "READY");
+    h.envs.setStatus(active.production_environment_id!, "READY");
     const routes = routesFor(active.identity_did, active.repository_id!);
     const deploy = await routes.deploy(post("apps/ci/deploy", deployBody(active.id)));
     expect(deploy.status).toBe(200);

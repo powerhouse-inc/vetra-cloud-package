@@ -196,7 +196,7 @@ describe("ensureStudioProduct", () => {
 
     // One new env: the product's, at <slug>.vetra.io, Connect at the apex.
     expect(h.envs.docs.size).toBe(envsBefore + 1);
-    const env = (await h.envs.getState(app.production_environment_id))!;
+    const env = (await h.envs.getState(app.production_environment_id!))!;
     expect(env).toMatchObject({
       label: "My Shop",
       genericSubdomain: "my-shop",
@@ -257,7 +257,7 @@ describe("ensureStudioProduct", () => {
     const second = await seedStudio();
     const b = await ensure({ studioEnvironmentId: second.id, name: "My Shop" });
     expect(b.slug).toBe("my-shop-2");
-    expect((await h.envs.getState(b.production_environment_id))!.genericSubdomain).toBe("my-shop-2");
+    expect((await h.envs.getState(b.production_environment_id!))!.genericSubdomain).toBe("my-shop-2");
 
     // An env's hosts hold it (an env "rapid-fox" serves rapid-fox-connect…).
     const legacy = await h.envs.seedStandalone(STRANGER);
@@ -284,7 +284,7 @@ describe("ensureStudioProduct", () => {
     await h.envs.execute(studio.id, [setOwnerOrg({ ownerOrgId: ORG, operators: [MEMBER] })]);
     const app = await ensure({ studioEnvironmentId: studio.id, name: "Team Shop" }, member);
     expect(app).toMatchObject({ owner_org_id: ORG, owner_address: OWNER, status: "ACTIVE" });
-    const env = (await h.envs.getState(app.production_environment_id))!;
+    const env = (await h.envs.getState(app.production_environment_id!))!;
     expect(env).toMatchObject({
       ownerOrgId: ORG,
       orgOperators: [MEMBER],
@@ -582,7 +582,7 @@ describe("unlaunched Studio products (D8, F32)", () => {
     expect(await runUnlaunchedStudioAppSweepOnce(h.deps)).toBe(1);
     expect((await getApp(h.db, idle.id))!.status).toBe("DELETED");
     // The env is terminated, its document kept.
-    const env = await h.envs.getState(idle.production_environment_id);
+    const env = await h.envs.getState(idle.production_environment_id!);
     expect(env?.status).toBe("TERMINATING");
     expect(h.envs.deleted).toStrictEqual([]);
     const lines = (h.deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.slice(logged).map((c) => String(c[0]));
@@ -590,7 +590,7 @@ describe("unlaunched Studio products (D8, F32)", () => {
 
     for (const kept of [launched, withDrive, deployed, github]) {
       expect((await getApp(h.db, kept.id))!.status).not.toBe("DELETED");
-      expect((await h.envs.getState(kept.production_environment_id))!.status).not.toBe("TERMINATING");
+      expect((await h.envs.getState(kept.production_environment_id!))!.status).not.toBe("TERMINATING");
     }
     // Once is enough.
     expect(await runUnlaunchedStudioAppSweepOnce(h.deps)).toBe(0);
@@ -617,7 +617,7 @@ describe("unlaunched Studio products (D8, F32)", () => {
         .execute();
       expect(await removeUnlaunchedStudioApp(h.deps, selected)).toBe(false);
       expect((await getApp(h.db, app.id))!.status).toBe("ACTIVE");
-      expect((await h.envs.getState(app.production_environment_id))!.status).not.toBe("TERMINATING");
+      expect((await h.envs.getState(app.production_environment_id!))!.status).not.toBe("TERMINATING");
     }
     // A launch marker set after the selection protects too.
     const s = await seedStudio();
@@ -684,7 +684,7 @@ describe("Apps without a repository on the GitHub paths (F30)", () => {
       packages: [{ name: "@acme/shop", version: "0.1.0" }],
     });
     expect(d.status).toBe("DEPLOYING");
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     expect(await runDeploymentWatcherOnce(h.deps)).toStrictEqual([d.id]);
     await reportDeploymentToGithub(h.deps, d.id);
     await reportPreviewRemovedToGithub(h.deps, app, { pr_number: 1 }, "test");

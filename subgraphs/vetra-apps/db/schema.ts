@@ -39,7 +39,8 @@ export interface AppsTable {
   release_branches?: string;
   /** Whether the reconciler runs this App's instances (releases phase 2; default false). */
   instances_enabled?: boolean;
-  production_environment_id: string;
+  /** Null: a publish-only App (spec 2026-11-14); it has no deploy environment. */
+  production_environment_id: string | null;
   previews_enabled: boolean;
   preview_limit: number;
   preview_ttl_days: number;

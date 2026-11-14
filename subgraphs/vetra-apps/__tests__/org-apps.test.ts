@@ -75,7 +75,7 @@ describe("org-owned apps", () => {
     expect(listed.map((a) => [a.id, a.owner_org_id])).toStrictEqual([
       [app.id, ORG],
     ]);
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env).toMatchObject({
       owner: OWNER,
       ownerOrgId: ORG,
@@ -131,7 +131,7 @@ describe("org-owned apps", () => {
     expect((await appForOwner(h.deps, admin, app.id)).owner_org_id).toBe(ORG);
     expect((await getApp(h.db, app.id))?.owner_org_id).toBe(ORG);
     expect(
-      (await h.envs.getState(app.production_environment_id))?.ownerOrgId,
+      (await h.envs.getState(app.production_environment_id!))?.ownerOrgId,
     ).toBe(ORG);
   });
 
@@ -146,7 +146,7 @@ describe("org-owned apps", () => {
       owner_org_id: null,
     });
     expect(
-      await h.envs.getState(app.production_environment_id),
+      await h.envs.getState(app.production_environment_id!),
     ).toMatchObject({ owner: STRANGER, ownerOrgId: null });
     expect(await code(updateApp(h.deps, owner, app.id, { name: "Nope" }))).toBe(
       "FORBIDDEN",
@@ -167,14 +167,14 @@ describe("org-owned apps", () => {
       "org-other",
     );
     expect(
-      (await h.envs.getState(app.production_environment_id))?.ownerOrgId,
+      (await h.envs.getState(app.production_environment_id!))?.ownerOrgId,
     ).toBe("org-other");
   });
 
   it("announces every lazy move, so the observability protection keeps it (not reverted)", async () => {
     const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
     const reactor = await createReactorPermissions([SERVICE]);
-    const envId = app.production_environment_id;
+    const envId = app.production_environment_id!;
     const readTarget = async (id: string): Promise<EnvProtectionTarget> => {
       const s = await h.envs.getState(id);
       return {
@@ -278,14 +278,14 @@ describe("org-owned apps", () => {
     expect(h.envs.executed.length).toBe(before);
     expect((await getApp(h.db, app.id))?.owner_org_id).toBeNull();
     expect(
-      (await h.envs.getState(app.production_environment_id))?.ownerOrgId ??
+      (await h.envs.getState(app.production_environment_id!))?.ownerOrgId ??
         null,
     ).toBeNull();
   });
 
   it("re-announces and re-makes a move the protection hook reverted", async () => {
     await moveToOrg();
-    const envId = app.production_environment_id;
+    const envId = app.production_environment_id!;
     // What the observability hook does to an unrecognised move.
     await h.envs.execute(envId, [
       setOwnerOrg({ ownerOrgId: null, operators: [] }),
@@ -415,7 +415,7 @@ describe("createApp in an organisation", () => {
       ownerOrgId: ORG,
     });
     expect(
-      await h.envs.getState(created.production_environment_id),
+      await h.envs.getState(created.production_environment_id!),
     ).toMatchObject({
       owner: OWNER,
       ownerOrgId: ORG,
@@ -426,7 +426,7 @@ describe("createApp in an organisation", () => {
   it("m2: re-makes a reverted hand-over of an org App that has no Renown profile yet", async () => {
     h.orgs.join(ORG, OWNER, "ADMIN");
     const created = await createApp(h.deps, owner, input);
-    const envId = created.production_environment_id;
+    const envId = created.production_environment_id!;
     // The announcement expired before observability could protect it: reverted.
     await h.envs.execute(envId, [setOwnerOrg({ ownerOrgId: null, operators: [] })]);
     h.clock.now = new Date(h.clock.now.getTime() + ENV_RECONCILE_INTERVAL_MS + 1);
@@ -457,7 +457,7 @@ describe("createApp in an organisation", () => {
     const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
     const reactor = await createReactorPermissions([SERVICE]);
     try {
-      const envId = created.production_environment_id;
+      const envId = created.production_environment_id!;
       const s = await h.envs.getState(envId);
       const reverted: unknown[] = [];
       const result = await protectEnvironment(
@@ -674,7 +674,7 @@ describe("CI and identity for org apps", () => {
   it("accepts a CI token from a publisher of the app and refuses one from a removed member or the creator who left", async () => {
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     await appForOwner(h.deps, admin, app.id);
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     h.orgs.join(ORG, MEMBER, "PUBLISHER");
     const memberCi = (c: ReturnType<typeof claim>) => ({
       ...ciIdentity(c),
@@ -707,7 +707,7 @@ describe("CI and identity for org apps", () => {
       sha: "a".repeat(40),
       packages: [{ name: "@acme/shop", version: "1.0.0" }],
     };
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     // Personal app: Renown down changes nothing.
     h.orgs.down = true;
     expect(
@@ -795,11 +795,11 @@ describe("previews of org apps", () => {
   it("copy the production env's organisation and operators", async () => {
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     await appForOwner(h.deps, admin, app.id);
-    await h.envs.execute(app.production_environment_id, [
+    await h.envs.execute(app.production_environment_id!, [
       syncOrgOperators({ operators: [MEMBER] }),
     ]);
     h.orgs.join(ORG, OWNER, "PUBLISHER"); // the CI token below is the creator's; org apps need capability
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     const d = await deployAsCi(
       h.deps,
       claim("refs/pull/7/merge", { prNumber: 7 }),
@@ -831,7 +831,7 @@ describe("previews of org apps", () => {
     h.orgs.publishers.set(APP_DID, { orgId: ORG, address: null });
     await appForOwner(h.deps, admin, app.id);
     h.orgs.join(ORG, OWNER, "PUBLISHER");
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     const execute = h.envs.execute.bind(h.envs);
     h.envs.execute = async (id, actions) => {
       if (actions.some((a) => a.type === "SET_OWNER_ORG"))
@@ -884,7 +884,7 @@ describe("transfers to a person reach their lists (I2)", () => {
       [app.id, STRANGER, null],
     ]);
     expect(
-      await h.envs.getState(app.production_environment_id),
+      await h.envs.getState(app.production_environment_id!),
     ).toMatchObject({ owner: STRANGER, ownerOrgId: null });
     // The org's list no longer has it.
     h.orgs.join(ORG, MEMBER, "MEMBER");
@@ -923,7 +923,7 @@ describe("personal apps never wait on Renown (I3)", () => {
     expect(askedFirst).toBe(2);
     // Within the cool-down nothing waits on Renown and nothing asks it.
     expect((await appForOwner(h.deps, owner, app.id)).id).toBe(app.id);
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     expect(
       await code(
         deployAsCi(h.deps, claim("refs/heads/main"), {

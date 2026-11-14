@@ -173,7 +173,7 @@ describe("createApp", () => {
         chainId: 1,
       },
     ]);
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env).toMatchObject({
       owner: OWNER,
       label: "My Shop!",

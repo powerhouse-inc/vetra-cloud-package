@@ -234,7 +234,7 @@ function studioAuth(ctx: AppsContext): StudioProductAuth {
     : { kind: "owner" };
 }
 
-function mapApp(deps: AppsDeps, app: AppRow) {
+export function mapApp(deps: AppsDeps, app: AppRow) {
   const repo = appRepository(app);
   return {
     id: app.id,
@@ -269,7 +269,11 @@ function mapApp(deps: AppsDeps, app: AppRow) {
     createdAt: app.created_at,
     updatedAt: app.updated_at,
     productionUrls: async () =>
-      envUrls(await deps.envs.getState(app.production_environment_id)),
+      envUrls(
+        app.production_environment_id
+          ? await deps.envs.getState(app.production_environment_id)
+          : null,
+      ),
     previews: async () =>
       Promise.all(
         (await listPreviews(deps.db, app.id)).map(async (p) => ({
