@@ -45,17 +45,13 @@ function setupSteps(
   declaresPackageManager: boolean,
 ): string {
   if (manager === null) return "";
-  // bun installs and builds, but the build still shells into ph-cli, so Node
-  // has to be set up as well. `cache: bun` is not a setup-node option.
-  if (manager === "bun") {
-    return (
-      "      - uses: oven-sh/setup-bun@v2\n" +
-      `      - uses: actions/setup-node@v4\n        with: { node-version: ${NODE_VERSION} }\n`
-    );
-  }
-  const node = `      - uses: actions/setup-node@v4\n        with: { node-version: ${NODE_VERSION}, cache: ${manager} }\n`;
+  // No setup-node `cache:`: when the action stops before installing (no host
+  // Dockerfile yet), the cache folder never exists and the post step fails
+  // the job. bun installs and builds, but the build still shells into ph-cli,
+  // so Node is set up for it as well.
+  const node = `      - uses: actions/setup-node@v4\n        with: { node-version: ${NODE_VERSION} }\n`;
+  if (manager === "bun") return `      - uses: oven-sh/setup-bun@v2\n${node}`;
   if (manager !== "pnpm") return node;
-  // pnpm must be on PATH before setup-node's cache lookup runs.
   const version = declaresPackageManager
     ? ""
     : `\n        with: { version: ${DEFAULT_PNPM_VERSION} }`;
