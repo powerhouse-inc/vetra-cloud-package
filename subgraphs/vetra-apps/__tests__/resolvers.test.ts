@@ -72,6 +72,14 @@ describe("SDL", () => {
     expect(field("UpdateAppInput", "releaseBranches")).toBe("[String!]");
   });
 
+  it("App.productionEnvironmentId is nullable (publish-only apps)", () => {
+    const built = buildASTSchema(schema);
+    const app = built.getType("App") as GraphQLObjectType;
+    expect(String(app.getFields().productionEnvironmentId?.type)).toBe(
+      "String",
+    );
+  });
+
   it("CreateStudioAppInput requires the connected installationId", () => {
     const input = buildASTSchema(schema).getType(
       "CreateStudioAppInput",
