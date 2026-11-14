@@ -68,7 +68,7 @@ production environment.
 |---|---|
 | `createApp` (`service.ts`, "creating/provisioning the production environment") | skipped; nothing to undo on failure |
 | `deployApp`, `ciDeployApp`, `rollbackApp` and the deploy helpers (`service.ts`) | refused: `BAD_USER_INPUT` "This app publishes releases; it has no deploy environment" |
-| PR previews (`service.ts`, webhook `pull_request`) | skipped silently (no preview, no PR comment) |
+| PR preview deploys (`service.ts`, through the same deploy path) | refused like deploys; none arrive, since the workflow has no deploy job. The webhook only removes existing previews, so it is unchanged |
 | Watcher, app removal (`watcher.ts`, `service.ts` delete) | the environment step is skipped |
 | Org transfer (`org-ownership.ts`) | the environment is skipped |
 | Setup PR (`workflowTemplate`, `service.ts` setup and re-setup) | workflow without the `deploy` job |
