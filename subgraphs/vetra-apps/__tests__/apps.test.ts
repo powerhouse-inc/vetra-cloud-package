@@ -144,7 +144,7 @@ describe("GitHub connection", () => {
 });
 
 describe("createApp", () => {
-  it("creates Harbor project + robot, Renown identity and a new production env", async () => {
+  it("creates Harbor project + robot and Renown identity, and no environment", async () => {
     await connectGithubDeploy(h.deps, owner, "code");
     const app = await createApp(h.deps, owner, {
       name: "My Shop!",
@@ -173,23 +173,8 @@ describe("createApp", () => {
         chainId: 1,
       },
     ]);
-    const env = await h.envs.getState(app.production_environment_id!);
-    expect(env).toMatchObject({
-      owner: OWNER,
-      label: "My Shop!",
-      status: "CHANGES_APPROVED",
-      defaultPackageRegistry: "https://registry.vetra.io",
-      app: {
-        appId: app.id,
-        role: "PRODUCTION",
-        imageProject: "app-my-shop",
-        prNumber: null,
-      },
-    });
-    expect(env!.services.map((s) => s.type)).toStrictEqual([
-      "SWITCHBOARD",
-      "CONNECT",
-    ]);
+    expect(app.production_environment_id).toBeNull();
+    expect(h.envs.docs.size).toBe(0);
     expect(renownAuthorizeUrl(h.deps, app)).toBe(
       `https://www.renown.id/?app=${encodeURIComponent(APP_DID)}&returnUrl=${encodeURIComponent(`https://vetra.io/user/apps/${app.id}?identity=1`)}&expiresInDays=365`,
     );

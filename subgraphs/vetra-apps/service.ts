@@ -865,7 +865,7 @@ export async function createApp(
   };
   let appId: string;
   let slug: string;
-  let envId: string;
+  let envId: string | null;
   let step = "reserving the Harbor project";
   try {
     slug = await reserveSlugAndProject(deps, harbor, name, made, new Set());
@@ -877,13 +877,9 @@ export async function createApp(
     appId = deps.newId();
     // The apps row goes in before the env actions: the gitops render resolves
     // the App's Harbor project from it (see app-image-project.ts).
-    step = "creating the production environment";
-    if (attachEnvState) {
-      envId = input.productionEnvironmentId!;
-    } else {
-      envId = await deps.envs.create();
-      made.envId = envId;
-    }
+    step = "recording the production environment";
+    // Publish-only (spec 2026-11-14): an environment only when one is attached.
+    envId = attachEnvState ? input.productionEnvironmentId! : null;
     made.appId = appId;
     step = "recording the App";
     await insertAppRow(deps, {
@@ -900,21 +896,23 @@ export async function createApp(
       harborProject,
       productionEnvironmentId: envId,
     });
-    step = "provisioning the production environment";
-    await provisionProductionEnv(
-      deps,
-      caller,
-      {
-        envId,
-        appId,
-        name,
-        harborProject,
-        productionBranch,
-        orgId,
-        attach: attachEnvState ? { state: attachEnvState } : null,
-      },
-      made,
-    );
+    if (attachEnvState && envId !== null) {
+      step = "provisioning the production environment";
+      await provisionProductionEnv(
+        deps,
+        caller,
+        {
+          envId,
+          appId,
+          name,
+          harborProject,
+          productionBranch,
+          orgId,
+          attach: { state: attachEnvState },
+        },
+        made,
+      );
+    }
   } catch (err) {
     const cleanedUp = await undoFailedCreate(
       deps,
@@ -931,7 +929,7 @@ export async function createApp(
     });
   }
   deps.logger.info(
-    `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
+    `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId ?? "none"}`,
   );
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);
@@ -2411,7 +2409,8 @@ interface InsertAppRowInput {
   repo: { id: string; fullName: string };
   productionBranch: string;
   harborProject: string;
-  productionEnvironmentId: string;
+  /** Null: a publish-only App (spec 2026-11-14). */
+  productionEnvironmentId: string | null;
   /** The Vetra Studio env the App is created from (never app-linked). */
   studioEnvironmentId?: string | null;
 }

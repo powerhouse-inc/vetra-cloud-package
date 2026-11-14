@@ -42,6 +42,7 @@ import {
   member,
   owner,
   seedActiveApp,
+  seedLegacyProductionEnv,
   stranger,
   type Harness,
 } from "./harness.js";
@@ -408,7 +409,10 @@ describe("createApp in an organisation", () => {
 
   it("registers the workload for the org and hands the production env to it", async () => {
     h.orgs.join(ORG, OWNER, "PUBLISHER");
-    const created = await createApp(h.deps, owner, input);
+    const created = await createApp(h.deps, owner, {
+      ...input,
+      productionEnvironmentId: await seedLegacyProductionEnv(h, input.name),
+    });
     expect(created.owner_org_id).toBe(ORG);
     expect(h.renown.registered.at(-1)).toMatchObject({
       ownerAddress: OWNER,
@@ -425,7 +429,10 @@ describe("createApp in an organisation", () => {
 
   it("m2: re-makes a reverted hand-over of an org App that has no Renown profile yet", async () => {
     h.orgs.join(ORG, OWNER, "ADMIN");
-    const created = await createApp(h.deps, owner, input);
+    const created = await createApp(h.deps, owner, {
+      ...input,
+      productionEnvironmentId: await seedLegacyProductionEnv(h, input.name),
+    });
     const envId = created.production_environment_id!;
     // The announcement expired before observability could protect it: reverted.
     await h.envs.execute(envId, [setOwnerOrg({ ownerOrgId: null, operators: [] })]);
@@ -453,7 +460,10 @@ describe("createApp in an organisation", () => {
 
   it("announces the hand-over of a new env, so the observability protection keeps it", async () => {
     h.orgs.join(ORG, OWNER, "ADMIN");
-    const created = await createApp(h.deps, owner, input);
+    const created = await createApp(h.deps, owner, {
+      ...input,
+      productionEnvironmentId: await seedLegacyProductionEnv(h, input.name),
+    });
     const SERVICE = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
     const reactor = await createReactorPermissions([SERVICE]);
     try {
@@ -652,7 +662,12 @@ describe("createApp in an organisation", () => {
         throw new Error("reactor down");
       return execute(id, actions);
     };
-    expect(await code(createApp(h.deps, owner, input))).toBe("DEPLOY_SETUP_FAILED");
+    const envId = await seedLegacyProductionEnv(h, input.name);
+    expect(
+      await code(
+        createApp(h.deps, owner, { ...input, productionEnvironmentId: envId }),
+      ),
+    ).toBe("DEPLOY_SETUP_FAILED");
     const rows = await h.db
       .selectFrom("apps")
       .select("id")
@@ -662,8 +677,8 @@ describe("createApp in an organisation", () => {
     expect(h.harbor.deletedProjects).toStrictEqual(["app-org-shop"]);
     expect(h.harbor.deletedRobots).toHaveLength(1);
     expect(h.renown.identities.has("4343")).toBe(false);
-    // The fresh production env document goes too.
-    expect(h.envs.deleted).toHaveLength(1);
+    // An attached env is never deleted (createApp creates none).
+    expect(h.envs.deleted).toHaveLength(0);
     expect(
       await h.obsDb.selectFrom("org_expected_handovers").selectAll().execute(),
     ).toStrictEqual([]);

@@ -326,27 +326,6 @@ describe("createStudioApp setup errors after the repository exists", () => {
 });
 
 describe("createApp rollback", () => {
-  it("deletes the new production env document it created, and says nothing was changed", async () => {
-    const before = new Set(h.envs.docs.keys());
-    h.envs.execute = async () => {
-      throw new Error("INITIALIZE rejected");
-    };
-    const err = await failure(
-      createApp(h.deps, owner, {
-        name: "Shop",
-        installationId: INSTALLATION,
-        repositoryId: REPO_ID,
-      }),
-    );
-    // createApp never touches the customer's own repository.
-    expect(err.extensions.code).toBe("DEPLOY_SETUP_FAILED");
-    expect(err.message).toBe(
-      "Setting up the deployment failed. Nothing was changed; try again.",
-    );
-    expect(h.envs.deleted).toHaveLength(1);
-    expect(new Set(h.envs.docs.keys())).toStrictEqual(before);
-  });
-
   it("never deletes an attached env", async () => {
     const env = await h.envs.seedStandalone(OWNER);
     const execute = h.envs.execute.bind(h.envs);
