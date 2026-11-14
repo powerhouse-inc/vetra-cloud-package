@@ -16,6 +16,9 @@ import { STUDIO_APP_ID } from "../studio-app.js";
 const OWNER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ADDR = "0x1111111111111111111111111111111111111111";
 const DID = `did:pkh:eip155:1:${ADDR}`;
+// The factory checks licences against the real clock (now: new Date()): redeem today, or the 30-day
+// licence expires as the calendar moves on (it did from 2026-11-07, redeemed at the harness NOW).
+const REDEEMED_AT = new Date().toISOString();
 const fakeTransit = {
   ensureTenantKey: async () => {},
   encrypt: async (_t: string, p: string) => p,
@@ -46,12 +49,12 @@ beforeAll(async () => {
   await pm("publishTerm", { appId: STUDIO_APP_ID, termId });
   await createInviteCode(h.db, {
     appId: STUDIO_APP_ID, kind: "studio-early-access-30d", code: "studio-1", label: null, expiresAt: null, maxUses: null,
-    anthropicKeyCiphertext: "enc", now: NOW,
+    anthropicKeyCiphertext: "enc", now: REDEEMED_AT,
   });
   const holderLicences = createHolderLicences({ licences: h.reads, lifecycle: h.lifecycle, grants: createGrantStore(h.db) });
   ({ licenseId } = await redeemInviteCode(
     { ...h.deps.issue, db: h.db, activeLicencesOf: async (a, d) => (await holderLicences(a, d)).filter((l) => l.status === "ACTIVE") },
-    { code: "studio-1", user: DID, label: null, upgrades: null, now: NOW },
+    { code: "studio-1", user: DID, label: null, upgrades: null, now: REDEEMED_AT },
   ));
 }, 120_000);
 
