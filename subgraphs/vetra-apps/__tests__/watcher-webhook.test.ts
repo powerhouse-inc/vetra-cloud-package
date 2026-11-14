@@ -37,7 +37,7 @@ let app: AppRow;
 beforeEach(async () => {
   h = await makeHarness();
   app = await seedActiveApp(h);
-  h.envs.setStatus(app.production_environment_id, "READY");
+  h.envs.setStatus(app.production_environment_id!, "READY");
 });
 afterEach(async () => {
   await h.close();
@@ -63,13 +63,13 @@ describe("deployment watcher", () => {
       input({ imageTag: "sha-aaaaaaaaaaaa" }),
     );
     expect(await runDeploymentWatcherOnce(h.deps)).toStrictEqual([]); // env still CHANGES_APPROVED
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     expect(await runDeploymentWatcherOnce(h.deps)).toStrictEqual([d.id]);
     expect((await getDeployment(h.db, d.id))?.status).toBe("READY");
   });
 
   it("stays DEPLOYING while the READY env does not carry the versions yet", async () => {
-    const state = (await h.envs.getState(app.production_environment_id))!;
+    const state = (await h.envs.getState(app.production_environment_id!))!;
     expect(
       deploymentApplied(state, {
         packages: '[{"name":"x","version":"1"}]',
@@ -89,7 +89,7 @@ describe("deployment watcher", () => {
 
   it("marks FAILED on DEPLOYMENt_FAILED", async () => {
     const d = await deployApp(h.deps, owner, input());
-    h.envs.setStatus(app.production_environment_id, "DEPLOYMENt_FAILED");
+    h.envs.setStatus(app.production_environment_id!, "DEPLOYMENt_FAILED");
     await runDeploymentWatcherOnce(h.deps);
     expect(await getDeployment(h.db, d.id)).toMatchObject({
       status: "FAILED",

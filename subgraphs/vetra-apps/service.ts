@@ -865,7 +865,7 @@ export async function createApp(
   };
   let appId: string;
   let slug: string;
-  let envId: string;
+  let envId: string | null;
   let step = "reserving the Harbor project";
   try {
     slug = await reserveSlugAndProject(deps, harbor, name, made, new Set());
@@ -877,13 +877,9 @@ export async function createApp(
     appId = deps.newId();
     // The apps row goes in before the env actions: the gitops render resolves
     // the App's Harbor project from it (see app-image-project.ts).
-    step = "creating the production environment";
-    if (attachEnvState) {
-      envId = input.productionEnvironmentId!;
-    } else {
-      envId = await deps.envs.create();
-      made.envId = envId;
-    }
+    step = "recording the production environment";
+    // Publish-only (spec 2026-11-14): an environment only when one is attached.
+    envId = attachEnvState ? input.productionEnvironmentId! : null;
     made.appId = appId;
     step = "recording the App";
     await insertAppRow(deps, {
@@ -900,21 +896,23 @@ export async function createApp(
       harborProject,
       productionEnvironmentId: envId,
     });
-    step = "provisioning the production environment";
-    await provisionProductionEnv(
-      deps,
-      caller,
-      {
-        envId,
-        appId,
-        name,
-        harborProject,
-        productionBranch,
-        orgId,
-        attach: attachEnvState ? { state: attachEnvState } : null,
-      },
-      made,
-    );
+    if (attachEnvState && envId !== null) {
+      step = "provisioning the production environment";
+      await provisionProductionEnv(
+        deps,
+        caller,
+        {
+          envId,
+          appId,
+          name,
+          harborProject,
+          productionBranch,
+          orgId,
+          attach: { state: attachEnvState },
+        },
+        made,
+      );
+    }
   } catch (err) {
     const cleanedUp = await undoFailedCreate(
       deps,
@@ -931,7 +929,7 @@ export async function createApp(
     });
   }
   deps.logger.info(
-    `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId}`,
+    `[vetra-apps] created App ${slug} (${appId}) for ${repo.fullName}, env ${envId ?? "none"}`,
   );
   const created = (await getApp(deps.db, appId))!;
   await mirrorAppRow(deps, created);
@@ -2411,7 +2409,8 @@ interface InsertAppRowInput {
   repo: { id: string; fullName: string };
   productionBranch: string;
   harborProject: string;
-  productionEnvironmentId: string;
+  /** Null: a publish-only App (spec 2026-11-14). */
+  productionEnvironmentId: string | null;
   /** The Vetra Studio env the App is created from (never app-linked). */
   studioEnvironmentId?: string | null;
 }
@@ -3102,10 +3101,10 @@ export async function deleteApp(
   const app = await loadAppForOwner(deps, caller, appId);
   await assertNoCustomerInstances(deps, app.id);
   await deletePreviewsOfApp(deps, app, "app deleted", { strict: true });
-  if (deleteEnvironments) {
-    const prod = await deps.envs.getState(app.production_environment_id);
-    if (prod?.app?.appId === app.id)
-      await deps.envs.delete(app.production_environment_id);
+  if (deleteEnvironments && app.production_environment_id !== null) {
+    const prodId = app.production_environment_id;
+    const prod = await deps.envs.getState(prodId);
+    if (prod?.app?.appId === app.id) await deps.envs.delete(prodId);
   }
   if (app.harbor_robot_id !== null) {
     if (!deps.harbor) throw notConfigured("Harbor (HARBOR_APPS_ADMIN_*)");
@@ -3200,20 +3199,28 @@ export async function openAppSetupPullRequest(
     repository.installationId,
     repository.fullName,
   );
+  // A publish-only App (no production env) gets no deploy job.
+  const deploy = app.production_environment_id !== null;
   return github.openPullRequestWithFile(
     repository.installationId,
     repository.fullName,
     {
       branch: "vetra/publish",
       path: ".github/workflows/vetra.yml",
-      content: workflowTemplate(app.id, app.production_branch, repo),
+      content: workflowTemplate(app.id, app.production_branch, repo, {
+        deploy,
+      }),
       commitMessage: "ci: publish with Vetra",
       title: "Publish with Vetra",
       body: [
         "Adds (or replaces) `.github/workflows/vetra.yml`:",
         "",
-        "- [powerhouse-inc/vetra-publish](https://github.com/powerhouse-inc/vetra-publish) publishes a build of every push and pull request, keeps a release PR open on each release branch, and publishes a release when you merge it,",
-        `- [powerhouse-inc/vetra-deploy-action](https://github.com/powerhouse-inc/vetra-deploy-action) keeps deploying \`${app.production_branch}\` to the production environment and pull requests to previews, until releases replace it.`,
+        `- [powerhouse-inc/vetra-publish](https://github.com/powerhouse-inc/vetra-publish) publishes a build of every push and pull request, keeps a release PR open on each release branch, and publishes a release when you merge it${deploy ? "," : "."}`,
+        ...(deploy
+          ? [
+              `- [powerhouse-inc/vetra-deploy-action](https://github.com/powerhouse-inc/vetra-deploy-action) keeps deploying \`${app.production_branch}\` to the production environment and pull requests to previews, until releases replace it.`,
+            ]
+          : []),
         "",
         "vetra-publish builds the host image from `hosts/<host>/Dockerfile` (generate it with `ph generate hosts`). Until the repository has one, it only warns and publishes nothing.",
         "",
@@ -3565,6 +3572,7 @@ async function deployChecked(
   }
   if (app.status !== "ACTIVE")
     throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
+  const envId = deployEnvOf(app);
   if (!actor.gitRef) throw appsError("BAD_USER_INPUT", "gitRef is required");
   if (typeof input.sha !== "string" || !SHA.test(input.sha)) {
     throw appsError("BAD_USER_INPUT", "sha must be a git commit sha");
@@ -3610,9 +3618,7 @@ async function deployChecked(
       onBehalfOf: actor.onBehalfOf,
     });
   }
-  const productionState = await deps.envs.getState(
-    app.production_environment_id,
-  );
+  const productionState = await deps.envs.getState(envId);
   const image = resolveImage(app, input.imageTag, productionState);
   // A PR's CI run can finish after the PR was merged/closed (and after the
   // pull_request.closed webhook removed its preview): never (re)create or
@@ -3710,9 +3716,7 @@ export async function rollbackApp(
     if (!preview)
       throw appsError("BAD_USER_INPUT", "That preview no longer exists");
   }
-  const productionState = await deps.envs.getState(
-    app.production_environment_id,
-  );
+  const productionState = await deps.envs.getState(deployEnvOf(app));
   return performDeploy(deps, app, productionState, {
     kind: source.kind,
     prNumber: source.pr_number,
@@ -3937,6 +3941,18 @@ interface DeployTarget {
  * adopt refused those, or marked after): only the keeper's release gate
  * moves that one's version (spec 4.3).
  */
+export const NO_DEPLOY_ENV =
+  "This app publishes releases; it has no deploy environment";
+
+/** The App's production env id. A publish-only App (no production env) refuses every deploy. */
+export function deployEnvOf(
+  app: Pick<AppRow, "production_environment_id">,
+): string {
+  if (app.production_environment_id === null)
+    throw appsError("BAD_USER_INPUT", NO_DEPLOY_ENV);
+  return app.production_environment_id;
+}
+
 function assertProductionEnv(
   app: AppRow,
   state: VetraCloudEnvironmentState | null,
@@ -4089,7 +4105,7 @@ async function performDeploy(
   let target: DeployTarget;
   if (req.kind === "PRODUCTION") {
     target = {
-      envId: app.production_environment_id,
+      envId: deployEnvOf(app),
       state: assertProductionEnv(app, productionState),
       createActions: [],
       fusionEnvTemplate: [],
@@ -4187,7 +4203,7 @@ async function studioProductionEnv(
     throw appsError("APP_NOT_ACTIVE", `App is ${app.status}`);
   const state = assertProductionEnv(
     app,
-    await deps.envs.getState(app.production_environment_id),
+    await deps.envs.getState(deployEnvOf(app)),
   );
   if (RELEASED_STATUSES.has(state.status))
     throw appsError("BAD_USER_INPUT", `The live app is ${state.status}`);
@@ -4247,7 +4263,7 @@ async function queueStudioDeployment(
 ): Promise<DeploymentRow> {
   const nowIso = deps.now().toISOString();
   const id = deps.newId();
-  const envId = app.production_environment_id;
+  const envId = deployEnvOf(app);
   const superseded = await deps.db.transaction().execute(async (trx) => {
     if (req.trigger === "STUDIO_LAUNCH") {
       const live = await trx
@@ -4455,7 +4471,7 @@ async function pointConnectAtDrive(
   app: AppRow,
   driveId: string,
 ): Promise<void> {
-  const envId = app.production_environment_id;
+  const envId = deployEnvOf(app);
   await withEnvLock(envId, async () => {
     const state = await studioProductionEnv(deps, app);
     const switchboard = envUrls(state).switchboard;

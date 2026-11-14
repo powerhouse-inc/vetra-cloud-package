@@ -38,7 +38,7 @@ let app: AppRow;
 beforeEach(async () => {
   h = await makeHarness();
   app = await seedActiveApp(h);
-  h.envs.setStatus(app.production_environment_id, "READY");
+  h.envs.setStatus(app.production_environment_id!, "READY");
 });
 afterEach(async () => {
   await h.close();
@@ -108,7 +108,7 @@ describe("deployApp authorization (Review Focus 1)", () => {
     expect(
       await code(deployAsCi(h.deps, claim("refs/heads/dev"), prod())),
     ).toBe("FORBIDDEN");
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env?.packages).toStrictEqual([]);
     expect(
       await h.db.selectFrom("app_deployments").selectAll().execute(),
@@ -232,7 +232,7 @@ describe("deployApp PRODUCTION", () => {
       prod({ imageTag: "sha-abcdef123456" }),
     );
     expect(d.image_tag).toBe("cr.vetra.io/app-shop/app:sha-abcdef123456");
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env).toMatchObject({
       status: "CHANGES_APPROVED",
       packages: [
@@ -251,18 +251,18 @@ describe("deployApp PRODUCTION", () => {
   });
 
   it("wakes a sleeping env before deploying", async () => {
-    h.envs.setStatus(app.production_environment_id, "STOPPED");
+    h.envs.setStatus(app.production_environment_id!, "STOPPED");
     const d = await deployApp(h.deps, owner, prod());
     expect(d.status).toBe("DEPLOYING");
     expect(h.envs.executed.at(-2)?.types[0]).toBe("WAKE_ENVIRONMENT");
     expect(h.envs.executed.at(-1)?.types).toStrictEqual(["APPROVE_CHANGES"]);
-    expect((await h.envs.getState(app.production_environment_id))?.status).toBe(
+    expect((await h.envs.getState(app.production_environment_id!))?.status).toBe(
       "CHANGES_APPROVED",
     );
   });
 
   it("records FAILED when the environment is terminated", async () => {
-    h.envs.setStatus(app.production_environment_id, "TERMINATING");
+    h.envs.setStatus(app.production_environment_id!, "TERMINATING");
     const d = await deployApp(h.deps, owner, prod());
     expect(d.status).toBe("FAILED");
     expect(d.error).toMatch(/TERMINATING/);
@@ -280,7 +280,7 @@ describe("deployApp PRODUCTION", () => {
   });
 
   it("refuses when the production env is no longer linked to the App", async () => {
-    await h.envs.execute(app.production_environment_id, [
+    await h.envs.execute(app.production_environment_id!, [
       (
         await import("../../../document-models/vetra-cloud-environment/v1/index.js")
       ).clearAppLink({}),
@@ -294,7 +294,7 @@ describe("deployApp to a template-managed production env", () => {
     (await h.db.selectFrom("app_deployments").select("id").execute()).length;
 
   it("refuses a target managed by an app's licence template: nothing dispatched, no deployment recorded", async () => {
-    await h.envs.manage(app.production_environment_id);
+    await h.envs.manage(app.production_environment_id!);
     const before = h.envs.executed.length;
     await expect(
       deployApp(h.deps, owner, prod({ imageTag: "sha-abcdef123456" })),
@@ -314,7 +314,7 @@ describe("deployApp to a template-managed production env", () => {
     ).toBe("BAD_USER_INPUT");
     expect(h.envs.executed.slice(before)).toStrictEqual([]);
     expect(await deploymentCount()).toBe(0);
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env?.fusion).toBeNull();
     expect(env?.packages).toStrictEqual([]);
   });
@@ -326,8 +326,8 @@ describe("deployApp to a template-managed production env", () => {
       .set({ status: "READY" })
       .where("id", "=", good.id)
       .execute();
-    h.envs.setStatus(app.production_environment_id, "READY");
-    await h.envs.manage(app.production_environment_id);
+    h.envs.setStatus(app.production_environment_id!, "READY");
+    await h.envs.manage(app.production_environment_id!);
     const before = h.envs.executed.length;
     await expect(rollbackApp(h.deps, owner, good.id)).rejects.toMatchObject({
       message:
@@ -339,14 +339,14 @@ describe("deployApp to a template-managed production env", () => {
   });
 
   it("deploys to a target whose document predates managedBy as before", async () => {
-    h.envs.dropManagedBy(app.production_environment_id);
+    h.envs.dropManagedBy(app.production_environment_id!);
     const d = await deployApp(
       h.deps,
       owner,
       prod({ imageTag: "sha-abcdef123456" }),
     );
     expect(d.status).toBe("DEPLOYING");
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env!.services.find((s) => s.type === "FUSION")).toMatchObject({
       enabled: true,
       version: "sha-abcdef123456",
@@ -393,7 +393,7 @@ describe("deployApp PREVIEW", () => {
   it("copies production's non-secret FUSION env as the preview template", async () => {
     const { setFusionConfig } =
       await import("../../../document-models/vetra-cloud-environment/v1/index.js");
-    await h.envs.execute(app.production_environment_id, [
+    await h.envs.execute(app.production_environment_id!, [
       setFusionConfig({
         image: "cr.vetra.io/app-shop/web",
         env: [
@@ -422,7 +422,7 @@ describe("deployApp PREVIEW", () => {
   it("runs a host image (PH_HOST) without the platform switchboard and Connect", async () => {
     const { setFusionConfig } =
       await import("../../../document-models/vetra-cloud-environment/v1/index.js");
-    await h.envs.execute(app.production_environment_id, [
+    await h.envs.execute(app.production_environment_id!, [
       setFusionConfig({
         image: "cr.vetra.io/app-shop/app",
         env: [{ name: "PH_HOST", value: "cli", isSecret: false }],
@@ -443,7 +443,7 @@ describe("deployApp PREVIEW", () => {
   it("never copies legacy secret-looking entries (isSecret null) into the preview template (M6)", async () => {
     const { setFusionConfig } =
       await import("../../../document-models/vetra-cloud-environment/v1/index.js");
-    await h.envs.execute(app.production_environment_id, [
+    await h.envs.execute(app.production_environment_id!, [
       setFusionConfig({
         image: "cr.vetra.io/app-shop/web",
         env: [
@@ -547,7 +547,7 @@ describe("deployApp PREVIEW", () => {
 describe("preview deletion safety (Review Focus 2)", () => {
   it("never deletes a production or standalone env, even if a preview row points at it", async () => {
     const standalone = await h.envs.seedStandalone();
-    for (const envId of [app.production_environment_id, standalone]) {
+    for (const envId of [app.production_environment_id!, standalone]) {
       await h.db
         .insertInto("app_previews")
         .values({
@@ -602,13 +602,13 @@ describe("rollbackApp", () => {
       .set({ status: "READY" })
       .where("id", "=", good.id)
       .execute();
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     await deployApp(
       h.deps,
       owner,
       prod({ packages: [{ name: "@acme/shop", version: "9.9.9" }] }),
     );
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
 
     const rb = await rollbackApp(h.deps, owner, good.id);
     expect(rb).toMatchObject({
@@ -616,7 +616,7 @@ describe("rollbackApp", () => {
       status: "DEPLOYING",
       kind: "PRODUCTION",
     });
-    const env = await h.envs.getState(app.production_environment_id);
+    const env = await h.envs.getState(app.production_environment_id!);
     expect(env?.packages[0]?.version).toBe("1.2.0-main.7.abcdef1");
   });
 
@@ -754,7 +754,7 @@ describe("PREVIEW deploys of an app on instances", () => {
       testConfig({ instances: { enabled: false, labelSuffix: "" } }),
     );
     app = await seedActiveApp(h);
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
     await optIn();
     const d = await deployAsCi(
       h.deps,

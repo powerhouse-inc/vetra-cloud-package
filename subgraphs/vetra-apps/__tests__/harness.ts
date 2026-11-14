@@ -27,6 +27,7 @@ import {
   type OrgMembership,
 } from "../../../shared/renown-orgs.js";
 import type { VetraAppsDB } from "../db/schema.js";
+import type { AppRow } from "../repo.js";
 import type { VetraAppsConfig } from "../config.js";
 import type { EnvGateway } from "../envs.js";
 import {
@@ -823,7 +824,32 @@ export async function makeHarness(
   };
 }
 
-/** createApp with a connected installation, then mark the identity ACTIVE. */
+/**
+ * The production env createApp made before publish-only apps (spec
+ * 2026-11-14): tests of the old deploy path start from it, attached.
+ */
+export async function seedLegacyProductionEnv(
+  h: Harness,
+  name: string,
+  address = OWNER,
+): Promise<string> {
+  // h.deps.envs: a test may swap the gateway (reactor-errors); the env lives where the App reads it.
+  const id = await h.deps.envs.create();
+  await h.deps.envs.execute(id, [
+    setLabel({ label: name }),
+    initialize({
+      genericSubdomain: `sub-${id}`,
+      genericBaseDomain: "vetra.io",
+      defaultPackageRegistry: "https://registry.vetra.io",
+    }),
+    setOwner({ address }),
+    enableService({ type: "SWITCHBOARD", prefix: "switchboard" }),
+    enableService({ type: "CONNECT", prefix: "connect" }),
+  ]);
+  return id;
+}
+
+/** createApp with a connected installation and a legacy production env, then mark the identity ACTIVE. */
 export async function seedActiveApp(
   h: Harness,
   name = "Shop",
@@ -832,14 +858,21 @@ export async function seedActiveApp(
   const { createApp, connectGithubDeploy, confirmAppIdentity } =
     await import("../service.js");
   await connectGithubDeploy(h.deps, owner, "code");
+  const envId =
+    productionEnvironmentId ?? (await seedLegacyProductionEnv(h, name));
   const app = await createApp(h.deps, owner, {
     name,
     installationId: INSTALLATION,
     repositoryId: REPO_ID,
-    productionEnvironmentId,
+    productionEnvironmentId: envId,
   });
+  if (!productionEnvironmentId)
+    await h.deps.envs.execute(envId, [approveChanges({})]);
   h.renown.delegation = { expiresAt: "2027-10-02T12:00:00.000Z" };
-  return confirmAppIdentity(h.deps, owner, app.id);
+  // Seeded on the old deploy path: always with a production env.
+  return (await confirmAppIdentity(h.deps, owner, app.id)) as AppRow & {
+    production_environment_id: string;
+  };
 }
 
 /**

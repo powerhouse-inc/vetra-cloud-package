@@ -110,7 +110,7 @@ describe("createStudioApp", () => {
     // The studio env is NOT app-linked (CI must never deploy into it).
     expect((await h.envs.getState(studio))!.app).toBeNull();
     expect(
-      (await h.envs.getState(app.production_environment_id))!.app,
+      (await h.envs.getState(app.production_environment_id!))!.app,
     ).toMatchObject({ appId: app.id, role: "PRODUCTION" });
   });
 

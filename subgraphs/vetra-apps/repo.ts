@@ -52,6 +52,29 @@ export async function getAppByIdentity(
   return row ? normalizeApp(row) : null;
 }
 
+/** The App's production env (if any) and its preview envs: what licensing may treat as the App's own. */
+export async function appEnvironmentIds(
+  db: Kysely<VetraAppsDB>,
+  appId: string,
+): Promise<string[]> {
+  const [row, previews] = await Promise.all([
+    db
+      .selectFrom("apps")
+      .select("production_environment_id")
+      .where("id", "=", appId)
+      .executeTakeFirst(),
+    db
+      .selectFrom("app_previews")
+      .select("environment_id")
+      .where("app_id", "=", appId)
+      .execute(),
+  ]);
+  return [
+    ...(row?.production_environment_id ? [row.production_environment_id] : []),
+    ...previews.map((p) => p.environment_id),
+  ];
+}
+
 export async function listPreviews(
   db: Kysely<VetraAppsDB>,
   appId: string,

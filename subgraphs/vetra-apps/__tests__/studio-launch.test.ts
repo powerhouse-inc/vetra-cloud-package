@@ -93,8 +93,8 @@ async function seedProduct(name = "My Shop", by: Caller = agent): Promise<Produc
     { studioEnvironmentId: studioId, name },
     { kind: "agent", secret },
   );
-  h.envs.setStatus(app.production_environment_id, "READY");
-  return { app, studioId, secret, envId: app.production_environment_id };
+  h.envs.setStatus(app.production_environment_id!, "READY");
+  return { app, studioId, secret, envId: app.production_environment_id! };
 }
 
 const launchInput = (

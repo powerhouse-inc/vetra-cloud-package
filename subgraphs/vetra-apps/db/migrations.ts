@@ -149,6 +149,17 @@ export async function up(db: Kysely<any>): Promise<void> {
   await ensureRolloutBackupColumns(db);
   await ensureTeamPlanSchema(db);
   await ensureSwitchoverSchema(db);
+  await ensureAppsProductionEnvNullable(db);
+}
+
+/** Publish-only apps (spec 2026-11-14) have no production environment. Idempotent: DROP NOT NULL on a nullable column is a no-op. */
+export async function ensureAppsProductionEnvNullable(
+  db: Kysely<any>,
+): Promise<void> {
+  await db.schema
+    .alterTable("apps")
+    .alterColumn("production_environment_id", (c) => c.dropNotNull())
+    .execute();
 }
 
 /** Switch-overs and the instances' switchover_id (plan 9). Schema builder only (namespaced). */

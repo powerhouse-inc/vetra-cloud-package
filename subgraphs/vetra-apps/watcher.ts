@@ -243,9 +243,10 @@ export async function removeUnlaunchedStudioApp(
   if (!gone) return false;
   await mirrorAppById(deps, app.id);
   const envId = app.production_environment_id;
-  const env = await deps.envs.getState(envId);
-  let envNote = "env already gone";
+  const env = envId === null ? null : await deps.envs.getState(envId);
+  let envNote = envId === null ? "no production env" : "env already gone";
   if (
+    envId !== null &&
     env &&
     env.app?.appId === app.id &&
     env.app.role === "PRODUCTION" &&

@@ -11,7 +11,7 @@ import {
   createEnvironmentStopper,
   offboardingKeepsDatabase,
 } from "../vetra-apps/holds/stop.js";
-import { getAppByIdentity } from "../vetra-apps/repo.js";
+import { appEnvironmentIds, getAppByIdentity } from "../vetra-apps/repo.js";
 import { generateSubdomain } from "../../shared/subdomain-generator.js";
 import { redactSecrets } from "../../shared/redact.js";
 import { createResolvers, type ResolverDeps } from "./resolvers.js";
@@ -267,24 +267,7 @@ export class VetraLicensingSubgraph extends BaseSubgraph {
     const publisherResolvers = createPublisherResolvers({
       onLicenceIssued,
       // Ownership of environments comes from the apps tables, never documents.
-      appEnvironments: async (appId) => {
-        const [row, previews] = await Promise.all([
-          appsDb
-            .selectFrom("apps")
-            .select("production_environment_id")
-            .where("id", "=", appId)
-            .executeTakeFirst(),
-          appsDb
-            .selectFrom("app_previews")
-            .select("environment_id")
-            .where("app_id", "=", appId)
-            .execute(),
-        ]);
-        return [
-          ...(row ? [row.production_environment_id] : []),
-          ...previews.map((p) => p.environment_id),
-        ];
-      },
+      appEnvironments: (appId) => appEnvironmentIds(appsDb, appId),
       auth: publisherAuth,
       appPublisher: defaultRenownOrgs(),
       warmPool: createWarmPoolStore(db),

@@ -510,7 +510,7 @@ describe("old previews", () => {
       .selectAll()
       .where("id", "=", appId)
       .executeTakeFirstOrThrow();
-    h.envs.setStatus(app.production_environment_id, "READY");
+    h.envs.setStatus(app.production_environment_id!, "READY");
   };
 
   it("are deleted once the app is on instances", async () => {

@@ -680,7 +680,8 @@ export const schema: DocumentNode = gql`
     productionBranch: String!
     "Branches besides productionBranch that may publish releases: exact names, or * within one path segment (*.x, release/*)."
     releaseBranches: [String!]!
-    productionEnvironmentId: String!
+    "Null for a publish-only App: it has no deploy environment."
+    productionEnvironmentId: String
     previewsEnabled: Boolean!
     previewLimit: Int!
     previewTtlDays: Int!

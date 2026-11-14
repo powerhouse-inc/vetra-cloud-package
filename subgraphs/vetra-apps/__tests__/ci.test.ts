@@ -31,7 +31,7 @@ let app: AppRow;
 beforeEach(async () => {
   h = await makeHarness();
   app = await seedActiveApp(h);
-  h.envs.setStatus(app.production_environment_id, "READY");
+  h.envs.setStatus(app.production_environment_id!, "READY");
 });
 afterEach(async () => {
   await h.close();
