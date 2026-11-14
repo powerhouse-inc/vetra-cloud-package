@@ -79,6 +79,8 @@ export function workflowTemplate(
     /** Whether package.json carries a `packageManager` field. */
     declaresPackageManager?: boolean;
   } = {},
+  /** deploy: false for a publish-only App (spec 2026-11-14): no vetra-deploy-action job. */
+  options: { deploy?: boolean } = {},
 ): string {
   const manager =
     repo.packageManager === undefined ? "pnpm" : repo.packageManager;
@@ -100,6 +102,24 @@ export function workflowTemplate(
     productionBranch === "main"
       ? ""
       : `          production-branch: ${JSON.stringify(productionBranch)}\n`;
+
+  const deployJob = `  # The production environment and PR previews, until releases replace them.
+  deploy:
+    if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}') && !startsWith(github.head_ref, 'release-please--')
+    # Deploys go out in order: a newer push or PR commit supersedes a running one.
+    concurrency:
+      group: vetra-deploy-\${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+${setup}      - uses: powerhouse-inc/vetra-deploy-action@v1
+        with:
+          app-id: ${appId}
+${deployCommands}${branchInput}`;
 
   return `name: Vetra
 on:
@@ -131,21 +151,5 @@ jobs:
 ${setup}      - uses: powerhouse-inc/vetra-publish@v1
         with:
           app-id: ${appId}
-${commands}  # The production environment and PR previews, until releases replace them.
-  deploy:
-    if: (${SAME_REPO}) && (github.event_name == 'pull_request' || github.ref == 'refs/heads/${productionBranch}') && !startsWith(github.head_ref, 'release-please--')
-    # Deploys go out in order: a newer push or PR commit supersedes a running one.
-    concurrency:
-      group: vetra-deploy-\${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-${setup}      - uses: powerhouse-inc/vetra-deploy-action@v1
-        with:
-          app-id: ${appId}
-${deployCommands}${branchInput}`;
+${commands}${options.deploy === false ? "" : deployJob}`;
 }

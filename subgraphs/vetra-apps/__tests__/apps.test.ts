@@ -597,6 +597,23 @@ describe("App identity + settings", () => {
     ).toBe("FORBIDDEN");
   });
 
+  it("opens a publish-only setup PR for an app without a production env", async () => {
+    const app = await seedActiveApp(h);
+    await h.db
+      .updateTable("apps")
+      .set({ production_environment_id: null })
+      .where("id", "=", app.id)
+      .execute();
+    await openAppSetupPullRequest(h.deps, owner, app.id);
+    const [, , input] = h.github.calls.openPullRequestWithFile[0] as [
+      string,
+      string,
+      { content: string; body: string },
+    ];
+    expect(input.content).not.toContain("vetra-deploy-action");
+    expect(input.body).not.toContain("vetra-deploy-action");
+  });
+
   it("opens the setup PR with the workflow for this App", async () => {
     const app = await seedActiveApp(h);
     expect(await openAppSetupPullRequest(h.deps, owner, app.id)).toBe(

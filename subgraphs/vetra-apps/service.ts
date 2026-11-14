@@ -3199,20 +3199,28 @@ export async function openAppSetupPullRequest(
     repository.installationId,
     repository.fullName,
   );
+  // A publish-only App (no production env) gets no deploy job.
+  const deploy = app.production_environment_id !== null;
   return github.openPullRequestWithFile(
     repository.installationId,
     repository.fullName,
     {
       branch: "vetra/publish",
       path: ".github/workflows/vetra.yml",
-      content: workflowTemplate(app.id, app.production_branch, repo),
+      content: workflowTemplate(app.id, app.production_branch, repo, {
+        deploy,
+      }),
       commitMessage: "ci: publish with Vetra",
       title: "Publish with Vetra",
       body: [
         "Adds (or replaces) `.github/workflows/vetra.yml`:",
         "",
-        "- [powerhouse-inc/vetra-publish](https://github.com/powerhouse-inc/vetra-publish) publishes a build of every push and pull request, keeps a release PR open on each release branch, and publishes a release when you merge it,",
-        `- [powerhouse-inc/vetra-deploy-action](https://github.com/powerhouse-inc/vetra-deploy-action) keeps deploying \`${app.production_branch}\` to the production environment and pull requests to previews, until releases replace it.`,
+        `- [powerhouse-inc/vetra-publish](https://github.com/powerhouse-inc/vetra-publish) publishes a build of every push and pull request, keeps a release PR open on each release branch, and publishes a release when you merge it${deploy ? "," : "."}`,
+        ...(deploy
+          ? [
+              `- [powerhouse-inc/vetra-deploy-action](https://github.com/powerhouse-inc/vetra-deploy-action) keeps deploying \`${app.production_branch}\` to the production environment and pull requests to previews, until releases replace it.`,
+            ]
+          : []),
         "",
         "vetra-publish builds the host image from `hosts/<host>/Dockerfile` (generate it with `ph generate hosts`). Until the repository has one, it only warns and publishes nothing.",
         "",
